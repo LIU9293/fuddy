@@ -97,6 +97,7 @@ const defaultAgent: StoredAgentProvider = {
 }
 
 const defaultCodingAgents: ConfigureCodingAgentSettingsInput = {
+  defaultAgent: 'codex',
   codex: { defaultModel: '' },
   claude: { defaultModel: '' },
   opencode: { defaultModel: '' }
@@ -248,8 +249,16 @@ export class ProviderSettingsService {
   private readCodingAgents(): ConfigureCodingAgentSettingsInput {
     const stored = this.database.getSetting<unknown>(CODING_AGENTS_KEY, defaultCodingAgents)
     if (!stored || typeof stored !== 'object') return defaultCodingAgents
-    const value = stored as Partial<Record<keyof ConfigureCodingAgentSettingsInput, { defaultModel?: unknown }>>
+    const value = stored as {
+      defaultAgent?: unknown
+      codex?: { defaultModel?: unknown }
+      claude?: { defaultModel?: unknown }
+      opencode?: { defaultModel?: unknown }
+    }
     return {
+      defaultAgent: value.defaultAgent === 'claude' || value.defaultAgent === 'opencode' || value.defaultAgent === 'codex'
+        ? value.defaultAgent
+        : defaultCodingAgents.defaultAgent,
       codex: { defaultModel: typeof value.codex?.defaultModel === 'string' ? value.codex.defaultModel : '' },
       claude: { defaultModel: typeof value.claude?.defaultModel === 'string' ? value.claude.defaultModel : '' },
       opencode: { defaultModel: typeof value.opencode?.defaultModel === 'string' ? value.opencode.defaultModel : '' }
@@ -276,6 +285,7 @@ export class ProviderSettingsService {
 
   configureCodingAgents(input: ConfigureCodingAgentSettingsInput): ProviderSettings {
     this.database.setSetting<ConfigureCodingAgentSettingsInput>(CODING_AGENTS_KEY, {
+      defaultAgent: input.defaultAgent,
       codex: { defaultModel: input.codex.defaultModel.trim() },
       claude: { defaultModel: input.claude.defaultModel.trim() },
       opencode: { defaultModel: input.opencode.defaultModel.trim() }
@@ -283,7 +293,7 @@ export class ProviderSettingsService {
     return this.getPublicSettings()
   }
 
-  getCodingAgentDefaultModel(provider: keyof ConfigureCodingAgentSettingsInput): string | null {
+  getCodingAgentDefaultModel(provider: 'codex' | 'claude' | 'opencode'): string | null {
     return this.readCodingAgents()[provider].defaultModel.trim() || null
   }
 

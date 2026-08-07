@@ -2,6 +2,24 @@
 
 > 面向自由职业者与个人开发者的多项目 AI 助理。当前仓库已进入 Electron 桌面端 MVP 开发阶段。
 
+## 当前实现状态（2026-08-07）
+
+当前版本已经跑通从项目上下文、决策事项到真实 Agent Session 的桌面端主链路：
+
+- 工作助理、每日简报、决策收件箱、项目状态 / 目标 / 设置、文件、Agent Runs 和自动化已接入同一套本地数据模型；
+- Agent Run 不再区分 Coding / General，统一选择 Pi、Codex、Claude Code 或 OpenCode 作为执行 Agent；
+- 每个项目支持一个或多个 Workspace Roots，并指定主 Workspace。普通 Run 与自动任务都在真实项目目录执行，同时把其他 Roots 和项目产物目录提供给 Agent；
+- 新建 Agent Session 只创建草稿，不自动发送消息。“去处理”会直接创建 Session、进入聊天，并把建议任务放进输入框，用户确认或修改后再发送；
+- Codex 使用 app-server，Claude Code 使用 Agent SDK，OpenCode 使用本机 CLI；三者均保存原生 Session ID，可在后续消息中恢复同一上下文；
+- Coding Agents 设置会检测本机安装状态、版本和可选模型，可设置全局默认 Coding Agent，并为每个 Agent 选择默认模型；运行时仅在已选择模型时显式传入模型参数；
+- macOS GUI 启动时读取交互式 zsh 环境，因此本机 Agent 能获得与终端一致、未经应用过滤的环境变量和认证配置；应用不会修改 `.zshrc`；
+- Agent Run 当前按产品约定使用 Full Access / 自动批准模式。Codex、Claude Code 和 OpenCode 分别使用各自支持的完全访问参数；
+- Agent 对话已支持流式回复、思考摘要、折叠工具调用链、当前工具运行态、Session 重命名 / 归档，以及 10 分钟无活动运行超时；
+- Agent Runs 详情采用完整聊天主区域，Session 列表只在运行时显示加载图标；主侧边栏支持拖拽调整宽度；临时成功和错误提示会在 5 秒后自动消失；
+- 主进程、Renderer 未处理异常及 Electron 子进程异常已接入 Sentry 崩溃报告。
+
+目前仍属于本机 MVP：签名、公证、自动更新、后台系统级调度和更细粒度的生产发布权限仍待后续完成。
+
 ## 1. 产品定位
 
 这是一个以 Agent 交互为中心的个人项目操作系统，用来同时管理 5–6 个规模、类型与阶段不同的项目。
@@ -235,9 +253,12 @@ Goal → Milestone → Evidence → Check-in → Briefing / Decision → Agent R
 - Session 可以选择关联一个 Goal / Milestone，也可以作为独立任务运行；
 - Agent Run 不再区分“普通任务”和“代码任务”，只选择执行 Agent；Pi、Codex、Claude Code 和 OpenCode 都接收同一种 Run 和项目上下文；
 - Pi 使用内置 Agent Harness；Codex、Claude Code 和 OpenCode 连接本机已登录的运行时，并继续拥有各自的认证、模型配置和 Session；
-- 每个项目可在项目设置中选择默认 Agent；新建 Run 自动带入该默认值，同时允许对单次 Run 覆盖；
+- 每个项目可在项目设置中选择默认 Agent；全局 Coding Agents 设置另有一个默认 Coding Agent，供“去处理”等未显式选择 Agent 的入口使用；单次 Run 仍可覆盖；
 - Session 保存对应运行时返回的 Session ID，后续消息恢复同一个 Agent 上下文；工作目录使用项目主 Workspace，其他 Workspace Roots 和项目文件空间作为额外可访问目录；
-- 当前本机已检测并接通 Codex、Claude Code 与 OpenCode CLI；Claude Code 和 OpenCode 通过本机 CC Switch 的 Anthropic 兼容端点使用 `gpt-5.6-sol`，并分别保存原生 Session ID 以支持后续恢复。
+- 新建 Session 先进入 `draft`，创建页只配置项目、Agent、关联里程碑和标题；第一条消息在聊天页由用户发送；
+- 从决策收件箱点击“去处理”时，系统直接创建草稿 Session 并把建议任务预填到聊天输入框，不自动执行；
+- Codex、Claude Code 与 OpenCode 使用各自本机默认账号和配置，不注入 CC Switch 配置；应用继承交互式 zsh 环境，并只在用户选择模型后显式传入对应模型参数；
+- 三个外部 Agent 默认使用完整本机访问和自动批准模式。思考摘要、最新工具调用链和流式回复统一显示在 Session 聊天中。
 
 ### 项目状态
 
@@ -288,11 +309,11 @@ Vows 当前以用户确认现状为准：产品已可正常使用，用户自主
 - 全局设置拆分为“通用、模型、语音与 TTS、权限与安全”；项目 Connector 移入对应项目的“设置”Tab；
 - 每个设置页面使用扁平单列布局，不再用嵌套 Card 重复标题或描述；
 - Agent 与 TTS 分开配置，各自包含一套 Primary 和可选 Backup；Primary 请求失败时自动切换一次，并在运行结果中记录实际 Provider；
-- Agent 支持 OpenAI-compatible API（自动兼容 `/responses` 与 `/chat/completions`）以及 CC Switch Codex OAuth 本地反代；开发期默认通过 `http://127.0.0.1:15721/v1/messages` 使用 ChatGPT/Codex 订阅，失败时切换备用 Provider；
+- 工作助理的内置模型 Provider 支持 OpenAI-compatible API（自动兼容 `/responses` 与 `/chat/completions`），并保留 CC Switch Codex OAuth 本地反代兼容模式；这套配置不注入 Codex、Claude Code 或 OpenCode；
 - Agent 回复使用 SSE 逐段传输并以 GitHub Flavored Markdown 渲染；内部更新事件对齐 ACP `session/update` 的 `agent_message_chunk` 与 `plan` 结构，为后续 Codex / Claude ACP Adapter 保留兼容边界；
 - TTS 支持 macOS 系统语音、OpenAI-compatible `/audio/speech` 和 ElevenLabs；OpenAI 默认使用 `gpt-4o-mini-tts` / `marin`，ElevenLabs 默认建议 `eleven_multilingual_v2` 并单独配置 Voice ID；
 - API Key 只写入系统安全凭证存储，SQLite 仅保存非敏感配置与凭证引用；
-- 设置页提供 TTS 实际试听，用来验证 cc-switch、OpenAI-compatible 网关或 ElevenLabs 配置；试听也走同一套 fallback 链路。
+- 设置页提供 TTS 实际试听，用来验证系统语音、OpenAI-compatible 网关或 ElevenLabs 配置；试听也走同一套 fallback 链路。
 
 ## 7. AI Native 原则
 
@@ -300,9 +321,9 @@ Vows 当前以用户确认现状为准：产品已可正常使用，用户自主
 2. **Context aware**：Agent 的判断来自项目目标、阶段、Repo、自动任务和数据源。
 3. **Evidence backed**：总结和建议必须能追溯到实际证据。
 4. **Adaptive lens**：不同项目使用不同的分析方法和成功标准。
-5. **Aggressive autonomy**：日常读写、命令、浏览器操作与应用操作默认自动批准，减少频繁打断。
-6. **Dangerous action gate**：只有极高风险且可能造成不可逆损失的操作才在执行前询问，例如大范围删除、账户删除、资金交易、凭证外传、修改系统安全设置或破坏生产数据。
-7. **Audit everything**：自动批准和人工批准的操作都写入审计记录；敏感但可逆的操作默认放行并提高日志显著性。
+5. **Full-access autonomy**：当前本机 Agent Run 的文件、命令、网络、浏览器和应用操作默认完全访问并自动批准，减少频繁打断。
+6. **Respect explicit scope**：完整访问不等于扩大用户意图；Agent 仍应遵守任务范围，避免未经要求的不可逆操作、凭证外传或生产数据破坏。
+7. **Audit everything**：Agent 的工具操作和结果都应进入运行记录与审计链路。
 8. **Dynamic UI**：表格、图表、表单和操作面板由 Agent 在需要时生成。
 9. **Progressive disclosure**：默认界面保持简单，细节按用户意图展开。
 10. **Automation with auditability**：自动运行必须有状态、历史和失败处理。
@@ -337,8 +358,8 @@ Apple 官方参考：
 - Repo 连接检查；
 - 工作助理通用对话，以及每日简报的文字生成、语音播放和追问；
 - Cron Jobs 列表、新建、启停、立即运行和运行记录；
-- Aggressive 权限策略、危险操作确认与完整审计；
-- Codex / Claude 任务适配器与结果回收；
+- Full Access / 自动批准策略与完整审计；
+- Codex / Claude Code / OpenCode 任务适配器与结果回收；
 - Browser Use 与 Computer Use 基础能力；
 - Light / Dark 自动适配。
 
@@ -410,8 +431,9 @@ Backend
 - Pi Agent 不作为权限或安全边界，权限、审计、取消、超时、预算和持久化由应用层实现；
 - Codex 优先使用 Codex SDK、App Server 或 `codex exec --json`；
 - Claude 优先使用 Agent SDK 或 `claude -p --output-format stream-json`；
-- 当前 Coding Run 使用 Codex app-server JSON-RPC 与官方 Claude Agent SDK；两者的 Session ID、流式结果、工具事件和权限请求都回投同一个 Agent Run；
-- Provider 请求的例行操作按 Aggressive 策略自动批准并审计，危险操作在 Run 内暂停，用户可“仅批准这次”或拒绝；
+- 当前外部 Agent Run 使用 Codex app-server JSON-RPC、官方 Claude Agent SDK 与 OpenCode CLI；三者的 Session ID、流式结果和工具事件都回投同一个 Agent Run；
+- Coding Agent Runtime 不覆盖各 CLI 的账号或基础配置。Electron 主进程启动时读取交互式 zsh 环境，确保从 Finder 启动时也能继承终端中的 `PATH`、API Key 和 Provider 变量；
+- 外部 Agent Run 使用 Full Access / 自动批准策略；用户仍可停止当前 Run，工具事件和结果进入同一个 Session 记录；
 - 不通过 Computer Use 点击 Codex / Claude UI 来派发任务；没有结构化接口的 App 才回退到 Computer Use。
 
 ### Browser Use 与 Computer Use
@@ -421,19 +443,19 @@ Backend
 - Computer Use 使用 CUA Driver `0.19.0` 的 embedded daemon 与 stdio MCP proxy，不维护自有 Swift Helper；
 - CUA daemon 由 Electron 主进程直接启动，继承 Project Agent 的 Screen Recording 与 Accessibility 权限，并把同一私有 socket 暴露给 Pi、Codex、Claude 和 OpenCode；
 - 浏览器优先走 Browser Use；只有明确需要用户现有本机登录态或原生 App 时才走 CUA Driver；
-- 两项能力都只存在于 Agent Run，不提供独立内置页面。极高风险动作仍需通过 Permission Broker 二次确认。
+- 两项能力都只存在于 Agent Run，不提供独立内置页面，并遵循当前本机 Run 的 Full Access 策略。
 
 ### 权限模型
 
-默认模式为 `aggressive`：
+当前本机模式为 `full access`：
 
-| 风险级别 | 默认处理 | 示例 |
+| 操作类型 | 默认处理 | 示例 |
 | --- | --- | --- |
-| Routine | 自动批准并记录 | 项目内读写、测试、普通命令、浏览网页 |
-| Sensitive | 自动批准并重点记录 | 部署预览、发送可撤回内容、修改非安全设置 |
-| Dangerous | 执行前询问并记录 | 大范围删除、生产数据破坏、账户删除、资金交易、凭证外传、修改系统安全设置 |
+| 文件与命令 | 完整访问、自动批准并记录 | 项目读写、测试、构建与本机命令 |
+| 网络与工具 | 完整访问、自动批准并记录 | 浏览网页、调用 MCP、运行 Connector |
+| 浏览器与应用 | 完整访问、自动批准并记录 | Browser Use 与 Computer Use |
 
-权限判断必须基于具体动作、目标范围和可逆性，而不能只根据工具名称。用户可以随时停止运行或调整单个项目的权限策略。
+Agent 仍必须服从用户明确的任务范围，不能因为拥有完整访问就主动扩大目标。用户可以随时停止运行；远程、多用户或生产发布场景的细粒度权限门禁留待后续实现。
 
 ### 数据、插件与 Skills
 
@@ -478,8 +500,13 @@ Backend
 - 聚合结果持久化、确定性无模型回退，以及按日期稳定去重的行动信号；
 - 基于操作系统安全存储的 Credential Vault；SQLite 和日志只保存凭证引用；
 - 模型与 TTS 的 Primary / Backup 配置、自动 fallback、ElevenLabs TTS 和按配置失效的音频缓存；
-- Aggressive 权限分类器和单元测试；
-- Codex app-server 与 Claude Agent SDK 的真实可恢复 Session、审批回调、拒绝后继续执行的端到端测试；
+- Full Access 运行参数、权限策略和单元测试；
+- Codex app-server 与 Claude Agent SDK 的真实可恢复 Session、流式结果、工具事件和取消处理测试；
+- Agent Session 草稿创建、默认 Coding Agent / 模型传递、思考摘要、工具调用链，以及重命名和归档；
+- Coding Agent 使用项目主 Workspace 作为 `cwd`，并获得所有 Workspace Roots 与项目产物目录；
+- Electron 主进程从交互式 zsh 继承本机 Agent 环境，不改写或过滤用户的 `.zshrc` 配置；
+- Agent Run 10 分钟无活动超时与应用启动时的遗留运行状态修正；
+- Sentry 主进程、Renderer 和 Electron 子进程崩溃上报；
 - Pi Agent Runtime、Codex、Claude、OpenCode、Browser Use MCP、CUA Driver MCP 与 TTS 的适配器边界；
 - 固定版本和 SHA-256 校验的第三方工具准备流程，以及 Browser Use / CUA Driver 的真实 MCP smoke；
 - 接近 ChatGPT Mac App 信息架构的基础 UI。

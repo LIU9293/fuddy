@@ -10,7 +10,8 @@ import type {
   AgentRunStreamUpdate,
   AgentRunProvider,
   DispatchTaskInput,
-  DispatchTaskResult
+  DispatchTaskResult,
+  CreateAgentRunDraftInput
 } from '../../shared/contracts'
 import { AppDatabase } from './database'
 import { CliAgentRuntime } from './cli-agent-runtime'
@@ -121,6 +122,44 @@ export class TaskDispatcher {
     onUpdate({ type: 'created', run })
     const detail = await this.executeTurn(run.id, input.prompt, onUpdate)
     return { detail, message: detail.run.summary }
+  }
+
+  createDraft(input: CreateAgentRunDraftInput): AgentRunDetail {
+    const now = new Date().toISOString()
+    const project = input.projectId
+      ? this.database.listProjects().find((item) => item.id === input.projectId) ?? null
+      : null
+    const provider = input.provider ?? project?.profile.defaultAgent ?? 'pi'
+    this.validateInput(input)
+    const projectWorkspaces = project ? normalizeWorkspaceRoots(project.profile).workspaceRoots : []
+    const requestedDirectory = input.workingDirectory?.trim() || null
+    if (requestedDirectory && project && !projectWorkspaces.some((root) => isWithinWorkspace(requestedDirectory, root.path))) {
+      throw new Error('Working directory 必须位于项目配置的 Workspace Root 内。')
+    }
+    const workingDirectory = requestedDirectory
+      ?? (project ? primaryWorkspaceRoot(project.profile)?.path ?? null : this.workspaceFiles.getRoot(null))
+    if (project && !workingDirectory) {
+      throw new Error('这个项目需要先配置至少一个 Workspace Root。')
+    }
+
+    const run: AgentRun = {
+      id: randomUUID(),
+      projectId: input.projectId,
+      goalId: input.goalId ?? null,
+      milestoneId: input.milestoneId ?? null,
+      provider,
+      title: input.title.trim(),
+      status: 'draft',
+      sessionId: null,
+      workingDirectory,
+      startedAt: null,
+      completedAt: null,
+      summary: '等待首次消息',
+      createdAt: now,
+      updatedAt: now
+    }
+    this.database.createAgentRun(run)
+    return this.database.getAgentRunDetail(run.id)
   }
 
   getDetail(id: string): AgentRunDetail {
@@ -349,7 +388,7 @@ export class TaskDispatcher {
     })
   }
 
-  private validateInput(input: ResolvedDispatchTaskInput): void {
+  private validateInput(input: Pick<ResolvedDispatchTaskInput, 'projectId' | 'goalId' | 'milestoneId'>): void {
     if (input.milestoneId && !input.goalId) {
       throw new Error('关联 Milestone 时必须同时关联 Goal。')
     }

@@ -18,6 +18,7 @@ describe('coding agent provider settings', () => {
     const settings = createSettings()
 
     expect(settings.getPublicSettings().codingAgents).toEqual({
+      defaultAgent: 'codex',
       codex: { defaultModel: '' },
       claude: { defaultModel: '' },
       opencode: { defaultModel: '' }
@@ -28,12 +29,14 @@ describe('coding agent provider settings', () => {
   it('trims and persists a default model per coding agent', () => {
     const settings = createSettings()
     const saved = settings.configureCodingAgents({
+      defaultAgent: 'claude',
       codex: { defaultModel: '  gpt-codex-test  ' },
       claude: { defaultModel: 'claude-test' },
       opencode: { defaultModel: ' provider/model-test ' }
     })
 
     expect(saved.codingAgents).toEqual({
+      defaultAgent: 'claude',
       codex: { defaultModel: 'gpt-codex-test' },
       claude: { defaultModel: 'claude-test' },
       opencode: { defaultModel: 'provider/model-test' }

@@ -33,13 +33,31 @@ export interface CliAgentTurnResult {
 
 type JsonRecord = Record<string, unknown>
 
+// Codex app-server deliberately uses different casing for the legacy thread
+// sandbox enum and the structured turn sandbox policy discriminant.
+export const CODEX_THREAD_SANDBOX = 'danger-full-access' as const
+export const CODEX_TURN_SANDBOX_POLICY = 'dangerFullAccess' as const
+export const CODEX_APPROVAL_POLICY = 'never' as const
+
+export function codingAgentRuntimeRoots(input: Pick<CliAgentTurnInput, 'workingDirectory' | 'workspaceRoots' | 'filesDirectory'>): string[] {
+  return [...new Set([input.workingDirectory, ...input.workspaceRoots, input.filesDirectory])]
+}
+
 function textValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function streamTextValue(value: unknown): string {
+  return typeof value === 'string' ? value : ''
 }
 
 export function codexTomlStringMap(values: Record<string, string>): string {
   const entries = Object.entries(values).map(([key, value]) => `${JSON.stringify(key)} = ${JSON.stringify(value)}`)
   return `{ ${entries.join(', ')} }`
+}
+
+export function codexReasoningSummaryDelta(method: string, params: JsonRecord): string {
+  return method === 'item/reasoning/summaryTextDelta' ? streamTextValue(params.delta) : ''
 }
 
 function recordSessionId(record: JsonRecord): string | null {
@@ -65,7 +83,7 @@ function codexRecord(record: JsonRecord): {
   return {}
 }
 
-function claudeRecord(record: JsonRecord): { assistant?: string; tool?: { name: string; detail: string } } {
+export function claudeRecord(record: JsonRecord): { assistant?: string; reasoning?: string; tool?: { name: string; detail: string } } {
   if (record.type === 'result') return { assistant: textValue(record.result) }
   if (record.type === 'assistant' && record.message && typeof record.message === 'object') {
     const content = (record.message as JsonRecord).content
@@ -83,7 +101,8 @@ function claudeRecord(record: JsonRecord): { assistant?: string; tool?: { name: 
     const event = record.event as JsonRecord
     if (event.type === 'content_block_delta' && event.delta && typeof event.delta === 'object') {
       const delta = event.delta as JsonRecord
-      if (delta.type === 'text_delta') return { assistant: textValue(delta.text) }
+      if (delta.type === 'text_delta') return { assistant: streamTextValue(delta.text) }
+      if (delta.type === 'thinking_delta') return { reasoning: streamTextValue(delta.thinking) }
     }
   }
   return {}
@@ -99,7 +118,7 @@ function opencodeRecord(record: JsonRecord): { assistant?: string; tool?: { name
 }
 
 export function buildCliArgs(input: CliAgentTurnInput, mcpServers: McpServerLaunchConfig[]): string[] {
-  const additionalDirectories = [...new Set([...input.workspaceRoots, input.filesDirectory])]
+  const additionalDirectories = codingAgentRuntimeRoots(input)
     .filter((directory) => directory !== input.workingDirectory)
   if (input.provider === 'codex') {
     const common = [
@@ -224,6 +243,8 @@ export class CliAgentRuntime {
   ): Promise<CliAgentTurnResult> {
     const { query } = await import('@anthropic-ai/claude-agent-sdk')
     const executable = resolveCliBinary('claude')
+    const additionalDirectories = codingAgentRuntimeRoots(input)
+      .filter((directory) => directory !== input.workingDirectory)
     let sessionId = input.sessionId
     let streamedText = ''
     let finalText = ''
@@ -237,11 +258,12 @@ export class CliAgentRuntime {
         ...(input.sessionId ? { resume: input.sessionId } : {}),
         pathToClaudeCodeExecutable: executable,
         env: buildCliEnv('claude', mcpServers),
-        additionalDirectories: [input.filesDirectory],
+        additionalDirectories,
         includePartialMessages: true,
+        thinking: { type: 'adaptive', display: 'summarized' },
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
-        settingSources: ['user', 'project'],
+        settingSources: ['user', 'project', 'local'],
         mcpServers: Object.fromEntries(mcpServers.map((server) => [server.name, {
           type: 'stdio' as const,
           command: server.command,
@@ -258,6 +280,7 @@ export class CliAgentRuntime {
         input.onSessionId(found)
       }
       const parsed = claudeRecord(record)
+      if (parsed.reasoning) input.onUpdate({ type: 'reasoning_delta', delta: parsed.reasoning })
       if (record.type === 'assistant' && record.message && typeof record.message === 'object') {
         const content = (record.message as JsonRecord).content
         if (Array.isArray(content)) {
@@ -361,6 +384,8 @@ export class CliAgentRuntime {
           return
         }
         const params = record.params && typeof record.params === 'object' ? record.params as JsonRecord : {}
+        const reasoningDelta = codexReasoningSummaryDelta(method, params)
+        if (reasoningDelta) input.onUpdate({ type: 'reasoning_delta', delta: reasoningDelta })
         if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
           streamedText += params.delta
           input.onUpdate({ type: 'message_delta', messageId: `stream-${sessionId ?? 'new'}`, delta: params.delta })
@@ -404,16 +429,17 @@ export class CliAgentRuntime {
           capabilities: { experimentalApi: true }
         })
         write({ method: 'initialized', params: {} })
+        const runtimeWorkspaceRoots = codingAgentRuntimeRoots(input)
         const threadResult = input.sessionId
           ? await request('thread/resume', {
-              threadId: input.sessionId, cwd: input.workingDirectory, approvalPolicy: 'never',
+              threadId: input.sessionId, cwd: input.workingDirectory, approvalPolicy: CODEX_APPROVAL_POLICY,
               ...(input.model ? { model: input.model } : {}),
-              sandbox: 'dangerFullAccess', runtimeWorkspaceRoots: [input.workingDirectory, input.filesDirectory]
+              sandbox: CODEX_THREAD_SANDBOX, runtimeWorkspaceRoots
             })
           : await request('thread/start', {
-              cwd: input.workingDirectory, approvalPolicy: 'never', sandbox: 'dangerFullAccess',
+              cwd: input.workingDirectory, approvalPolicy: CODEX_APPROVAL_POLICY, sandbox: CODEX_THREAD_SANDBOX,
               ...(input.model ? { model: input.model } : {}),
-              runtimeWorkspaceRoots: [input.workingDirectory, input.filesDirectory],
+              runtimeWorkspaceRoots,
               developerInstructions: `这是 Project Agent 中的代码 Session。项目产物目录是 ${input.filesDirectory}。`
             })
         const thread = threadResult.thread && typeof threadResult.thread === 'object' ? threadResult.thread as JsonRecord : {}
@@ -424,8 +450,8 @@ export class CliAgentRuntime {
         await request('turn/start', {
           threadId: found,
           input: [{ type: 'text', text: input.prompt }],
-          approvalPolicy: 'never',
-          sandboxPolicy: { type: 'dangerFullAccess' }
+          approvalPolicy: CODEX_APPROVAL_POLICY,
+          sandboxPolicy: { type: CODEX_TURN_SANDBOX_POLICY }
         })
       })().catch(finishError)
     })

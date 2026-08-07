@@ -1,5 +1,4 @@
 import {
-  Archive,
   ArrowLeft,
   Bot,
   Check,
@@ -31,7 +30,7 @@ import {
   X,
   Trash2
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChatComposer } from './components/ChatComposer'
@@ -85,8 +84,7 @@ type WorkAssistantHandoff = {
 }
 type AgentRunHandoff = {
   id: string
-  projectId: string | null
-  title: string
+  runId: string
   prompt: string
 }
 
@@ -98,6 +96,10 @@ const workAssistantImageMimeTypes: readonly WorkAssistantImageMimeType[] = [
 ]
 const maxWorkAssistantImages = 4
 const maxWorkAssistantImageBytes = 5 * 1024 * 1024
+const defaultSidebarWidth = 258
+const minimumSidebarWidth = 220
+const maximumSidebarWidth = 420
+const sidebarWidthStorageKey = 'project-agent.sidebar-width'
 const codingAgentOptions: Array<{ id: CodingAgentProvider; label: string }> = [
   { id: 'codex', label: 'Codex' },
   { id: 'claude', label: 'Claude Code' },
@@ -106,6 +108,15 @@ const codingAgentOptions: Array<{ id: CodingAgentProvider; label: string }> = [
 
 function isWorkAssistantImageMimeType(value: string): value is WorkAssistantImageMimeType {
   return workAssistantImageMimeTypes.includes(value as WorkAssistantImageMimeType)
+}
+
+function clampSidebarWidth(value: number): number {
+  return Math.round(Math.min(maximumSidebarWidth, Math.max(minimumSidebarWidth, value)))
+}
+
+function initialSidebarWidth(): number {
+  const stored = Number.parseFloat(window.localStorage.getItem(sidebarWidthStorageKey) ?? '')
+  return Number.isFinite(stored) ? clampSidebarWidth(stored) : defaultSidebarWidth
 }
 
 function readImageAttachment(file: File): Promise<WorkAssistantImageAttachment> {
@@ -176,25 +187,33 @@ function formatRelativeTime(value: string): string {
   return `${Math.round(hours / 24)} 天前`
 }
 
-function CapabilityDot({ capability }: { capability: Capability }): React.JSX.Element {
-  return (
-    <span
-      className={`capability-dot capability-${capability.status}`}
-      title={`${capability.label}：${capability.detail}`}
-    />
-  )
+function useAutoDismissMessage(
+  message: string | null | undefined,
+  onDismiss: () => void,
+  delay = 5_000
+): void {
+  const onDismissRef = useRef(onDismiss)
+  onDismissRef.current = onDismiss
+
+  useEffect(() => {
+    if (!message) return
+    const timer = window.setTimeout(() => onDismissRef.current(), delay)
+    return () => window.clearTimeout(timer)
+  }, [message, delay])
 }
 
 function DecisionRow({
   item,
   project,
   onStatus,
-  onHandle
+  onHandle,
+  handling
 }: {
   item: DecisionItem
   project?: Project
   onStatus: (id: string, status: DecisionStatus) => Promise<void>
-  onHandle: (item: DecisionItem) => void
+  onHandle: (item: DecisionItem) => Promise<void>
+  handling: boolean
 }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
   const KindIcon = kindIcons[item.kind]
@@ -256,9 +275,9 @@ function DecisionRow({
               <Sparkles size={14} />
               <span><small>建议</small>{item.suggestedActions[0] ?? '让 Agent 先分析证据并明确下一步'}</span>
             </span>
-            <button className="primary-action" onClick={() => onHandle(item)}>
-              <Workflow size={14} />
-              去处理
+            <button className="primary-action" disabled={handling} onClick={() => void onHandle(item)}>
+              {handling ? <LoaderCircle size={14} className="spin" /> : <Workflow size={14} />}
+              {handling ? '正在创建…' : '去处理'}
             </button>
             <span className="action-spacer" />
             {item.status !== 'later' && (
@@ -489,6 +508,7 @@ function ProjectStatusView({
   const [currentStateFacts, setCurrentStateFacts] = useState(project.profile.currentState.facts.join('\n'))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  useAutoDismissMessage(error, () => setError(null))
 
   useEffect(() => {
     setMission(project.profile.mission)
@@ -594,6 +614,7 @@ function ProjectSettingsView({
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  useAutoDismissMessage(error, () => setError(null))
 
   useEffect(() => {
     setDraft(structuredClone(project))
@@ -900,6 +921,7 @@ function AudioBriefingCard({
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const speechSupported = typeof window !== 'undefined' && 'speechSynthesis' in window
+  useAutoDismissMessage(audioError, () => setAudioError(''))
 
   useEffect(() => {
     return () => {
@@ -1109,6 +1131,7 @@ function WorkAssistantView({
   } | null>(null)
   const threadEndRef = useRef<HTMLDivElement | null>(null)
   const handledHandoffRef = useRef<string | null>(null)
+  useAutoDismissMessage(imageError, () => setImageError(null))
   const completedBriefings = briefings.filter((briefing) => briefing.status === 'completed')
   const latestBriefing = completedBriefings[0]
   const timeline = [
@@ -1380,6 +1403,9 @@ function SettingsView({
   const [providerError, setProviderError] = useState<string | null>(null)
   const [requestingComputerPermissions, setRequestingComputerPermissions] = useState(false)
   const [projectAgentBusy, setProjectAgentBusy] = useState<string | null>(null)
+  useAutoDismissMessage(postgresError, () => setPostgresError(null))
+  useAutoDismissMessage(connectorSetupError, () => setConnectorSetupError(null))
+  useAutoDismissMessage(providerError, () => setProviderError(null))
   const visibleConnectors = bootstrap.connectors.filter(
     (connector) => !projectId || connector.projectId === projectId
   )
@@ -1690,7 +1716,7 @@ function SettingsView({
     setProviderError(null)
     try {
       await window.projectAgent.configureCodingAgents(codingAgents)
-      onNotice('Coding Agent 默认模型已保存。')
+      onNotice('默认 Coding Agent 和模型配置已保存。')
       await onRefresh()
     } catch (error) {
       setProviderError(error instanceof Error ? error.message : 'Coding Agent 配置保存失败。')
@@ -1973,30 +1999,29 @@ function SettingsView({
             </div>
           </article>
           <article>
-            <span className="settings-icon"><Archive size={17} /></span>
+            <span className="settings-icon"><Folder size={17} /></span>
             <div>
               <small>项目工作区</small>
               <strong>{bootstrap.projects.length} 个项目</strong>
               <p>{bootstrap.projects.map((project) => project.name).join('、')}</p>
             </div>
           </article>
-          <article>
-            <span className="settings-icon"><Workflow size={17} /></span>
-            <div>
-              <small>运行能力</small>
-              <strong>{bootstrap.capabilities.filter((item) => item.status === 'ready').length} 项已就绪</strong>
-              <p>模型、语音和权限在全局设置；Connector 跟随各自项目管理。</p>
-            </div>
-          </article>
+        </div>
+        <div className="settings-subsection-heading">
+          <div>
+            <h3>本机 Agent 能力</h3>
+            <p>Agent Run 可以使用的本机交互能力及当前状态。</p>
+          </div>
         </div>
         <div className="runtime-capability-list">
           {bootstrap.capabilities.filter((item) => item.id === 'browser' || item.id === 'computer').map((capability) => (
             <article key={capability.id}>
-              <span className={`capability-dot capability-${capability.status}`} />
-              <div>
+              <div className="runtime-capability-heading">
+                <span className={`capability-dot capability-${capability.status}`} />
                 <strong>{capability.label}</strong>
-                <p>{capability.detail}</p>
+                <small>{capability.status === 'ready' ? '可用' : capability.status === 'needs-setup' ? '需要配置' : capability.status === 'scaffolded' ? '准备中' : '不可用'}</small>
               </div>
+              <p>{capability.detail}</p>
               {capability.id === 'computer' && capability.status !== 'ready' && (
                 <button onClick={() => void requestComputerPermissions()} disabled={requestingComputerPermissions}>
                   {requestingComputerPermissions ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />}
@@ -2056,7 +2081,22 @@ function SettingsView({
 
         <div className="settings-group-heading coding-agent-settings-heading">
           <h2>Coding Agents</h2>
-          <p>从本机 Agent 读取当前账号支持的模型。选择后，启动 Agent Run 时会把该模型显式传给对应 Agent。</p>
+          <p>选择默认 Coding Agent，并为每个本机 Agent 配置运行时使用的模型。</p>
+        </div>
+        <div className="coding-agent-default-control">
+          <div>
+            <strong>默认 Coding Agent</strong>
+            <p>“去处理”等未手动选择 Agent 的入口会使用这个 Agent。</p>
+          </div>
+          <SelectMenu
+            value={codingAgents.defaultAgent}
+            options={codingAgentOptions.map((option) => ({ value: option.id, label: option.label }))}
+            onChange={(value) => setCodingAgents((current) => ({
+              ...current,
+              defaultAgent: value as CodingAgentProvider
+            }))}
+            ariaLabel="默认 Coding Agent"
+          />
         </div>
         <div className="coding-agent-config-list">
           {codingAgentOptions.map((option) => {
@@ -2552,6 +2592,9 @@ export default function App(): React.JSX.Element {
   const [submitting, setSubmitting] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth)
+  const [resizingSidebar, setResizingSidebar] = useState(false)
+  const sidebarResizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [settingsSearch, setSettingsSearch] = useState('')
   const [settingsReturnNavigation, setSettingsReturnNavigation] = useState<Exclude<Navigation, 'settings'>>('briefing')
@@ -2560,6 +2603,39 @@ export default function App(): React.JSX.Element {
   const [selectedAgentRunId, setSelectedAgentRunId] = useState<string | null>(null)
   const [creatingAgentRun, setCreatingAgentRun] = useState(false)
   const [agentRunHandoff, setAgentRunHandoff] = useState<AgentRunHandoff | null>(null)
+  const [handlingDecisionId, setHandlingDecisionId] = useState<string | null>(null)
+  useAutoDismissMessage(notice, () => setNotice(null))
+
+  useEffect(() => {
+    window.localStorage.setItem(sidebarWidthStorageKey, String(sidebarWidth))
+  }, [sidebarWidth])
+
+  function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    sidebarResizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: sidebarWidth
+    }
+    setResizingSidebar(true)
+  }
+
+  function moveSidebarResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    const resize = sidebarResizeRef.current
+    if (!resize || resize.pointerId !== event.pointerId) return
+    setSidebarWidth(clampSidebarWidth(resize.startWidth + event.clientX - resize.startX))
+  }
+
+  function finishSidebarResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    if (sidebarResizeRef.current?.pointerId !== event.pointerId) return
+    sidebarResizeRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    setResizingSidebar(false)
+  }
 
   useEffect(() => {
     void window.projectAgent.getBootstrap().then(setBootstrap)
@@ -2654,20 +2730,33 @@ export default function App(): React.JSX.Element {
     setNotice(null)
   }
 
-  function handleDecision(item: DecisionItem): void {
-    setAgentRunHandoff({
-      id: crypto.randomUUID(),
-      projectId: item.projectId,
-      title: `处理 · ${item.title}`,
-      prompt: item.summary
-    })
-    setNavigation('runs')
-    setSidebarSelection('runs')
-    setSelectedProject(null)
-    setComposerProjectId(null)
-    setSelectedAgentRunId(null)
-    setCreatingAgentRun(true)
+  async function handleDecision(item: DecisionItem): Promise<void> {
+    if (handlingDecisionId) return
+    setHandlingDecisionId(item.id)
     setNotice(null)
+    try {
+      const detail = await window.projectAgent.createAgentRunDraft({
+        projectId: item.projectId,
+        provider: bootstrap?.providerSettings.codingAgents.defaultAgent ?? 'codex',
+        title: `处理 · ${item.title}`
+      })
+      setAgentRunHandoff({
+        id: crypto.randomUUID(),
+        runId: detail.run.id,
+        prompt: item.summary
+      })
+      await refresh()
+      setNavigation('runs')
+      setSidebarSelection('runs')
+      setSelectedProject(null)
+      setComposerProjectId(null)
+      setSelectedAgentRunId(detail.run.id)
+      setCreatingAgentRun(false)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Agent Session 创建失败。')
+    } finally {
+      setHandlingDecisionId(null)
+    }
   }
 
   async function submitComposer(): Promise<void> {
@@ -2748,7 +2837,10 @@ export default function App(): React.JSX.Element {
     `${item.label} ${item.keywords}`.toLocaleLowerCase().includes(settingsSearch.trim().toLocaleLowerCase())
   )
   return (
-    <div className={`app-shell ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
+    <div
+      className={`app-shell ${sidebarOpen ? '' : 'sidebar-collapsed'} ${resizingSidebar ? 'is-resizing-sidebar' : ''}`}
+      style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}
+    >
       <aside className="sidebar">
         <div className="window-drag-region" />
         {navigation === 'settings' ? (
@@ -2794,10 +2886,6 @@ export default function App(): React.JSX.Element {
               })}
               {filteredSettingsNavigation.length === 0 && <p className="settings-search-empty">没有匹配的设置</p>}
             </nav>
-            <div className="settings-sidebar-footer">
-              <span className="capability-dot capability-ready" />
-              <span>{bootstrap.capabilities.filter((item) => item.status === 'ready').length} 项能力就绪</span>
-            </div>
           </>
         ) : navigation === 'runs' && (selectedAgentRunId || creatingAgentRun) ? (
           <AgentRunsSidebar
@@ -2931,12 +3019,6 @@ export default function App(): React.JSX.Element {
         </div>
 
         <div className="sidebar-footer">
-          <div className="capability-summary" title={bootstrap.capabilities.map((item) => `${item.label}: ${item.detail}`).join('\n')}>
-            {bootstrap.capabilities.map((capability) => (
-              <CapabilityDot key={capability.id} capability={capability} />
-            ))}
-            <span>{bootstrap.capabilities.filter((item) => item.status === 'ready').length} 项能力就绪</span>
-          </div>
           <button
             className="settings-button"
             onClick={() => {
@@ -2952,6 +3034,32 @@ export default function App(): React.JSX.Element {
         </div>
         </>
         )}
+        <div
+          className="sidebar-resize-handle"
+          role="separator"
+          aria-label="调整侧边栏宽度"
+          aria-orientation="vertical"
+          aria-valuemin={minimumSidebarWidth}
+          aria-valuemax={maximumSidebarWidth}
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
+          onPointerDown={startSidebarResize}
+          onPointerMove={moveSidebarResize}
+          onPointerUp={finishSidebarResize}
+          onPointerCancel={finishSidebarResize}
+          onLostPointerCapture={() => {
+            sidebarResizeRef.current = null
+            setResizingSidebar(false)
+          }}
+          onDoubleClick={() => setSidebarWidth(defaultSidebarWidth)}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home') return
+            event.preventDefault()
+            setSidebarWidth((current) => event.key === 'Home'
+              ? defaultSidebarWidth
+              : clampSidebarWidth(current + (event.key === 'ArrowRight' ? 12 : -12)))
+          }}
+        />
       </aside>
 
       <main className="content-shell">
@@ -3111,6 +3219,7 @@ export default function App(): React.JSX.Element {
                         project={bootstrap.projects.find((project) => project.id === item.projectId)}
                         onStatus={updateStatus}
                         onHandle={handleDecision}
+                        handling={handlingDecisionId === item.id}
                       />
                     ))
                   ) : (

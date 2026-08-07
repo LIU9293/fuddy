@@ -93,6 +93,10 @@ const dispatchTaskSchema = z.object({
   prompt: z.string().trim().min(1).max(20_000)
 })
 
+const createAgentRunDraftSchema = dispatchTaskSchema.omit({ requestId: true, prompt: true }).extend({
+  title: z.string().trim().min(1).max(200)
+})
+
 const dispatchProjectAgentSchema = z.object({
   requestId: z.string().trim().min(1).max(200),
   projectId: z.enum(['vows', 'ai-marketing']),
@@ -303,6 +307,10 @@ export function registerIpc(
     })
   })
 
+  ipcMain.handle('agent-run:create-draft', (_event, rawInput: unknown) => {
+    return dispatcher.createDraft(createAgentRunDraftSchema.parse(rawInput))
+  })
+
   ipcMain.handle('project-agent:dispatch', (event, rawInput: unknown) => {
     const input = dispatchProjectAgentSchema.parse(rawInput)
     return projectAgentIntegration.dispatch(input, (update) => {
@@ -454,7 +462,12 @@ export function registerIpc(
 
   ipcMain.handle('provider:configure-coding-agents', (_event, rawInput: unknown) => {
     const model = z.object({ defaultModel: z.string().trim().max(300) })
-    const input = z.object({ codex: model, claude: model, opencode: model }).parse(rawInput)
+    const input = z.object({
+      defaultAgent: z.enum(['codex', 'claude', 'opencode']),
+      codex: model,
+      claude: model,
+      opencode: model
+    }).parse(rawInput)
     return providerSettings.configureCodingAgents(input)
   })
 

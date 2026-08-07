@@ -243,7 +243,7 @@ export function AgentRunsView({
   goals: ProjectGoal[]
   selectedRunId: string | null
   creating: boolean
-  handoff: { id: string; projectId: string | null; title: string; prompt: string } | null
+  handoff: { id: string; runId: string; prompt: string } | null
   onHandoffConsumed: () => void
   onSelectRun: (runId: string | null) => void
   onCreatingChange: (creating: boolean) => void
@@ -254,6 +254,7 @@ export function AgentRunsView({
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [busy, setBusy] = useState(false)
   const [streamingText, setStreamingText] = useState('')
+  const [reasoningText, setReasoningText] = useState('')
   const [toolActivity, setToolActivity] = useState<ToolActivity[]>([])
   const [pendingApproval, setPendingApproval] = useState<AgentApprovalRequest | null>(null)
   const [reply, setReply] = useState('')
@@ -265,7 +266,6 @@ export function AgentRunsView({
   const [projectId, setProjectId] = useState<string | null>(projects[0]?.id ?? null)
   const [milestoneValue, setMilestoneValue] = useState('')
   const [title, setTitle] = useState('')
-  const [prompt, setPrompt] = useState('')
   const threadEndRef = useRef<HTMLDivElement | null>(null)
   const handledHandoffRef = useRef<string | null>(null)
   const previousCreatingRef = useRef(creating)
@@ -286,6 +286,7 @@ export function AgentRunsView({
     let cancelled = false
     setLoadingDetail(true)
     setStreamingText('')
+    setReasoningText('')
     setToolActivity([])
     setPendingApproval(null)
     setRenamingTitle(null)
@@ -301,10 +302,11 @@ export function AgentRunsView({
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ block: 'end' })
-  }, [detail?.messages.length, busy, streamingText])
+  }, [detail?.messages.length, busy, reasoningText, streamingText])
 
   function handleStream(update: AgentRunStreamUpdate): void {
     if (update.type === 'message_delta') setStreamingText((current) => current + update.delta)
+    if (update.type === 'reasoning_delta') setReasoningText((current) => current + update.delta)
     if (update.type === 'tool') {
       setToolActivity((current) => [
         ...current.filter((item) => item.name !== update.toolName || item.status === 'completed'),
@@ -318,16 +320,13 @@ export function AgentRunsView({
     if (!handoff || handledHandoffRef.current === handoff.id) return
     handledHandoffRef.current = handoff.id
     onHandoffConsumed()
-    setDetail(null)
     setStreamingText('')
+    setReasoningText('')
     setToolActivity([])
     setPendingApproval(null)
-    setProjectId(handoff.projectId)
-    setProvider(projectDefaultAgent(handoff.projectId))
-    setMilestoneValue('')
-    setTitle(handoff.title)
-    setPrompt(handoff.prompt)
-    onCreatingChange(true)
+    setReply(handoff.prompt)
+    onCreatingChange(false)
+    onSelectRun(handoff.runId)
   }, [handoff])
 
   async function respondToApproval(decision: 'approve' | 'deny'): Promise<void> {
@@ -349,12 +348,12 @@ export function AgentRunsView({
   function resetNewRun(): void {
     setDetail(null)
     setStreamingText('')
+    setReasoningText('')
     setToolActivity([])
     setPendingApproval(null)
     setProvider(projectDefaultAgent(projectId))
     setMilestoneValue('')
     setTitle('')
-    setPrompt('')
   }
 
   useEffect(() => {
@@ -364,31 +363,25 @@ export function AgentRunsView({
   }, [creating, handoff])
 
   async function createRun(): Promise<void> {
-    if (!prompt.trim() || busy) return
+    if (!title.trim() || busy) return
     const [goalId, milestoneId] = milestoneValue ? milestoneValue.split(':') : [null, null]
     setBusy(true)
-    setStreamingText('')
-    setToolActivity([])
     try {
-      const result = await window.projectAgent.dispatchTask({
-        requestId: crypto.randomUUID(),
+      const result = await window.projectAgent.createAgentRunDraft({
         projectId,
         goalId,
         milestoneId,
         provider,
-        title: title.trim() || undefined,
-        prompt: prompt.trim()
-      }, handleStream)
-      setDetail(result.detail)
+        title: title.trim()
+      })
+      setDetail(result)
       await onRefresh()
       onCreatingChange(false)
-      onSelectRun(result.detail.run.id)
+      onSelectRun(result.run.id)
     } catch (error) {
       onNotice(error instanceof Error ? error.message : 'Agent Run 创建失败。')
     } finally {
       setBusy(false)
-      setStreamingText('')
-      setToolActivity([])
     }
   }
 
@@ -398,6 +391,7 @@ export function AgentRunsView({
     setReply('')
     setBusy(true)
     setStreamingText('')
+    setReasoningText('')
     setToolActivity([])
     setDetail((current) => current ? {
       ...current,
@@ -426,6 +420,7 @@ export function AgentRunsView({
     } finally {
       setBusy(false)
       setStreamingText('')
+      setReasoningText('')
       setToolActivity([])
     }
   }
@@ -553,20 +548,17 @@ export function AgentRunsView({
     return (
       <section className="agent-runs-view agent-run-chat-view">
         <header className="agent-run-page-header">
-          <div><strong>创建 Agent Session</strong><small>选择项目和 Agent，然后直接开始对话</small></div>
+          <div><strong>创建 Agent Session</strong><small>配置 Session，创建后进入聊天</small></div>
         </header>
         <div className="agent-run-create-shell">
           <div className="agent-run-create-form">
             <label><span>项目</span><SelectMenu value={projectId ?? ''} options={[{ value: '', label: '共享任务' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]} onChange={(value) => { const nextProjectId = value || null; setProjectId(nextProjectId); setMilestoneValue(''); setProvider(projectDefaultAgent(nextProjectId)) }} ariaLabel="Run 所属项目" /></label>
             <label><span>Agent</span><SelectMenu value={provider} options={agentOptions} onChange={(value) => setProvider(value as AgentRunProvider)} ariaLabel="执行 Agent" /></label>
             <label><span>关联 Milestone（可选）</span><SelectMenu value={milestoneValue} options={[{ value: '', label: '不关联 Milestone' }, ...milestoneOptions]} onChange={setMilestoneValue} ariaLabel="关联 Milestone" /></label>
-            <label><span>Session 标题</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="可留空，自动使用任务第一行" /></label>
-            <label className="run-prompt-field"><span>首次任务</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="描述要完成的工作、背景和验收标准…" rows={7} /></label>
-            <p className="run-create-note">已带入项目的默认 Agent，也可以为本次 Run 覆盖。内容只会在你点击下方按钮后发送；所有 Agent 默认拥有完整本机访问权限并自动批准工具调用。</p>
-            {busy && <RunLiveActivity streamingText={streamingText} tools={toolActivity} approval={pendingApproval} onApproval={respondToApproval} />}
-            <button className="run-create-submit" onClick={() => void createRun()} disabled={!prompt.trim() || busy}>
+            <label><span>Session 标题</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：分析 Roombase 入驻阻塞" /></label>
+            <button className="run-create-submit" onClick={() => void createRun()} disabled={!title.trim() || busy}>
               {busy ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}
-              {busy ? '正在创建并执行…' : '创建并开始运行'}
+              {busy ? '正在创建…' : '创建 Session'}
             </button>
           </div>
         </div>
@@ -638,7 +630,7 @@ export function AgentRunsView({
             <article className="chat-turn is-assistant is-pending">
               <div className="chat-turn-content">
                 <div className="chat-turn-meta"><strong>{detail.run.provider}</strong><time>正在回复</time></div>
-                <RunLiveActivity streamingText={streamingText} tools={toolActivity} approval={pendingApproval} onApproval={respondToApproval} />
+                <RunLiveActivity reasoningText={reasoningText} streamingText={streamingText} tools={toolActivity} approval={pendingApproval} onApproval={respondToApproval} />
               </div>
             </article>
           )}
@@ -665,11 +657,13 @@ export function AgentRunsView({
 }
 
 function RunLiveActivity({
+  reasoningText,
   streamingText,
   tools,
   approval,
   onApproval
 }: {
+  reasoningText: string
   streamingText: string
   tools: ToolActivity[]
   approval: AgentApprovalRequest | null
@@ -683,9 +677,13 @@ function RunLiveActivity({
         <button onClick={() => void onApproval('deny')}>拒绝</button>
         <button className="is-primary" onClick={() => void onApproval('approve')}>仅批准这次</button>
       </div>}
+      {reasoningText && <div className="agent-run-reasoning">
+        <span><LoaderCircle size={12} className="spin" /><strong>思考摘要</strong></span>
+        <Markdown content={reasoningText} />
+      </div>}
       {tools.length > 0 && <ToolCallChain tools={tools} />}
       {streamingText && <Markdown content={streamingText} />}
-      {!approval && !streamingText && tools.length === 0 && <div className="agent-run-live-idle"><LoaderCircle size={13} className="spin" /><span>Agent 正在处理…</span></div>}
+      {!approval && !reasoningText && !streamingText && tools.length === 0 && <div className="agent-run-live-idle"><LoaderCircle size={13} className="spin" /><span>Agent 正在思考…</span></div>}
     </div>
   )
 }

@@ -17,6 +17,42 @@ afterEach(() => {
 })
 
 describe('TaskDispatcher project agent defaults', () => {
+  it('creates a draft session with the project defaults without sending its first message', () => {
+    const root = mkdtempSync(join(tmpdir(), 'project-agent-draft-session-'))
+    temporaryDirectories.push(root)
+    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const roombase = database.listProjects().find((project) => project.id === 'roombase')!
+    database.updateProject({
+      ...roombase,
+      profile: {
+        ...roombase.profile,
+        repoPath: root,
+        workspaceRoots: [{ id: 'primary', label: 'Test', path: root }],
+        primaryWorkspaceRootId: 'primary',
+        defaultAgent: 'claude'
+      }
+    })
+    const dispatcher = new TaskDispatcher(
+      database,
+      {} as PiTaskHarness,
+      new WorkspaceFilesService(database, join(root, 'files')),
+      {} as CliAgentRuntime
+    )
+
+    const detail = dispatcher.createDraft({ projectId: 'roombase', title: '处理 · 等待平台处理' })
+
+    expect(detail.run).toMatchObject({
+      projectId: 'roombase',
+      provider: 'claude',
+      workingDirectory: root,
+      title: '处理 · 等待平台处理',
+      status: 'draft',
+      summary: '等待首次消息'
+    })
+    expect(detail.messages).toEqual([])
+    database.close()
+  })
+
   it('uses the project default agent when dispatch omits provider', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-default-provider-'))
     temporaryDirectories.push(root)

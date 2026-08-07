@@ -22,6 +22,7 @@ import { CliAgentRuntime } from './services/cli-agent-runtime'
 import { resolveThirdPartyMcpOptions, ThirdPartyMcpRuntime } from './services/third-party-mcp-runtime'
 import { ProjectAgentIntegrationService } from './services/project-agent-integration'
 import { SENTRY_DSN, SENTRY_PROJECT } from '../shared/sentry'
+import { hydrateProcessEnvironmentFromZsh } from './services/shell-environment'
 
 Sentry.init({
   dsn: SENTRY_DSN,
@@ -134,6 +135,7 @@ if (!hasLock) {
   })
 
   app.whenReady().then(async () => {
+    await hydrateProcessEnvironmentFromZsh()
     const userDataPath = app.getPath('userData')
     const databasePath = join(userDataPath, 'project-agent.sqlite')
     database = new AppDatabase(databasePath)

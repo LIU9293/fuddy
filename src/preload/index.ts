@@ -11,6 +11,7 @@ import type {
   ConfigurePostgresInput,
   ConfigureTtsProviderInput,
   CreateDecisionInput,
+  CreateAgentRunDraftInput,
   DecisionStatus,
   DesktopApi,
   CreateAgentRunInput,
@@ -54,6 +55,8 @@ const api: DesktopApi = {
       ipcRenderer.removeListener('agent-run:update', listener)
     })
   },
+  createAgentRunDraft: (input: CreateAgentRunDraftInput) =>
+    ipcRenderer.invoke('agent-run:create-draft', input),
   dispatchProjectAgent: (
     input: DispatchProjectAgentInput,
     onUpdate: (update: AgentRunStreamUpdate) => void

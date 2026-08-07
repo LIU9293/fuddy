@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type { CliAgentTurnInput } from './cli-agent-runtime'
-import { buildCliArgs, buildCliEnv, buildCodexAppServerArgs, codexTomlStringMap } from './cli-agent-runtime'
+import {
+  buildCliArgs,
+  buildCliEnv,
+  buildCodexAppServerArgs,
+  codingAgentRuntimeRoots,
+  codexReasoningSummaryDelta,
+  CODEX_APPROVAL_POLICY,
+  CODEX_THREAD_SANDBOX,
+  CODEX_TURN_SANDBOX_POLICY,
+  claudeRecord,
+  codexTomlStringMap
+} from './cli-agent-runtime'
 import type { McpServerLaunchConfig } from './third-party-mcp-runtime'
 
 const servers: McpServerLaunchConfig[] = [
@@ -29,6 +40,23 @@ function input(provider: CliAgentTurnInput['provider']): CliAgentTurnInput {
 }
 
 describe('coding CLI MCP injection', () => {
+  it('preserves Claude summarized-thinking stream deltas for the live reasoning UI', () => {
+    expect(claudeRecord({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        delta: { type: 'thinking_delta', thinking: '正在检查项目数据库连接方式。' }
+      }
+    })).toEqual({ reasoning: '正在检查项目数据库连接方式。' })
+  })
+
+  it('forwards Codex reasoning summaries without exposing raw reasoning deltas', () => {
+    expect(codexReasoningSummaryDelta('item/reasoning/summaryTextDelta', { delta: '正在检查依赖关系。' }))
+      .toBe('正在检查依赖关系。')
+    expect(codexReasoningSummaryDelta('item/reasoning/textDelta', { delta: 'raw chain of thought' }))
+      .toBe('')
+  })
+
   it('adds both stdio servers to Codex config overrides', () => {
     const rawArgs = buildCliArgs(input('codex'), servers)
     const args = rawArgs.join(' ')
@@ -50,6 +78,27 @@ describe('coding CLI MCP injection', () => {
     expect(rawArgs).toContain('mcp_servers.browser_use.env={ "BROWSER_USE_CONFIG_DIR" = "/profiles/test" }')
     expect(args).not.toContain('dangerously-bypass')
     expect(args).not.toContain('approve-for-me')
+  })
+
+  it('uses the exact Codex app-server permission enum casing', () => {
+    expect(CODEX_APPROVAL_POLICY).toBe('never')
+    expect(CODEX_THREAD_SANDBOX).toBe('danger-full-access')
+    expect(CODEX_TURN_SANDBOX_POLICY).toBe('dangerFullAccess')
+  })
+
+  it('binds every configured workspace root plus the project files directory', () => {
+    expect(codingAgentRuntimeRoots({
+      workingDirectory: '/repo-primary',
+      workspaceRoots: ['/repo-primary', '/repo-secondary'],
+      filesDirectory: '/files'
+    })).toEqual(['/repo-primary', '/repo-secondary', '/files'])
+
+    const claudeArgs = buildCliArgs({
+      ...input('claude'),
+      workingDirectory: '/repo-primary',
+      workspaceRoots: ['/repo-primary', '/repo-secondary']
+    }, [])
+    expect(claudeArgs).toEqual(expect.arrayContaining(['--add-dir', '/repo-secondary', '--add-dir', '/files']))
   })
 
   it('escapes Codex MCP environment values as a TOML inline table', () => {

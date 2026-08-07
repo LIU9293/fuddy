@@ -140,6 +140,7 @@ export type AgentRunStreamUpdate =
   | { type: 'created'; run: AgentRun }
   | { type: 'status'; status: AgentRunStatus; detail?: string }
   | { type: 'message_delta'; messageId: string; delta: string }
+  | { type: 'reasoning_delta'; delta: string }
   | { type: 'tool'; toolName: string; status: 'running' | 'completed' | 'failed'; detail: string }
   | { type: 'approval'; request: AgentApprovalRequest }
 
@@ -419,7 +420,9 @@ export interface CodingAgentModelSettings {
   defaultModel: string
 }
 
-export type CodingAgentSettings = Record<CodingAgentProvider, CodingAgentModelSettings>
+export interface CodingAgentSettings extends Record<CodingAgentProvider, CodingAgentModelSettings> {
+  defaultAgent: CodingAgentProvider
+}
 
 export type ConfigureCodingAgentSettingsInput = CodingAgentSettings
 
@@ -752,6 +755,16 @@ export interface CreateAgentRunInput extends DispatchTaskInput {
   requestId: string
 }
 
+export interface CreateAgentRunDraftInput {
+  projectId: string | null
+  goalId?: string | null
+  milestoneId?: string | null
+  /** Uses the project's default agent when omitted. */
+  provider?: AgentRunProvider
+  title: string
+  workingDirectory?: string | null
+}
+
 export interface WriteWorkspaceFileInput {
   projectId: string | null
   relativePath: string
@@ -778,6 +791,7 @@ export interface DesktopApi {
     input: CreateAgentRunInput,
     onUpdate: (update: AgentRunStreamUpdate) => void
   ): Promise<DispatchTaskResult>
+  createAgentRunDraft(input: CreateAgentRunDraftInput): Promise<AgentRunDetail>
   dispatchProjectAgent(
     input: DispatchProjectAgentInput,
     onUpdate: (update: AgentRunStreamUpdate) => void
