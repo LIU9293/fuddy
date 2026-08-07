@@ -3,6 +3,13 @@ import Foundation
 let companionProtocolVersion = 1
 let defaultCompanionRelayURL = "https://project-agent-companion-relay.moghub.workers.dev"
 
+func parseCompanionDate(_ value: String) -> Date? {
+    let fractionalFormatter = ISO8601DateFormatter()
+    fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = fractionalFormatter.date(from: value) { return date }
+    return ISO8601DateFormatter().date(from: value)
+}
+
 struct PairingPayload: Codable {
     let protocolVersion: Int
     let relayUrl: String

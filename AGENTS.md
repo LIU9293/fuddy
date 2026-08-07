@@ -32,7 +32,7 @@ npm run ios:generate
 npm run ios:typecheck
 ```
 
-Regenerate the iOS project with `cd ios && xcodegen generate`. Use `/Applications/Xcode.app` through `DEVELOPER_DIR` for builds; accepting the Xcode license and selecting an Apple Developer team are user-owned legal/account steps.
+Regenerate the iOS project with `cd ios && xcodegen generate`. Use `/Applications/Xcode.app` through `DEVELOPER_DIR` for builds; accepting the Xcode license and selecting an Apple Developer team are user-owned legal/account steps. Simulator builds must keep local ad-hoc signing enabled because pairing uses Keychain; do not pass `CODE_SIGNING_ALLOWED=NO`. After a Simulator runtime is installed, run the `ProjectAgentCompanion` scheme's XCTest suite on an available iPhone simulator.
 
 Use `npm run prepare:agent-tools` before packaging or running the optional Browser Use / Computer Use smoke tests. The integration smoke tests are opt-in because they require installed local tools and live authentication:
 

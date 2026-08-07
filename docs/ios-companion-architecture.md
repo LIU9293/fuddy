@@ -129,14 +129,21 @@ npm run ios:generate
 # the local Xcode license because it invokes the installed toolchain directly.
 npm run ios:typecheck
 
-# Build after accepting the local Xcode license
+# Build and run XCTest after accepting the local Xcode license and installing an
+# iOS Simulator runtime. Keep local ad-hoc signing enabled: the Keychain APIs used
+# by pairing require the generated application identifier entitlement.
 cd ios
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcodebuild -project ProjectAgentCompanion.xcodeproj \
   -scheme ProjectAgentCompanion \
-  -sdk iphonesimulator \
-  -destination 'generic/platform=iOS Simulator' \
-  CODE_SIGNING_ALLOWED=NO build
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  build
+
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcodebuild test \
+  -project ProjectAgentCompanion.xcodeproj \
+  -scheme ProjectAgentCompanion \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
 ```
 
 Device/APNs verification additionally requires selecting an Apple Developer team, enabling Push Notifications for the app identifier, and installing a development provisioning profile.

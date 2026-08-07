@@ -527,6 +527,8 @@ npm run dev
 npm run typecheck
 npm test
 npm run build
+npm run ios:generate
+npm run ios:typecheck
 RUN_AGENT_TOOLS_SMOKE=1 npx vitest run src/main/services/third-party-mcp-runtime.integration.test.ts
 RUN_CODING_CLI_SMOKE=1 npx vitest run src/main/services/coding-cli.integration.test.ts
 ```

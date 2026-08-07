@@ -226,12 +226,10 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ProjectAgentCompanion-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Project Agent";
 				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的一次性 Companion 配对二维码。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIBackgroundModes = (
-					"remote-notification",
-				);
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -393,12 +391,10 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ProjectAgentCompanion-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Project Agent";
 				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的一次性 Companion 配对二维码。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIBackgroundModes = (
-					"remote-notification",
-				);
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

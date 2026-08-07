@@ -376,7 +376,8 @@ struct CompanionSettingsView: View {
 }
 
 private func relativeDate(_ value: String) -> String {
-    let formatter = ISO8601DateFormatter()
-    guard let date = formatter.date(from: value) else { return value }
-    return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+    guard let date = parseCompanionDate(value) else { return value }
+    let formatter = RelativeDateTimeFormatter()
+    formatter.locale = Locale(identifier: "zh-Hans-CN")
+    return formatter.localizedString(for: date, relativeTo: Date())
 }

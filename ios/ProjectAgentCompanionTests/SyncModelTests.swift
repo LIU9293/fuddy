@@ -2,6 +2,12 @@ import XCTest
 @testable import ProjectAgentCompanion
 
 final class SyncModelTests: XCTestCase {
+    func testCompanionDateParsesFractionalAndWholeSecondTimestamps() {
+        XCTAssertNotNil(parseCompanionDate("2026-08-07T17:55:03.145Z"))
+        XCTAssertNotNil(parseCompanionDate("2026-08-07T17:55:03Z"))
+        XCTAssertNil(parseCompanionDate("not-a-date"))
+    }
+
     func testPairingPayloadDecodesMacPayload() throws {
         let payload = #"{"protocolVersion":1,"relayUrl":"https://relay.example.com","accountId":"account","pairingSecret":"secret"}"#
         let decoded = try JSONDecoder().decode(PairingPayload.self, from: Data(payload.utf8))
