@@ -1,0 +1,75 @@
+{
+  "name": "ai-native-project-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A native decision inbox and project agent for macOS.",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev --watch",
+    "build": "npm run typecheck && electron-vite build",
+    "postinstall": "install-electron",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "metrics:roombase:daily": "node scripts/roombase-daily-metrics.mjs",
+    "prepare:agent-tools": "node scripts/prepare-agent-tools.mjs",
+    "dist:mac": "npm run prepare:agent-tools && npm run build && electron-builder --mac dmg"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.224",
+    "@earendil-works/pi-agent-core": "0.83.0",
+    "@earendil-works/pi-ai": "0.83.0",
+    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@sentry/electron": "^7.16.0",
+    "@trycua/cua-driver": "0.19.0",
+    "lucide-react": "1.28.0",
+    "pg": "^8.22.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.2",
+    "@types/pg": "^8.20.4",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "43.3.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "typescript": "7.0.2",
+    "vite": "7.3.6",
+    "vitest": "4.1.10"
+  },
+  "build": {
+    "appId": "dev.ainative.projectagent",
+    "productName": "Project Agent",
+    "asar": true,
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".third-party-tools/uv/darwin-${arch}/uv",
+        "to": "third-party/uv/uv"
+      },
+      {
+        "from": ".third-party-tools/cua-driver/darwin-universal/cua-driver",
+        "to": "third-party/cua-driver/cua-driver"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "target": [
+        "dmg"
+      ]
+    }
+  }
+}

@@ -1,0 +1,212 @@
+import { Check, ChevronDown } from 'lucide-react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+
+export interface SelectMenuOption<T extends string> {
+  value: T
+  label: string
+  icon?: ReactNode
+}
+
+interface SelectMenuProps<T extends string> {
+  value: T
+  options: readonly SelectMenuOption<T>[]
+  onChange: (value: T) => void
+  ariaLabel: string
+  className?: string
+  leading?: ReactNode
+  disabled?: boolean
+  position?: 'up' | 'down'
+}
+
+export function SelectMenu<T extends string>({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+  className = '',
+  leading,
+  disabled = false,
+  position = 'down'
+}: SelectMenuProps<T>): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const listboxId = useId()
+  const selected = options.find((option) => option.value === value) ?? options[0]
+
+  useEffect(() => {
+    if (!open) return
+
+    function closeOutside(event: PointerEvent): void {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+
+    function closeOnEscape(event: KeyboardEvent): void {
+      if (event.key === 'Escape') setOpen(false)
+    }
+
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  return (
+    <div
+      className={`select-menu ${position === 'up' ? 'opens-up' : ''} ${open ? 'is-open' : ''} ${className}`.trim()}
+      ref={rootRef}
+    >
+      <button
+        type="button"
+        className="select-menu-trigger"
+        aria-label={ariaLabel}
+        aria-controls={listboxId}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault()
+            setOpen(true)
+          }
+        }}
+      >
+        <span className="select-menu-value">
+          {leading ?? selected?.icon}
+          <span>{selected?.label ?? value}</span>
+        </span>
+        <ChevronDown className="select-menu-chevron" size={13} />
+      </button>
+
+      {open && (
+        <div className="select-menu-popover" id={listboxId} role="listbox" aria-label={ariaLabel}>
+          {options.map((option) => {
+            const isSelected = option.value === value
+            return (
+              <button
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                className={`select-menu-option ${isSelected ? 'is-selected' : ''}`}
+                key={option.value}
+                onClick={() => {
+                  onChange(option.value)
+                  setOpen(false)
+                }}
+              >
+                <span>
+                  {option.icon}
+                  {option.label}
+                </span>
+                {isSelected && <Check size={14} />}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface SuggestionInputProps {
+  value: string
+  suggestions: readonly string[]
+  onChange: (value: string) => void
+  ariaLabel: string
+  placeholder?: string
+}
+
+export function SuggestionInput({
+  value,
+  suggestions,
+  onChange,
+  ariaLabel,
+  placeholder
+}: SuggestionInputProps): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const listboxId = useId()
+  const normalizedValue = value.trim().toLowerCase()
+  const filteredSuggestions = suggestions.filter(
+    (suggestion) => !normalizedValue || suggestion.toLowerCase().includes(normalizedValue)
+  )
+  const visibleSuggestions = filteredSuggestions.length > 0 ? filteredSuggestions : suggestions
+
+  useEffect(() => {
+    if (!open) return
+
+    function closeOutside(event: PointerEvent): void {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+
+    function closeOnEscape(event: KeyboardEvent): void {
+      if (event.key === 'Escape') setOpen(false)
+    }
+
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  return (
+    <div className={`suggestion-input ${open ? 'is-open' : ''}`} ref={rootRef}>
+      <input
+        value={value}
+        placeholder={placeholder}
+        role="combobox"
+        aria-label={ariaLabel}
+        aria-controls={listboxId}
+        aria-expanded={open}
+        aria-autocomplete="list"
+        onFocus={() => setOpen(true)}
+        onChange={(event) => {
+          onChange(event.target.value)
+          setOpen(true)
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown') {
+            event.preventDefault()
+            setOpen(true)
+          }
+        }}
+      />
+      <button
+        type="button"
+        className="suggestion-input-toggle"
+        aria-label={`${ariaLabel}建议`}
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <ChevronDown size={13} />
+      </button>
+      {open && (
+        <div className="select-menu-popover" id={listboxId} role="listbox" aria-label={`${ariaLabel}建议`}>
+          {visibleSuggestions.map((suggestion) => {
+            const isSelected = suggestion === value
+            return (
+              <button
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                className={`select-menu-option ${isSelected ? 'is-selected' : ''}`}
+                key={suggestion}
+                onClick={() => {
+                  onChange(suggestion)
+                  setOpen(false)
+                }}
+              >
+                <span>{suggestion}</span>
+                {isSelected && <Check size={14} />}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}

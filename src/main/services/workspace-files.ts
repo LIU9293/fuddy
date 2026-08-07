@@ -1,0 +1,192 @@
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
+import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
+import type { Project, WorkspaceFileContent, WorkspaceFileEntry } from '../../shared/contracts'
+import { AppDatabase } from './database'
+
+const editableExtensions = new Set([
+  '.txt', '.md', '.markdown', '.json', '.jsonl', '.csv', '.tsv', '.html', '.css', '.xml', '.yaml', '.yml'
+])
+
+const mimeTypes: Record<string, string> = {
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.markdown': 'text/markdown',
+  '.json': 'application/json',
+  '.jsonl': 'application/x-ndjson',
+  '.csv': 'text/csv',
+  '.tsv': 'text/tab-separated-values',
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.yaml': 'application/yaml',
+  '.yml': 'application/yaml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.mp4': 'video/mp4',
+  '.mov': 'video/quicktime'
+}
+
+function normalizeRelativePath(value: string): string {
+  return value.trim().replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/{2,}/g, '/')
+}
+
+export class WorkspaceFilesService {
+  constructor(
+    private readonly database: AppDatabase,
+    private readonly root: string
+  ) {
+    mkdirSync(this.root, { recursive: true })
+    this.database.listProjects().forEach((project) => this.ensureRoot(project.id))
+    this.ensureRoot(null)
+  }
+
+  getRoot(projectId: string | null): string {
+    this.assertProject(projectId)
+    return this.ensureRoot(projectId)
+  }
+
+  list(projectId: string | null): WorkspaceFileEntry[] {
+    const root = this.getRoot(projectId)
+    const entries: WorkspaceFileEntry[] = []
+    const visit = (directory: string): void => {
+      for (const item of readdirSync(directory, { withFileTypes: true })) {
+        if (item.name === '.DS_Store') continue
+        const absolutePath = resolve(directory, item.name)
+        const relativePath = relative(root, absolutePath).split(sep).join('/')
+        const entry = this.toEntry(projectId, root, relativePath)
+        entries.push(entry)
+        if (item.isDirectory() && entries.length < 2_000) visit(absolutePath)
+        if (entries.length >= 2_000) return
+      }
+    }
+    visit(root)
+    return entries.sort((left, right) => {
+      const leftDepth = left.relativePath.split('/').length
+      const rightDepth = right.relativePath.split('/').length
+      if (leftDepth !== rightDepth) return leftDepth - rightDepth
+      if (left.kind !== right.kind) return left.kind === 'directory' ? -1 : 1
+      return left.relativePath.localeCompare(right.relativePath, 'zh-CN')
+    })
+  }
+
+  read(projectId: string | null, relativePath: string): WorkspaceFileContent {
+    const root = this.getRoot(projectId)
+    const normalized = normalizeRelativePath(relativePath)
+    const absolutePath = this.resolveInside(root, normalized)
+    const entry = this.toEntry(projectId, root, normalized)
+    if (entry.kind !== 'file') throw new Error('请选择一个文件。')
+    if (!entry.editable) return { entry, content: null }
+    if (entry.size > 2 * 1024 * 1024) throw new Error('文本文件超过 2 MB，请在外部应用中打开。')
+    return { entry, content: readFileSync(absolutePath, 'utf8') }
+  }
+
+  write(projectId: string | null, relativePath: string, content: string): WorkspaceFileEntry {
+    const root = this.getRoot(projectId)
+    const normalized = normalizeRelativePath(relativePath)
+    if (!normalized) throw new Error('请输入文件名。')
+    const absolutePath = this.resolveInside(root, normalized)
+    mkdirSync(dirname(absolutePath), { recursive: true })
+    writeFileSync(absolutePath, content, 'utf8')
+    return this.toEntry(projectId, root, normalized)
+  }
+
+  createFolder(projectId: string | null, relativePath: string): WorkspaceFileEntry {
+    const root = this.getRoot(projectId)
+    const normalized = normalizeRelativePath(relativePath)
+    if (!normalized) throw new Error('请输入文件夹名称。')
+    const absolutePath = this.resolveInside(root, normalized)
+    mkdirSync(absolutePath, { recursive: true })
+    return this.toEntry(projectId, root, normalized)
+  }
+
+  importFiles(projectId: string | null, sourcePaths: string[], targetDirectory = ''): WorkspaceFileEntry[] {
+    const root = this.getRoot(projectId)
+    const normalizedDirectory = normalizeRelativePath(targetDirectory)
+    const targetRoot = this.resolveInside(root, normalizedDirectory)
+    mkdirSync(targetRoot, { recursive: true })
+
+    return sourcePaths.map((sourcePath) => {
+      const sourceStats = statSync(sourcePath)
+      if (!sourceStats.isFile()) throw new Error(`暂不支持导入文件夹：${basename(sourcePath)}`)
+      const targetPath = resolve(targetRoot, basename(sourcePath))
+      this.assertInside(root, targetPath)
+      copyFileSync(sourcePath, targetPath)
+      return this.toEntry(projectId, root, relative(root, targetPath).split(sep).join('/'))
+    })
+  }
+
+  resolvePath(projectId: string | null, relativePath = ''): string {
+    const root = this.getRoot(projectId)
+    const normalized = normalizeRelativePath(relativePath)
+    const absolutePath = this.resolveInside(root, normalized)
+    if (!existsSync(absolutePath)) throw new Error('文件或文件夹不存在。')
+    return absolutePath
+  }
+
+  relativePath(projectId: string | null, absolutePath: string): string | null {
+    const root = this.getRoot(projectId)
+    const resolved = resolve(absolutePath)
+    try {
+      this.assertInside(root, resolved)
+      return relative(root, resolved).split(sep).join('/')
+    } catch {
+      return null
+    }
+  }
+
+  private toEntry(projectId: string | null, root: string, relativePath: string): WorkspaceFileEntry {
+    const absolutePath = this.resolveInside(root, relativePath)
+    const stats = statSync(absolutePath)
+    const extension = extname(absolutePath).toLowerCase()
+    return {
+      projectId,
+      relativePath,
+      name: basename(absolutePath),
+      kind: stats.isDirectory() ? 'directory' : 'file',
+      size: stats.size,
+      modifiedAt: stats.mtime.toISOString(),
+      mimeType: stats.isDirectory() ? null : mimeTypes[extension] ?? 'application/octet-stream',
+      editable: stats.isFile() && editableExtensions.has(extension)
+    }
+  }
+
+  private ensureRoot(projectId: string | null): string {
+    const path = resolve(this.root, projectId ?? '_shared')
+    mkdirSync(path, { recursive: true })
+    return path
+  }
+
+  private assertProject(projectId: string | null): Project | null {
+    if (projectId === null) return null
+    const project = this.database.listProjects().find((item) => item.id === projectId)
+    if (!project) throw new Error(`Project not found: ${projectId}`)
+    return project
+  }
+
+  private resolveInside(root: string, relativePath: string): string {
+    const target = resolve(root, relativePath || '.')
+    this.assertInside(root, target)
+    return target
+  }
+
+  private assertInside(root: string, target: string): void {
+    const relativeTarget = relative(root, target)
+    if (relativeTarget === '..' || relativeTarget.startsWith(`..${sep}`) || resolve(target) === resolve(this.root)) {
+      throw new Error('路径必须位于项目文件空间内。')
+    }
+  }
+}
