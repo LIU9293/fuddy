@@ -45,7 +45,7 @@ describe('companion relay', () => {
     expect(await response.json()).toEqual({
       status: 'ok',
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-08.3'
+      build: '2026-08-08.4'
     })
   })
 
@@ -95,6 +95,7 @@ describe('companion relay', () => {
     const page = await pageResponse.json<CompanionEventPage>()
     expect(page.events).toHaveLength(1)
     expect(page.events[0]).toMatchObject(input)
+    expect(page.presence).toMatchObject({ macOnline: false, iosDevicesOnline: 0 })
   })
 
   it('queues iOS commands and lets the Mac complete them idempotently', async () => {

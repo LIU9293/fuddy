@@ -105,6 +105,7 @@ export interface CompanionCommandUpdate {
 export interface CompanionEventPage {
   events: CompanionSyncEvent[]
   lastSequence: number
+  presence?: CompanionPresence
 }
 
 export interface CompanionPresence {

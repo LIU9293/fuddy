@@ -17,8 +17,8 @@
 - Agent 对话已支持流式回复、思考摘要、折叠工具调用链、当前工具运行态、Session 重命名 / 归档，以及 10 分钟无活动运行超时；
 - Agent Runs 详情采用完整聊天主区域，Session 列表只在运行时显示加载图标；主侧边栏支持拖拽调整宽度；临时成功和错误提示会在 5 秒后自动消失；
 - 主进程、Renderer 未处理异常及 Electron 子进程异常已接入 Sentry 崩溃报告。
-- 已加入原生 SwiftUI iOS Companion 工程。Mac 通过本地 SQLite outbox 把项目、目标、决策、工作助理、Agent Run、消息和产物增量同步到 Cloudflare Relay；手机支持离线只读缓存、原生聊天、决策操作、重命名 / 归档和 Quick Look 附件预览，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
-- Companion Relay 已部署到 [`project-agent-companion-relay.moghub.workers.dev`](https://project-agent-companion-relay.moghub.workers.dev)，使用 Durable Objects、Hibernation WebSocket 和私有 R2；配对密钥一次有效、设备 Token 只保存哈希，Mac 解除绑定会撤销设备并清理 Relay 数据。前台实时同步已打通，APNs 后台唤醒代码已接入，但正式设备推送仍需 Apple Developer Team、APNs Key 与签名配置。
+- 已加入原生 SwiftUI iOS Companion 工程。Mac 可显示一次性配对二维码，iPhone 使用 VisionKit 原生扫码连接；本地 SQLite outbox 会把项目、目标、决策、工作助理、Agent Run、消息和产物增量同步到 Cloudflare Relay。手机支持离线缓存、原生聊天、决策操作、重命名 / 归档和经过 SHA-256 校验的 Quick Look 附件预览，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
+- Companion Relay 已部署到 [`project-agent-companion-relay.moghub.workers.dev`](https://project-agent-companion-relay.moghub.workers.dev)，使用 Durable Objects、Hibernation WebSocket 和私有 R2；配对密钥一次有效、设备 Token 只保存哈希，Mac 解除绑定会撤销设备并清理 Relay 数据。手机会区分 Relay 断线与 Mac 离线，后者仍可安全排队操作。前台实时同步已打通，APNs 后台唤醒代码已接入，但正式设备推送仍需 Apple Developer Team、APNs Key 与签名配置。
 
 目前仍属于本机 / 个人设备 MVP：Mac 签名、公证、自动更新，以及 iOS 的 Apple Developer 签名、APNs 凭证与应用层端到端加密仍是公开分发前的发布门槛。
 

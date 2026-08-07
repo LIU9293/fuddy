@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		07F3CDC397BE47E65A5A057B /* RelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A57F13FB0BBE001DAB5DF0 /* RelayClient.swift */; };
+		0B1834AC74E0161F6B65034C /* PairingCodeScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5F5580905A2559653C6AE66 /* PairingCodeScanner.swift */; };
 		0C2BA32FB13C17EB234F1B8B /* CompanionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */; };
 		27ACA6DC0A4F400D3B3F2523 /* ArtifactViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B47F1531E907F8945808DAC /* ArtifactViews.swift */; };
 		45B15BB7FB97DB4125B4DB42 /* SyncModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7908738597AEE67070893705 /* SyncModelTests.swift */; };
@@ -35,6 +36,7 @@
 		9D48D6C471A7AB56D1344033 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		A1BA317B52DA4F0E106F6BC6 /* ProjectAgentCompanion.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ProjectAgentCompanion.entitlements; sourceTree = "<group>"; };
 		B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		B5F5580905A2559653C6AE66 /* PairingCodeScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingCodeScanner.swift; sourceTree = "<group>"; };
 		B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectAgentCompanionApp.swift; sourceTree = "<group>"; };
 		B675BF1415AFA5806E4876DC /* ProjectAgentCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ProjectAgentCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionStore.swift; sourceTree = "<group>"; };
@@ -77,6 +79,7 @@
 				B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */,
 				B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */,
 				7F3F5393D89089BA711CCD8A /* Models.swift */,
+				B5F5580905A2559653C6AE66 /* PairingCodeScanner.swift */,
 				9D48D6C471A7AB56D1344033 /* PairingView.swift */,
 				A1BA317B52DA4F0E106F6BC6 /* ProjectAgentCompanion.entitlements */,
 				B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */,
@@ -171,6 +174,7 @@
 				0C2BA32FB13C17EB234F1B8B /* CompanionStore.swift in Sources */,
 				9271BDB1930FBF2D5BCC26B1 /* KeychainStore.swift in Sources */,
 				5C1FC98F3F8090A21D2B0F52 /* Models.swift in Sources */,
+				0B1834AC74E0161F6B65034C /* PairingCodeScanner.swift in Sources */,
 				CCC0EB5AD601015817B21875 /* PairingView.swift in Sources */,
 				F9E6CDF2312ADB3376C46EA6 /* ProjectAgentCompanionApp.swift in Sources */,
 				07F3CDC397BE47E65A5A057B /* RelayClient.swift in Sources */,
@@ -223,6 +227,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Project Agent";
+				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的一次性 Companion 配对二维码。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIBackgroundModes = (
 					"remote-notification",
@@ -389,6 +394,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Project Agent";
+				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的一次性 Companion 配对二维码。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIBackgroundModes = (
 					"remote-notification",

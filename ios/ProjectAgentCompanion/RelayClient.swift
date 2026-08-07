@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 final class RelayClient: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
@@ -11,7 +12,13 @@ final class RelayClient: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
     static func claim(pairing: PairingPayload, deviceName: String) async throws -> CompanionCredentials {
         guard pairing.protocolVersion == companionProtocolVersion else { throw RelayError.protocolMismatch }
         let deviceID = UUID().uuidString
-        let url = URL(string: pairing.relayUrl + "/v1/pairings/claim")!
+        guard var components = URLComponents(string: pairing.relayUrl),
+              components.scheme == "https",
+              components.host != nil,
+              components.query == nil,
+              components.fragment == nil else { throw RelayError.invalidRelayURL }
+        components.path = "/v1/pairings/claim"
+        guard let url = components.url else { throw RelayError.invalidRelayURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -66,15 +73,25 @@ final class RelayClient: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
         try Self.validate(response: response, data: data)
     }
 
-    func downloadAttachment(id: String, filename: String) async throws -> URL {
-        let url = authenticatedComponents(path: "/v1/attachments/\(id)").url!
+    func downloadAttachment(_ attachment: AttachmentDescriptor) async throws -> URL {
+        let url = authenticatedComponents(path: "/v1/attachments/\(attachment.id)").url!
         let (temporaryURL, response) = try await session.download(for: authorizedRequest(url: url))
         try Self.validate(response: response, data: Data())
+        let downloadedSize = try temporaryURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard downloadedSize == attachment.size else {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw RelayError.integrity("附件大小不一致。")
+        }
+        let downloadedHash = try Self.sha256(of: temporaryURL)
+        guard downloadedHash.caseInsensitiveCompare(attachment.sha256) == .orderedSame else {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw RelayError.integrity("附件校验失败。")
+        }
         let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("CompanionAttachments", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let safeFilename = URL(fileURLWithPath: filename).lastPathComponent
-        let destination = directory.appendingPathComponent("\(id)-\(safeFilename)")
+        let safeFilename = URL(fileURLWithPath: attachment.filename).lastPathComponent
+        let destination = directory.appendingPathComponent("\(attachment.id)-\(safeFilename)")
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: temporaryURL, to: destination)
         return destination
@@ -138,16 +155,30 @@ final class RelayClient: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
             throw RelayError.server(body?.error ?? "Relay request failed (\(response.statusCode))")
         }
     }
+
+    private static func sha256(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var digest = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            digest.update(data: chunk)
+        }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 private struct RelayErrorBody: Codable { let error: String }
 private struct PushTokenRegistration: Codable { let token: String }
 enum RelayError: LocalizedError {
-    case protocolMismatch, invalidResponse, server(String)
+    case protocolMismatch, invalidRelayURL, invalidResponse, integrity(String), server(String)
     var errorDescription: String? {
         switch self {
         case .protocolMismatch: "Mac 与 iPhone 的协议版本不一致。"
+        case .invalidRelayURL: "配对二维码中的 Relay 地址无效或不安全。"
         case .invalidResponse: "Relay 返回了无效响应。"
+        case .integrity(let message): message
         case .server(let message): message
         }
     }

@@ -16,6 +16,8 @@
     "relay:typecheck": "npm --prefix cloud/relay run typecheck",
     "relay:test": "npm --prefix cloud/relay run test",
     "relay:deploy": "npm --prefix cloud/relay run deploy",
+    "ios:generate": "cd ios && xcodegen generate",
+    "ios:typecheck": "zsh scripts/typecheck-ios.sh",
     "metrics:roombase:daily": "node scripts/roombase-daily-metrics.mjs",
     "prepare:agent-tools": "node scripts/prepare-agent-tools.mjs",
     "dist:mac": "npm run prepare:agent-tools && npm run build && electron-builder --mac dmg"
@@ -30,6 +32,7 @@
     "@trycua/cua-driver": "0.19.0",
     "lucide-react": "1.28.0",
     "pg": "^8.22.0",
+    "qrcode.react": "^4.2.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "^10.1.0",

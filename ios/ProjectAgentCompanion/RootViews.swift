@@ -1,14 +1,38 @@
 import SwiftUI
 
 struct CompanionRootView: View {
+    @EnvironmentObject private var store: CompanionStore
+
     var body: some View {
-        TabView {
-            WorkAssistantView().tabItem { Label("工作助理", systemImage: "sparkles") }
-            RunsListView().tabItem { Label("Agent Runs", systemImage: "bubble.left.and.bubble.right") }
-            DecisionListView().tabItem { Label("收件箱", systemImage: "tray") }
-            ProjectListView().tabItem { Label("项目", systemImage: "square.grid.2x2") }
-            CompanionSettingsView().tabItem { Label("设置", systemImage: "gearshape") }
+        VStack(spacing: 0) {
+            if let statusMessage {
+                Label(
+                    statusMessage,
+                    systemImage: store.connection == .offline
+                        ? "wifi.slash"
+                        : "desktopcomputer.trianglebadge.exclamationmark"
+                )
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.thinMaterial)
+            }
+            TabView {
+                WorkAssistantView().tabItem { Label("工作助理", systemImage: "sparkles") }
+                RunsListView().tabItem { Label("Agent Runs", systemImage: "bubble.left.and.bubble.right") }
+                DecisionListView().tabItem { Label("收件箱", systemImage: "tray") }
+                ProjectListView().tabItem { Label("项目", systemImage: "square.grid.2x2") }
+                CompanionSettingsView().tabItem { Label("设置", systemImage: "gearshape") }
+            }
         }
+    }
+
+    private var statusMessage: String? {
+        if store.connection == .offline { return "Relay 暂时不可达，当前显示本地缓存" }
+        if store.connection == .connected && !store.macOnline { return "Mac 当前离线，操作会在它上线后执行" }
+        return nil
     }
 }
 
@@ -344,7 +368,7 @@ struct CompanionSettingsView: View {
         switch store.connection {
         case .unpaired: "未配对"
         case .connecting: "正在连接"
-        case .connected: "已连接"
+        case .connected: store.macOnline ? "Mac 在线" : "Relay 已连接，Mac 离线"
         case .offline: "离线，显示本地缓存"
         case .error(let message): message
         }

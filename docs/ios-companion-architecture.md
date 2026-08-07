@@ -42,10 +42,13 @@ The Mac database is authoritative.
 
 The WebSocket is a wake-up hint, not the source of truth. Both clients replay the ordered HTTP event log after reconnecting. Mac also polls every two seconds while configured.
 
+Each event page also carries current Durable Object presence. The iPhone distinguishes “Relay unreachable” from “Relay connected but Mac offline”; commands may still be queued in the second state and will execute when the Mac reconnects.
+
 ## Pairing and authentication
 
 - Mac requests an account ID, a one-time pairing secret, and a Mac bearer token.
 - The pairing secret expires after ten minutes and can be claimed once.
+- Mac renders the complete pairing payload as a QR code. iOS scans it with VisionKit's native `DataScannerViewController`, validates an HTTPS Relay origin, and claims it without retyping secrets; Universal Clipboard paste remains the fallback.
 - iOS stores its bearer token in Keychain with `AfterFirstUnlockThisDeviceOnly`; Mac stores its token in the existing encrypted credential vault/macOS Keychain path.
 - Durable Object storage contains only SHA-256 token hashes. Tokens and pairing secrets are never logged or stored in SQLite on the Mac.
 - Every account/device operation requires account ID, device ID, and bearer token. Role checks ensure only Mac can append authoritative events or complete commands, while only iOS can create commands.
@@ -78,7 +81,7 @@ Agent-generated files already become `AgentRunArtifact` records on Mac. Work Ass
 1. Mac resolves the artifact relative to the Run working directory and rejects paths outside it.
 2. Files up to 100 MiB are streamed to a private R2 object under the account ID. The initial pairing snapshot uploads existing Run artifacts too, so historical Sessions are not display-only.
 3. The event contains filename, MIME type, size, SHA-256, and artifact linkage; it never exposes a local Mac path as a downloadable URL.
-4. iOS downloads with its device token into the Caches directory and opens the local file with Quick Look. Image, PDF, text, and video types use native previews.
+4. iOS downloads with its device token, verifies the expected byte length and SHA-256 before moving the file into Caches, and opens the local file with Quick Look. Image, PDF, text, and video types use native previews.
 
 The local path remains visible only as descriptive metadata. R2 objects are not public and cannot be enumerated without a valid paired device token. iOS preserves the original filename extension in its private cache so Quick Look can select the correct native previewer.
 
@@ -120,10 +123,14 @@ npm --prefix cloud/relay run smoke
 
 # Regenerate iOS project
 brew install xcodegen
-cd ios
-xcodegen generate
+npm run ios:generate
+
+# Swift 6 typecheck for the app and XCTest sources; this works before accepting
+# the local Xcode license because it invokes the installed toolchain directly.
+npm run ios:typecheck
 
 # Build after accepting the local Xcode license
+cd ios
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcodebuild -project ProjectAgentCompanion.xcodeproj \
   -scheme ProjectAgentCompanion \

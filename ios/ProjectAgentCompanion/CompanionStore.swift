@@ -8,11 +8,15 @@ final class CompanionStore: ObservableObject {
 
     @Published private(set) var state = CachedState()
     @Published private(set) var connection: ConnectionState = .unpaired
+    @Published private(set) var macOnline = false
     @Published private(set) var credentials: CompanionCredentials?
     @Published var operationError: String?
 
     private var client: RelayClient?
     private var pollingTask: Task<Void, Never>?
+    private var activeSync: Task<Void, Never>?
+    private var activeSyncID: UUID?
+    private var syncRequested = false
     private var notificationObservers: [NSObjectProtocol] = []
     private let cacheURL: URL
 
@@ -34,11 +38,6 @@ final class CompanionStore: ObservableObject {
             guard let token = notification.object as? String else { return }
             Task { @MainActor in await self?.registerPushToken(token) }
         })
-        notificationObservers.append(NotificationCenter.default.addObserver(
-            forName: .companionRemoteUpdate,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in Task { @MainActor in await self?.sync() } })
     }
 
     var isPaired: Bool { credentials != nil }
@@ -82,21 +81,62 @@ final class CompanionStore: ObservableObject {
     func unpair() {
         pollingTask?.cancel()
         pollingTask = nil
+        activeSync?.cancel()
+        activeSync = nil
+        activeSyncID = nil
+        syncRequested = false
         client?.disconnect()
         client = nil
         KeychainStore.delete()
         credentials = nil
+        macOnline = false
         connection = .unpaired
     }
 
     func sync() async {
+        guard client != nil else { return }
+        if let activeSync {
+            syncRequested = true
+            await activeSync.value
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performSyncLoop()
+        }
+        let syncID = UUID()
+        activeSyncID = syncID
+        activeSync = task
+        await task.value
+        if activeSyncID == syncID {
+            activeSync = nil
+            activeSyncID = nil
+        }
+    }
+
+    private func performSyncLoop() async {
+        repeat {
+            syncRequested = false
+            await performSync()
+        } while syncRequested && client != nil
+    }
+
+    private func performSync() async {
         guard let client else { return }
         do {
-            let page = try await client.events(after: state.lastSequence)
-            for event in page.events { apply(event) }
-            state.lastSequence = max(state.lastSequence, page.lastSequence)
-            persistCache()
+            while true {
+                let page = try await client.events(after: state.lastSequence)
+                guard !Task.isCancelled else { return }
+                if let presence = page.presence { macOnline = presence.macOnline }
+                for event in page.events where event.sequence > state.lastSequence {
+                    try apply(event)
+                    state.lastSequence = event.sequence
+                }
+                persistCache()
+                if page.events.count < 200 { break }
+            }
             connection = .connected
+            operationError = nil
         } catch {
             connection = .offline
             operationError = error.localizedDescription
@@ -142,7 +182,7 @@ final class CompanionStore: ObservableObject {
 
     func download(_ attachment: AttachmentDescriptor) async throws -> URL {
         guard let client else { throw RelayError.invalidResponse }
-        return try await client.downloadAttachment(id: attachment.id, filename: attachment.filename)
+        return try await client.downloadAttachment(attachment)
     }
 
     func attachment(for artifactID: String) -> AttachmentDescriptor? { state.attachments[artifactID] }
@@ -161,9 +201,8 @@ final class CompanionStore: ObservableObject {
         }
     }
 
-    private func apply(_ event: SyncEvent) {
-        do {
-            switch event.type {
+    private func apply(_ event: SyncEvent) throws {
+        switch event.type {
             case "snapshot.created":
                 let snapshot = try event.payload.decode(SnapshotPayload.self)
                 state.projects = snapshot.projects
@@ -203,10 +242,8 @@ final class CompanionStore: ObservableObject {
                 } else {
                     upsertArtifact(try event.payload.decode(AgentArtifact.self))
                 }
-            default: break
-            }
-        } catch {
-            operationError = "无法读取同步事件 \(event.type)：\(error.localizedDescription)"
+        default:
+            break
         }
     }
 

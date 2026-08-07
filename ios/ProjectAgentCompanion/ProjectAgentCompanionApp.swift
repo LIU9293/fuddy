@@ -3,10 +3,11 @@ import UIKit
 
 extension Notification.Name {
     static let companionPushToken = Notification.Name("companion.push-token")
-    static let companionRemoteUpdate = Notification.Name("companion.remote-update")
 }
 
 final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
+    var handleRemoteUpdate: (@MainActor () async -> UIBackgroundFetchResult)?
+
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
@@ -17,11 +18,10 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
 
     func application(
         _ application: UIApplication,
-        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
-        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
-    ) {
-        NotificationCenter.default.post(name: .companionRemoteUpdate, object: nil)
-        completionHandler(.newData)
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any]
+    ) async -> UIBackgroundFetchResult {
+        guard let handleRemoteUpdate else { return .noData }
+        return await handleRemoteUpdate()
     }
 }
 
@@ -38,7 +38,16 @@ struct ProjectAgentCompanionApp: App {
                 else { PairingView() }
             }
             .environmentObject(store)
-            .task { store.start() }
+            .task {
+                appDelegate.handleRemoteUpdate = { [weak store] in
+                    guard let store else { return .failed }
+                    let previousSequence = store.state.lastSequence
+                    await store.sync()
+                    if case .offline = store.connection { return .failed }
+                    return store.state.lastSequence > previousSequence ? .newData : .noData
+                }
+                store.start()
+            }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
                     store.start()

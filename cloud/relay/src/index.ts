@@ -1,4 +1,5 @@
 import type {
+  CompanionEventPage,
   CompanionPairingStartResult,
   CompanionPairingClaimResult
 } from '../../../src/shared/companion-sync'
@@ -17,7 +18,7 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 const maximumAttachmentBytes = 100 * 1024 * 1024
-const relayBuild = '2026-08-08.3'
+const relayBuild = '2026-08-08.4'
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -145,7 +146,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const context = await authenticatedContext(request, env, url)
     const after = Math.max(0, Number.parseInt(url.searchParams.get('after') ?? '0', 10) || 0)
     const limit = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get('limit') ?? '200', 10) || 200))
-    return Response.json(await context.stub.listEvents(context.deviceId, context.token, after, limit))
+    const page = await context.stub.listEvents(context.deviceId, context.token, after, limit) as CompanionEventPage
+    return Response.json({ ...page, presence: await context.stub.getPresence() })
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/events') {

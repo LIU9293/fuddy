@@ -35,6 +35,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { QRCodeSVG } from 'qrcode.react'
 import { ChatComposer } from './components/ChatComposer'
 import { AgentRunsSidebar, AgentRunsView } from './components/AgentRunsView'
 import { SelectMenu, SuggestionInput } from './components/SelectMenu'
@@ -189,6 +190,14 @@ function formatRelativeTime(value: string): string {
   const hours = Math.round(diffMinutes / 60)
   if (hours < 24) return `${hours} 小时前`
   return `${Math.round(hours / 24)} 天前`
+}
+
+function formatExpiryLabel(value: string): string {
+  const diffMinutes = Math.ceil((new Date(value).getTime() - Date.now()) / 60_000)
+  if (diffMinutes <= 0) return '二维码已经失效'
+  if (diffMinutes < 60) return `二维码将在 ${diffMinutes} 分钟后失效`
+  const time = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value))
+  return `二维码将在 ${time} 失效`
 }
 
 function useAutoDismissMessage(
@@ -1635,7 +1644,7 @@ function SettingsView({
       const pairing = await window.projectAgent.beginCompanionPairing(companionRelayUrl.trim())
       setCompanionPairing(pairing)
       setCompanionStatus(pairing.status)
-      onNotice('已创建一次性 iPhone 配对信息，请在 10 分钟内粘贴到手机。')
+      onNotice('已创建一次性 iPhone 配对信息，请在 10 分钟内扫描或粘贴到手机。')
     } catch (error) {
       setCompanionError(error instanceof Error ? error.message : '创建 iPhone 配对失败。')
     } finally {
@@ -2124,8 +2133,20 @@ function SettingsView({
             )}
             {companionPairing && (
               <div className="companion-pairing-payload">
-                <code>{companionPairing.pairingPayload}</code>
-                <button type="button" onClick={() => void copyCompanionPairing()}><Copy size={13} /> 复制到 iPhone</button>
+                <div className="companion-pairing-qr" aria-label="iPhone Companion 配对二维码">
+                  <QRCodeSVG
+                    value={companionPairing.pairingPayload}
+                    size={132}
+                    marginSize={2}
+                    level="M"
+                  />
+                </div>
+                <div className="companion-pairing-copy">
+                  <strong>使用 iPhone 扫描</strong>
+                  <p>{formatExpiryLabel(companionPairing.expiresAt)}，也可以通过通用剪贴板复制。</p>
+                  <code>{companionPairing.pairingPayload}</code>
+                  <button type="button" onClick={() => void copyCompanionPairing()}><Copy size={13} /> 复制配对信息</button>
+                </div>
               </div>
             )}
             {companionError && <p className="provider-settings-error">{companionError}</p>}

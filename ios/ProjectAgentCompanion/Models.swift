@@ -37,6 +37,13 @@ struct CompanionCredentials: Codable {
 struct SyncEventPage: Codable {
     let events: [SyncEvent]
     let lastSequence: Int
+    let presence: CompanionPresence?
+}
+
+struct CompanionPresence: Codable {
+    let macOnline: Bool
+    let iosDevicesOnline: Int
+    let updatedAt: String
 }
 
 struct SyncEvent: Codable, Identifiable {
