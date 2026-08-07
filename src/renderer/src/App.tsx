@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleAlert,
   CircleCheck,
+  Copy,
   Clock3,
   Database,
   Folder,
@@ -24,6 +25,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Smartphone,
   Square,
   Target,
   Workflow,
@@ -71,6 +73,8 @@ import type {
   WorkAssistantTaskReference
 } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
+import type { CompanionMacStatus, CompanionPairingSession } from '../../shared/companion-sync'
+import { defaultCompanionRelayUrl } from '../../shared/companion-sync'
 
 type Navigation = 'briefing' | 'inbox' | 'files' | 'runs' | 'automations' | 'settings'
 type ProjectSection = 'inbox' | 'status' | 'goals' | 'settings'
@@ -1403,9 +1407,15 @@ function SettingsView({
   const [providerError, setProviderError] = useState<string | null>(null)
   const [requestingComputerPermissions, setRequestingComputerPermissions] = useState(false)
   const [projectAgentBusy, setProjectAgentBusy] = useState<string | null>(null)
+  const [companionStatus, setCompanionStatus] = useState<CompanionMacStatus | null>(null)
+  const [companionRelayUrl, setCompanionRelayUrl] = useState(defaultCompanionRelayUrl)
+  const [companionPairing, setCompanionPairing] = useState<CompanionPairingSession | null>(null)
+  const [companionBusy, setCompanionBusy] = useState<'pair' | 'sync' | 'disconnect' | null>(null)
+  const [companionError, setCompanionError] = useState<string | null>(null)
   useAutoDismissMessage(postgresError, () => setPostgresError(null))
   useAutoDismissMessage(connectorSetupError, () => setConnectorSetupError(null))
   useAutoDismissMessage(providerError, () => setProviderError(null))
+  useAutoDismissMessage(companionError, () => setCompanionError(null))
   const visibleConnectors = bootstrap.connectors.filter(
     (connector) => !projectId || connector.projectId === projectId
   )
@@ -1424,6 +1434,24 @@ function SettingsView({
     setTtsBackup(bootstrap.providerSettings.tts.backup)
     setTtsBackupEnabled(bootstrap.providerSettings.tts.backupEnabled)
   }, [bootstrap.providerSettings])
+
+  useEffect(() => {
+    let active = true
+    void window.projectAgent.getCompanionStatus().then((status) => {
+      if (!active) return
+      setCompanionStatus(status)
+      if (status.configuration) setCompanionRelayUrl(status.configuration.relayUrl)
+    }).catch((error: unknown) => {
+      if (active) setCompanionError(error instanceof Error ? error.message : '无法读取 iPhone Companion 状态。')
+    })
+    const unsubscribe = window.projectAgent.onCompanionStatusChanged((status) => {
+      if (active) setCompanionStatus(status)
+    })
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [])
 
   useEffect(() => {
     if (section !== 'models') return
@@ -1597,6 +1625,58 @@ function SettingsView({
     } finally {
       setRequestingComputerPermissions(false)
     }
+  }
+
+  async function beginCompanionPairing(): Promise<void> {
+    if (companionBusy) return
+    setCompanionBusy('pair')
+    setCompanionError(null)
+    try {
+      const pairing = await window.projectAgent.beginCompanionPairing(companionRelayUrl.trim())
+      setCompanionPairing(pairing)
+      setCompanionStatus(pairing.status)
+      onNotice('已创建一次性 iPhone 配对信息，请在 10 分钟内粘贴到手机。')
+    } catch (error) {
+      setCompanionError(error instanceof Error ? error.message : '创建 iPhone 配对失败。')
+    } finally {
+      setCompanionBusy(null)
+    }
+  }
+
+  async function syncCompanionNow(): Promise<void> {
+    if (companionBusy) return
+    setCompanionBusy('sync')
+    setCompanionError(null)
+    try {
+      setCompanionStatus(await window.projectAgent.syncCompanionNow())
+      onNotice('iPhone Companion 已同步。')
+    } catch (error) {
+      setCompanionError(error instanceof Error ? error.message : '同步失败。')
+    } finally {
+      setCompanionBusy(null)
+    }
+  }
+
+  async function disconnectCompanion(): Promise<void> {
+    if (companionBusy) return
+    setCompanionBusy('disconnect')
+    setCompanionError(null)
+    try {
+      await window.projectAgent.disconnectCompanion()
+      setCompanionPairing(null)
+      setCompanionStatus(await window.projectAgent.getCompanionStatus())
+      onNotice('已断开 iPhone Companion。')
+    } catch (error) {
+      setCompanionError(error instanceof Error ? error.message : '断开 Companion 失败。')
+    } finally {
+      setCompanionBusy(null)
+    }
+  }
+
+  async function copyCompanionPairing(): Promise<void> {
+    if (!companionPairing) return
+    await navigator.clipboard.writeText(companionPairing.pairingPayload)
+    onNotice('配对信息已复制。')
   }
 
   async function runProjectAgent(projectProfileId: string): Promise<void> {
@@ -2006,6 +2086,70 @@ function SettingsView({
               <p>{bootstrap.projects.map((project) => project.name).join('、')}</p>
             </div>
           </article>
+        </div>
+        <div className="settings-subsection-heading companion-settings-heading">
+          <div>
+            <h3>iPhone Companion</h3>
+            <p>手机只作为安全客户端；Agent、工具和项目文件仍在这台 Mac 上运行。</p>
+          </div>
+          <span className={`settings-value-pill ${companionStatus?.state === 'connected' ? 'is-ready' : ''}`}>
+            {companionStatus?.state === 'connected'
+              ? '已连接'
+              : companionStatus?.state === 'connecting'
+                ? '正在连接'
+                : companionStatus?.configuration
+                  ? '离线'
+                  : '未配对'}
+          </span>
+        </div>
+        <div className="companion-settings-card">
+          <span className="settings-icon"><Smartphone size={18} /></span>
+          <div className="companion-settings-main">
+            <label>
+              <span>Cloudflare Relay</span>
+              <input
+                type="url"
+                value={companionRelayUrl}
+                disabled={Boolean(companionStatus?.configuration)}
+                onChange={(event) => setCompanionRelayUrl(event.target.value)}
+                placeholder={defaultCompanionRelayUrl}
+              />
+            </label>
+            {companionStatus?.configuration && (
+              <p>
+                Mac Device {companionStatus.configuration.macDeviceId.slice(0, 8)}
+                {' · '}{companionStatus.pendingEvents} 条待同步
+                {companionStatus.lastConnectedAt ? ` · 最近连接 ${formatRelativeTime(companionStatus.lastConnectedAt)}` : ''}
+              </p>
+            )}
+            {companionPairing && (
+              <div className="companion-pairing-payload">
+                <code>{companionPairing.pairingPayload}</code>
+                <button type="button" onClick={() => void copyCompanionPairing()}><Copy size={13} /> 复制到 iPhone</button>
+              </div>
+            )}
+            {companionError && <p className="provider-settings-error">{companionError}</p>}
+            {companionStatus?.lastError && !companionError && <p className="provider-settings-error">{companionStatus.lastError}</p>}
+          </div>
+          <div className="companion-settings-actions">
+            {!companionStatus?.configuration ? (
+              <button className="provider-save-button" onClick={() => void beginCompanionPairing()} disabled={Boolean(companionBusy) || !companionRelayUrl.trim()}>
+                {companionBusy === 'pair' ? <LoaderCircle className="spin" size={13} /> : <Smartphone size={13} />}
+                配对 iPhone
+              </button>
+            ) : (
+              <>
+                <button className="secondary-action-button" onClick={() => void syncCompanionNow()} disabled={Boolean(companionBusy)}>
+                  {companionBusy === 'sync' ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}
+                  立即同步
+                </button>
+                <button className="secondary-action-button" onClick={() => void disconnectCompanion()} disabled={Boolean(companionBusy)}>
+                  {companionBusy === 'disconnect' ? <LoaderCircle className="spin" size={13} /> : <X size={13} />}
+                  断开
+                </button>
+              </>
+            )}
+          </div>
         </div>
         <div className="settings-subsection-heading">
           <div>

@@ -15,6 +15,8 @@ The current product language is primarily Chinese. Keep UI copy concise, direct,
 - `prompts/`: versioned prompts used by product workflows.
 - `scripts/`: local metrics and third-party tool preparation scripts.
 - `docs/` and `design/`: examples and visual references.
+- `cloud/relay/`: Cloudflare Worker, one Durable Object per paired account, WebSocket/event protocol, command queue, and private R2 attachment transport.
+- `ios/`: native SwiftUI iPhone companion generated from `ios/project.yml`; it is a client and never executes project tools locally.
 
 ## Development commands
 
@@ -24,13 +26,18 @@ npm run dev
 npm run typecheck
 npm test
 npm run build
+npm run relay:typecheck
+npm run relay:test
 ```
+
+Regenerate the iOS project with `cd ios && xcodegen generate`. Use `/Applications/Xcode.app` through `DEVELOPER_DIR` for builds; accepting the Xcode license and selecting an Apple Developer team are user-owned legal/account steps.
 
 Use `npm run prepare:agent-tools` before packaging or running the optional Browser Use / Computer Use smoke tests. The integration smoke tests are opt-in because they require installed local tools and live authentication:
 
 ```bash
 RUN_AGENT_TOOLS_SMOKE=1 npx vitest run src/main/services/third-party-mcp-runtime.integration.test.ts
 RUN_CODING_CLI_SMOKE=1 npx vitest run src/main/services/coding-cli.integration.test.ts
+RUN_COMPANION_RELAY_SMOKE=1 npx vitest run src/main/services/companion-sync.integration.test.ts
 ```
 
 ## Implementation invariants
@@ -69,6 +76,18 @@ RUN_CODING_CLI_SMOKE=1 npx vitest run src/main/services/coding-cli.integration.t
 - Keep production analytics fixed, aggregate, read-only, and versioned. Never let a model generate arbitrary SQL for a production connector.
 - A missing connector or failed query is unknown state, not evidence that a problem is resolved.
 - Keep Decision Inbox deduplication based on stable issue lifecycles, not dates or repeated wording.
+
+### iOS Companion and Cloud relay
+
+- The Mac database is authoritative. Persist outgoing mutations to `companion_sync_outbox` before network delivery, and treat WebSocket frames as wake-up hints followed by ordered event replay.
+- Execute phone actions only through constrained, versioned command types. Persist command IDs on Mac before execution and never run the same terminal command twice.
+- Keep Agent runtimes, project paths, database credentials, shell environment, and tool execution on Mac. iOS may cache display data and attachment bytes but must not receive local credentials.
+- Keep device bearer tokens in Keychain/credential vault and only token hashes in Durable Object storage. Never place pairing secrets or tokens in logs.
+- Mac disconnect must revoke the remote account and remove its Durable Object/R2 data; deleting only the local token leaves stale phone access and is not sufficient.
+- Attachments belong in the private R2 binding. Resolve artifact paths inside the Run workspace, validate size, record SHA-256/MIME metadata, and require paired-device auth for download.
+- A new pairing snapshot must upload descriptors and bytes for existing artifacts as well as future artifact events; otherwise the phone can render old Runs but cannot open their files.
+- Foreground realtime uses the Hibernation WebSocket API. Suspended iOS delivery requires APNs and must always fall back to event replay on foreground because silent pushes are not guaranteed.
+- Treat application-layer end-to-end encryption and abuse protection for the public pairing endpoint as release gates before untrusted multi-user distribution.
 
 ### UI conventions
 

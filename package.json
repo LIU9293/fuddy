@@ -12,6 +12,10 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "relay:dev": "npm --prefix cloud/relay run dev",
+    "relay:typecheck": "npm --prefix cloud/relay run typecheck",
+    "relay:test": "npm --prefix cloud/relay run test",
+    "relay:deploy": "npm --prefix cloud/relay run deploy",
     "metrics:roombase:daily": "node scripts/roombase-daily-metrics.mjs",
     "prepare:agent-tools": "node scripts/prepare-agent-tools.mjs",
     "dist:mac": "npm run prepare:agent-tools && npm run build && electron-builder --mac dmg"
@@ -30,6 +34,7 @@
     "react-dom": "19.2.8",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "ws": "^8.21.3",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -37,6 +42,7 @@
     "@types/pg": "^8.20.4",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "5.2.0",
     "electron": "43.3.0",
     "electron-builder": "26.15.3",

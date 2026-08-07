@@ -23,6 +23,7 @@ import { resolveThirdPartyMcpOptions, ThirdPartyMcpRuntime } from './services/th
 import { ProjectAgentIntegrationService } from './services/project-agent-integration'
 import { SENTRY_DSN, SENTRY_PROJECT } from '../shared/sentry'
 import { hydrateProcessEnvironmentFromZsh } from './services/shell-environment'
+import { CompanionSyncService } from './services/companion-sync'
 
 Sentry.init({
   dsn: SENTRY_DSN,
@@ -40,6 +41,7 @@ let automationScheduler: AutomationScheduler | null = null
 let agentToolsMcp: ThirdPartyMcpRuntime | null = null
 let shutdownPromise: Promise<void> | null = null
 let shutdownComplete = false
+let companionSync: CompanionSyncService | null = null
 
 app.on('render-process-gone', (_event, webContents, details) => {
   if (details.reason === 'clean-exit' || details.reason === 'killed') return
@@ -179,6 +181,15 @@ if (!hasLock) {
       goalTrackingService,
       workspaceAgentActions
     )
+    companionSync = new CompanionSyncService(
+      database,
+      credentialVault,
+      dispatcher,
+      (question) => morningBriefingService.ask(null, question)
+    )
+    companionSync.onStatusChanged((status) => {
+      if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:status-changed', status)
+    })
     const ttsService = new TtsService(database, providerSettings)
     const automationRuntime = new AutomationRuntime(database, {
       runAgentTask: async (job) => {
@@ -240,9 +251,11 @@ if (!hasLock) {
       ttsService,
       workspaceFiles,
       automationRuntime,
-      projectAgentIntegration
+      projectAgentIntegration,
+      companionSync
     )
     createWindow()
+    void companionSync.start()
     if (process.env.PROJECT_AGENT_SENTRY_TEST === '1') {
       setTimeout(() => {
         Sentry.captureException(new Error('Project Agent main-process Sentry integration test'))
@@ -273,6 +286,8 @@ async function shutdown(): Promise<void> {
     dailyBriefingScheduler = null
     automationScheduler?.stop()
     automationScheduler = null
+    companionSync?.stop()
+    companionSync = null
     await agentToolsMcp?.stop()
     agentToolsMcp = null
     database?.close()

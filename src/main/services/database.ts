@@ -40,6 +40,14 @@ import type {
 } from '../../shared/contracts'
 import type { ConnectorCatalogItem } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
+import { companionProtocolVersion } from '../../shared/companion-sync'
+import type {
+  CompanionCommand,
+  CompanionCommandStatus,
+  CompanionEntityType,
+  CompanionOutboxEvent,
+  CompanionSnapshotPayload
+} from '../../shared/companion-sync'
 
 type SqlRow = Record<string, string | number | null>
 
@@ -178,6 +186,7 @@ export class AppDatabase {
   }
 
   updateProject(project: Project): Project {
+    return this.companionTransaction(() => {
     const workspaces = normalizeWorkspaceRoots(project.profile)
     const normalizedProject: Project = {
       ...project,
@@ -202,7 +211,10 @@ export class AppDatabase {
       SET config_json = json_set(config_json, '$.repoPath', ?)
       WHERE project_id = ? AND kind = 'repo'
     `).run(workspaces.repoPath, normalizedProject.id)
-    return this.listProjects().find((candidate) => candidate.id === normalizedProject.id) as Project
+    const updated = this.listProjects().find((candidate) => candidate.id === normalizedProject.id) as Project
+    this.enqueueCompanionEvent('project.updated', 'project', updated.id, updated)
+    return updated
+    })
   }
 
   listGoals(projectId?: string): ProjectGoal[] {
@@ -235,6 +247,7 @@ export class AppDatabase {
   }
 
   createGoal(goal: ProjectGoal): ProjectGoal {
+    return this.companionTransaction(() => {
     this.database.prepare(`
       INSERT INTO project_goals (
         id, project_id, title, description, status, priority, metric_json, deadline,
@@ -280,7 +293,10 @@ export class AppDatabase {
       milestone.completedAt
     ))
     goal.checkIns.forEach((checkIn) => this.createGoalCheckIn(checkIn))
-    return this.getGoal(goal.id)
+    const created = this.getGoal(goal.id)
+    this.enqueueCompanionEvent('goal.created', 'goal', created.id, created)
+    return created
+    })
   }
 
   updateGoalTracking(input: {
@@ -292,6 +308,7 @@ export class AppDatabase {
     agentSummary: string
     nextCheckInAt: string | null
   }): ProjectGoal {
+    return this.companionTransaction(() => {
     const now = new Date().toISOString()
     this.database.prepare(`
       UPDATE project_goals
@@ -311,7 +328,10 @@ export class AppDatabase {
       now,
       input.id
     )
-    return this.getGoal(input.id)
+    const updated = this.getGoal(input.id)
+    this.enqueueCompanionEvent('goal.updated', 'goal', updated.id, updated)
+    return updated
+    })
   }
 
   updateGoalStatus(id: string, status: GoalStatus): ProjectGoal {
@@ -336,6 +356,7 @@ export class AppDatabase {
   }
 
   updateGoalPriority(id: string, priority: GoalPriority): ProjectGoal {
+    return this.companionTransaction(() => {
     const now = new Date().toISOString()
     const result = this.database.prepare(`
       UPDATE project_goals
@@ -343,13 +364,17 @@ export class AppDatabase {
       WHERE id = ?
     `).run(priority, now, id)
     if (result.changes === 0) throw new Error(`Goal not found: ${id}`)
-    return this.getGoal(id)
+    const updated = this.getGoal(id)
+    this.enqueueCompanionEvent('goal.updated', 'goal', updated.id, updated)
+    return updated
+    })
   }
 
   updateGoalMilestones(
     goalId: string,
     updates: Array<{ title: string; status: GoalMilestoneStatus }>
   ): void {
+    return this.companionTransaction(() => {
     const now = new Date().toISOString()
     const update = this.database.prepare(`
       UPDATE goal_milestones
@@ -358,6 +383,9 @@ export class AppDatabase {
       WHERE goal_id = ? AND title = ?
     `)
     updates.forEach((item) => update.run(item.status, now, item.status, now, goalId, item.title))
+    const goal = this.getGoal(goalId)
+    this.enqueueCompanionEvent('goal.updated', 'goal', goal.id, goal)
+    })
   }
 
   createGoalCheckIn(checkIn: GoalCheckIn): GoalCheckIn {
@@ -409,16 +437,21 @@ export class AppDatabase {
   }
 
   renameAgentRun(id: string, title: string): AgentRun {
+    return this.companionTransaction(() => {
     const normalizedTitle = title.trim()
     if (!normalizedTitle) throw new Error('Session 标题不能为空。')
     const result = this.database.prepare(`
       UPDATE agent_runs SET title = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL
     `).run(normalizedTitle, new Date().toISOString(), id)
     if (Number(result.changes) === 0) throw new Error(`Agent run not found: ${id}`)
-    return this.getAgentRun(id)
+    const run = this.getAgentRun(id)
+    this.enqueueCompanionEvent('agent-run.updated', 'agent-run', run.id, run)
+    return run
+    })
   }
 
   archiveAgentRun(id: string): void {
+    return this.companionTransaction(() => {
     const run = this.getAgentRun(id)
     if (run.status === 'running' || run.status === 'queued') {
       throw new Error('正在运行的 Session 不能归档，请等待本轮结束。')
@@ -427,6 +460,8 @@ export class AppDatabase {
     this.database.prepare(`
       UPDATE agent_runs SET archived_at = ?, updated_at = ? WHERE id = ?
     `).run(archivedAt, archivedAt, id)
+    this.enqueueCompanionEvent('agent-run.archived', 'agent-run', id, { id, archivedAt })
+    })
   }
 
   listAgentRunMessages(runId: string): AgentRunMessage[] {
@@ -458,6 +493,20 @@ export class AppDatabase {
       mimeType: row.mime_type ? String(row.mime_type) : null,
       createdAt: String(row.created_at)
     }))
+  }
+
+  getAgentRunArtifact(id: string): AgentRunArtifact | null {
+    const row = this.database.prepare('SELECT * FROM agent_run_artifacts WHERE id = ?').get(id) as SqlRow | undefined
+    if (!row) return null
+    return {
+      id: String(row.id),
+      runId: String(row.run_id),
+      projectId: row.project_id ? String(row.project_id) : null,
+      relativePath: String(row.relative_path),
+      label: String(row.label),
+      mimeType: row.mime_type ? String(row.mime_type) : null,
+      createdAt: String(row.created_at)
+    }
   }
 
   listConnectors(): ConnectorInstance[] {
@@ -628,6 +677,7 @@ export class AppDatabase {
   }
 
   createBriefingMessage(message: BriefingMessage): BriefingMessage {
+    return this.companionTransaction(() => {
     this.database.prepare(`
       INSERT INTO work_assistant_messages (
         id, source_briefing_id, role, content, attachments_json, task_context_json, created_at
@@ -641,7 +691,9 @@ export class AppDatabase {
       message.taskContext ? JSON.stringify(message.taskContext) : null,
       message.createdAt
     )
+    this.enqueueCompanionEvent('work-assistant-message.created', 'work-assistant-message', message.id, message)
     return message
+    })
   }
 
   getSetting<T>(key: string, fallback: T): T {
@@ -924,6 +976,21 @@ export class AppDatabase {
   }
 
   applyDecisionInspection(input: DecisionInspectionInput): DecisionInspectionResult {
+    return this.companionTransaction(() => {
+      const result = this.applyDecisionInspectionMutation(input)
+      if (result.decision) {
+        this.enqueueCompanionEvent(
+          result.created ? 'decision.created' : 'decision.updated',
+          'decision',
+          result.decision.id,
+          result.decision
+        )
+      }
+      return result
+    })
+  }
+
+  private applyDecisionInspectionMutation(input: DecisionInspectionInput): DecisionInspectionResult {
     const existing = this.database.prepare(`
       SELECT * FROM decision_items
       WHERE project_id IS ? AND dedupe_key = ? AND status IN ('inbox', 'later')
@@ -1004,6 +1071,7 @@ export class AppDatabase {
   }
 
   createDecision(input: CreateDecisionInput): DecisionItem {
+    return this.companionTransaction(() => {
     const item: DecisionItem = {
       id: randomUUID(),
       projectId: input.projectId,
@@ -1022,10 +1090,13 @@ export class AppDatabase {
     }
 
     this.insertDecision(item)
+    this.enqueueCompanionEvent('decision.created', 'decision', item.id, item)
     return item
+    })
   }
 
   updateDecisionStatus(id: string, status: DecisionStatus): DecisionItem {
+    return this.companionTransaction(() => {
     this.database
       .prepare(`
         UPDATE decision_items
@@ -1041,10 +1112,14 @@ export class AppDatabase {
       .get(id) as SqlRow | undefined
 
     if (!row) throw new Error(`Decision item not found: ${id}`)
-    return this.mapDecision(row)
+    const decision = this.mapDecision(row)
+    this.enqueueCompanionEvent('decision.updated', 'decision', decision.id, decision)
+    return decision
+    })
   }
 
   createAgentRun(run: AgentRun): AgentRun {
+    return this.companionTransaction(() => {
     this.database.prepare(`
       INSERT INTO agent_runs (
         id, project_id, goal_id, milestone_id, agent, kind, provider, title, status,
@@ -1068,10 +1143,14 @@ export class AppDatabase {
       run.createdAt,
       run.updatedAt
     )
-    return this.getAgentRun(run.id)
+    const created = this.getAgentRun(run.id)
+    this.enqueueCompanionEvent('agent-run.created', 'agent-run', created.id, created)
+    return created
+    })
   }
 
   updateAgentRun(run: AgentRun): AgentRun {
+    return this.companionTransaction(() => {
     this.database.prepare(`
       UPDATE agent_runs
       SET project_id = ?, goal_id = ?, milestone_id = ?, agent = ?, kind = ?, provider = ?,
@@ -1095,7 +1174,10 @@ export class AppDatabase {
       run.updatedAt,
       run.id
     )
-    return this.getAgentRun(run.id)
+    const updated = this.getAgentRun(run.id)
+    this.enqueueCompanionEvent('agent-run.updated', 'agent-run', updated.id, updated)
+    return updated
+    })
   }
 
   recoverInterruptedAgentRuns(recoveredAt: string): number {
@@ -1103,6 +1185,7 @@ export class AppDatabase {
       SELECT id FROM agent_runs WHERE status IN ('queued', 'running')
     `).all() as SqlRow[]
     if (rows.length === 0) return 0
+    return this.companionTransaction(() => {
     this.database.prepare(`
       UPDATE agent_runs
       SET status = 'failed', completed_at = ?,
@@ -1116,17 +1199,34 @@ export class AppDatabase {
       ) VALUES (?, ?, 'system', ?, 'error', NULL, NULL, ?)
     `)
     for (const row of rows) {
+      const runId = String(row.id)
+      const messageId = randomUUID()
+      const content = '上一次运行被应用退出或重启中断。这个 Session 已停止，你可以发送新消息继续。'
       insertMessage.run(
-        randomUUID(),
-        String(row.id),
-        '上一次运行被应用退出或重启中断。这个 Session 已停止，你可以发送新消息继续。',
+        messageId,
+        runId,
+        content,
         recoveredAt
       )
+      this.enqueueCompanionEvent('agent-message.created', 'agent-message', messageId, {
+        id: messageId,
+        runId,
+        role: 'system',
+        content,
+        eventType: 'error',
+        toolName: null,
+        metadata: null,
+        createdAt: recoveredAt
+      } satisfies AgentRunMessage)
+      const run = this.getAgentRun(runId)
+      this.enqueueCompanionEvent('agent-run.updated', 'agent-run', runId, run)
     }
     return rows.length
+    })
   }
 
   createAgentRunMessage(message: AgentRunMessage): AgentRunMessage {
+    return this.companionTransaction(() => {
     this.database.prepare(`
       INSERT INTO agent_run_messages (
         id, run_id, role, content, event_type, tool_name, metadata_json, created_at
@@ -1141,10 +1241,13 @@ export class AppDatabase {
       message.metadata ? JSON.stringify(message.metadata) : null,
       message.createdAt
     )
+    this.enqueueCompanionEvent('agent-message.created', 'agent-message', message.id, message)
     return message
+    })
   }
 
   upsertAgentRunArtifact(artifact: AgentRunArtifact): AgentRunArtifact {
+    return this.companionTransaction(() => {
     this.database.prepare(`
       INSERT INTO agent_run_artifacts (
         id, run_id, project_id, relative_path, label, mime_type, created_at
@@ -1162,7 +1265,178 @@ export class AppDatabase {
       artifact.mimeType,
       artifact.createdAt
     )
-    return artifact
+    const row = this.database.prepare(`
+      SELECT id FROM agent_run_artifacts WHERE run_id = ? AND relative_path = ?
+    `).get(artifact.runId, artifact.relativePath) as { id: string }
+    const persisted = this.getAgentRunArtifact(row.id) as AgentRunArtifact
+    this.enqueueCompanionEvent('artifact.updated', 'artifact', persisted.id, persisted)
+    return persisted
+    })
+  }
+
+  enqueueCompanionSnapshot(): CompanionOutboxEvent {
+    const snapshot: CompanionSnapshotPayload = {
+      generatedAt: new Date().toISOString(),
+      projects: this.listProjects(),
+      goals: this.listGoals(),
+      decisions: this.listDecisions(),
+      workAssistantMessages: this.listBriefingMessages(),
+      attachments: [],
+      runs: this.listRuns().map((run) => this.getAgentRunDetail(run.id))
+    }
+    return this.enqueueCompanionEvent('snapshot.created', 'snapshot', 'current', snapshot)
+  }
+
+  listPendingCompanionEvents(limit = 100): CompanionOutboxEvent[] {
+    const rows = this.database.prepare(`
+      SELECT * FROM companion_sync_outbox
+      WHERE published_at IS NULL
+      ORDER BY rowid ASC
+      LIMIT ?
+    `).all(limit) as SqlRow[]
+    return rows.map((row) => ({
+      eventId: String(row.event_id),
+      protocolVersion: Number(row.protocol_version),
+      type: String(row.type),
+      entityType: row.entity_type as CompanionEntityType,
+      entityId: String(row.entity_id),
+      revision: Number(row.revision),
+      payload: parseJson<unknown>(String(row.payload_json), null),
+      occurredAt: String(row.occurred_at),
+      attempts: Number(row.attempts),
+      lastError: row.last_error ? String(row.last_error) : null
+    }))
+  }
+
+  countPendingCompanionEvents(): number {
+    const row = this.database.prepare(`
+      SELECT COUNT(*) AS count FROM companion_sync_outbox WHERE published_at IS NULL
+    `).get() as SqlRow
+    return Number(row.count)
+  }
+
+  markCompanionEventPublished(eventId: string, publishedAt: string): void {
+    this.database.prepare(`
+      UPDATE companion_sync_outbox SET published_at = ?, last_error = NULL WHERE event_id = ?
+    `).run(publishedAt, eventId)
+  }
+
+  markCompanionEventFailed(eventId: string, error: string): void {
+    this.database.prepare(`
+      UPDATE companion_sync_outbox
+      SET attempts = attempts + 1, last_error = ?
+      WHERE event_id = ?
+    `).run(error.slice(0, 2_000), eventId)
+  }
+
+  getCompanionCommand(commandId: string): CompanionCommand | null {
+    const row = this.database.prepare(`
+      SELECT * FROM companion_remote_commands WHERE command_id = ?
+    `).get(commandId) as SqlRow | undefined
+    if (!row) return null
+    return {
+      commandId: String(row.command_id),
+      protocolVersion: Number(row.protocol_version),
+      type: String(row.type) as CompanionCommand['type'],
+      payload: parseJson<unknown>(String(row.payload_json), null),
+      sourceDeviceId: String(row.source_device_id),
+      status: String(row.status) as CompanionCommandStatus,
+      result: parseJson<unknown>(row.result_json ? String(row.result_json) : null, null),
+      error: row.error ? String(row.error) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    }
+  }
+
+  upsertCompanionCommand(command: CompanionCommand): CompanionCommand {
+    this.database.prepare(`
+      INSERT INTO companion_remote_commands (
+        command_id, protocol_version, type, payload_json, source_device_id,
+        status, result_json, error, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(command_id) DO UPDATE SET
+        status = excluded.status,
+        result_json = excluded.result_json,
+        error = excluded.error,
+        updated_at = excluded.updated_at
+    `).run(
+      command.commandId,
+      command.protocolVersion,
+      command.type,
+      JSON.stringify(command.payload),
+      command.sourceDeviceId,
+      command.status,
+      command.result == null ? null : JSON.stringify(command.result),
+      command.error,
+      command.createdAt,
+      command.updatedAt
+    )
+    return this.getCompanionCommand(command.commandId) as CompanionCommand
+  }
+
+  updateCompanionCommand(
+    commandId: string,
+    status: CompanionCommandStatus,
+    result: unknown = null,
+    error: string | null = null
+  ): CompanionCommand {
+    this.database.prepare(`
+      UPDATE companion_remote_commands
+      SET status = ?, result_json = ?, error = ?, updated_at = ?
+      WHERE command_id = ?
+    `).run(status, result == null ? null : JSON.stringify(result), error, new Date().toISOString(), commandId)
+    const command = this.getCompanionCommand(commandId)
+    if (!command) throw new Error(`Companion command not found: ${commandId}`)
+    return command
+  }
+
+  private companionTransaction<T>(operation: () => T): T {
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const result = operation()
+      this.database.exec('COMMIT')
+      return result
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  private enqueueCompanionEvent(
+    type: string,
+    entityType: CompanionEntityType,
+    entityId: string,
+    payload: unknown
+  ): CompanionOutboxEvent {
+    const occurredAt = new Date().toISOString()
+    const event: CompanionOutboxEvent = {
+      eventId: randomUUID(),
+      protocolVersion: companionProtocolVersion,
+      type,
+      entityType,
+      entityId,
+      revision: Date.now(),
+      payload,
+      occurredAt,
+      attempts: 0,
+      lastError: null
+    }
+    this.database.prepare(`
+      INSERT INTO companion_sync_outbox (
+        event_id, protocol_version, type, entity_type, entity_id, revision,
+        payload_json, occurred_at, published_at, attempts, last_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL)
+    `).run(
+      event.eventId,
+      event.protocolVersion,
+      event.type,
+      event.entityType,
+      event.entityId,
+      event.revision,
+      JSON.stringify(event.payload),
+      event.occurredAt
+    )
+    return event
   }
 
   recordPermissionEvaluation(
@@ -1341,6 +1615,36 @@ export class AppDatabase {
       CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS companion_sync_outbox (
+        event_id TEXT PRIMARY KEY,
+        protocol_version INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        published_at TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS companion_sync_outbox_pending_idx
+      ON companion_sync_outbox(published_at, occurred_at);
+
+      CREATE TABLE IF NOT EXISTS companion_remote_commands (
+        command_id TEXT PRIMARY KEY,
+        protocol_version INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        source_device_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        result_json TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
 

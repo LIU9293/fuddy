@@ -27,6 +27,7 @@ import type {
   DispatchProjectAgentInput,
   RespondAgentApprovalInput
 } from '../shared/contracts'
+import type { CompanionMacStatus } from '../shared/companion-sync'
 
 const api: DesktopApi = {
   getBootstrap: () => ipcRenderer.invoke('app:get-bootstrap'),
@@ -72,6 +73,15 @@ const api: DesktopApi = {
   getAgentRun: (id: string) => ipcRenderer.invoke('agent-run:get', id),
   renameAgentRun: (id: string, title: string) => ipcRenderer.invoke('agent-run:rename', { id, title }),
   archiveAgentRun: (id: string) => ipcRenderer.invoke('agent-run:archive', id),
+  getCompanionStatus: () => ipcRenderer.invoke('companion:get-status'),
+  beginCompanionPairing: (relayUrl: string) => ipcRenderer.invoke('companion:begin-pairing', relayUrl),
+  disconnectCompanion: () => ipcRenderer.invoke('companion:disconnect'),
+  syncCompanionNow: () => ipcRenderer.invoke('companion:sync-now'),
+  onCompanionStatusChanged: (callback: (status: CompanionMacStatus) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: CompanionMacStatus): void => callback(status)
+    ipcRenderer.on('companion:status-changed', listener)
+    return () => ipcRenderer.removeListener('companion:status-changed', listener)
+  },
   sendAgentRunMessage: (
     input: SendAgentRunMessageInput,
     onUpdate: (update: AgentRunStreamUpdate) => void

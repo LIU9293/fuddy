@@ -78,6 +78,11 @@ describe('open decision signal dedupe', () => {
     expect(resolved.decision?.status).toBe('resolved')
     expect(resolved.decision?.resolutionSummary).toBe('已经没有等待平台处理的事项。')
     expect(database.listDecisions()).toHaveLength(1)
+    expect(database.listPendingCompanionEvents().map((event) => event.type)).toEqual([
+      'decision.created',
+      'decision.updated',
+      'decision.updated'
+    ])
 
     database.close()
   })

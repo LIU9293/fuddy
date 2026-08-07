@@ -799,6 +799,13 @@ export interface DesktopApi {
   getAgentRun(id: string): Promise<AgentRunDetail>
   renameAgentRun(id: string, title: string): Promise<AgentRun>
   archiveAgentRun(id: string): Promise<void>
+  getCompanionStatus(): Promise<import('./companion-sync').CompanionMacStatus>
+  beginCompanionPairing(relayUrl: string): Promise<import('./companion-sync').CompanionPairingSession>
+  disconnectCompanion(): Promise<void>
+  syncCompanionNow(): Promise<import('./companion-sync').CompanionMacStatus>
+  onCompanionStatusChanged(
+    callback: (status: import('./companion-sync').CompanionMacStatus) => void
+  ): () => void
   sendAgentRunMessage(
     input: SendAgentRunMessageInput,
     onUpdate: (update: AgentRunStreamUpdate) => void

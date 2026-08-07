@@ -17,6 +17,7 @@ import { AutomationRuntime } from './services/automation-runtime'
 import { listProjectAnalyticsProfileSummaries } from './analytics/project-analytics-profiles'
 import { ProjectAgentIntegrationService } from './services/project-agent-integration'
 import { discoverCodingAgentModels } from './services/coding-agent-models'
+import { CompanionSyncService } from './services/companion-sync'
 
 const createDecisionSchema = z.object({
   projectId: z.string().nullable(),
@@ -218,7 +219,8 @@ export function registerIpc(
   ttsService: TtsService,
   workspaceFiles: WorkspaceFilesService,
   automationRuntime: AutomationRuntime,
-  projectAgentIntegration: ProjectAgentIntegrationService
+  projectAgentIntegration: ProjectAgentIntegrationService,
+  companionSync: CompanionSyncService
 ): void {
   ipcMain.handle('app:get-bootstrap', () => {
     const settings = providerSettings.getPublicSettings()
@@ -332,6 +334,16 @@ export function registerIpc(
   ipcMain.handle('agent-run:archive', (_event, rawId: unknown) => {
     database.archiveAgentRun(z.string().trim().min(1).max(200).parse(rawId))
   })
+
+  ipcMain.handle('companion:get-status', () => companionSync.getStatus())
+
+  ipcMain.handle('companion:begin-pairing', (_event, rawRelayUrl: unknown) => {
+    return companionSync.beginPairing(z.url().parse(rawRelayUrl))
+  })
+
+  ipcMain.handle('companion:disconnect', () => companionSync.disconnect())
+
+  ipcMain.handle('companion:sync-now', () => companionSync.syncNow())
 
   ipcMain.handle('agent-run:send', (event, rawInput: unknown) => {
     const input = sendAgentRunMessageSchema.parse(rawInput)
