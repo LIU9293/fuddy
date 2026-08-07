@@ -45,7 +45,7 @@ describe('companion relay', () => {
     expect(await response.json()).toEqual({
       status: 'ok',
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-08.2'
+      build: '2026-08-08.3'
     })
   })
 
@@ -162,9 +162,26 @@ describe('companion relay', () => {
   it('streams authenticated attachments through R2', async () => {
     const { pairing, phone } = await pairedDevices()
     const attachmentId = crypto.randomUUID()
-    const phoneUrl = authenticatedUrl(`/v1/attachments/${attachmentId}`, pairing.accountId, phone.device.id)
+    const macUrl = authenticatedUrl(`/v1/attachments/${attachmentId}`, pairing.accountId, pairing.macDeviceId)
     const content = 'attachment body'
-    const put = await SELF.fetch(phoneUrl, {
+    const put = await SELF.fetch(macUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${pairing.macToken}`,
+        'Content-Type': 'text/plain',
+        'Content-Length': String(content.length)
+      },
+      body: content
+    })
+    expect(put.status).toBe(201)
+
+    const get = await SELF.fetch(authenticatedUrl(`/v1/attachments/${attachmentId}`, pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    expect(get.status).toBe(200)
+    expect(await get.text()).toBe(content)
+
+    const rejectedPhoneUpload = await SELF.fetch(authenticatedUrl(`/v1/attachments/${crypto.randomUUID()}`, pairing.accountId, phone.device.id), {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${phone.deviceToken}`,
@@ -173,13 +190,23 @@ describe('companion relay', () => {
       },
       body: content
     })
-    expect(put.status).toBe(201)
+    expect(rejectedPhoneUpload.status).toBe(401)
+  })
 
-    const get = await SELF.fetch(authenticatedUrl(`/v1/attachments/${attachmentId}`, pairing.accountId, pairing.macDeviceId), {
-      headers: { Authorization: `Bearer ${pairing.macToken}` }
+  it('rejects malformed JSON and oversized bodies without relying on Content-Length', async () => {
+    const invalid = await SELF.fetch('https://relay.test/v1/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{'
     })
-    expect(get.status).toBe(200)
-    expect(await get.text()).toBe(content)
+    expect(invalid.status).toBe(400)
+
+    const oversized = await SELF.fetch('https://relay.test/v1/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ macDeviceId: 'mac', macDeviceName: 'x'.repeat(5 * 1024 * 1024) })
+    })
+    expect(oversized.status).toBe(413)
   })
 
   it('registers an authenticated iOS APNs device token', async () => {

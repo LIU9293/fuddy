@@ -17,7 +17,7 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 const maximumAttachmentBytes = 100 * 1024 * 1024
-const relayBuild = '2026-08-08.2'
+const relayBuild = '2026-08-08.3'
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -38,7 +38,15 @@ async function readJson(request: Request): Promise<unknown> {
   if (Number.isFinite(contentLength) && contentLength > maximumJsonBytes) {
     throw new HttpError(413, 'JSON body is too large.')
   }
-  return await request.json()
+  const body = await request.text()
+  if (new TextEncoder().encode(body).byteLength > maximumJsonBytes) {
+    throw new HttpError(413, 'JSON body is too large.')
+  }
+  try {
+    return JSON.parse(body) as unknown
+  } catch {
+    throw new HttpError(400, 'JSON body is invalid.')
+  }
 }
 
 function bearerToken(request: Request): string {
@@ -178,7 +186,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
   const attachmentMatch = url.pathname.match(/^\/v1\/attachments\/([A-Za-z0-9._-]+)$/)
   if (attachmentMatch) {
-    const context = await authenticatedContext(request, env, url)
+    const context = await authenticatedContext(request, env, url, request.method === 'PUT' ? 'mac' : undefined)
     const attachmentId = attachmentMatch[1]
     const key = `${context.accountId}/${attachmentId}`
     if (request.method === 'PUT') {
