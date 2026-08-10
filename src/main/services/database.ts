@@ -17,11 +17,14 @@ import type {
   ConnectorRun,
   ConnectorRunStatus,
   CodingAgentProvider,
+  CreateProjectInput,
   CreateDecisionInput,
   CredentialStorageStatus,
   DailyBriefing,
   DecisionItem,
+  DecisionRemediation,
   DecisionStatus,
+  DecisionWaitingReason,
   EvidenceRef,
   GoalCheckIn,
   GoalMilestone,
@@ -36,6 +39,7 @@ import type {
   ProjectAnalyticsProfileSummary,
   ProjectGoal,
   ProjectProfile,
+  WorkAssistantActionProposal,
   WorkAssistantTaskContext
 } from '../../shared/contracts'
 import type { ConnectorCatalogItem } from '../../shared/contracts'
@@ -69,6 +73,14 @@ export interface DecisionInspectionResult {
   resolved: boolean
 }
 
+export interface DecisionStatusTransitionInput {
+  actor: 'system' | 'agent' | 'user'
+  reason?: string
+  waitingReason?: DecisionWaitingReason | null
+  evidenceRefs?: EvidenceRef[]
+  occurredAt?: string
+}
+
 function parseJson<T>(value: string | null, fallback: T): T {
   if (!value) return fallback
 
@@ -81,6 +93,7 @@ function parseJson<T>(value: string | null, fallback: T): T {
 
 export class AppDatabase {
   private readonly database: DatabaseSync
+  private readonly companionEventListeners = new Set<() => void>()
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true })
@@ -94,7 +107,13 @@ export class AppDatabase {
   }
 
   close(): void {
+    this.companionEventListeners.clear()
     this.database.close()
+  }
+
+  onCompanionEventEnqueued(listener: () => void): () => void {
+    this.companionEventListeners.add(listener)
+    return () => this.companionEventListeners.delete(listener)
   }
 
   getBootstrap(
@@ -108,6 +127,7 @@ export class AppDatabase {
       projects: this.listProjects(),
       goals: this.listGoals(),
       decisions: this.listDecisions(),
+      decisionRemediations: this.listDecisionRemediations(),
       runs: this.listRuns(),
       connectors: this.listConnectors(),
       connectorRuns: this.listConnectorRuns(),
@@ -214,6 +234,58 @@ export class AppDatabase {
     const updated = this.listProjects().find((candidate) => candidate.id === normalizedProject.id) as Project
     this.enqueueCompanionEvent('project.updated', 'project', updated.id, updated)
     return updated
+    })
+  }
+
+  createProject(input: CreateProjectInput): Project {
+    return this.companionTransaction(() => {
+      const baseId = input.name
+        .normalize('NFKD')
+        .toLocaleLowerCase()
+        .replace(/[^a-z0-9\u3400-\u9fff]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 80) || `project-${randomUUID().slice(0, 8)}`
+      let id = baseId
+      let suffix = 2
+      while (this.database.prepare('SELECT 1 FROM projects WHERE id = ?').get(id)) id = `${baseId}-${suffix++}`
+      const now = new Date().toISOString()
+      const workspacePath = input.workspacePath?.trim() || ''
+      const project: Project = {
+        id,
+        name: input.name.trim(),
+        summary: input.summary.trim(),
+        focus: input.focus.trim(),
+        status: 'active',
+        accent: ['#327bd6', '#8d6fd1', '#2f8f6b', '#d17b32', '#d25572'][this.listProjects().length % 5],
+        profile: {
+          productType: input.productType.trim(),
+          stage: input.stage.trim(),
+          mission: input.mission.trim(),
+          vision: input.vision.trim(),
+          repoPath: workspacePath,
+          workspaceRoots: workspacePath ? [{ id: 'primary', label: input.name.trim(), path: workspacePath }] : [],
+          primaryWorkspaceRootId: workspacePath ? 'primary' : null,
+          defaultAgent: input.defaultAgent ?? 'codex',
+          websiteUrl: input.websiteUrl ?? null,
+          surfaces: [],
+          focusAreas: [],
+          dataSources: [],
+          nextMoves: [],
+          currentState: {
+            summary: input.summary.trim(),
+            facts: [],
+            source: 'user',
+            updatedAt: now
+          }
+        }
+      }
+      const sortOrder = Number((this.database.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM projects').get() as SqlRow).value)
+      this.database.prepare(`
+        INSERT INTO projects (id, name, summary, focus, status, accent, sort_order, profile_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(project.id, project.name, project.summary, project.focus, project.status, project.accent, sortOrder, JSON.stringify(project.profile))
+      this.enqueueCompanionEvent('project.created', 'project', project.id, project)
+      return project
     })
   }
 
@@ -388,6 +460,60 @@ export class AppDatabase {
     })
   }
 
+  completeGoalMilestone(goalId: string, milestoneId: string): ProjectGoal {
+    return this.companionTransaction(() => {
+      const now = new Date().toISOString()
+      const result = this.database.prepare(`
+        UPDATE goal_milestones
+        SET status = 'completed', updated_at = ?, completed_at = COALESCE(completed_at, ?)
+        WHERE id = ? AND goal_id = ?
+      `).run(now, now, milestoneId, goalId)
+      if (result.changes === 0) throw new Error(`Milestone not found: ${milestoneId}`)
+      this.refreshGoalProgressFromMilestones(goalId, now)
+      const goal = this.getGoal(goalId)
+      this.enqueueCompanionEvent('goal.updated', 'goal', goal.id, goal)
+      return goal
+    })
+  }
+
+  deleteGoalMilestone(goalId: string, milestoneId: string): ProjectGoal {
+    return this.companionTransaction(() => {
+      const existing = this.database.prepare(`
+        SELECT id FROM goal_milestones WHERE id = ? AND goal_id = ?
+      `).get(milestoneId, goalId)
+      if (!existing) throw new Error(`Milestone not found: ${milestoneId}`)
+      const linkedRunIds = (this.database.prepare(`
+        SELECT id FROM agent_runs WHERE milestone_id = ?
+      `).all(milestoneId) as SqlRow[]).map((row) => String(row.id))
+      const now = new Date().toISOString()
+      this.database.prepare(`
+        UPDATE agent_runs SET milestone_id = NULL, updated_at = ? WHERE milestone_id = ?
+      `).run(now, milestoneId)
+      this.database.prepare('DELETE FROM goal_milestones WHERE id = ? AND goal_id = ?').run(milestoneId, goalId)
+      this.refreshGoalProgressFromMilestones(goalId, now)
+      for (const runId of linkedRunIds) {
+        const run = this.getAgentRun(runId)
+        this.enqueueCompanionEvent('agent-run.updated', 'agent-run', run.id, run)
+      }
+      const goal = this.getGoal(goalId)
+      this.enqueueCompanionEvent('goal.updated', 'goal', goal.id, goal)
+      return goal
+    })
+  }
+
+  private refreshGoalProgressFromMilestones(goalId: string, updatedAt: string): void {
+    const goal = this.getGoal(goalId)
+    const metric = goal.metric
+    const progress = metric.current !== null && metric.target !== null && metric.baseline !== metric.target
+      ? Math.max(0, Math.min(1, (metric.current - (metric.baseline ?? 0)) / (metric.target - (metric.baseline ?? 0))))
+      : goal.milestones.length === 0
+        ? 0
+        : goal.milestones.filter((milestone) => milestone.status === 'completed').length / goal.milestones.length
+    this.database.prepare(`
+      UPDATE project_goals SET progress = ?, updated_at = ? WHERE id = ?
+    `).run(progress, updatedAt, goalId)
+  }
+
   createGoalCheckIn(checkIn: GoalCheckIn): GoalCheckIn {
     this.database.prepare(`
       INSERT INTO goal_checkins (
@@ -412,6 +538,53 @@ export class AppDatabase {
       .all() as SqlRow[]
 
     return rows.map((row) => this.mapDecision(row))
+  }
+
+  listDecisionRemediations(decisionId?: string): DecisionRemediation[] {
+    const rows = decisionId
+      ? this.database.prepare(`
+          SELECT * FROM decision_remediations
+          WHERE decision_id = ?
+          ORDER BY last_seen_at DESC, first_seen_at DESC
+        `).all(decisionId) as SqlRow[]
+      : this.database.prepare(`
+          SELECT * FROM decision_remediations
+          ORDER BY last_seen_at DESC, first_seen_at DESC
+        `).all() as SqlRow[]
+    return rows.map((row) => this.mapDecisionRemediation(row))
+  }
+
+  upsertDecisionRemediation(remediation: DecisionRemediation): DecisionRemediation {
+    this.database.prepare(`
+      INSERT INTO decision_remediations (
+        id, decision_id, source_type, source_ref, state, summary, next_action,
+        evidence_refs_json, metadata_json, first_seen_at, last_seen_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(decision_id, source_type, source_ref) DO UPDATE SET
+        state = excluded.state,
+        summary = excluded.summary,
+        next_action = excluded.next_action,
+        evidence_refs_json = excluded.evidence_refs_json,
+        metadata_json = excluded.metadata_json,
+        last_seen_at = excluded.last_seen_at
+    `).run(
+      remediation.id,
+      remediation.decisionId,
+      remediation.sourceType,
+      remediation.sourceRef,
+      remediation.state,
+      remediation.summary,
+      remediation.nextAction,
+      JSON.stringify(remediation.evidenceRefs),
+      JSON.stringify(remediation.metadata),
+      remediation.firstSeenAt,
+      remediation.lastSeenAt
+    )
+    const row = this.database.prepare(`
+      SELECT * FROM decision_remediations
+      WHERE decision_id = ? AND source_type = ? AND source_ref = ?
+    `).get(remediation.decisionId, remediation.sourceType, remediation.sourceRef) as SqlRow
+    return this.mapDecisionRemediation(row)
   }
 
   listRuns(): AgentRun[] {
@@ -450,6 +623,22 @@ export class AppDatabase {
     })
   }
 
+  updateAgentRunDraftPrompt(id: string, draftPrompt: string): AgentRun {
+    return this.companionTransaction(() => {
+      const run = this.getAgentRun(id)
+      if (run.status !== 'draft' || this.listAgentRunMessages(id).length > 0) {
+        throw new Error('只有尚未发送首条消息的草稿 Run 可以修改预填内容。')
+      }
+      const updatedAt = new Date().toISOString()
+      this.database.prepare(`
+        UPDATE agent_runs SET draft_prompt = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL
+      `).run(draftPrompt.trim() || null, updatedAt, id)
+      const updated = this.getAgentRun(id)
+      this.enqueueCompanionEvent('agent-run.updated', 'agent-run', updated.id, updated)
+      return updated
+    })
+  }
+
   archiveAgentRun(id: string): void {
     return this.companionTransaction(() => {
     const run = this.getAgentRun(id)
@@ -466,7 +655,7 @@ export class AppDatabase {
 
   listAgentRunMessages(runId: string): AgentRunMessage[] {
     const rows = this.database
-      .prepare('SELECT * FROM agent_run_messages WHERE run_id = ? ORDER BY created_at ASC, id ASC')
+      .prepare('SELECT * FROM agent_run_messages WHERE run_id = ? ORDER BY created_at ASC, rowid ASC')
       .all(runId) as SqlRow[]
     return rows.map((row) => ({
       id: String(row.id),
@@ -616,39 +805,43 @@ export class AppDatabase {
   }
 
   upsertMorningBriefing(briefing: MorningBriefing): MorningBriefing {
-    this.database.prepare(`
-      INSERT INTO morning_briefings (
-        id, report_date, timezone, status, headline, body, narration,
-        estimated_duration_seconds, source_briefing_ids_json, signal_ids_json,
-        generated_at, error, generation
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(report_date) DO UPDATE SET
-        status = excluded.status,
-        headline = excluded.headline,
-        body = excluded.body,
-        narration = excluded.narration,
-        estimated_duration_seconds = excluded.estimated_duration_seconds,
-        source_briefing_ids_json = excluded.source_briefing_ids_json,
-        signal_ids_json = excluded.signal_ids_json,
-        generated_at = excluded.generated_at,
-        error = excluded.error,
-        generation = excluded.generation
-    `).run(
-      briefing.id,
-      briefing.reportDate,
-      briefing.timezone,
-      briefing.status,
-      briefing.headline,
-      briefing.body,
-      briefing.narration,
-      briefing.estimatedDurationSeconds,
-      JSON.stringify(briefing.sourceBriefingIds),
-      JSON.stringify(briefing.signalIds),
-      briefing.generatedAt,
-      briefing.error,
-      briefing.generation
-    )
-    return this.getMorningBriefing(briefing.reportDate) as MorningBriefing
+    return this.companionTransaction(() => {
+      this.database.prepare(`
+        INSERT INTO morning_briefings (
+          id, report_date, timezone, status, headline, body, narration,
+          estimated_duration_seconds, source_briefing_ids_json, signal_ids_json,
+          generated_at, error, generation
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(report_date) DO UPDATE SET
+          status = excluded.status,
+          headline = excluded.headline,
+          body = excluded.body,
+          narration = excluded.narration,
+          estimated_duration_seconds = excluded.estimated_duration_seconds,
+          source_briefing_ids_json = excluded.source_briefing_ids_json,
+          signal_ids_json = excluded.signal_ids_json,
+          generated_at = excluded.generated_at,
+          error = excluded.error,
+          generation = excluded.generation
+      `).run(
+        briefing.id,
+        briefing.reportDate,
+        briefing.timezone,
+        briefing.status,
+        briefing.headline,
+        briefing.body,
+        briefing.narration,
+        briefing.estimatedDurationSeconds,
+        JSON.stringify(briefing.sourceBriefingIds),
+        JSON.stringify(briefing.signalIds),
+        briefing.generatedAt,
+        briefing.error,
+        briefing.generation
+      )
+      const updated = this.getMorningBriefing(briefing.reportDate) as MorningBriefing
+      this.enqueueCompanionEvent('morning-briefing.updated', 'morning-briefing', updated.id, updated)
+      return updated
+    })
   }
 
   listBriefingMessages(briefingId?: string): BriefingMessage[] {
@@ -672,6 +865,8 @@ export class AppDatabase {
         row.task_context_json ? String(row.task_context_json) : null,
         null
       ),
+      linkedRunId: row.linked_run_id ? String(row.linked_run_id) : null,
+      actions: parseJson<WorkAssistantActionProposal[]>(row.actions_json ? String(row.actions_json) : null, []),
       createdAt: String(row.created_at)
     }))
   }
@@ -680,8 +875,8 @@ export class AppDatabase {
     return this.companionTransaction(() => {
     this.database.prepare(`
       INSERT INTO work_assistant_messages (
-        id, source_briefing_id, role, content, attachments_json, task_context_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        id, source_briefing_id, role, content, attachments_json, task_context_json, linked_run_id, actions_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       message.id,
       message.briefingId,
@@ -689,10 +884,31 @@ export class AppDatabase {
       message.content,
       JSON.stringify(message.attachments),
       message.taskContext ? JSON.stringify(message.taskContext) : null,
+      message.linkedRunId ?? null,
+      JSON.stringify(message.actions ?? []),
       message.createdAt
     )
     this.enqueueCompanionEvent('work-assistant-message.created', 'work-assistant-message', message.id, message)
     return message
+    })
+  }
+
+  updateBriefingMessageActions(
+    messageId: string,
+    actions: WorkAssistantActionProposal[],
+    linkedRunId?: string | null
+  ): BriefingMessage {
+    return this.companionTransaction(() => {
+      const result = this.database.prepare(`
+        UPDATE work_assistant_messages
+        SET actions_json = ?, linked_run_id = COALESCE(?, linked_run_id)
+        WHERE id = ?
+      `).run(JSON.stringify(actions), linkedRunId ?? null, messageId)
+      if (Number(result.changes) === 0) throw new Error('没有找到这条工作助理消息。')
+      const message = this.listBriefingMessages().find((item) => item.id === messageId)
+      if (!message) throw new Error('没有找到这条工作助理消息。')
+      this.enqueueCompanionEvent('work-assistant-message.updated', 'work-assistant-message', message.id, message)
+      return message
     })
   }
 
@@ -993,7 +1209,7 @@ export class AppDatabase {
   private applyDecisionInspectionMutation(input: DecisionInspectionInput): DecisionInspectionResult {
     const existing = this.database.prepare(`
       SELECT * FROM decision_items
-      WHERE project_id IS ? AND dedupe_key = ? AND status IN ('inbox', 'later')
+      WHERE project_id IS ? AND dedupe_key = ?
       ORDER BY first_seen_at ASC, created_at ASC
       LIMIT 1
     `).get(input.projectId, input.dedupeKey) as SqlRow | undefined
@@ -1001,20 +1217,44 @@ export class AppDatabase {
     if (input.state === 'resolved') {
       if (!existing) return { decision: null, created: false, updated: false, resolved: false }
       const id = String(existing.id)
+      const current = this.mapDecision(existing)
       const isNewObservation = this.recordDecisionObservation(id, input)
+      const mergedEvidence = [...current.evidenceRefs]
+      for (const evidence of input.evidenceRefs) {
+        if (!mergedEvidence.some((item) => item.uri === evidence.uri)) mergedEvidence.push(evidence)
+      }
+      if (current.status === 'ignored') {
+        this.database.prepare(`
+          UPDATE decision_items
+          SET last_seen_at = ?, evidence_refs_json = ?, occurrence_count = occurrence_count + ?
+          WHERE id = ?
+        `).run(input.observedAt, JSON.stringify(mergedEvidence), isNewObservation ? 1 : 0, id)
+        return { decision: this.getDecision(id), created: false, updated: isNewObservation, resolved: false }
+      }
       this.database.prepare(`
         UPDATE decision_items
-        SET status = 'resolved', last_seen_at = ?, resolved_at = ?, resolution_summary = ?,
+        SET status = 'resolved', waiting_reason = NULL, status_summary = ?, status_updated_at = ?,
+            last_seen_at = ?, resolved_at = ?, resolution_summary = ?,
             evidence_refs_json = ?, occurrence_count = occurrence_count + ?
         WHERE id = ?
       `).run(
+        input.summary,
+        input.observedAt,
         input.observedAt,
         input.observedAt,
         input.summary,
-        JSON.stringify(input.evidenceRefs),
+        JSON.stringify(mergedEvidence),
         isNewObservation ? 1 : 0,
         id
       )
+      if (current.status !== 'resolved') {
+        this.recordDecisionStatusEvent(id, current.status, 'resolved', {
+          actor: 'system',
+          reason: input.summary,
+          evidenceRefs: input.evidenceRefs,
+          occurredAt: input.observedAt
+        })
+      }
       return {
         decision: this.getDecision(id),
         created: false,
@@ -1042,14 +1282,50 @@ export class AppDatabase {
     }
 
     const id = String(existing.id)
+    const current = this.mapDecision(existing)
     const isNewObservation = this.recordDecisionObservation(id, input)
     const item = input.decision
+    if (current.status === 'ignored') {
+      this.database.prepare(`
+        UPDATE decision_items
+        SET summary = ?, evidence_refs_json = ?, last_seen_at = ?,
+            occurrence_count = occurrence_count + ?
+        WHERE id = ?
+      `).run(
+        item.summary,
+        JSON.stringify(item.evidenceRefs),
+        input.observedAt,
+        isNewObservation ? 1 : 0,
+        id
+      )
+      return { decision: this.getDecision(id), created: false, updated: true, resolved: false }
+    }
+    const newerThanResolution = current.status !== 'resolved'
+      || !current.resolvedAt
+      || input.observedAt > current.resolvedAt
+    if (current.status === 'resolved' && !newerThanResolution) {
+      return { decision: current, created: false, updated: isNewObservation, resolved: true }
+    }
+    const reopened = current.status === 'resolved'
+    const verificationFailed = current.status === 'waiting'
+      && current.waitingReason === 'verification'
+      && input.observedAt > (current.statusUpdatedAt ?? current.createdAt)
+    const nextStatus: DecisionStatus = reopened ? 'inbox' : verificationFailed ? 'in_progress' : current.status
+    const nextStatusSummary = reopened
+      ? `最新巡检重新打开：${input.summary}`
+      : verificationFailed
+        ? `生产验证失败：${input.summary}`
+        : current.statusSummary ?? null
+    const statusChanged = reopened || verificationFailed
     this.database.prepare(`
       UPDATE decision_items
       SET goal_id = ?, dedupe_key = ?, kind = ?, title = ?, summary = ?, impact = ?, urgency = ?,
           confidence = ?, suggested_actions_json = ?, evidence_refs_json = ?, source = ?,
           last_seen_at = ?, occurrence_count = occurrence_count + ?, resolved_at = NULL,
-          resolution_summary = NULL
+          resolution_summary = NULL, status = ?, waiting_reason = ?, status_summary = ?,
+          status_updated_at = CASE WHEN ? THEN ? ELSE status_updated_at END,
+          reopen_count = reopen_count + CASE WHEN ? THEN 1 ELSE 0 END,
+          auto_completion_key = CASE WHEN ? THEN NULL ELSE auto_completion_key END
       WHERE id = ?
     `).run(
       item.goalId ?? null,
@@ -1065,8 +1341,23 @@ export class AppDatabase {
       item.source,
       input.observedAt,
       isNewObservation ? 1 : 0,
+      nextStatus,
+      statusChanged ? null : current.waitingReason ?? null,
+      nextStatusSummary,
+      statusChanged ? 1 : 0,
+      input.observedAt,
+      reopened ? 1 : 0,
+      reopened ? 1 : 0,
       id
     )
+    if (statusChanged) {
+      this.recordDecisionStatusEvent(id, current.status, nextStatus, {
+        actor: 'system',
+        reason: nextStatusSummary ?? input.summary,
+        evidenceRefs: input.evidenceRefs,
+        occurredAt: input.observedAt
+      })
+    }
     return { decision: this.getDecision(id), created: false, updated: true, resolved: false }
   }
 
@@ -1083,7 +1374,7 @@ export class AppDatabase {
       urgency: 'medium',
       confidence: 1,
       suggestedActions: ['交给助理分析', '稍后处理'],
-      evidenceRefs: [],
+      evidenceRefs: input.evidenceRefs ?? [],
       status: 'inbox',
       source: '用户投递',
       createdAt: new Date().toISOString()
@@ -1095,26 +1386,114 @@ export class AppDatabase {
     })
   }
 
-  updateDecisionStatus(id: string, status: DecisionStatus): DecisionItem {
+  updateDecisionStatus(
+    id: string,
+    status: DecisionStatus,
+    transition: DecisionStatusTransitionInput = { actor: 'user' }
+  ): DecisionItem {
     return this.companionTransaction(() => {
-    this.database
-      .prepare(`
+      const current = this.getDecision(id)
+      const occurredAt = transition.occurredAt ?? new Date().toISOString()
+      const waitingReason = status === 'waiting'
+        ? transition.waitingReason ?? current.waitingReason ?? 'user'
+        : null
+      const reason = transition.reason ?? (
+        status === 'inbox' ? '事项恢复为待处理。'
+          : status === 'in_progress' ? '事项开始处理。'
+            : status === 'waiting' ? '事项正在等待下一项外部条件。'
+              : status === 'resolved' ? '事项已解决。'
+                : '由用户忽略。'
+      )
+      const mergedEvidence = [...current.evidenceRefs]
+      for (const evidence of transition.evidenceRefs ?? []) {
+        if (!mergedEvidence.some((item) => item.uri === evidence.uri)) mergedEvidence.push(evidence)
+      }
+      this.database.prepare(`
         UPDATE decision_items
-        SET status = ?,
-            resolved_at = CASE WHEN ? = 'resolved' THEN COALESCE(resolved_at, ?) ELSE NULL END,
-            resolution_summary = CASE WHEN ? = 'resolved' THEN COALESCE(resolution_summary, '由用户标记为已完成。') ELSE NULL END
+        SET status = ?, waiting_reason = ?, status_summary = ?, status_updated_at = ?,
+            evidence_refs_json = ?,
+            reopen_count = reopen_count + CASE
+              WHEN status = 'resolved' AND ? IN ('inbox', 'in_progress', 'waiting') THEN 1 ELSE 0 END,
+            resolved_at = CASE WHEN ? IN ('resolved', 'ignored') THEN COALESCE(resolved_at, ?) ELSE NULL END,
+            resolution_summary = CASE
+              WHEN ? = 'resolved' THEN ?
+              WHEN ? = 'ignored' THEN '由用户忽略。'
+              ELSE NULL
+            END,
+            auto_completion_suppressed_key = CASE
+              WHEN ? IN ('inbox', 'in_progress', 'waiting') AND status = 'resolved' AND auto_completion_key IS NOT NULL THEN auto_completion_key
+              ELSE auto_completion_suppressed_key
+            END,
+            auto_completion_key = CASE WHEN ? = 'resolved' THEN NULL ELSE auto_completion_key END
         WHERE id = ?
-      `)
-      .run(status, status, new Date().toISOString(), status, id)
+      `).run(
+        status,
+        waitingReason,
+        reason,
+        occurredAt,
+        JSON.stringify(mergedEvidence),
+        status,
+        status,
+        occurredAt,
+        status,
+        reason,
+        status,
+        status,
+        status,
+        id
+      )
+      if (current.status !== status || current.waitingReason !== waitingReason || current.statusSummary !== reason) {
+        this.recordDecisionStatusEvent(id, current.status, status, {
+          ...transition,
+          reason,
+          waitingReason,
+          occurredAt
+        })
+      }
+      const decision = this.getDecision(id)
+      this.enqueueCompanionEvent('decision.updated', 'decision', decision.id, decision)
+      return decision
+    })
+  }
 
-    const row = this.database
-      .prepare('SELECT * FROM decision_items WHERE id = ?')
-      .get(id) as SqlRow | undefined
-
-    if (!row) throw new Error(`Decision item not found: ${id}`)
-    const decision = this.mapDecision(row)
-    this.enqueueCompanionEvent('decision.updated', 'decision', decision.id, decision)
-    return decision
+  completeDecisionWithEvidence(
+    id: string,
+    resolutionSummary: string,
+    evidenceRefs: EvidenceRef[],
+    completionKey: string,
+    resolvedAt = new Date().toISOString()
+  ): DecisionItem {
+    return this.companionTransaction(() => {
+      const lifecycle = this.database.prepare(`
+        SELECT status, auto_completion_key, auto_completion_suppressed_key
+        FROM decision_items WHERE id = ?
+      `).get(id) as SqlRow | undefined
+      if (!lifecycle) throw new Error(`Decision item not found: ${id}`)
+      const current = this.getDecision(id)
+      if (current.status === 'ignored') return current
+      if (lifecycle.auto_completion_suppressed_key === completionKey) return current
+      if (current.status === 'resolved' && lifecycle.auto_completion_key === completionKey) return current
+      const mergedEvidence = [...current.evidenceRefs]
+      for (const evidence of evidenceRefs) {
+        if (!mergedEvidence.some((item) => item.uri === evidence.uri)) mergedEvidence.push(evidence)
+      }
+      this.database.prepare(`
+        UPDATE decision_items
+        SET status = 'resolved', waiting_reason = NULL, status_summary = ?, status_updated_at = ?,
+            resolved_at = ?, resolution_summary = ?, evidence_refs_json = ?, auto_completion_key = ?
+        WHERE id = ?
+      `).run(resolutionSummary, resolvedAt, resolvedAt, resolutionSummary, JSON.stringify(mergedEvidence), completionKey, id)
+      if (current.status !== 'resolved') {
+        this.recordDecisionStatusEvent(id, current.status, 'resolved', {
+          actor: 'system',
+          reason: resolutionSummary,
+          evidenceRefs,
+          occurredAt: resolvedAt
+        })
+      }
+      const decision = this.getDecision(id)
+      this.enqueueCompanionEvent('decision.updated', 'decision', decision.id, decision)
+      return decision
     })
   }
 
@@ -1122,12 +1501,13 @@ export class AppDatabase {
     return this.companionTransaction(() => {
     this.database.prepare(`
       INSERT INTO agent_runs (
-        id, project_id, goal_id, milestone_id, agent, kind, provider, title, status,
-        session_id, working_directory, started_at, completed_at, summary, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, project_id, decision_id, goal_id, milestone_id, agent, kind, provider, title, status,
+        session_id, working_directory, started_at, completed_at, summary, draft_prompt, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       run.id,
       run.projectId,
+      run.decisionId ?? null,
       run.goalId ?? null,
       run.milestoneId ?? null,
       run.provider,
@@ -1140,6 +1520,7 @@ export class AppDatabase {
       run.startedAt,
       run.completedAt,
       run.summary,
+      run.draftPrompt,
       run.createdAt,
       run.updatedAt
     )
@@ -1153,12 +1534,13 @@ export class AppDatabase {
     return this.companionTransaction(() => {
     this.database.prepare(`
       UPDATE agent_runs
-      SET project_id = ?, goal_id = ?, milestone_id = ?, agent = ?, kind = ?, provider = ?,
+      SET project_id = ?, decision_id = ?, goal_id = ?, milestone_id = ?, agent = ?, kind = ?, provider = ?,
           title = ?, status = ?, session_id = ?, working_directory = ?, started_at = ?,
-          completed_at = ?, summary = ?, updated_at = ?
+          completed_at = ?, summary = ?, draft_prompt = ?, updated_at = ?
       WHERE id = ?
     `).run(
       run.projectId,
+      run.decisionId ?? null,
       run.goalId ?? null,
       run.milestoneId ?? null,
       run.provider,
@@ -1171,6 +1553,7 @@ export class AppDatabase {
       run.startedAt,
       run.completedAt,
       run.summary,
+      run.draftPrompt,
       run.updatedAt,
       run.id
     )
@@ -1280,6 +1663,7 @@ export class AppDatabase {
       projects: this.listProjects(),
       goals: this.listGoals(),
       decisions: this.listDecisions(),
+      morningBriefings: this.listMorningBriefings(),
       workAssistantMessages: this.listBriefingMessages(),
       attachments: [],
       runs: this.listRuns().map((run) => this.getAgentRunDetail(run.id))
@@ -1436,6 +1820,9 @@ export class AppDatabase {
       JSON.stringify(event.payload),
       event.occurredAt
     )
+    queueMicrotask(() => {
+      for (const listener of this.companionEventListeners) listener()
+    })
     return event
   }
 
@@ -1547,7 +1934,13 @@ export class AppDatabase {
         last_seen_at TEXT,
         occurrence_count INTEGER NOT NULL DEFAULT 1,
         resolved_at TEXT,
-        resolution_summary TEXT
+        resolution_summary TEXT,
+        auto_completion_key TEXT,
+        auto_completion_suppressed_key TEXT,
+        waiting_reason TEXT,
+        status_summary TEXT,
+        status_updated_at TEXT,
+        reopen_count INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS decision_observations (
@@ -1562,6 +1955,39 @@ export class AppDatabase {
         UNIQUE(decision_id, observation_key)
       );
 
+      CREATE TABLE IF NOT EXISTS decision_status_events (
+        id TEXT PRIMARY KEY,
+        decision_id TEXT NOT NULL REFERENCES decision_items(id) ON DELETE CASCADE,
+        from_status TEXT,
+        to_status TEXT NOT NULL,
+        waiting_reason TEXT,
+        reason TEXT NOT NULL,
+        evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+        actor_type TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS decision_status_events_decision_idx
+      ON decision_status_events(decision_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS decision_remediations (
+        id TEXT PRIMARY KEY,
+        decision_id TEXT NOT NULL REFERENCES decision_items(id) ON DELETE CASCADE,
+        source_type TEXT NOT NULL,
+        source_ref TEXT NOT NULL,
+        state TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        next_action TEXT NOT NULL,
+        evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        UNIQUE(decision_id, source_type, source_ref)
+      );
+
+      CREATE INDEX IF NOT EXISTS decision_remediations_decision_idx
+      ON decision_remediations(decision_id, last_seen_at DESC);
+
       CREATE TABLE IF NOT EXISTS agent_runs (
         id TEXT PRIMARY KEY,
         project_id TEXT REFERENCES projects(id),
@@ -1572,6 +1998,7 @@ export class AppDatabase {
         started_at TEXT,
         completed_at TEXT,
         summary TEXT NOT NULL,
+        draft_prompt TEXT,
         created_at TEXT NOT NULL,
         archived_at TEXT
       );
@@ -1724,6 +2151,8 @@ export class AppDatabase {
         content TEXT NOT NULL,
         attachments_json TEXT NOT NULL DEFAULT '[]',
         task_context_json TEXT,
+        linked_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+        actions_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL
       );
 
@@ -1818,6 +2247,12 @@ export class AppDatabase {
     if (!workAssistantMessageColumns.some((column) => column.name === 'attachments_json')) {
       this.database.exec("ALTER TABLE work_assistant_messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'")
     }
+    if (!workAssistantMessageColumns.some((column) => column.name === 'linked_run_id')) {
+      this.database.exec('ALTER TABLE work_assistant_messages ADD COLUMN linked_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL')
+    }
+    if (!workAssistantMessageColumns.some((column) => column.name === 'actions_json')) {
+      this.database.exec("ALTER TABLE work_assistant_messages ADD COLUMN actions_json TEXT NOT NULL DEFAULT '[]'")
+    }
 
     const connectorRunColumns = this.database.prepare('PRAGMA table_info(connector_runs)').all() as Array<{
       name: string
@@ -1857,11 +2292,47 @@ export class AppDatabase {
     if (!decisionColumns.some((column) => column.name === 'resolution_summary')) {
       this.database.exec('ALTER TABLE decision_items ADD COLUMN resolution_summary TEXT')
     }
+    if (!decisionColumns.some((column) => column.name === 'auto_completion_key')) {
+      this.database.exec('ALTER TABLE decision_items ADD COLUMN auto_completion_key TEXT')
+    }
+    if (!decisionColumns.some((column) => column.name === 'auto_completion_suppressed_key')) {
+      this.database.exec('ALTER TABLE decision_items ADD COLUMN auto_completion_suppressed_key TEXT')
+    }
+    if (!decisionColumns.some((column) => column.name === 'waiting_reason')) {
+      this.database.exec('ALTER TABLE decision_items ADD COLUMN waiting_reason TEXT')
+    }
+    if (!decisionColumns.some((column) => column.name === 'status_summary')) {
+      this.database.exec('ALTER TABLE decision_items ADD COLUMN status_summary TEXT')
+    }
+    if (!decisionColumns.some((column) => column.name === 'status_updated_at')) {
+      this.database.exec('ALTER TABLE decision_items ADD COLUMN status_updated_at TEXT')
+    }
+    if (!decisionColumns.some((column) => column.name === 'reopen_count')) {
+      this.database.exec('ALTER TABLE decision_items ADD COLUMN reopen_count INTEGER NOT NULL DEFAULT 0')
+    }
     this.database.exec(`
       UPDATE decision_items
       SET first_seen_at = COALESCE(first_seen_at, created_at),
           last_seen_at = COALESCE(last_seen_at, created_at),
-          occurrence_count = COALESCE(occurrence_count, 1)
+          occurrence_count = COALESCE(occurrence_count, 1),
+          status = CASE WHEN status = 'later' THEN 'waiting' ELSE status END,
+          waiting_reason = CASE WHEN status = 'later' THEN 'user' ELSE waiting_reason END,
+          status_summary = CASE WHEN status = 'later' THEN COALESCE(status_summary, '等待用户稍后处理。') ELSE status_summary END,
+          status_updated_at = COALESCE(status_updated_at, resolved_at, last_seen_at, created_at),
+          reopen_count = COALESCE(reopen_count, 0)
+    `)
+    this.database.exec(`
+      INSERT INTO decision_status_events (
+        id, decision_id, from_status, to_status, waiting_reason, reason,
+        evidence_refs_json, actor_type, created_at
+      )
+      SELECT lower(hex(randomblob(16))), id, NULL, status, waiting_reason,
+        COALESCE(status_summary, '迁移现有事项状态。'), evidence_refs_json, 'system',
+        COALESCE(status_updated_at, created_at)
+      FROM decision_items
+      WHERE NOT EXISTS (
+        SELECT 1 FROM decision_status_events WHERE decision_status_events.decision_id = decision_items.id
+      )
     `)
     this.database.exec(`
       CREATE INDEX IF NOT EXISTS decision_lifecycle_idx
@@ -1873,6 +2344,9 @@ export class AppDatabase {
     }>
     if (!agentRunColumns.some((column) => column.name === 'goal_id')) {
       this.database.exec('ALTER TABLE agent_runs ADD COLUMN goal_id TEXT REFERENCES project_goals(id)')
+    }
+    if (!agentRunColumns.some((column) => column.name === 'decision_id')) {
+      this.database.exec('ALTER TABLE agent_runs ADD COLUMN decision_id TEXT REFERENCES decision_items(id)')
     }
     if (!agentRunColumns.some((column) => column.name === 'milestone_id')) {
       this.database.exec('ALTER TABLE agent_runs ADD COLUMN milestone_id TEXT REFERENCES goal_milestones(id)')
@@ -1895,6 +2369,9 @@ export class AppDatabase {
     if (!agentRunColumns.some((column) => column.name === 'archived_at')) {
       this.database.exec('ALTER TABLE agent_runs ADD COLUMN archived_at TEXT')
     }
+    if (!agentRunColumns.some((column) => column.name === 'draft_prompt')) {
+      this.database.exec('ALTER TABLE agent_runs ADD COLUMN draft_prompt TEXT')
+    }
     this.database.exec(`
       UPDATE agent_runs
       SET provider = CASE agent
@@ -1913,6 +2390,19 @@ export class AppDatabase {
         ELSE 'coding'
       END,
       updated_at = COALESCE(updated_at, started_at, created_at)
+    `)
+    this.database.exec(`
+      UPDATE agent_runs
+      SET decision_id = (
+        SELECT decision_items.id
+        FROM decision_items
+        WHERE decision_items.project_id IS agent_runs.project_id
+          AND agent_runs.title = '处理 · ' || decision_items.title
+        ORDER BY decision_items.first_seen_at ASC, decision_items.created_at ASC
+        LIMIT 1
+      )
+      WHERE decision_id IS NULL
+        AND title LIKE '处理 · %'
     `)
   }
 
@@ -2164,8 +2654,9 @@ export class AppDatabase {
       INSERT INTO decision_items (
         id, project_id, goal_id, dedupe_key, kind, title, summary, impact, urgency, confidence,
         suggested_actions_json, evidence_refs_json, status, source, created_at,
-        first_seen_at, last_seen_at, occurrence_count, resolved_at, resolution_summary
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        first_seen_at, last_seen_at, occurrence_count, resolved_at, resolution_summary,
+        waiting_reason, status_summary, status_updated_at, reopen_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       item.id,
       item.projectId,
@@ -2186,14 +2677,49 @@ export class AppDatabase {
       item.lastSeenAt ?? item.createdAt,
       item.occurrenceCount ?? 1,
       item.resolvedAt ?? null,
-      item.resolutionSummary ?? null
+      item.resolutionSummary ?? null,
+      item.waitingReason ?? null,
+      item.statusSummary ?? null,
+      item.statusUpdatedAt ?? item.createdAt,
+      item.reopenCount ?? 0
     )
+    this.recordDecisionStatusEvent(item.id, null, item.status, {
+      actor: 'system',
+      reason: item.statusSummary ?? '事项已创建。',
+      waitingReason: item.waitingReason ?? null,
+      evidenceRefs: item.evidenceRefs,
+      occurredAt: item.statusUpdatedAt ?? item.createdAt
+    })
   }
 
   private getDecision(id: string): DecisionItem {
     const row = this.database.prepare('SELECT * FROM decision_items WHERE id = ?').get(id) as SqlRow | undefined
     if (!row) throw new Error(`Decision item not found: ${id}`)
     return this.mapDecision(row)
+  }
+
+  private recordDecisionStatusEvent(
+    decisionId: string,
+    fromStatus: DecisionStatus | null,
+    toStatus: DecisionStatus,
+    input: DecisionStatusTransitionInput
+  ): void {
+    this.database.prepare(`
+      INSERT INTO decision_status_events (
+        id, decision_id, from_status, to_status, waiting_reason, reason,
+        evidence_refs_json, actor_type, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      randomUUID(),
+      decisionId,
+      fromStatus,
+      toStatus,
+      input.waitingReason ?? null,
+      input.reason ?? '事项状态已更新。',
+      JSON.stringify(input.evidenceRefs ?? []),
+      input.actor,
+      input.occurredAt ?? new Date().toISOString()
+    )
   }
 
   private recordDecisionObservation(decisionId: string, input: DecisionInspectionInput): boolean {
@@ -2257,7 +2783,7 @@ export class AppDatabase {
           ? 'roombase:activation:first-booking-below-7d'
           : `daily:${projectId ?? 'all'}:${title}`
       const latest = rows[rows.length - 1]
-      const open = rows.find((row) => row.status === 'inbox' || row.status === 'later')
+      const open = rows.find((row) => row.status === 'inbox' || row.status === 'in_progress' || row.status === 'waiting' || row.status === 'later')
       const finalStatus = open ? String(open.status) : 'resolved'
 
       for (const row of rows) {
@@ -2275,6 +2801,8 @@ export class AppDatabase {
       const duplicateIds = rows.slice(1).map((row) => String(row.id))
       for (const duplicateId of duplicateIds) {
         this.database.prepare('UPDATE connector_runs SET decision_id = ? WHERE decision_id = ?').run(keeperId, duplicateId)
+        this.database.prepare('UPDATE agent_runs SET decision_id = ? WHERE decision_id = ?').run(keeperId, duplicateId)
+        this.database.prepare('UPDATE decision_remediations SET decision_id = ? WHERE decision_id = ?').run(keeperId, duplicateId)
         this.replaceBriefingSignalId('daily_briefings', duplicateId, keeperId)
         this.replaceBriefingSignalId('morning_briefings', duplicateId, keeperId)
         this.database.prepare('DELETE FROM decision_items WHERE id = ?').run(duplicateId)
@@ -2335,6 +2863,7 @@ export class AppDatabase {
     return {
       id: String(row.id),
       projectId: row.project_id ? String(row.project_id) : null,
+      decisionId: row.decision_id ? String(row.decision_id) : null,
       goalId: row.goal_id ? String(row.goal_id) : null,
       milestoneId: row.milestone_id ? String(row.milestone_id) : null,
       provider: provider as AgentRun['provider'],
@@ -2345,6 +2874,7 @@ export class AppDatabase {
       startedAt: row.started_at ? String(row.started_at) : null,
       completedAt: row.completed_at ? String(row.completed_at) : null,
       summary: String(row.summary),
+      draftPrompt: row.draft_prompt ? String(row.draft_prompt) : null,
       createdAt,
       updatedAt: row.updated_at ? String(row.updated_at) : createdAt
     }
@@ -2364,7 +2894,11 @@ export class AppDatabase {
       confidence: Number(row.confidence),
       suggestedActions: parseJson<string[]>(String(row.suggested_actions_json), []),
       evidenceRefs: parseJson<EvidenceRef[]>(String(row.evidence_refs_json), []),
-      status: row.status as DecisionItem['status'],
+      status: (row.status === 'later' ? 'waiting' : row.status) as DecisionItem['status'],
+      waitingReason: row.waiting_reason ? String(row.waiting_reason) as DecisionWaitingReason : null,
+      statusSummary: row.status_summary ? String(row.status_summary) : null,
+      statusUpdatedAt: row.status_updated_at ? String(row.status_updated_at) : String(row.created_at),
+      reopenCount: row.reopen_count === null ? 0 : Number(row.reopen_count),
       source: String(row.source),
       createdAt: String(row.created_at),
       firstSeenAt: row.first_seen_at ? String(row.first_seen_at) : String(row.created_at),
@@ -2372,6 +2906,22 @@ export class AppDatabase {
       occurrenceCount: row.occurrence_count === null ? 1 : Number(row.occurrence_count),
       resolvedAt: row.resolved_at ? String(row.resolved_at) : null,
       resolutionSummary: row.resolution_summary ? String(row.resolution_summary) : null
+    }
+  }
+
+  private mapDecisionRemediation(row: SqlRow): DecisionRemediation {
+    return {
+      id: String(row.id),
+      decisionId: String(row.decision_id),
+      sourceType: row.source_type as DecisionRemediation['sourceType'],
+      sourceRef: String(row.source_ref),
+      state: row.state as DecisionRemediation['state'],
+      summary: String(row.summary),
+      nextAction: String(row.next_action),
+      evidenceRefs: parseJson<EvidenceRef[]>(String(row.evidence_refs_json), []),
+      metadata: parseJson<Record<string, unknown>>(String(row.metadata_json), {}),
+      firstSeenAt: String(row.first_seen_at),
+      lastSeenAt: String(row.last_seen_at)
     }
   }
 

@@ -1,4 +1,5 @@
 import type {
+  CompanionDevice,
   CompanionEventPage,
   CompanionPairingStartResult,
   CompanionPairingClaimResult
@@ -18,7 +19,7 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 const maximumAttachmentBytes = 100 * 1024 * 1024
-const relayBuild = '2026-08-08.4'
+const relayBuild = '2026-08-08.5'
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -75,6 +76,7 @@ async function authenticatedContext(
   accountId: string
   deviceId: string
   token: string
+  device: CompanionDevice
   stub: DurableObjectStub<AccountRelay>
 }> {
   const accountId = requiredSearchParam(url, 'accountId')
@@ -83,7 +85,7 @@ async function authenticatedContext(
   const stub = relay(env, accountId)
   const device = await stub.authorize(deviceId, token, requiredRole)
   if (!device) throw new HttpError(401, '设备认证失败。')
-  return { accountId, deviceId, token, stub }
+  return { accountId, deviceId, token, device, stub }
 }
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
@@ -134,11 +136,9 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
   if (request.method === 'GET' && url.pathname === '/v1/connect') {
     const context = await authenticatedContext(request, env, url)
-    const device = await context.stub.authorize(context.deviceId, context.token)
-    if (!device) throw new HttpError(401, '设备认证失败。')
     const headers = new Headers(request.headers)
-    headers.set('X-Companion-Device-Id', device.id)
-    headers.set('X-Companion-Device-Role', device.role)
+    headers.set('X-Companion-Device-Id', context.device.id)
+    headers.set('X-Companion-Device-Role', context.device.role)
     return await context.stub.fetch(new Request(request, { headers }))
   }
 
@@ -188,13 +188,25 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
   const attachmentMatch = url.pathname.match(/^\/v1\/attachments\/([A-Za-z0-9._-]+)$/)
   if (attachmentMatch) {
-    const context = await authenticatedContext(request, env, url, request.method === 'PUT' ? 'mac' : undefined)
+    const context = await authenticatedContext(request, env, url)
     const attachmentId = attachmentMatch[1]
     const key = `${context.accountId}/${attachmentId}`
     if (request.method === 'PUT') {
       const contentLength = Number.parseInt(request.headers.get('Content-Length') ?? '0', 10)
       if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > maximumAttachmentBytes) {
         throw new HttpError(413, 'Attachment size is invalid or exceeds 100 MiB.')
+      }
+      const sha256 = request.headers.get('X-Content-SHA256')?.trim().toLowerCase() ?? ''
+      if (!/^[a-f0-9]{64}$/.test(sha256)) {
+        throw new HttpError(400, 'Attachment SHA-256 is required.')
+      }
+      const existing = await env.ATTACHMENTS.head(key)
+      if (existing) {
+        const sameUpload = existing.customMetadata?.uploadedBy === context.deviceId
+          && existing.customMetadata?.sha256 === sha256
+          && existing.size === contentLength
+        if (!sameUpload) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
+        return Response.json({ id: attachmentId, size: existing.size }, { status: 200 })
       }
       await env.ATTACHMENTS.put(key, request.body, {
         httpMetadata: {
@@ -203,7 +215,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         customMetadata: {
           accountId: context.accountId,
           uploadedBy: context.deviceId,
-          sha256: request.headers.get('X-Content-SHA256') ?? ''
+          sha256
         }
       })
       return Response.json({ id: attachmentId, size: contentLength }, { status: 201 })
@@ -246,7 +258,9 @@ export default {
           ? 400
           : 500
       const message = error instanceof Error ? error.message : 'Unexpected relay error.'
-      console.error(JSON.stringify({ message: 'companion relay request failed', status, error: message }))
+      if (status >= 500) {
+        console.error(JSON.stringify({ message: 'companion relay request failed', status, error: message }))
+      }
       return Response.json({ error: status === 500 ? 'Internal relay error.' : message }, { status })
     }
   }

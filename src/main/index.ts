@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, Notification, shell } from 'electron'
+import { app, BrowserWindow, nativeTheme, Notification, shell } from 'electron'
 import * as Sentry from '@sentry/electron/main'
 import { ConnectorRuntime } from './connectors/connector-runtime'
 import { registerIpc } from './ipc'
@@ -14,7 +14,9 @@ import { TaskDispatcher } from './services/task-dispatcher'
 import { TtsService } from './services/tts-service'
 import { GoalTrackingService } from './services/goal-tracking'
 import { WorkspaceAgentActions } from './services/workspace-agent-actions'
+import { DecisionRemediationService } from './services/decision-remediation'
 import { WorkspaceFilesService } from './services/workspace-files'
+import { ProjectInspectionService } from './services/project-inspection'
 import { PiTaskHarness } from './services/pi-task-harness'
 import { AutomationRuntime } from './services/automation-runtime'
 import { AutomationScheduler } from './services/automation-scheduler'
@@ -24,6 +26,7 @@ import { ProjectAgentIntegrationService } from './services/project-agent-integra
 import { SENTRY_DSN, SENTRY_PROJECT } from '../shared/sentry'
 import { hydrateProcessEnvironmentFromZsh } from './services/shell-environment'
 import { CompanionSyncService } from './services/companion-sync'
+import { WebResearchService } from './services/web-research'
 
 Sentry.init({
   dsn: SENTRY_DSN,
@@ -35,6 +38,7 @@ Sentry.init({
 })
 
 let mainWindow: BrowserWindow | null = null
+let splashWindow: BrowserWindow | null = null
 let database: AppDatabase | null = null
 let dailyBriefingScheduler: DailyBriefingScheduler | null = null
 let automationScheduler: AutomationScheduler | null = null
@@ -79,6 +83,52 @@ function isSafeExternalUrl(url: string): boolean {
   }
 }
 
+function resolveMacDockIconPath(): string {
+  const filename = nativeTheme.shouldUseDarkColors
+    ? 'fuddy-mac-icon-dark.png'
+    : 'fuddy-mac-icon-light.png'
+  return app.isPackaged
+    ? join(process.resourcesPath, 'branding', filename)
+    : join(app.getAppPath(), 'build', filename)
+}
+
+function updateMacDockIcon(): void {
+  if (process.platform !== 'darwin') return
+  app.dock?.setIcon(resolveMacDockIconPath())
+}
+
+function createSplashWindow(): void {
+  splashWindow = new BrowserWindow({
+    width: 720,
+    height: 512,
+    show: false,
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#000000' : '#ffffff',
+    title: 'Fuddy',
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true
+    }
+  })
+
+  splashWindow.once('ready-to-show', () => splashWindow?.show())
+  splashWindow.on('closed', () => {
+    splashWindow = null
+  })
+
+  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
+    void splashWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/splash.html`)
+  } else {
+    void splashWindow.loadFile(join(__dirname, '../renderer/splash.html'))
+  }
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1360,
@@ -101,7 +151,10 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('ready-to-show', () => {
+    splashWindow?.close()
+    mainWindow?.show()
+  })
   mainWindow.on('closed', () => {
     mainWindow = null
   })
@@ -137,6 +190,9 @@ if (!hasLock) {
   })
 
   app.whenReady().then(async () => {
+    updateMacDockIcon()
+    nativeTheme.on('updated', updateMacDockIcon)
+    createSplashWindow()
     await hydrateProcessEnvironmentFromZsh()
     const userDataPath = app.getPath('userData')
     const databasePath = join(userDataPath, 'project-agent.sqlite')
@@ -145,6 +201,7 @@ if (!hasLock) {
     const providerSettings = new ProviderSettingsService(database, credentialVault)
     const connectorRuntime = new ConnectorRuntime(database, credentialVault)
     const runtime = new PiAgentRuntime(providerSettings)
+    const decisionRemediationService = new DecisionRemediationService(database)
     const workspaceFiles = new WorkspaceFilesService(database, join(userDataPath, 'project-files'))
     const mcpOptions = resolveThirdPartyMcpOptions({
       appPath: app.getAppPath(),
@@ -164,7 +221,11 @@ if (!hasLock) {
       database,
       piTaskHarness,
       workspaceFiles,
-      new CliAgentRuntime(agentToolsMcp, join(__dirname, 'project-agent-mcp.js'), databasePath, providerSettings)
+      new CliAgentRuntime(agentToolsMcp, join(__dirname, 'project-agent-mcp.js'), databasePath, providerSettings),
+      undefined,
+      async (run) => {
+        await decisionRemediationService.sync(run.projectId)
+      }
     )
     const dailyBriefingService = new DailyBriefingService(database, connectorRuntime, runtime)
     const projectAgentIntegration = new ProjectAgentIntegrationService(
@@ -173,22 +234,38 @@ if (!hasLock) {
       (input, onUpdate) => dispatcher.dispatch(input, onUpdate)
     )
     const goalTrackingService = new GoalTrackingService(database, runtime)
-    const workspaceAgentActions = new WorkspaceAgentActions(database, runtime, goalTrackingService)
+    const workspaceAgentActions = new WorkspaceAgentActions(
+      database,
+      runtime,
+      goalTrackingService,
+      dispatcher,
+      new ProjectInspectionService(database, workspaceFiles),
+      new WebResearchService()
+    )
     const morningBriefingService = new MorningBriefingService(
       database,
       dailyBriefingService,
       runtime,
       goalTrackingService,
-      workspaceAgentActions
+      workspaceAgentActions,
+      decisionRemediationService
     )
+    workspaceAgentActions.setMorningBriefingGenerator(() => morningBriefingService.generate())
     companionSync = new CompanionSyncService(
       database,
       credentialVault,
       dispatcher,
-      (question) => morningBriefingService.ask(null, question)
+      (question, attachments) => morningBriefingService.ask(null, question, null, attachments),
+      join(userDataPath, 'companion-uploads'),
+      () => providerSettings.getPublicSettings().codingAgents.defaultAgent,
+      workspaceFiles
     )
+    companionSync.setWorkAssistantActionExecutor((input) => morningBriefingService.executeAction(input))
     companionSync.onStatusChanged((status) => {
       if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:status-changed', status)
+    })
+    companionSync.onDataChanged(() => {
+      if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
     })
     const ttsService = new TtsService(database, providerSettings)
     const automationRuntime = new AutomationRuntime(database, {
@@ -203,7 +280,8 @@ if (!hasLock) {
       },
       runConnectors: async (projectId) => {
         const result = await connectorRuntime.runConnectors(projectId)
-        return `Connector 巡检完成：${result.succeeded} 成功，${result.failed} 失败。`
+        const remediation = await decisionRemediationService.sync(projectId)
+        return `Connector 巡检完成：${result.succeeded} 成功，${result.failed} 失败；核验 ${remediation.remediations.length} 条修复进度。`
       },
       checkGoals: async (projectId) => {
         const results = await goalTrackingService.checkDueGoals(projectId ?? undefined)
@@ -222,27 +300,36 @@ if (!hasLock) {
       if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('automation:changed')
     })
     automationScheduler = new AutomationScheduler(database, automationRuntime)
-    dailyBriefingScheduler = new DailyBriefingScheduler(database, morningBriefingService, (headline) => {
-      mainWindow?.webContents.send('briefing:morning-ready')
-      if (Notification.isSupported()) {
-        const notification = new Notification({
-          title: '每日简报已送达',
-          body: headline,
-          silent: false
-        })
-        notification.on('click', () => {
-          if (!mainWindow) createWindow()
-          if (mainWindow?.isMinimized()) mainWindow.restore()
-          mainWindow?.show()
-          mainWindow?.focus()
-        })
-        notification.show()
+    dailyBriefingScheduler = new DailyBriefingScheduler(
+      database,
+      morningBriefingService,
+      (headline) => {
+        mainWindow?.webContents.send('briefing:morning-ready')
+        if (Notification.isSupported()) {
+          const notification = new Notification({
+            title: '每日简报已送达',
+            body: headline,
+            silent: false
+          })
+          notification.on('click', () => {
+            if (!mainWindow) createWindow()
+            if (mainWindow?.isMinimized()) mainWindow.restore()
+            mainWindow?.show()
+            mainWindow?.focus()
+          })
+          notification.show()
+        }
+      },
+      (error) => {
+        Sentry.captureException(error, { tags: { boundary: 'daily-briefing-scheduler' } })
+        console.error('[daily-briefing-scheduler] generation failed', error instanceof Error ? error.message : 'Unknown error')
       }
-    })
+    )
     registerIpc(
       database,
       dispatcher,
       connectorRuntime,
+      decisionRemediationService,
       credentialVault,
       dailyBriefingService,
       morningBriefingService,
@@ -255,6 +342,11 @@ if (!hasLock) {
       companionSync
     )
     createWindow()
+    void decisionRemediationService.sync().then(() => {
+      if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
+    }).catch((error: unknown) => {
+      Sentry.captureException(error, { tags: { boundary: 'decision-remediation-startup' } })
+    })
     void companionSync.start()
     if (process.env.PROJECT_AGENT_SENTRY_TEST === '1') {
       setTimeout(() => {
@@ -269,6 +361,7 @@ if (!hasLock) {
       if (!mainWindow) createWindow()
     })
   }).catch(async (error: unknown) => {
+    splashWindow?.close()
     Sentry.captureException(error, { tags: { boundary: 'app.whenReady' } })
     await Sentry.flush(2_000)
     app.quit()
@@ -282,6 +375,7 @@ app.on('window-all-closed', () => {
 async function shutdown(): Promise<void> {
   if (shutdownPromise) return await shutdownPromise
   shutdownPromise = (async () => {
+    nativeTheme.removeListener('updated', updateMacDockIcon)
     dailyBriefingScheduler?.stop()
     dailyBriefingScheduler = null
     automationScheduler?.stop()

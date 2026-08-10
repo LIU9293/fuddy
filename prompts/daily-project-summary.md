@@ -18,6 +18,7 @@
 10. 语言简洁、直接，先给结论。不要使用空泛表达，例如“持续关注”“赋能增长”，除非同时给出具体检查对象。
 11. 收件箱是问题生命周期，不是日报消息流。输入中已有的持续问题如果今天仍存在，必须更新原 Item，不能创建标题相近的新 Item。
 12. 只有最新巡检证据直接证明异常恢复、阻塞解除或事项完成时，才允许返回 `resolved`。缺少数据、无法检查或今天没有新记录都不代表完成。
+13. 输入包含相同 `dedupeKey` 的完整历史状态。更新且更晚的 `active` 证据如果与“已完成”冲突，必须重新打开原 Item，不能创建新 Item；“已忽略”只记录观察，不自动恢复。
 
 判断优先级：
 
@@ -34,10 +35,10 @@
 {{DAILY_PROJECT_METRICS_JSON}}
 ```
 
-下面是这个项目当前未完成的收件箱 Item。`dedupeKey` 是问题的稳定身份，不包含日期：
+下面是这个项目相关的历史收件箱 Item，包括待处理、进行中、等待中、已完成和已忽略。`dedupeKey` 是问题的稳定身份，不包含日期：
 
 ```json
-{{CURRENT_OPEN_DECISIONS_JSON}}
+{{DECISION_LIFECYCLES_JSON}}
 ```
 
 请输出：
@@ -67,8 +68,8 @@
 最后附加一个机器可读的 `inspections` JSON 代码块。只返回本次数据确实检查过的问题：
 
 - 同一问题每次都使用相同 `dedupeKey`；禁止把日期、指标值或本次运行 ID 放进 key。
-- `active` 表示问题仍存在：已有 Item 用 `existingItemId` 更新摘要和证据，新问题才创建 Item。
-- `resolved` 表示证据已经直接证明旧问题解除，只能引用当前收件箱中真实存在的 `existingItemId`。
+- `active` 表示问题仍存在：任何历史状态下已有相同 `dedupeKey` 的 Item 都使用 `existingItemId` 更新或重新打开；只有从未出现过才创建 Item。
+- `resolved` 表示证据已经直接证明旧问题解除，只能引用历史列表中真实存在的 `existingItemId`。
 - 正常基本盘且从未产生过 Item 时，不需要输出 `resolved`。
 
 ```json

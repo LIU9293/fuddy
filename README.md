@@ -2,14 +2,15 @@
 
 > 面向自由职业者与个人开发者的多项目 AI 助理。当前仓库已进入 Electron 桌面端 MVP 开发阶段。
 
-## 当前实现状态（2026-08-08）
+## 当前实现状态（2026-08-09）
 
 当前版本已经跑通从项目上下文、决策事项到真实 Agent Session 的桌面端主链路：
 
 - 工作助理、每日简报、决策收件箱、项目状态 / 目标 / 设置、文件、Agent Runs 和自动化已接入同一套本地数据模型；
 - Agent Run 不再区分 Coding / General，统一选择 Pi、Codex、Claude Code 或 OpenCode 作为执行 Agent；
 - 每个项目支持一个或多个 Workspace Roots，并指定主 Workspace。普通 Run 与自动任务都在真实项目目录执行，同时把其他 Roots 和项目产物目录提供给 Agent；
-- 新建 Agent Session 只创建草稿，不自动发送消息。“去处理”会直接创建 Session、进入聊天，并把建议任务放进输入框，用户确认或修改后再发送；
+- 新建 Agent Session 只创建草稿，不自动发送消息。“去处理”和 Milestone“开始任务”都会直接创建或打开关联 Session、进入聊天，并把持久化的建议任务放进输入框，用户确认或修改后再发送；
+- 工作助理使用统一能力目录与持续任务上下文：可以管理项目、目标、收件箱、Agent Run 和自动化，读取每日简报、联网公开来源，并受约束地读取项目文件空间及已配置 Workspace 中的文件/代码；只读能力可直接执行，改变 App 状态的能力先展示确认 Action，创建 Run 只预填不发送；
 - Codex 使用 app-server，Claude Code 使用 Agent SDK，OpenCode 使用本机 CLI；三者均保存原生 Session ID，可在后续消息中恢复同一上下文；
 - Coding Agents 设置会检测本机安装状态、版本和可选模型，可设置全局默认 Coding Agent，并为每个 Agent 选择默认模型；运行时仅在已选择模型时显式传入模型参数；
 - macOS GUI 启动时读取交互式 zsh 环境，因此本机 Agent 能获得与终端一致、未经应用过滤的环境变量和认证配置；应用不会修改 `.zshrc`；
@@ -17,8 +18,8 @@
 - Agent 对话已支持流式回复、思考摘要、折叠工具调用链、当前工具运行态、Session 重命名 / 归档，以及 10 分钟无活动运行超时；
 - Agent Runs 详情采用完整聊天主区域，Session 列表只在运行时显示加载图标；主侧边栏支持拖拽调整宽度；临时成功和错误提示会在 5 秒后自动消失；
 - 主进程、Renderer 未处理异常及 Electron 子进程异常已接入 Sentry 崩溃报告。
-- 已加入原生 SwiftUI iOS Companion 工程。Mac 可显示一次性配对二维码，iPhone 使用 VisionKit 原生扫码连接；本地 SQLite outbox 会把项目、目标、决策、工作助理、Agent Run、消息和产物增量同步到 Cloudflare Relay。手机支持离线缓存、原生聊天、决策操作、重命名 / 归档和经过 SHA-256 校验的 Quick Look 附件预览，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
-- Companion Relay 已部署到 [`project-agent-companion-relay.moghub.workers.dev`](https://project-agent-companion-relay.moghub.workers.dev)，使用 Durable Objects、Hibernation WebSocket 和私有 R2；配对密钥一次有效、设备 Token 只保存哈希，Mac 解除绑定会撤销设备并清理 Relay 数据。手机会区分 Relay 断线与 Mac 离线，后者仍可安全排队操作。前台实时同步已打通，APNs 后台唤醒代码已接入，但正式设备推送仍需 Apple Developer Team、APNs Key 与签名配置。
+- 已加入原生 SwiftUI iOS Companion 工程。Mac 可显示一次性配对二维码，iPhone 使用 VisionKit 原生扫码连接；本地 SQLite outbox 会把项目、目标、决策、每日总结、工作助理、Agent Run、消息和产物增量同步到 Cloudflare Relay。手机以顶部“助理 / Runs”切换和侧边栏组织导航，两类聊天共用支持照片 / 文件上传的输入组件；每日总结直接进入助理时间线，Agent 工具调用按 Thinking 阶段折叠分组。项目详情提供与 Mac 对齐的概览 / 设置，可编辑基本信息、产品上下文、一个或多个 Workspace、主 Workspace、默认 Agent、入口与数据源，并通过受约束的 `project.update` 命令交由 Mac 落库。Session 聊天不再内嵌产物列表，右上角“信息与文件”Modal 集中展示基本信息和文件；缺少云端副本时，iPhone 会通过受约束的命令请求在线 Mac 实时上传，再进行大小与 SHA-256 校验并用 Quick Look 打开。手机也支持离线缓存、收件箱处理和 Session 重命名 / 归档，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
+- Companion Relay 已部署到 [`project-agent-companion-relay.moghub.workers.dev`](https://project-agent-companion-relay.moghub.workers.dev)，使用 Durable Objects、Hibernation WebSocket 和私有 R2；配对密钥一次有效、设备 Token 只保存哈希，Mac 解除绑定会撤销设备并清理 Relay 数据。Mac 与前台 iPhone 以 WebSocket 事件作为同步唤醒信号，只保留 60 秒一次的 ordered replay 兜底，并每 20 秒执行应用层心跳；漏掉一次 `pong` 会主动废弃半开连接，断线重连按 5 / 15 / 60 秒退避。iPhone 进入后台会主动关闭 WebSocket 和兜底定时器，改由 APNs 静默通知唤醒 HTTPS replay，回到前台后立即重连补齐。命令状态同样写入 ordered event log，离线期间发生的执行失败不会丢失；Worker 只持久化显式错误日志，Trace 采样为 1%。手机会区分 Relay 断线与 Mac 离线并直接消费 presence 帧，Mac 设置页也分开显示 HTTP 同步和实时连接；Mac 离线时仍可安全排队操作。APNs 后台唤醒代码已接入，但正式设备推送仍需 Apple Developer Team、APNs Key 与签名配置。
 
 目前仍属于本机 / 个人设备 MVP：Mac 签名、公证、自动更新，以及 iOS 的 Apple Developer 签名、APNs 凭证与应用层端到端加密仍是公开分发前的发布门槛。
 
@@ -111,7 +112,7 @@ Agent Check-in 更新指标、进度与风险判断
 
 目标是项目内的一级对象，不是设置中的一段文字。每个项目先保存一份带来源和更新时间的“项目现状”；用户确认事实优先于 Agent 推断和 Repo 证据。每个目标包含独立的优先级（P0 / P1 / P2）与生命周期状态（已规划 / 进行中 / 有风险 / 暂停 / 已完成），以及结果描述、一个主指标（Baseline / Current / Target）、截止时间、下一次 Check-in、里程碑、监控数据源、Agent 总结与置信度。Check-in 单独留存历史，Agent 可以根据已有证据更新当前值、里程碑、进度和风险状态，但不能静默修改成功标准、目标值或截止日期。
 
-对话是目标与收件箱的主要操作入口，而不只是问答界面。Agent 可以根据用户的明确指令创建目标、检查进展、暂停 / 恢复 / 完成目标，也可以创建收件箱事项并在待处理、稍后和已完成之间流转。每次操作都先把自然语言映射为受约束的应用动作，只允许引用当前数据库中真实存在的项目、目标和收件箱 ID，并写入权限审计；普通咨询不会触发写入。
+对话是目标与收件箱的主要管理入口，而不只是问答界面。Agent 可以根据用户的明确指令创建目标、检查进展、暂停 / 恢复 / 完成目标，也可以创建和流转收件箱事项。收件箱页面本身不提供通用输入框；用户点击“去处理”后，事项进入“进行中”，系统创建或打开关联草稿 Session 并预填问题但不自动发送。“忽略”关闭该事项。每次操作都先把自然语言映射为受约束的应用动作，只允许引用当前数据库中真实存在的项目、目标和收件箱 ID，并写入权限审计；普通咨询不会触发写入。
 
 目标创建与 Check-in 不依赖 Renderer 中的业务文案。Agent 会在执行时读取最新 Project Profile、Repo 状态、README / 项目规划、已有 Skill 摘要和 Connector 运行结果，再生成结构化目标与证据。Git、README 和测试结果只能证明工程能力及开发进展，不能被当作生产用户、收入或转化率证据；缺少业务 Connector 数据时，Baseline / Current 必须保持未知。
 
@@ -121,7 +122,9 @@ Agent Check-in 更新指标、进度与风险判断
 Goal → Milestone → Evidence → Check-in → Briefing / Decision → Agent Run → Goal
 ```
 
-收件箱采用“问题生命周期”而不是“每日消息”模型。每类持续问题都有不含日期的稳定 `dedupeKey`；每次巡检只追加或更新一条 Observation，并刷新原 Item 的摘要、证据、最近发现时间和出现次数。巡检结果为 `active` 时继续维护原 Item，为 `resolved` 时只有在最新证据直接证明问题解除后才主动标记完成。缺少数据或无法检查不能作为完成证据；问题真正完成后再次发生时，才创建新的生命周期 Item。
+收件箱采用“问题生命周期”而不是“每日消息”模型。每类持续问题都有不含日期的稳定 `dedupeKey`；每次巡检会读取待处理、进行中、等待中、已完成和已忽略的完整历史，只追加或更新 Observation，并刷新原 Item 的摘要、证据、最近发现时间和出现次数。巡检结果为 `active` 时继续维护原 Item；如果更新且更晚的证据与“已完成”冲突，系统会重新打开同一个 Item 并记录 reopen 次数，而不是新建重复事项。巡检结果为 `resolved` 时，只有最新证据直接证明问题解除后才主动标记完成。缺少数据或无法检查不能作为完成证据；已忽略事项只更新观察，不会被 Agent 擅自恢复。
+
+问题事实与修复进度分开追踪：由收件箱“去处理”创建的 Run 会保留原始 Decision ID；Run 中产生的规范 GitHub PR 链接会自动成为修复证据。PR 提交、Review 或 CI 状态推动事项进入“进行中”；PR 合并只表示代码工作完成，事项进入“等待中 · 等待部署”，生产发布后进入“等待中 · 等待验证”。只有后续生产 Connector 或其他验收证据证明问题解除，事项才自动进入“已完成”。非开发事项使用同一套 Ticket 状态，并通过等待外部处理、等待指标、等待用户或等待复查等原因表达不同验收路径。每次自动状态转换都会记录原因、证据、操作者和时间；GitHub 暂时不可用时保留最后一次已核验状态，不把未知当作完成。
 
 “工作助理”是独立一级通用聊天频道，用来跨项目讨论、规划和推进任务，不依赖当天是否已经生成简报。“每日简报”是工作助理每天 09:00 自动发送的一种特殊消息，由助理 Agent 汇总所有项目的数据、信号与决策收件箱；消息内是一张三分钟以内的中文语音卡片，支持直接播放和在卡片内展开全文。简报、任务讨论和用户追问共同组成一条连续时间线，输入框始终固定在聊天区域底部。每条收件箱项目至少包含所属项目、类型、影响、紧急度、置信度、证据、建议动作与处理状态。助理 Agent 在自动任务或用户手动触发时生成简报，建议结构固定为：
 
@@ -130,6 +133,14 @@ Goal → Milestone → Evidence → Check-in → Briefing / Decision → Agent R
 3. **接下来关注什么**：给出少量、明确、可行动的重点；
 4. **证据来源**：链接到 Repo、自动任务结果、分析数据或人工更新；
 5. **待确认事项**：需要用户判断或授权的选择。
+
+工作助理的能力统一按授权等级组织：
+
+- **只读**：列出/检查项目与 Agent Run、搜索项目文件、读取已配置 Workspace、联网搜索与读取 HTTP/HTTPS 页面（包括本机和私有网络服务）、读取历史简报；结果必须保留来源，且不能把网页或 Repo 信息直接当作已确认的生产事实。
+- **确认后执行**：新建或更新项目、创建/打开/修改 Agent Run、管理目标与收件箱、生成简报、创建或启停自动化。确认 Action 会持久化到助理消息，点击时重新校验对象状态。
+- **明确执行**：向 Run 发送消息、归档 Run、触发会写入外部系统的 Agent 工作。工作助理本身不修改项目代码，而是把任务交给项目绑定的 Agent Run。
+
+用户要求“处理 PR / 问题 / 事项”时，助理先按 Decision ID、PR URL/编号、项目和历史消息查找已有 Run。强匹配的运行中、草稿、空闲或可恢复中断 Run 优先复用，并展示“继续这个 Run / 新建 Run”Action；没有匹配时才建议创建 Draft Run。用户确认后跳转并把建议 Prompt 放进 Input，但不自动发送。每日简报的定时投递和手动生成复用同一个 `briefing.generate` 能力，Scheduler 只是另一种触发入口。
 
 ## 4. 单个项目的信息模型
 
@@ -231,10 +242,10 @@ Goal → Milestone → Evidence → Check-in → Briefing / Decision → Agent R
 
 ### 决策收件箱
 
-- 默认显示跨项目待处理决策；
-- 决策状态可切换为待处理、稍后和已完成；
+- 使用“待处理、进行中、等待中、已完成、已忽略”五个状态；“去处理”立即进入进行中；
+- 等待中包含等待部署、等待验证、等待外部处理、等待指标、等待用户和等待复查；关联 PR 合并不会直接完成事项，最新验收证据才可以自动完成；
 - 选择项目后，项目工作区使用“收件箱、状态、目标、设置”四个一级 Tab；
-- 收件箱内部再切换“待处理、稍后、已完成”，不与项目一级信息架构混在一起；
+- 收件箱默认聚焦待处理事项，不显示通用输入框；创建和管理事项通过工作助理完成；
 - 支持由助理 Agent 生成简报；
 - 支持播放语音、查看文字和自然语言追问；
 - 展示少量证据链接；
@@ -245,13 +256,13 @@ Goal → Milestone → Evidence → Check-in → Briefing / Decision → Agent R
 - 在 Agent Runs 前提供跨项目文件入口，用于集中保存运营、Marketing、分析和内容生产产物；
 - 每个项目拥有独立文件空间，另有不归属具体项目的共享空间；
 - 支持新建文件与文件夹、导入、文本预览和编辑，并可在 Finder 中打开；
-- Agent 只能在绑定的项目 Workspace Roots 和所选文件空间内工作，不能越过项目目录；
+- Agent 只能在绑定的项目 Workspace Roots 和所选文件空间内工作，不能越过项目目录；代码与随产品发布的资源进入 Workspace，Marketing、运营、研究、报告、品牌与宣传素材等代码无关产物进入项目文件空间；
 - Agent 真实写入的文件会作为 Artifact 关联回产生它的 Agent Run，避免只在对话里声称“已保存”。
 
 ### Agent Runs
 
 - 每个 Run 都是一个可恢复、可继续对话的持久 Session；列表页只展示 Session，不保留底部全局输入框；
-- 点击 Run 后在右侧打开 Session 对话，展示完整消息、工具活动、错误和产物；
+- 点击 Run 后在右侧打开 Session 对话，展示完整消息、工具活动和错误；默认收起、可拖拽调宽的右侧信息栏分为“基本信息 / 文件”，集中展示 Git 增删行、项目与 Workspace 摘要，并在栏内预览 Run 产出的 Markdown、文本和图片；
 - Session 可以选择关联一个 Goal / Milestone，也可以作为独立任务运行；
 - Agent Run 不再区分“普通任务”和“代码任务”，只选择执行 Agent；Pi、Codex、Claude Code 和 OpenCode 都接收同一种 Run 和项目上下文；
 - Pi 使用内置 Agent Harness；Codex、Claude Code 和 OpenCode 连接本机已登录的运行时，并继续拥有各自的认证、模型配置和 Session；
@@ -259,8 +270,9 @@ Goal → Milestone → Evidence → Check-in → Briefing / Decision → Agent R
 - Session 保存对应运行时返回的 Session ID，后续消息恢复同一个 Agent 上下文；工作目录使用项目主 Workspace，其他 Workspace Roots 和项目文件空间作为额外可访问目录；
 - 新建 Session 先进入 `draft`，创建页只配置项目、Agent、关联里程碑和标题；第一条消息在聊天页由用户发送；
 - 从决策收件箱点击“去处理”时，系统直接创建草稿 Session 并把建议任务预填到聊天输入框，不自动执行；
+- 从 Goal Milestone 点击“开始任务”时复用已有未归档关联 Run，或创建新的草稿 Run；预填 Prompt 会在 Mac 与 iPhone 间同步，编辑后自动保存，首条消息仍由用户发送；
 - Codex、Claude Code 与 OpenCode 使用各自本机默认账号和配置，不注入 CC Switch 配置；应用继承交互式 zsh 环境，并只在用户选择模型后显式传入对应模型参数；
-- 三个外部 Agent 默认使用完整本机访问和自动批准模式。思考摘要、最新工具调用链和流式回复统一显示在 Session 聊天中。
+- 三个外部 Agent 默认使用完整本机访问和自动批准模式。每段思考摘要独立保存和显示；两个 Thinking 之间的连续工具调用归为一个默认折叠的调用组，当前 Thinking 与正在运行的工具会显示动态工作状态。
 
 ### 项目状态
 
@@ -275,6 +287,7 @@ Goal → Milestone → Evidence → Check-in → Briefing / Decision → Agent R
 - 每个目标都可以独立展开或折叠；折叠后保留标题、状态、指标和里程碑数量，展开后显示进度、里程碑和最近一次 Agent Check-in；
 - 用户可以在统一输入框中直接描述结果，或在工作助理中要求 Agent 操作，由目标 Agent 创建结构化目标和 2–5 个可验证里程碑；
 - 未完成里程碑提供“开始任务”操作，点击后进入工作助理的结构化任务上下文，而不是直接修改完成状态；
+- 里程碑是信息行而不是可选择列表；每项的三点菜单可由用户明确标记完成或删除，删除时保留历史 Agent Run 并解除其里程碑关联；
 - 支持手动“检查进展”，每天 09:00 生成简报前也会检查已到期的目标；
 - Check-in 优先使用项目 Connector 的真实数据和证据，没有证据时明确保持未知，不虚构完成度；
 - Agent 发现目标有风险时才创建关联的收件箱 Signal；后续 Check-in 使用稳定问题键更新同一 Item，证据确认风险解除时主动完成；
@@ -286,7 +299,7 @@ Goal → Milestone → Evidence → Check-in → Briefing / Decision → Agent R
 - “检查 Vows 当前目标的进展”；
 - “暂停这个目标”或“把这个目标标记为完成”；
 - “把这个阻塞投递到 Vows 的收件箱”；
-- “把这条收件箱事项移到稍后”或“标记为已完成”。
+- “忽略这条收件箱事项”。
 
 Vows 当前以用户确认现状为准：产品已可正常使用，用户自主创建婚礼 Event 的完整流程已经打通。当前 Roadmap 包含一个 P0 当前目标（社交媒体账号与宣传内容体系）、一个 P1 规划目标（婚礼模板优化与升学宴、百日宴等场景扩展）以及两个 P2 规划目标（定价方式、H5 与海外用户支持）。
 
@@ -531,6 +544,7 @@ npm run ios:generate
 npm run ios:typecheck
 RUN_AGENT_TOOLS_SMOKE=1 npx vitest run src/main/services/third-party-mcp-runtime.integration.test.ts
 RUN_CODING_CLI_SMOKE=1 npx vitest run src/main/services/coding-cli.integration.test.ts
+RUN_MORNING_BRIEFING_SMOKE=1 npx vitest run src/main/services/morning-briefing.integration.test.ts
 ```
 
 ### PostgreSQL 指标 View 协议

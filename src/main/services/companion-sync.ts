@@ -1,7 +1,8 @@
 import { hostname } from 'node:os'
 import { createHash } from 'node:crypto'
-import { createReadStream, existsSync, statSync } from 'node:fs'
-import { extname, isAbsolute, relative, resolve } from 'node:path'
+import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
+import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import WebSocket from 'ws'
 import type {
@@ -9,6 +10,7 @@ import type {
   CompanionCommandUpdate,
   CompanionMacConfiguration,
   CompanionMacStatus,
+  CompanionRealtimeConnectionState,
   CompanionPairingSession,
   CompanionPairingStartResult,
   CompanionSocketMessage,
@@ -17,15 +19,49 @@ import type {
   CompanionSnapshotPayload
 } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
-import type { DecisionStatus } from '../../shared/contracts'
+import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
 import type { AgentRunArtifact, BriefingMessage } from '../../shared/contracts'
+import { updateProjectSchema } from '../../shared/project-validation'
 import { AppDatabase } from './database'
 import { CredentialVault } from './credential-vault'
 import { TaskDispatcher } from './task-dispatcher'
+import type { WorkspaceFilesService } from './workspace-files'
 
 const configurationKey = 'companion.mac-configuration'
-const pollIntervalMs = 2_000
-const reconnectDelayMs = 2_500
+export const companionFallbackSyncIntervalMs = 60_000
+export const companionRequestTimeoutMs = 30_000
+export const companionSocketHeartbeatIntervalMs = 20_000
+const companionAttachmentRequestTimeoutMs = 120_000
+const companionEventSyncDebounceMs = 150
+const reconnectDelaysMs = [5_000, 15_000, 60_000] as const
+
+export function companionReconnectDelayMs(attempt: number): number {
+  return reconnectDelaysMs[Math.min(Math.max(0, attempt), reconnectDelaysMs.length - 1)]
+}
+
+export function companionSocketMessageRequestsSync(message: CompanionSocketMessage): boolean {
+  return message.type === 'sync.ready' || message.type === 'command.created'
+}
+
+export function companionSocketHeartbeatShouldReconnect(awaitingPong: boolean): boolean {
+  return awaitingPong
+}
+
+export function companionCommandRecovery(
+  status: CompanionCommand['status'] | null
+): 'execute' | 'fail-interrupted' | 'ack-terminal' {
+  if (status === 'completed' || status === 'failed') return 'ack-terminal'
+  if (status === 'executing') return 'fail-interrupted'
+  return 'execute'
+}
+
+function fetchWithTimeout(
+  input: string | URL,
+  init: RequestInit = {},
+  timeoutMs = companionRequestTimeoutMs
+): Promise<Response> {
+  return fetch(input, { ...init, signal: init.signal ?? AbortSignal.timeout(timeoutMs) })
+}
 
 function normalizedRelayUrl(value: string): string {
   const url = new URL(value.trim())
@@ -42,33 +78,48 @@ async function responseJson<T>(response: Response): Promise<T> {
 }
 
 export class CompanionSyncService {
+  private executeWorkAssistantAction: ((input: { messageId: string; proposalId: string; optionId: string }) => unknown) | null = null
   private configuration: CompanionMacConfiguration | null
   private state: CompanionMacStatus['state'] = 'not-configured'
+  private realtimeState: CompanionRealtimeConnectionState = 'disconnected'
   private lastConnectedAt: string | null = null
+  private lastSyncedAt: string | null = null
   private lastError: string | null = null
   private socket: WebSocket | null = null
+  private socketHeartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private awaitingSocketPong = false
   private timer: ReturnType<typeof setInterval> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private eventSyncTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempt = 0
   private activeSync: Promise<CompanionMacStatus> | null = null
+  private readonly activeCommands = new Map<string, Promise<void>>()
   private syncRequested = false
   private stopped = false
   private readonly listeners = new Set<(status: CompanionMacStatus) => void>()
+  private readonly dataChangedListeners = new Set<() => void>()
 
   constructor(
     private readonly database: AppDatabase,
     private readonly credentials: CredentialVault,
     private readonly dispatcher: TaskDispatcher,
-    private readonly askWorkAssistant: (question: string) => Promise<unknown>
+    private readonly askWorkAssistant: (question: string, attachments: WorkAssistantImageAttachment[]) => Promise<unknown>,
+    private readonly incomingAttachmentsRoot = resolve(process.cwd(), '.companion-uploads'),
+    private readonly defaultCodingAgent: () => CodingAgentProvider = () => 'codex',
+    private readonly workspaceFiles?: WorkspaceFilesService
   ) {
     this.configuration = database.getSetting<CompanionMacConfiguration | null>(configurationKey, null)
     this.state = this.configuration ? 'disconnected' : 'not-configured'
+    database.onCompanionEventEnqueued(() => this.scheduleEventSync())
   }
 
   getStatus(): CompanionMacStatus {
     return {
       configuration: this.configuration,
       state: this.state,
+      realtimeState: this.realtimeState,
       lastConnectedAt: this.lastConnectedAt,
+      lastSyncedAt: this.lastSyncedAt,
       lastError: this.lastError,
       pendingEvents: this.database.countPendingCompanionEvents()
     }
@@ -77,6 +128,17 @@ export class CompanionSyncService {
   onStatusChanged(listener: (status: CompanionMacStatus) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  onDataChanged(listener: () => void): () => void {
+    this.dataChangedListeners.add(listener)
+    return () => this.dataChangedListeners.delete(listener)
+  }
+
+  setWorkAssistantActionExecutor(
+    executor: (input: { messageId: string; proposalId: string; optionId: string }) => unknown
+  ): void {
+    this.executeWorkAssistantAction = executor
   }
 
   async start(): Promise<void> {
@@ -92,7 +154,7 @@ export class CompanionSyncService {
     this.closeTransports()
     const origin = normalizedRelayUrl(relayUrl)
     const macDeviceId = crypto.randomUUID()
-    const response = await fetch(`${origin}/v1/pairings`, {
+    const response = await fetchWithTimeout(`${origin}/v1/pairings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -133,7 +195,9 @@ export class CompanionSyncService {
     this.database.setSetting<CompanionMacConfiguration | null>(configurationKey, null)
     this.configuration = null
     this.state = 'not-configured'
+    this.realtimeState = 'disconnected'
     this.lastConnectedAt = null
+    this.lastSyncedAt = null
     this.lastError = null
     this.closeTransports()
     this.emitStatus()
@@ -171,7 +235,7 @@ export class CompanionSyncService {
       await this.flushOutbox()
       await this.processPendingCommands()
       this.state = 'connected'
-      this.lastConnectedAt = new Date().toISOString()
+      this.lastSyncedAt = new Date().toISOString()
       this.lastError = null
     } catch (error) {
       this.state = 'error'
@@ -192,7 +256,7 @@ export class CompanionSyncService {
     for (const event of this.database.listPendingCompanionEvents()) {
       try {
         const payload = await this.prepareEventPayload(event)
-        const response = await fetch(this.authenticatedUrl('/v1/events', context.configuration), {
+        const response = await fetchWithTimeout(this.authenticatedUrl('/v1/events', context.configuration), {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${context.token}`,
@@ -246,13 +310,8 @@ export class CompanionSyncService {
   }
 
   private async prepareArtifact(artifact: AgentRunArtifact): Promise<CompanionAttachmentDescriptor | null> {
-    const run = this.database.getAgentRun(artifact.runId)
-    if (!run.workingDirectory) return null
-    const filePath = resolve(run.workingDirectory, artifact.relativePath)
-    const relation = relative(resolve(run.workingDirectory), filePath)
-    if (isAbsolute(relation) || relation.startsWith('..') || !existsSync(filePath)) {
-      return null
-    }
+    const filePath = this.resolveArtifactPath(artifact)
+    if (!filePath) return null
     const file = statSync(filePath)
     if (!file.isFile() || file.size <= 0 || file.size > 100 * 1024 * 1024) {
       return null
@@ -261,7 +320,7 @@ export class CompanionSyncService {
     const mimeType = artifact.mimeType ?? this.mimeTypeForPath(filePath)
     const context = this.authenticatedContext()
     const body = Readable.toWeb(createReadStream(filePath)) as ReadableStream
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       this.authenticatedUrl(`/v1/attachments/${encodeURIComponent(artifact.id)}`, context.configuration),
       {
         method: 'PUT',
@@ -273,7 +332,8 @@ export class CompanionSyncService {
         },
         body,
         duplex: 'half'
-      } as RequestInit & { duplex: 'half' }
+      } as RequestInit & { duplex: 'half' },
+      companionAttachmentRequestTimeoutMs
     )
     await responseJson(response)
     return {
@@ -289,6 +349,25 @@ export class CompanionSyncService {
       thumbnailAttachmentId: null,
       createdAt: artifact.createdAt
     }
+  }
+
+  private resolveArtifactPath(artifact: AgentRunArtifact): string | null {
+    if (this.workspaceFiles) {
+      try {
+        return this.workspaceFiles.resolvePath(artifact.projectId, artifact.relativePath)
+      } catch {
+        // Some coding Agents report artifacts relative to the Run workspace instead.
+      }
+    }
+    const run = this.database.getAgentRun(artifact.runId)
+    if (!run.workingDirectory) return null
+    const root = resolve(run.workingDirectory)
+    const filePath = resolve(root, artifact.relativePath)
+    const relation = relative(root, filePath)
+    if (isAbsolute(relation) || relation === '..' || relation.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) {
+      return null
+    }
+    return existsSync(filePath) ? filePath : null
   }
 
   private async prepareWorkAssistantMessage(message: BriefingMessage): Promise<unknown> {
@@ -325,7 +404,7 @@ export class CompanionSyncService {
     sha256: string
   ): Promise<void> {
     const context = this.authenticatedContext()
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       this.authenticatedUrl(`/v1/attachments/${encodeURIComponent(attachmentId)}`, context.configuration),
       {
         method: 'PUT',
@@ -336,7 +415,8 @@ export class CompanionSyncService {
           'X-Content-SHA256': sha256
         },
         body: bytes as unknown as BodyInit
-      }
+      },
+      companionAttachmentRequestTimeoutMs
     )
     await responseJson(response)
   }
@@ -365,72 +445,205 @@ export class CompanionSyncService {
 
   private async processPendingCommands(): Promise<void> {
     const context = this.authenticatedContext()
-    const response = await fetch(this.authenticatedUrl('/v1/commands/pending', context.configuration), {
+    const response = await fetchWithTimeout(this.authenticatedUrl('/v1/commands/pending', context.configuration), {
       headers: { Authorization: `Bearer ${context.token}` }
     })
     const body = await responseJson<{ commands: CompanionCommand[] }>(response)
-    for (const remoteCommand of body.commands) await this.executeCommand(remoteCommand)
+    for (const remoteCommand of body.commands) this.scheduleCommand(remoteCommand)
+    if (body.commands.length >= 100) this.scheduleEventSync()
+  }
+
+  private scheduleCommand(remoteCommand: CompanionCommand): void {
+    if (this.activeCommands.has(remoteCommand.commandId)) return
+    const operation = this.executeCommand(remoteCommand)
+      .catch((error) => {
+        this.lastError = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
+        this.emitStatus()
+      })
+      .finally(() => {
+        this.activeCommands.delete(remoteCommand.commandId)
+        this.scheduleEventSync()
+      })
+    this.activeCommands.set(remoteCommand.commandId, operation)
   }
 
   private async executeCommand(remoteCommand: CompanionCommand): Promise<void> {
     const existing = this.database.getCompanionCommand(remoteCommand.commandId)
-    if (existing?.status === 'completed' || existing?.status === 'failed') {
+    const recovery = companionCommandRecovery(existing?.status ?? null)
+    if (recovery === 'ack-terminal' && existing) {
       await this.updateRemoteCommand(existing.commandId, {
-        status: existing.status,
+        status: existing.status === 'completed' ? 'completed' : 'failed',
         result: existing.result,
         error: existing.error
       })
       return
     }
+    if (recovery === 'fail-interrupted') {
+      const error = 'Mac 在执行远程操作期间中断；为避免重复执行，请确认结果后重新操作。'
+      this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, error)
+      this.emitDataChanged()
+      await this.updateRemoteCommand(remoteCommand.commandId, { status: 'failed', error })
+      return
+    }
     this.database.upsertCompanionCommand(remoteCommand)
     this.database.updateCompanionCommand(remoteCommand.commandId, 'executing')
     await this.updateRemoteCommand(remoteCommand.commandId, { status: 'executing' })
+    let result: unknown
     try {
-      const payload = remoteCommand.payload as Record<string, unknown>
-      let result: unknown
-      switch (remoteCommand.type) {
-        case 'assistant.send-message': {
-          result = await this.askWorkAssistant(this.requiredString(payload, 'prompt'))
-          break
-        }
-        case 'agent.send-message': {
-          const runId = this.requiredString(payload, 'runId')
-          const prompt = this.requiredString(payload, 'prompt')
-          result = await this.dispatcher.sendMessage(runId, prompt)
-          break
-        }
-        case 'agent.rename-session': {
-          const runId = this.requiredString(payload, 'runId')
-          result = this.database.renameAgentRun(runId, this.requiredString(payload, 'title'))
-          break
-        }
-        case 'agent.archive-session': {
-          const runId = this.requiredString(payload, 'runId')
-          this.database.archiveAgentRun(runId)
-          result = { runId, archived: true }
-          break
-        }
-        case 'decision.update-status': {
-          const decisionId = this.requiredString(payload, 'decisionId')
-          const status = this.requiredString(payload, 'status')
-          if (!['inbox', 'later', 'resolved'].includes(status)) throw new Error('Decision 状态无效。')
-          result = this.database.updateDecisionStatus(decisionId, status as DecisionStatus)
-          break
-        }
-      }
-      this.database.updateCompanionCommand(remoteCommand.commandId, 'completed', result)
-      await this.updateRemoteCommand(remoteCommand.commandId, { status: 'completed', result })
-      await this.flushOutbox()
+      result = await this.performCommand(remoteCommand)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
       this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, message)
+      this.emitDataChanged()
       await this.updateRemoteCommand(remoteCommand.commandId, { status: 'failed', error: message })
+      return
     }
+    this.database.updateCompanionCommand(remoteCommand.commandId, 'completed', result)
+    this.emitDataChanged()
+    await this.updateRemoteCommand(remoteCommand.commandId, { status: 'completed', result })
+    this.scheduleEventSync()
+  }
+
+  private async performCommand(remoteCommand: CompanionCommand): Promise<unknown> {
+    const payload = remoteCommand.payload as Record<string, unknown>
+    switch (remoteCommand.type) {
+      case 'assistant.send-message': {
+        const attachments = await this.materializeIncomingAttachments(remoteCommand.commandId, payload)
+        const images = attachments
+          .filter((attachment) => ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(attachment.descriptor.mimeType))
+          .map((attachment): WorkAssistantImageAttachment => ({
+            id: attachment.descriptor.id,
+            name: attachment.descriptor.filename,
+            mimeType: attachment.descriptor.mimeType as WorkAssistantImageAttachment['mimeType'],
+            dataUrl: `data:${attachment.descriptor.mimeType};base64,${attachment.bytes.toString('base64')}`
+          }))
+        if (images.length !== attachments.length) throw new Error('工作助理当前只支持图片附件。')
+        return await this.askWorkAssistant(this.requiredString(payload, 'prompt'), images)
+      }
+      case 'assistant.execute-action': {
+        if (!this.executeWorkAssistantAction) throw new Error('工作助理 Action 能力尚未初始化。')
+        return this.executeWorkAssistantAction({
+          messageId: this.requiredString(payload, 'messageId'),
+          proposalId: this.requiredString(payload, 'proposalId'),
+          optionId: this.requiredString(payload, 'optionId')
+        })
+      }
+      case 'agent.send-message': {
+        const runId = this.requiredString(payload, 'runId')
+        const clientMessageId = typeof payload.clientMessageId === 'string' && payload.clientMessageId.trim()
+          ? payload.clientMessageId.trim()
+          : undefined
+        const attachments = await this.materializeIncomingAttachments(remoteCommand.commandId, payload)
+        const attachmentContext = attachments.length > 0
+          ? `\n\n用户从 iPhone 附加了以下本机文件，请按需读取：\n${attachments.map((attachment) => `- ${attachment.path}`).join('\n')}`
+          : ''
+        return await this.dispatcher.sendMessage(
+          runId,
+          `${this.requiredString(payload, 'prompt')}${attachmentContext}`,
+          () => this.scheduleEventSync(),
+          clientMessageId
+        )
+      }
+      case 'agent.rename-session':
+        return this.database.renameAgentRun(
+          this.requiredString(payload, 'runId'),
+          this.requiredString(payload, 'title')
+        )
+      case 'agent.update-draft-prompt':
+        return this.database.updateAgentRunDraftPrompt(
+          this.requiredString(payload, 'runId'),
+          typeof payload.draftPrompt === 'string' ? payload.draftPrompt : ''
+        )
+      case 'agent.archive-session': {
+        const runId = this.requiredString(payload, 'runId')
+        this.database.archiveAgentRun(runId)
+        return { runId, archived: true }
+      }
+      case 'artifact.request-upload': {
+        const artifactId = this.requiredString(payload, 'artifactId')
+        const artifact = this.database.getAgentRunArtifact(artifactId)
+        if (!artifact) throw new Error('没有找到这个附件。')
+        const attachment = await this.prepareArtifact(artifact)
+        if (!attachment) throw new Error('附件文件不存在、不可访问或超过 100 MiB。')
+        return { artifactId, attachment }
+      }
+      case 'decision.update-status': {
+        const decisionId = this.requiredString(payload, 'decisionId')
+        const status = this.requiredString(payload, 'status')
+        if (!['inbox', 'in_progress', 'waiting', 'resolved', 'ignored'].includes(status)) throw new Error('Decision 状态无效。')
+        return this.database.updateDecisionStatus(decisionId, status as DecisionStatus)
+      }
+      case 'decision.handle': {
+        const decisionId = this.requiredString(payload, 'decisionId')
+        const runId = this.requiredString(payload, 'runId')
+        const decision = this.database.listDecisions().find((item) => item.id === decisionId)
+        if (!decision) throw new Error('没有找到这个收件箱事项。')
+        const existingRun = this.database.listRuns().find((item) => item.id === runId)
+        const detail = existingRun ? this.database.getAgentRunDetail(runId) : await this.dispatcher.createDraft({
+          id: runId,
+          projectId: decision.projectId,
+          decisionId: decision.id,
+          provider: this.defaultCodingAgent(),
+          title: `处理 · ${decision.title}`,
+          draftPrompt: decision.summary
+        })
+        this.database.updateDecisionStatus(decision.id, 'in_progress')
+        return detail
+      }
+      case 'project.update':
+        return this.database.updateProject(updateProjectSchema.parse(payload.project))
+    }
+  }
+
+  private async materializeIncomingAttachments(
+    commandId: string,
+    payload: Record<string, unknown>
+  ): Promise<Array<{ descriptor: CompanionAttachmentDescriptor; path: string; bytes: Buffer }>> {
+    if (!Array.isArray(payload.attachments) || payload.attachments.length === 0) return []
+    if (payload.attachments.length > 4) throw new Error('一次最多发送 4 个附件。')
+    const directory = join(this.incomingAttachmentsRoot, commandId.replace(/[^A-Za-z0-9._-]/g, '_'))
+    mkdirSync(directory, { recursive: true })
+    const context = this.authenticatedContext()
+    const results: Array<{ descriptor: CompanionAttachmentDescriptor; path: string; bytes: Buffer }> = []
+    for (const raw of payload.attachments) {
+      if (!raw || typeof raw !== 'object') throw new Error('附件描述无效。')
+      const value = raw as Record<string, unknown>
+      const descriptor: CompanionAttachmentDescriptor = {
+        id: this.requiredString(value, 'id'),
+        messageId: null,
+        artifactId: null,
+        filename: basename(this.requiredString(value, 'filename')),
+        mimeType: this.requiredString(value, 'mimeType'),
+        size: Number(value.size),
+        sha256: this.requiredString(value, 'sha256'),
+        width: typeof value.width === 'number' ? value.width : null,
+        height: typeof value.height === 'number' ? value.height : null,
+        thumbnailAttachmentId: null,
+        createdAt: this.requiredString(value, 'createdAt')
+      }
+      if (!Number.isInteger(descriptor.size) || descriptor.size <= 0 || descriptor.size > 20 * 1024 * 1024) {
+        throw new Error('附件大小无效或超过 20 MiB。')
+      }
+      const response = await fetchWithTimeout(
+        this.authenticatedUrl(`/v1/attachments/${encodeURIComponent(descriptor.id)}`, context.configuration),
+        { headers: { Authorization: `Bearer ${context.token}` } },
+        companionAttachmentRequestTimeoutMs
+      )
+      if (!response.ok) throw new Error(`附件下载失败（${response.status}）。`)
+      const bytes = Buffer.from(await response.arrayBuffer())
+      if (bytes.byteLength !== descriptor.size) throw new Error('附件大小校验失败。')
+      const sha256 = createHash('sha256').update(bytes).digest('hex')
+      if (sha256.toLowerCase() !== descriptor.sha256.toLowerCase()) throw new Error('附件哈希校验失败。')
+      const filePath = join(directory, `${descriptor.id}-${descriptor.filename}`)
+      await writeFile(filePath, bytes)
+      results.push({ descriptor, path: filePath, bytes })
+    }
+    return results
   }
 
   private async updateRemoteCommand(commandId: string, update: CompanionCommandUpdate): Promise<void> {
     const context = this.authenticatedContext()
-    const response = await fetch(this.authenticatedUrl(`/v1/commands/${encodeURIComponent(commandId)}`, context.configuration), {
+    const response = await fetchWithTimeout(this.authenticatedUrl(`/v1/commands/${encodeURIComponent(commandId)}`, context.configuration), {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${context.token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(update)
@@ -440,21 +653,39 @@ export class CompanionSyncService {
 
   private connectSocket(): void {
     if (this.socket || !this.configuration || this.stopped) return
+    this.realtimeState = 'connecting'
+    this.emitStatus()
     const context = this.authenticatedContext()
     const url = new URL(this.authenticatedUrl('/v1/connect', context.configuration))
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(url, { headers: { Authorization: `Bearer ${context.token}` } })
+    const socket = new WebSocket(url, {
+      headers: { Authorization: `Bearer ${context.token}` },
+      handshakeTimeout: companionRequestTimeoutMs
+    })
     this.socket = socket
     socket.on('open', () => {
       this.state = 'connected'
+      this.realtimeState = 'connected'
       this.lastConnectedAt = new Date().toISOString()
       this.lastError = null
+      this.reconnectAttempt = 0
+      this.startSocketHeartbeat(socket)
       this.emitStatus()
     })
     socket.on('message', (data) => {
+      if (this.socket !== socket) return
+      const payload = data.toString()
+      this.awaitingSocketPong = false
+      this.lastConnectedAt = new Date().toISOString()
+      if (payload === 'pong') {
+        this.reconnectAttempt = 0
+        this.emitStatus()
+        return
+      }
       try {
-        const message = JSON.parse(data.toString()) as CompanionSocketMessage
-        if (message.type === 'command.created') void this.syncNow()
+        const message = JSON.parse(payload) as CompanionSocketMessage
+        this.reconnectAttempt = 0
+        if (companionSocketMessageRequestsSync(message)) void this.syncNow()
       } catch {
         // A malformed push frame must not interrupt periodic synchronization.
       }
@@ -464,14 +695,49 @@ export class CompanionSyncService {
       this.emitStatus()
     })
     socket.on('close', () => {
-      if (this.socket === socket) this.socket = null
+      if (this.socket !== socket) return
+      this.socket = null
+      this.stopSocketHeartbeat()
       if (!this.stopped && this.configuration) {
+        this.realtimeState = 'disconnected'
         this.state = 'disconnected'
         this.emitStatus()
-        this.reconnectTimer = setTimeout(() => this.connectSocket(), reconnectDelayMs)
+        const delay = companionReconnectDelayMs(this.reconnectAttempt)
+        this.reconnectAttempt += 1
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null
+          this.connectSocket()
+        }, delay)
         this.reconnectTimer.unref?.()
       }
     })
+  }
+
+  private startSocketHeartbeat(socket: WebSocket): void {
+    this.stopSocketHeartbeat()
+    const heartbeat = (): void => {
+      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) return
+      if (companionSocketHeartbeatShouldReconnect(this.awaitingSocketPong)) {
+        this.lastError = 'Companion 实时连接心跳超时，正在重连。'
+        socket.terminate()
+        return
+      }
+      this.awaitingSocketPong = true
+      socket.send('ping', (error) => {
+        if (!error || this.socket !== socket) return
+        this.lastError = error.message
+        socket.terminate()
+      })
+    }
+    heartbeat()
+    this.socketHeartbeatTimer = setInterval(heartbeat, companionSocketHeartbeatIntervalMs)
+    this.socketHeartbeatTimer.unref?.()
+  }
+
+  private stopSocketHeartbeat(): void {
+    if (this.socketHeartbeatTimer) clearInterval(this.socketHeartbeatTimer)
+    this.socketHeartbeatTimer = null
+    this.awaitingSocketPong = false
   }
 
   private authenticatedContext(): { configuration: CompanionMacConfiguration; token: string } {
@@ -490,7 +756,7 @@ export class CompanionSyncService {
 
   private async revokeRemoteAccount(): Promise<void> {
     const context = this.authenticatedContext()
-    const response = await fetch(this.authenticatedUrl('/v1/account', context.configuration), {
+    const response = await fetchWithTimeout(this.authenticatedUrl('/v1/account', context.configuration), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${context.token}` }
     })
@@ -510,15 +776,29 @@ export class CompanionSyncService {
 
   private ensureTimer(): void {
     if (this.timer) return
-    this.timer = setInterval(() => void this.syncNow(), pollIntervalMs)
+    this.timer = setInterval(() => void this.syncNow(), companionFallbackSyncIntervalMs)
     this.timer.unref?.()
+  }
+
+  private scheduleEventSync(): void {
+    if (!this.configuration || this.stopped || this.eventSyncTimer) return
+    this.eventSyncTimer = setTimeout(() => {
+      this.eventSyncTimer = null
+      void this.syncNow()
+    }, companionEventSyncDebounceMs)
+    this.eventSyncTimer.unref?.()
   }
 
   private closeTransports(): void {
     if (this.timer) clearInterval(this.timer)
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    if (this.eventSyncTimer) clearTimeout(this.eventSyncTimer)
     this.timer = null
     this.reconnectTimer = null
+    this.eventSyncTimer = null
+    this.reconnectAttempt = 0
+    this.stopSocketHeartbeat()
+    this.realtimeState = 'disconnected'
     const socket = this.socket
     this.socket = null
     socket?.removeAllListeners()
@@ -528,5 +808,9 @@ export class CompanionSyncService {
   private emitStatus(): void {
     const status = this.getStatus()
     for (const listener of this.listeners) listener(status)
+  }
+
+  private emitDataChanged(): void {
+    for (const listener of this.dataChangedListeners) listener()
   }
 }

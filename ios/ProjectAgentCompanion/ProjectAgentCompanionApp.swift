@@ -6,8 +6,6 @@ extension Notification.Name {
 }
 
 final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
-    var handleRemoteUpdate: (@MainActor () async -> UIBackgroundFetchResult)?
-
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
@@ -20,16 +18,41 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any]
     ) async -> UIBackgroundFetchResult {
-        guard let handleRemoteUpdate else { return .noData }
-        return await handleRemoteUpdate()
+        await CompanionBackgroundSyncBridge.shared.handleRemoteUpdate()
     }
 }
 
+@MainActor
+final class CompanionBackgroundSyncBridge {
+    static let shared = CompanionBackgroundSyncBridge()
+    weak var store: CompanionStore?
+
+    func handleRemoteUpdate() async -> UIBackgroundFetchResult {
+        guard let store else { return .noData }
+        let previousSequence = store.state.lastSequence
+        await store.sync()
+        if case .offline = store.connection { return .failed }
+        return store.state.lastSequence > previousSequence ? .newData : .noData
+    }
+}
+
+func companionShouldRunForegroundTransport(for phase: ScenePhase) -> Bool {
+    if case .active = phase { return true }
+    return false
+}
+
 @main
+@MainActor
 struct ProjectAgentCompanionApp: App {
     @UIApplicationDelegateAdaptor(CompanionAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var store = CompanionStore()
+    @StateObject private var store: CompanionStore
+
+    init() {
+        let store = CompanionStore()
+        _store = StateObject(wrappedValue: store)
+        CompanionBackgroundSyncBridge.shared.store = store
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -39,19 +62,13 @@ struct ProjectAgentCompanionApp: App {
             }
             .environmentObject(store)
             .task {
-                appDelegate.handleRemoteUpdate = { [weak store] in
-                    guard let store else { return .failed }
-                    let previousSequence = store.state.lastSequence
-                    await store.sync()
-                    if case .offline = store.connection { return .failed }
-                    return store.state.lastSequence > previousSequence ? .newData : .noData
-                }
-                store.start()
+                if companionShouldRunForegroundTransport(for: scenePhase) { store.start() }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active {
+                if companionShouldRunForegroundTransport(for: phase) {
                     store.start()
-                    Task { await store.sync() }
+                } else if phase == .background {
+                    store.suspendForegroundTransport()
                 }
             }
         }

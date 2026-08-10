@@ -23,6 +23,7 @@ export const syncEventSchema = z.object({
   protocolVersion: z.literal(companionProtocolVersion),
   type: z.string().trim().min(1).max(200),
   entityType: z.enum([
+    'command',
     'snapshot',
     'project',
     'goal',
@@ -30,6 +31,7 @@ export const syncEventSchema = z.object({
     'agent-run',
     'agent-message',
     'artifact',
+    'morning-briefing',
     'work-assistant-message'
   ]),
   entityId: identifier,
@@ -43,10 +45,15 @@ export const commandSchema = z.object({
   protocolVersion: z.literal(companionProtocolVersion),
   type: z.enum([
     'assistant.send-message',
+    'assistant.execute-action',
     'agent.send-message',
     'agent.rename-session',
+    'agent.update-draft-prompt',
     'agent.archive-session',
-    'decision.update-status'
+    'artifact.request-upload',
+    'decision.update-status',
+    'decision.handle',
+    'project.update'
   ]),
   payload: z.unknown(),
   createdAt: isoDate

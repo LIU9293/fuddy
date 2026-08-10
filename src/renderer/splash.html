@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fuddy</title>
+    <style>
+      :root { color-scheme: light dark; background: #fff; }
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #fff; }
+      body { -webkit-app-region: drag; }
+      picture, img { display: block; width: 100%; height: 100%; }
+      img { object-fit: cover; user-select: none; }
+      @media (prefers-color-scheme: dark) {
+        :root, html, body { background: #000; }
+      }
+    </style>
+  </head>
+  <body>
+    <picture>
+      <source srcset="/fuddy/mac-splash-dark.png" media="(prefers-color-scheme: dark)" />
+      <img src="/fuddy/mac-splash-light.png" alt="Fuddy" />
+    </picture>
+  </body>
+</html>

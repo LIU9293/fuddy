@@ -7,6 +7,13 @@ export interface SelectMenuOption<T extends string> {
   icon?: ReactNode
 }
 
+export interface ActionMenuOption<T extends string> {
+  value: T
+  label: string
+  icon?: ReactNode
+  danger?: boolean
+}
+
 interface SelectMenuProps<T extends string> {
   value: T
   options: readonly SelectMenuOption<T>[]
@@ -104,6 +111,75 @@ export function SelectMenu<T extends string>({
               </button>
             )
           })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function ActionMenu<T extends string>({
+  options,
+  onSelect,
+  ariaLabel,
+  trigger,
+  className = ''
+}: {
+  options: readonly ActionMenuOption<T>[]
+  onSelect: (value: T) => void
+  ariaLabel: string
+  trigger: ReactNode
+  className?: string
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const menuId = useId()
+
+  useEffect(() => {
+    if (!open) return
+    function closeOutside(event: PointerEvent): void {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    function closeOnEscape(event: KeyboardEvent): void {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  return (
+    <div className={`action-menu ${open ? 'is-open' : ''} ${className}`.trim()} ref={rootRef}>
+      <button
+        type="button"
+        className="action-menu-trigger"
+        aria-label={ariaLabel}
+        aria-controls={menuId}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((current) => !current)}
+      >
+        {trigger}
+      </button>
+      {open && (
+        <div className="action-menu-popover" id={menuId} role="menu" aria-label={ariaLabel}>
+          {options.map((option) => (
+            <button
+              type="button"
+              role="menuitem"
+              className={option.danger ? 'is-danger' : ''}
+              key={option.value}
+              onClick={() => {
+                setOpen(false)
+                onSelect(option.value)
+              }}
+            >
+              {option.icon}
+              <span>{option.label}</span>
+            </button>
+          ))}
         </div>
       )}
     </div>

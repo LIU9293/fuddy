@@ -8,7 +8,8 @@ import type {
   GoalPriority,
   GoalStatus,
   Project,
-  ProjectGoal
+  ProjectGoal,
+  WorkAssistantImageAttachment
 } from '../../shared/contracts'
 import { AppDatabase } from './database'
 import type { AgentRuntime } from './pi-runtime'
@@ -209,7 +210,12 @@ export class GoalTrackingService {
   async createFromPrompt(
     projectId: string,
     prompt: string,
-    options: { priority?: GoalPriority; status?: Extract<GoalStatus, 'planned' | 'active'> } = {}
+    options: {
+      priority?: GoalPriority
+      status?: Extract<GoalStatus, 'planned' | 'active'>
+      attachments?: WorkAssistantImageAttachment[]
+      evidenceRefs?: EvidenceRef[]
+    } = {}
   ): Promise<ProjectGoal> {
     const project = this.database.listProjects().find((item) => item.id === projectId)
     if (!project) throw new Error('没有找到这个项目。')
@@ -238,6 +244,7 @@ export class GoalTrackingService {
         data: item.data
       }))
     const contextEvidenceRefs: EvidenceRef[] = [
+      ...(options.evidenceRefs ?? []),
       ...(project.profile.currentState.source === 'user'
         ? [{ label: '用户确认的项目现状', uri: `project-agent://projects/${project.id}/current-state` }]
         : []),
@@ -253,7 +260,10 @@ export class GoalTrackingService {
     let generatedByAgent = false
     if (this.agentRuntime.isConfigured()) {
       try {
-        const response = await this.agentRuntime.run(creationPrompt(project, prompt, repoContext, connectorEvidence))
+        const response = await this.agentRuntime.run(
+          creationPrompt(project, prompt, repoContext, connectorEvidence),
+          options.attachments ?? []
+        )
         draft = jsonObject(response) ?? {}
         generatedByAgent = Boolean(draft.title)
       } catch {
@@ -346,7 +356,7 @@ export class GoalTrackingService {
       .slice(0, 8)
     const evidenceRefs: EvidenceRef[] = connectorRuns.flatMap((item) => item.evidenceRefs).slice(0, 12)
     const decisions = this.database.listDecisions()
-      .filter((item) => item.projectId === goal.projectId && (item.goalId === goal.id || item.status === 'inbox'))
+      .filter((item) => item.projectId === goal.projectId && (item.goalId === goal.id || item.status === 'inbox' || item.status === 'in_progress' || item.status === 'waiting'))
       .slice(0, 10)
       .map((item) => ({
         id: item.id,

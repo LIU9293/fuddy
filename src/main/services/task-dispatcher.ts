@@ -11,7 +11,8 @@ import type {
   AgentRunProvider,
   DispatchTaskInput,
   DispatchTaskResult,
-  CreateAgentRunDraftInput
+  CreateAgentRunDraftInput,
+  WorkAssistantImageAttachment
 } from '../../shared/contracts'
 import { AppDatabase } from './database'
 import { CliAgentRuntime } from './cli-agent-runtime'
@@ -19,6 +20,7 @@ import { PiTaskHarness } from './pi-task-harness'
 import { WorkspaceFilesService } from './workspace-files'
 import { evaluateAggressivePermission } from '../../shared/permissions'
 import { normalizeWorkspaceRoots, primaryWorkspaceRoot } from '../../shared/project-workspaces'
+import { buildAgentStoragePolicy } from './agent-runtime-context'
 
 type ResolvedDispatchTaskInput = Omit<DispatchTaskInput, 'provider'> & {
   provider: AgentRunProvider
@@ -73,7 +75,8 @@ export class TaskDispatcher {
     private readonly piHarness: PiTaskHarness,
     private readonly workspaceFiles: WorkspaceFilesService,
     private readonly cliRuntime: CliAgentRuntime,
-    private readonly inactivityTimeoutMs = AGENT_RUN_INACTIVITY_TIMEOUT_MS
+    private readonly inactivityTimeoutMs = AGENT_RUN_INACTIVITY_TIMEOUT_MS,
+    private readonly onRunSettled?: (run: AgentRun) => void | Promise<void>
   ) {
     this.database.recoverInterruptedAgentRuns(new Date().toISOString())
   }
@@ -105,6 +108,7 @@ export class TaskDispatcher {
     const run: AgentRun = {
       id: randomUUID(),
       projectId: input.projectId,
+      decisionId: input.decisionId ?? null,
       goalId: input.goalId ?? null,
       milestoneId: input.milestoneId ?? null,
       provider: resolvedInput.provider,
@@ -115,6 +119,7 @@ export class TaskDispatcher {
       startedAt: null,
       completedAt: null,
       summary: '等待首次运行',
+      draftPrompt: null,
       createdAt: now,
       updatedAt: now
     }
@@ -143,8 +148,9 @@ export class TaskDispatcher {
     }
 
     const run: AgentRun = {
-      id: randomUUID(),
+      id: input.id?.trim() || randomUUID(),
       projectId: input.projectId,
+      decisionId: input.decisionId ?? null,
       goalId: input.goalId ?? null,
       milestoneId: input.milestoneId ?? null,
       provider,
@@ -155,6 +161,7 @@ export class TaskDispatcher {
       startedAt: null,
       completedAt: null,
       summary: '等待首次消息',
+      draftPrompt: input.draftPrompt?.trim() || null,
       createdAt: now,
       updatedAt: now
     }
@@ -178,20 +185,58 @@ export class TaskDispatcher {
   async sendMessage(
     runId: string,
     prompt: string,
-    onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined
+    onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined,
+    userMessageId?: string,
+    attachments: WorkAssistantImageAttachment[] = []
   ): Promise<AgentRunDetail> {
     const run = this.database.getAgentRun(runId)
     if (run.status === 'running') throw new Error('这个 Agent Run 正在执行，请等待当前回合结束。')
-    return this.executeTurn(runId, prompt, onUpdate)
+    return this.executeTurn(runId, prompt, onUpdate, userMessageId, attachments)
   }
 
   private async executeTurn(
     runId: string,
     prompt: string,
-    onUpdate: (update: AgentRunStreamUpdate) => void
+    onUpdate: (update: AgentRunStreamUpdate) => void,
+    userMessageId?: string,
+    attachments: WorkAssistantImageAttachment[] = []
   ): Promise<AgentRunDetail> {
     const abortController = new AbortController()
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null
+    let activeReasoning: {
+      id: string
+      segmentId: string | null
+      content: string
+      createdAt: string
+    } | null = null
+    let activeVisibleText = ''
+    let sawVisibleText = false
+    let visibleThinkingIndex = 0
+    const persistReasoning = (content: string, segmentId: string | null, id: string = randomUUID(), createdAt = new Date().toISOString()): void => {
+      const normalized = content.trim()
+      if (!normalized) return
+      this.database.createAgentRunMessage({
+        id,
+        runId,
+        role: 'assistant',
+        content: normalized,
+        eventType: 'reasoning',
+        toolName: null,
+        metadata: segmentId ? { segmentId } : null,
+        createdAt
+      })
+    }
+    const flushReasoning = (): void => {
+      if (!activeReasoning) return
+      const reasoning = activeReasoning
+      activeReasoning = null
+      persistReasoning(reasoning.content, reasoning.segmentId, reasoning.id, reasoning.createdAt)
+    }
+    const flushVisibleTextAsReasoning = (): void => {
+      const content = activeVisibleText
+      activeVisibleText = ''
+      persistReasoning(content, `visible-thinking-${visibleThinkingIndex++}`)
+    }
     const touchActivity = (): void => {
       if (inactivityTimer) clearTimeout(inactivityTimer)
       inactivityTimer = setTimeout(() => {
@@ -202,17 +247,62 @@ export class TaskDispatcher {
     }
     const trackedUpdate = (update: AgentRunStreamUpdate): void => {
       touchActivity()
+      if (update.type === 'reasoning_delta') {
+        if (activeVisibleText.trim()) flushVisibleTextAsReasoning()
+        const nextSegmentId = update.segmentId?.trim() || null
+        if (activeReasoning?.segmentId && nextSegmentId && activeReasoning.segmentId !== nextSegmentId) {
+          flushReasoning()
+        }
+        activeReasoning ??= {
+          id: randomUUID(),
+          segmentId: nextSegmentId,
+          content: '',
+          createdAt: new Date().toISOString()
+        }
+        activeReasoning.content += update.delta
+      } else if (update.type === 'message_delta') {
+        flushReasoning()
+        activeVisibleText += update.delta
+        sawVisibleText = true
+      } else if (update.type === 'tool' || update.type === 'approval') {
+        flushReasoning()
+        flushVisibleTextAsReasoning()
+      } else if (update.type === 'status' && update.status !== 'running') {
+        flushReasoning()
+      }
       onUpdate(update)
     }
     let run = this.database.getAgentRun(runId)
+    const attachmentFiles = attachments.map((attachment) => {
+      const safeName = attachment.name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'attachment'
+      const relativePath = `_attachments/agent-runs/${runId}/${attachment.id}-${safeName}`
+      this.workspaceFiles.writeDataUrl(run.projectId, relativePath, attachment.dataUrl)
+      return {
+        id: attachment.id,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        relativePath,
+        absolutePath: this.workspaceFiles.resolvePath(run.projectId, relativePath)
+      }
+    })
+    const runtimePrompt = attachmentFiles.length > 0
+      ? `${prompt.trim()}\n\n用户同时提供了以下附件，请读取并结合附件内容完成任务：\n${attachmentFiles.map((file) => `- ${file.name}: ${file.absolutePath}`).join('\n')}`
+      : prompt.trim()
+    const projectFilesBefore = new Map(
+      this.workspaceFiles.list(run.projectId)
+        .filter((entry) => entry.kind === 'file' && !entry.relativePath.startsWith('_attachments/'))
+        .map((entry) => [entry.relativePath, `${entry.size}:${entry.modifiedAt}`])
+    )
     const userMessage: AgentRunMessage = {
-      id: randomUUID(),
+      id: userMessageId?.trim() || randomUUID(),
       runId,
       role: 'user',
       content: prompt.trim(),
       eventType: null,
       toolName: null,
-      metadata: null,
+      metadata: attachmentFiles.length > 0
+        ? { attachments: attachmentFiles.map(({ absolutePath: _absolutePath, ...file }) => file) }
+        : null,
       createdAt: new Date().toISOString()
     }
     this.database.createAgentRunMessage(userMessage)
@@ -220,6 +310,7 @@ export class TaskDispatcher {
     run = this.database.updateAgentRun({
       ...run,
       status: 'running',
+      draftPrompt: null,
       startedAt: run.startedAt ?? startedAt,
       completedAt: null,
       updatedAt: startedAt
@@ -228,6 +319,8 @@ export class TaskDispatcher {
 
     const recordTool = (toolName: string, detail: string, metadata?: Record<string, unknown>): void => {
       touchActivity()
+      flushReasoning()
+      flushVisibleTextAsReasoning()
       const toolMessage: AgentRunMessage = {
         id: randomUUID(),
         runId,
@@ -261,7 +354,7 @@ export class TaskDispatcher {
           runId,
           projectId: run.projectId,
           projectContext: this.buildRunContext(run),
-          prompt: userMessage.content,
+          prompt: runtimePrompt,
           history,
           sessionId: run.sessionId,
           workingDirectory: run.workingDirectory ?? this.workspaceFiles.getRoot(run.projectId),
@@ -281,9 +374,7 @@ export class TaskDispatcher {
         const result = await runWithAbort(this.cliRuntime.runTurn({
           projectId: run.projectId,
           provider: run.provider,
-          prompt: run.sessionId
-            ? userMessage.content
-            : `${this.buildRunContext(run)}\n\n用户任务：\n${userMessage.content}`,
+          prompt: `${this.buildRunContext(run)}\n\n用户任务：\n${runtimePrompt}`,
           sessionId: run.sessionId,
           workingDirectory: run.workingDirectory,
           workspaceRoots: projectWorkspacesFor(this.database, run.projectId),
@@ -307,11 +398,13 @@ export class TaskDispatcher {
         }
       }
 
+      flushReasoning()
+      const finalResponse = sawVisibleText && activeVisibleText.trim() ? activeVisibleText.trim() : response
       const assistantMessage: AgentRunMessage = {
         id: randomUUID(),
         runId,
         role: 'assistant',
-        content: response,
+        content: finalResponse,
         eventType: null,
         toolName: null,
         metadata: null,
@@ -322,12 +415,16 @@ export class TaskDispatcher {
       run = this.database.updateAgentRun({
         ...run,
         status: 'idle',
-        summary: response.replace(/\s+/g, ' ').slice(0, 240),
+        summary: finalResponse.replace(/\s+/g, ' ').slice(0, 240),
         updatedAt
       })
       onUpdate({ type: 'status', status: 'idle' })
+      void Promise.resolve(this.onRunSettled?.(run)).catch(() => undefined)
+      this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
       return this.database.getAgentRunDetail(run.id)
     } catch (error) {
+      flushReasoning()
+      flushVisibleTextAsReasoning()
       const message = error instanceof Error ? error.message : 'Agent Run 执行失败。'
       const systemMessage: AgentRunMessage = {
         id: randomUUID(),
@@ -347,6 +444,7 @@ export class TaskDispatcher {
         updatedAt: new Date().toISOString()
       })
       onUpdate({ type: 'status', status: 'failed', detail: message })
+      this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
       return this.database.getAgentRunDetail(run.id)
     } finally {
       if (inactivityTimer) clearTimeout(inactivityTimer)
@@ -388,7 +486,14 @@ export class TaskDispatcher {
     })
   }
 
-  private validateInput(input: Pick<ResolvedDispatchTaskInput, 'projectId' | 'goalId' | 'milestoneId'>): void {
+  private validateInput(input: Pick<ResolvedDispatchTaskInput, 'projectId' | 'decisionId' | 'goalId' | 'milestoneId'>): void {
+    if (input.decisionId) {
+      const decision = this.database.listDecisions().find((item) => item.id === input.decisionId)
+      if (!decision) throw new Error('关联的收件箱事项不存在。')
+      if (input.projectId && decision.projectId !== input.projectId) {
+        throw new Error('收件箱事项不属于所选项目。')
+      }
+    }
     if (input.milestoneId && !input.goalId) {
       throw new Error('关联 Milestone 时必须同时关联 Goal。')
     }
@@ -427,6 +532,50 @@ export class TaskDispatcher {
     if (milestone) {
       lines.push(`关联 Milestone：${milestone.title}`, `Milestone 状态：${milestone.status}`)
     }
+    const decision = run.decisionId
+      ? this.database.listDecisions().find((item) => item.id === run.decisionId) ?? null
+      : null
+    if (decision) {
+      lines.push(
+        `关联收件箱事项：${decision.title}`,
+        `事项稳定标识：${decision.dedupeKey ?? decision.id}`,
+        `事项最新证据：${decision.summary}`
+      )
+    }
+    const workspaceRoots = projectWorkspacesFor(this.database, run.projectId)
+    const workingDirectory = run.workingDirectory ?? this.workspaceFiles.getRoot(run.projectId)
+    lines.push(buildAgentStoragePolicy({
+      workingDirectory,
+      workspaceRoots,
+      filesDirectory: this.workspaceFiles.getRoot(run.projectId)
+    }))
     return lines.filter((line): line is string => Boolean(line)).join('\n')
+  }
+
+  private registerChangedProjectFiles(run: AgentRun, before: Map<string, string>): void {
+    const changed = this.workspaceFiles.list(run.projectId).filter((entry) =>
+      entry.kind === 'file'
+      && !entry.relativePath.startsWith('_attachments/')
+      && before.get(entry.relativePath) !== `${entry.size}:${entry.modifiedAt}`
+    )
+    for (const entry of changed) {
+      this.database.upsertAgentRunArtifact({
+        id: randomUUID(),
+        runId: run.id,
+        projectId: run.projectId,
+        relativePath: entry.relativePath,
+        label: entry.name,
+        mimeType: entry.mimeType,
+        createdAt: new Date().toISOString()
+      })
+    }
+  }
+
+  private tryRegisterChangedProjectFiles(run: AgentRun, before: Map<string, string>): void {
+    try {
+      this.registerChangedProjectFiles(run, before)
+    } catch {
+      // A file-indexing failure must not replace the Agent's actual turn result.
+    }
   }
 }

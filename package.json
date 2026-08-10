@@ -70,9 +70,18 @@
       {
         "from": ".third-party-tools/cua-driver/darwin-universal/cua-driver",
         "to": "third-party/cua-driver/cua-driver"
+      },
+      {
+        "from": "resources/branding/fuddy-mac-icon-light.png",
+        "to": "branding/fuddy-mac-icon-light.png"
+      },
+      {
+        "from": "resources/branding/fuddy-mac-icon-dark.png",
+        "to": "branding/fuddy-mac-icon-dark.png"
       }
     ],
     "mac": {
+      "icon": "resources/branding/icon.icns",
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,

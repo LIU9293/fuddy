@@ -40,6 +40,37 @@ describe('WorkspaceFilesService', () => {
     database.close()
   })
 
+  it('returns renderable previews for Markdown and images', () => {
+    const { database, files } = createWorkspace()
+
+    files.write('vows', 'launch.md', '# Launch plan')
+    files.writeDataUrl('vows', 'cover.png', 'data:image/png;base64,aW1hZ2U=')
+
+    const markdown = files.previewArtifact({
+      id: 'artifact-markdown',
+      runId: 'run-1',
+      projectId: 'vows',
+      relativePath: 'launch.md',
+      label: 'launch.md',
+      mimeType: 'text/markdown',
+      createdAt: '2026-08-10T00:00:00.000Z'
+    })
+    const image = files.previewArtifact({
+      id: 'artifact-image',
+      runId: 'run-1',
+      projectId: 'vows',
+      relativePath: 'cover.png',
+      label: 'cover.png',
+      mimeType: 'image/png',
+      createdAt: '2026-08-10T00:00:00.000Z'
+    })
+
+    expect(markdown).toMatchObject({ kind: 'markdown', content: '# Launch plan', dataUrl: null })
+    expect(image).toMatchObject({ kind: 'image', content: null, dataUrl: 'data:image/png;base64,aW1hZ2U=' })
+
+    database.close()
+  })
+
   it('rejects paths outside the project file space', () => {
     const { database, files } = createWorkspace()
 

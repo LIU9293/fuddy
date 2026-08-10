@@ -86,4 +86,87 @@ describe('open decision signal dedupe', () => {
 
     database.close()
   })
+
+  it('reopens the same completed lifecycle when newer inspection evidence contradicts completion', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-decision-reopen-'))
+    directories.push(directory)
+    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    database.applyDecisionInspection({
+      projectId: 'roombase',
+      dedupeKey: 'roombase:onboarding:waiting-platform',
+      observationKey: '2026-08-07:onboarding',
+      state: 'active',
+      observedAt: '2026-08-08T01:00:00.000Z',
+      summary: '仍有等待事项',
+      evidenceRefs: [],
+      decision: signal('original-ticket', '仍有等待事项')
+    })
+    database.applyDecisionInspection({
+      projectId: 'roombase',
+      dedupeKey: 'roombase:onboarding:waiting-platform',
+      observationKey: '2026-08-08:onboarding:resolved',
+      state: 'resolved',
+      observedAt: '2026-08-09T01:00:00.000Z',
+      summary: '问题已经解除。',
+      evidenceRefs: []
+    })
+
+    const reopened = database.applyDecisionInspection({
+      projectId: 'roombase',
+      dedupeKey: 'roombase:onboarding:waiting-platform',
+      observationKey: '2026-08-09:onboarding',
+      state: 'active',
+      observedAt: '2026-08-10T01:00:00.000Z',
+      summary: '生产仍有 4 个等待事项。',
+      evidenceRefs: [],
+      decision: signal('duplicate-ticket', '生产仍有 4 个等待事项。')
+    })
+
+    expect(reopened.created).toBe(false)
+    expect(reopened.decision?.id).toBe('original-ticket')
+    expect(reopened.decision?.status).toBe('inbox')
+    expect(reopened.decision?.reopenCount).toBe(1)
+    expect(reopened.decision?.statusSummary).toContain('最新巡检重新打开')
+    expect(database.listDecisions()).toHaveLength(1)
+    database.close()
+  })
+
+  it('returns a waiting verification ticket to in progress when production still fails', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-decision-verification-'))
+    directories.push(directory)
+    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    database.applyDecisionInspection({
+      projectId: 'roombase',
+      dedupeKey: 'roombase:onboarding:waiting-platform',
+      observationKey: 'before-deploy',
+      state: 'active',
+      observedAt: '2026-08-09T01:00:00.000Z',
+      summary: '部署前仍有等待事项。',
+      evidenceRefs: [],
+      decision: signal('verification-ticket', '部署前仍有等待事项。')
+    })
+    database.updateDecisionStatus('verification-ticket', 'waiting', {
+      actor: 'system',
+      waitingReason: 'verification',
+      reason: '生产发布完成，等待验证。',
+      occurredAt: '2026-08-09T10:00:00.000Z'
+    })
+
+    const failed = database.applyDecisionInspection({
+      projectId: 'roombase',
+      dedupeKey: 'roombase:onboarding:waiting-platform',
+      observationKey: 'after-deploy',
+      state: 'active',
+      observedAt: '2026-08-10T01:00:00.000Z',
+      summary: '生产仍有 4 个等待事项。',
+      evidenceRefs: [],
+      decision: signal('should-not-be-created', '生产仍有 4 个等待事项。')
+    })
+
+    expect(failed.decision?.id).toBe('verification-ticket')
+    expect(failed.decision?.status).toBe('in_progress')
+    expect(failed.decision?.waitingReason).toBeNull()
+    expect(failed.decision?.statusSummary).toContain('生产验证失败')
+    database.close()
+  })
 })

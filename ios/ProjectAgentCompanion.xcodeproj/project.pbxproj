@@ -11,11 +11,13 @@
 		0B1834AC74E0161F6B65034C /* PairingCodeScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5F5580905A2559653C6AE66 /* PairingCodeScanner.swift */; };
 		0C2BA32FB13C17EB234F1B8B /* CompanionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */; };
 		27ACA6DC0A4F400D3B3F2523 /* ArtifactViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B47F1531E907F8945808DAC /* ArtifactViews.swift */; };
+		3B7DA75E4711BC4D744CEAD5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5CD502DF6E11A245E3716F80 /* Assets.xcassets */; };
 		45B15BB7FB97DB4125B4DB42 /* SyncModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7908738597AEE67070893705 /* SyncModelTests.swift */; };
 		5C1FC98F3F8090A21D2B0F52 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F3F5393D89089BA711CCD8A /* Models.swift */; };
 		67E70F0EB9A59223134B00A5 /* RootViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0BC51CC42E21CDCBA0EE606 /* RootViews.swift */; };
 		9271BDB1930FBF2D5BCC26B1 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */; };
 		CCC0EB5AD601015817B21875 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D48D6C471A7AB56D1344033 /* PairingView.swift */; };
+		F1FD298AB5A25BB1E46E7F90 /* ChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52B7088EB0EFC0E27BEF8BB5 /* ChatComposer.swift */; };
 		F9E6CDF2312ADB3376C46EA6 /* ProjectAgentCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */; };
 /* End PBXBuildFile section */
 
@@ -30,6 +32,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		52B7088EB0EFC0E27BEF8BB5 /* ChatComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatComposer.swift; sourceTree = "<group>"; };
+		5CD502DF6E11A245E3716F80 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		7908738597AEE67070893705 /* SyncModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncModelTests.swift; sourceTree = "<group>"; };
 		7F3F5393D89089BA711CCD8A /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		8B47F1531E907F8945808DAC /* ArtifactViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactViews.swift; sourceTree = "<group>"; };
@@ -76,6 +80,8 @@
 			isa = PBXGroup;
 			children = (
 				8B47F1531E907F8945808DAC /* ArtifactViews.swift */,
+				5CD502DF6E11A245E3716F80 /* Assets.xcassets */,
+				52B7088EB0EFC0E27BEF8BB5 /* ChatComposer.swift */,
 				B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */,
 				B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */,
 				7F3F5393D89089BA711CCD8A /* Models.swift */,
@@ -115,6 +121,7 @@
 			buildConfigurationList = 5D7FA16ADF9882B10C8D8BD1 /* Build configuration list for PBXNativeTarget "ProjectAgentCompanion" */;
 			buildPhases = (
 				41119202B00C526FF1991DD1 /* Sources */,
+				3F4CC04236305ECD9BE60F30 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -165,12 +172,24 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		3F4CC04236305ECD9BE60F30 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3B7DA75E4711BC4D744CEAD5 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		41119202B00C526FF1991DD1 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				27ACA6DC0A4F400D3B3F2523 /* ArtifactViews.swift in Sources */,
+				F1FD298AB5A25BB1E46E7F90 /* ChatComposer.swift in Sources */,
 				0C2BA32FB13C17EB234F1B8B /* CompanionStore.swift in Sources */,
 				9271BDB1930FBF2D5BCC26B1 /* KeychainStore.swift in Sources */,
 				5C1FC98F3F8090A21D2B0F52 /* Models.swift in Sources */,
@@ -227,10 +246,10 @@
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ProjectAgentCompanion-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Project Agent";
+				INFOPLIST_KEY_CFBundleDisplayName = Fuddy;
 				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的一次性 Companion 配对二维码。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -392,10 +411,10 @@
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ProjectAgentCompanion-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Project Agent";
+				INFOPLIST_KEY_CFBundleDisplayName = Fuddy;
 				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的一次性 Companion 配对二维码。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

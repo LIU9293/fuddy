@@ -83,6 +83,13 @@ describe('Work Assistant task handoff', () => {
     expect(result.assistantMessage.content).toContain('开始任务不会自动把里程碑标记为完成')
     expect(database.getGoal(goal.id).milestones[0].status).toBe('pending')
     expect(database.listBriefingMessages()).toHaveLength(2)
+
+    const followUp = await service.ask(null, '那先找一下现有素材。')
+    expect(followUp.userMessage.taskContext?.milestoneId).toBe(milestone.id)
+    expect(followUp.assistantMessage.taskContext?.projectId).toBe('vows')
+
+    const switched = await service.ask(null, 'Roombase 现在最重要的事情是什么？')
+    expect(switched.userMessage.taskContext).toBeNull()
     database.close()
   })
 

@@ -11,6 +11,7 @@ import type {
   ConfigurePostgresInput,
   ConfigureTtsProviderInput,
   CreateDecisionInput,
+  CreateProjectInput,
   CreateAgentRunDraftInput,
   DecisionStatus,
   DesktopApi,
@@ -25,6 +26,7 @@ import type {
   SaveAutomationInput,
   WriteWorkspaceFileInput,
   DispatchProjectAgentInput,
+  ExecuteWorkAssistantActionInput,
   RespondAgentApprovalInput
 } from '../shared/contracts'
 import type { CompanionMacStatus } from '../shared/companion-sync'
@@ -33,12 +35,17 @@ const api: DesktopApi = {
   getBootstrap: () => ipcRenderer.invoke('app:get-bootstrap'),
   requestComputerUsePermissions: () => ipcRenderer.invoke('capability:request-computer-permissions'),
   updateProject: (input: UpdateProjectInput) => ipcRenderer.invoke('project:update', input),
+  createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
   createGoal: (input: CreateGoalInput) => ipcRenderer.invoke('goal:create', input),
   checkGoal: (id: string) => ipcRenderer.invoke('goal:check', id),
   updateGoalStatus: (id: string, status: GoalStatus) =>
     ipcRenderer.invoke('goal:update-status', { id, status }),
   updateGoalPriority: (id: string, priority: GoalPriority) =>
     ipcRenderer.invoke('goal:update-priority', { id, priority }),
+  completeGoalMilestone: (goalId: string, milestoneId: string) =>
+    ipcRenderer.invoke('goal:complete-milestone', { goalId, milestoneId }),
+  deleteGoalMilestone: (goalId: string, milestoneId: string) =>
+    ipcRenderer.invoke('goal:delete-milestone', { goalId, milestoneId }),
   createDecision: (input: CreateDecisionInput) => ipcRenderer.invoke('decision:create', input),
   updateDecisionStatus: (id: string, status: DecisionStatus) =>
     ipcRenderer.invoke('decision:update-status', { id, status }),
@@ -71,7 +78,12 @@ const api: DesktopApi = {
     })
   },
   getAgentRun: (id: string) => ipcRenderer.invoke('agent-run:get', id),
+  getAgentRunGitSummary: (id: string) => ipcRenderer.invoke('agent-run:git-summary', id),
+  getAgentRunArtifactPreview: (runId: string, artifactId: string) =>
+    ipcRenderer.invoke('agent-run:artifact-preview', { runId, artifactId }),
   renameAgentRun: (id: string, title: string) => ipcRenderer.invoke('agent-run:rename', { id, title }),
+  updateAgentRunDraftPrompt: (id: string, draftPrompt: string) =>
+    ipcRenderer.invoke('agent-run:update-draft-prompt', { id, draftPrompt }),
   archiveAgentRun: (id: string) => ipcRenderer.invoke('agent-run:archive', id),
   getCompanionStatus: () => ipcRenderer.invoke('companion:get-status'),
   beginCompanionPairing: (relayUrl: string) => ipcRenderer.invoke('companion:begin-pairing', relayUrl),
@@ -81,6 +93,11 @@ const api: DesktopApi = {
     const listener = (_event: Electron.IpcRendererEvent, status: CompanionMacStatus): void => callback(status)
     ipcRenderer.on('companion:status-changed', listener)
     return () => ipcRenderer.removeListener('companion:status-changed', listener)
+  },
+  onCompanionDataChanged: (callback: () => void) => {
+    const listener = (): void => callback()
+    ipcRenderer.on('companion:data-changed', listener)
+    return () => ipcRenderer.removeListener('companion:data-changed', listener)
   },
   sendAgentRunMessage: (
     input: SendAgentRunMessageInput,
@@ -129,6 +146,8 @@ const api: DesktopApi = {
       ipcRenderer.removeListener('briefing:ask-update', listener)
     })
   },
+  executeWorkAssistantAction: (input: ExecuteWorkAssistantActionInput) =>
+    ipcRenderer.invoke('work-assistant:execute-action', input),
   configureAgentProvider: (input: ConfigureAgentProviderInput) =>
     ipcRenderer.invoke('provider:configure-agent', input),
   configureCodingAgents: (input: ConfigureCodingAgentSettingsInput) =>

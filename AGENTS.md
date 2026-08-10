@@ -83,6 +83,7 @@ RUN_COMPANION_RELAY_SMOKE=1 npx vitest run src/main/services/companion-sync.inte
 
 - The Mac database is authoritative. Persist outgoing mutations to `companion_sync_outbox` before network delivery, and treat WebSocket frames as wake-up hints followed by ordered event replay.
 - Execute phone actions only through constrained, versioned command types. Persist command IDs on Mac before execution and never run the same terminal command twice.
+- Project settings edited on iOS use the constrained `project.update` command; validate the project status and profile shape on Mac, normalize Workspace roots there, and publish the resulting canonical `project.updated` event back to every device.
 - Keep Agent runtimes, project paths, database credentials, shell environment, and tool execution on Mac. iOS may cache display data and attachment bytes but must not receive local credentials.
 - Keep device bearer tokens in Keychain/credential vault and only token hashes in Durable Object storage. Never place pairing secrets or tokens in logs.
 - Pairing QR payloads are single-use credentials: keep them only in transient UI state, require HTTPS on iOS, and never persist them in app caches or analytics.
@@ -97,7 +98,7 @@ RUN_COMPANION_RELAY_SMOKE=1 npx vitest run src/main/services/companion-sync.inte
 
 - The main area should carry one primary task. Agent Run details use the full chat layout with the Session list in the sidebar.
 - In Session lists, show a spinner only while running; completed and failed sessions do not need status icons or a “current” label.
-- Tool activity is collapsed by default and emphasizes the latest active call. Keep reasoning summaries readable without exposing unsupported private chain-of-thought data.
+- Keep each supported reasoning summary as its own timeline segment. Group only the consecutive tool calls between two reasoning segments, collapse each group by default, and emphasize its latest active call without exposing unsupported private chain-of-thought data.
 - Session rename and archive belong in the three-dot menu in both list and detail contexts.
 - Temporary success and error notices dismiss after five seconds unless the user must act on them.
 - Preserve Light / Dark mode behavior, portal dropdowns, keyboard access, and the resizable sidebar when changing layout styles.

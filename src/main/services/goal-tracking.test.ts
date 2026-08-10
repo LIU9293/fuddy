@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { AgentSessionUpdate } from '../../shared/contracts'
+import type { AgentRun, AgentSessionUpdate } from '../../shared/contracts'
 import { AppDatabase } from './database'
 import { GoalTrackingService } from './goal-tracking'
 import type { AgentRuntime } from './pi-runtime'
@@ -90,6 +90,53 @@ describe('GoalTrackingService', () => {
     expect(goalSignals).toHaveLength(1)
     expect(goalSignals[0].status).toBe('resolved')
     expect(goalSignals[0].resolutionSummary).toContain('风险解除')
+    database.close()
+  })
+
+  it('manually completes and deletes milestones while preserving linked Runs', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-milestone-actions-'))
+    directories.push(directory)
+    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const runtime = new StubRuntime([JSON.stringify({
+      title: '建立内容发布体系',
+      description: '完成首轮内容生产与发布。',
+      metric: { label: '发布体系', unit: '', baseline: null, current: null, target: null },
+      monitoringSources: [],
+      milestones: [{ title: '准备品牌资料', dueAt: null }, { title: '发布首批内容', dueAt: null }]
+    })])
+    const goal = await new GoalTrackingService(database, runtime).createFromPrompt('vows', '建立内容发布体系')
+
+    const completed = database.completeGoalMilestone(goal.id, goal.milestones[0].id)
+    expect(completed.milestones[0].status).toBe('completed')
+    expect(completed.milestones[0].completedAt).not.toBeNull()
+    expect(completed.progress).toBe(0.5)
+
+    const linkedMilestone = completed.milestones[1]
+    const now = new Date().toISOString()
+    const run: AgentRun = {
+      id: 'run-linked-to-deleted-milestone',
+      projectId: goal.projectId,
+      decisionId: null,
+      goalId: goal.id,
+      milestoneId: linkedMilestone.id,
+      provider: 'codex',
+      title: linkedMilestone.title,
+      status: 'draft',
+      sessionId: null,
+      workingDirectory: '/tmp',
+      startedAt: null,
+      completedAt: null,
+      summary: '等待首次消息',
+      draftPrompt: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    database.createAgentRun(run)
+
+    const afterDelete = database.deleteGoalMilestone(goal.id, linkedMilestone.id)
+    expect(afterDelete.milestones.map((milestone) => milestone.id)).toEqual([completed.milestones[0].id])
+    expect(afterDelete.progress).toBe(1)
+    expect(database.getAgentRun(run.id).milestoneId).toBeNull()
     database.close()
   })
 })

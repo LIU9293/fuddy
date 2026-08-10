@@ -1,4 +1,5 @@
 import {
+  ArchiveX,
   ArrowLeft,
   Bot,
   Check,
@@ -15,6 +16,7 @@ import {
   Inbox,
   Lightbulb,
   LoaderCircle,
+  MoreHorizontal,
   PanelLeft,
   Pause,
   Play,
@@ -38,12 +40,16 @@ import remarkGfm from 'remark-gfm'
 import { QRCodeSVG } from 'qrcode.react'
 import { ChatComposer } from './components/ChatComposer'
 import { AgentRunsSidebar, AgentRunsView } from './components/AgentRunsView'
-import { SelectMenu, SuggestionInput } from './components/SelectMenu'
+import { ConversationMessageActions } from './components/ConversationMessageActions'
+import { ActionMenu, SelectMenu, SuggestionInput } from './components/SelectMenu'
 import { WorkspaceFilesView } from './components/WorkspaceFilesView'
 import { AutomationsView } from './components/AutomationsView'
 import { normalizeChatMarkdown } from './markdown'
+import { maxChatImages, prepareChatImages } from './chat-attachments'
+import fuddyWordmark from './assets/fuddy-wordmark.png'
 import type {
   AgentPlanEntry,
+  AgentRun,
   AgentProviderMode,
   AgentSessionUpdate,
   AgentEndpointSettings,
@@ -59,6 +65,7 @@ import type {
   DecisionItem,
   DecisionKind,
   DecisionStatus,
+  DecisionWaitingReason,
   GoalMilestone,
   GoalPriority,
   GoalStatus,
@@ -69,7 +76,7 @@ import type {
   TtsProviderMode,
   UpdateProjectInput,
   WorkAssistantImageAttachment,
-  WorkAssistantImageMimeType,
+  WorkAssistantActionProposal,
   WorkAssistantTaskContext,
   WorkAssistantTaskReference
 } from '../../shared/contracts'
@@ -80,27 +87,17 @@ import { defaultCompanionRelayUrl } from '../../shared/companion-sync'
 type Navigation = 'briefing' | 'inbox' | 'files' | 'runs' | 'automations' | 'settings'
 type ProjectSection = 'inbox' | 'status' | 'goals' | 'settings'
 type SidebarSelection = 'briefing' | 'inbox' | 'files' | 'runs' | 'automations' | 'all-projects' | `project:${string}`
-type ComposerTarget = 'inbox' | 'goal'
 type SettingsSection = 'general' | 'models' | 'voice' | 'connectors' | 'permissions'
-type WorkAssistantHandoff = {
-  id: string
-  question: string
-  taskContext: WorkAssistantTaskContext
-}
-type AgentRunHandoff = {
-  id: string
-  runId: string
-  prompt: string
+
+const decisionWaitingReasonLabels: Record<DecisionWaitingReason, string> = {
+  deployment: '等待部署',
+  verification: '等待验证',
+  external: '等待外部处理',
+  measurement: '等待指标',
+  user: '等待用户',
+  scheduled: '等待复查'
 }
 
-const workAssistantImageMimeTypes: readonly WorkAssistantImageMimeType[] = [
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-  'image/gif'
-]
-const maxWorkAssistantImages = 4
-const maxWorkAssistantImageBytes = 5 * 1024 * 1024
 const defaultSidebarWidth = 258
 const minimumSidebarWidth = 220
 const maximumSidebarWidth = 420
@@ -111,10 +108,6 @@ const codingAgentOptions: Array<{ id: CodingAgentProvider; label: string }> = [
   { id: 'opencode', label: 'OpenCode' }
 ]
 
-function isWorkAssistantImageMimeType(value: string): value is WorkAssistantImageMimeType {
-  return workAssistantImageMimeTypes.includes(value as WorkAssistantImageMimeType)
-}
-
 function clampSidebarWidth(value: number): number {
   return Math.round(Math.min(maximumSidebarWidth, Math.max(minimumSidebarWidth, value)))
 }
@@ -122,26 +115,6 @@ function clampSidebarWidth(value: number): number {
 function initialSidebarWidth(): number {
   const stored = Number.parseFloat(window.localStorage.getItem(sidebarWidthStorageKey) ?? '')
   return Number.isFinite(stored) ? clampSidebarWidth(stored) : defaultSidebarWidth
-}
-
-function readImageAttachment(file: File): Promise<WorkAssistantImageAttachment> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(new Error(`无法读取图片 ${file.name}`))
-    reader.onload = () => {
-      if (typeof reader.result !== 'string' || !isWorkAssistantImageMimeType(file.type)) {
-        reject(new Error(`不支持图片 ${file.name}`))
-        return
-      }
-      resolve({
-        id: crypto.randomUUID(),
-        name: file.name,
-        mimeType: file.type,
-        dataUrl: reader.result
-      })
-    }
-    reader.readAsDataURL(file)
-  })
 }
 
 const settingsSectionMeta: Record<SettingsSection, { title: string; description: string }> = {
@@ -192,6 +165,21 @@ function formatRelativeTime(value: string): string {
   return `${Math.round(hours / 24)} 天前`
 }
 
+function formatDecisionSource(item: DecisionItem): string {
+  const explicitDate = [item.source, ...item.evidenceRefs.map((evidence) => evidence.label)]
+    .join(' ')
+    .match(/\b(\d{4})-(\d{2})-(\d{2})\b/)
+  const date = explicitDate
+    ? `${explicitDate[1]}年${Number(explicitDate[2])}月${Number(explicitDate[3])}日`
+    : new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+        .format(new Date(item.lastSeenAt ?? item.createdAt))
+  const source = item.source.trim()
+
+  if (/用户|手动/.test(source)) return `用户消息 · ${date}`
+  if (/每日项目总结|每日巡检|巡检/.test(source)) return `${date}巡检`
+  return source ? `${source} · ${date}` : date
+}
+
 function formatExpiryLabel(value: string): string {
   const diffMinutes = Math.ceil((new Date(value).getTime() - Date.now()) / 60_000)
   if (diffMinutes <= 0) return '二维码已经失效'
@@ -231,6 +219,48 @@ function DecisionRow({
   const [expanded, setExpanded] = useState(false)
   const KindIcon = kindIcons[item.kind]
 
+  if (item.status === 'resolved') {
+    return (
+      <article className="decision-completion-card">
+        <div className="decision-completion-heading">
+          <span className="decision-completion-icon"><CircleCheck size={18} /></span>
+          <div>
+            <span>已完成</span>
+            <small>{item.resolvedAt ? `${formatRelativeTime(item.resolvedAt)}完成` : '已有可核验的完成证据'}</small>
+          </div>
+        </div>
+        <div className="decision-completion-copy">
+          <div className="decision-meta">
+            {project && (
+              <span className="project-name">
+                <span className="project-dot" style={{ background: project.accent }} />
+                {project.name}
+              </span>
+            )}
+            {!project && <span className="project-name">全部项目</span>}
+            <span>·</span>
+            <span>{kindLabels[item.kind]}</span>
+          </div>
+          <strong>{item.title}</strong>
+          <p>{item.resolutionSummary ?? '事项已经完成。'}</p>
+          {item.evidenceRefs.length > 0 && (
+            <div className="decision-completion-evidence" aria-label="完成证据">
+              {item.evidenceRefs.map((evidence) => (
+                <a key={`${evidence.label}:${evidence.uri}`} href={evidence.uri} target="_blank" rel="noreferrer">
+                  <Check size={12} /> {evidence.label}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+        <button className="icon-text-action decision-undo-action" onClick={() => void onStatus(item.id, 'in_progress')}>
+          <RefreshCw size={14} />
+          取消完成
+        </button>
+      </article>
+    )
+  }
+
   return (
     <article className={`decision-row ${expanded ? 'is-expanded' : ''}`}>
       <button className="decision-summary" onClick={() => setExpanded((value) => !value)}>
@@ -247,6 +277,12 @@ function DecisionRow({
             )}
             {!project && <span className="project-name">全部项目</span>}
             <span>{kindLabels[item.kind]}</span>
+            {item.status === 'in_progress' && <span className="decision-status-label">进行中</span>}
+            {item.status === 'waiting' && (
+              <span className="decision-status-label is-waiting">
+                {item.waitingReason ? decisionWaitingReasonLabels[item.waitingReason] : '等待中'}
+              </span>
+            )}
             <span>·</span>
             <span>{formatRelativeTime(item.lastSeenAt ?? item.createdAt)}</span>
             {(item.occurrenceCount ?? 1) > 1 && (
@@ -258,6 +294,9 @@ function DecisionRow({
           </span>
           <strong>{item.title}</strong>
           <span className="decision-preview">{item.summary}</span>
+          {item.status === 'waiting' && item.statusSummary && (
+            <span className="decision-preview decision-waiting-summary">{item.statusSummary}</span>
+          )}
         </span>
         <span className="decision-trailing">
           {item.urgency === 'high' && item.status === 'inbox' && <span className="urgent-dot" />}
@@ -271,46 +310,23 @@ function DecisionRow({
             <span className="detail-label">影响</span>
             <p>{item.impact}</p>
           </div>
-          <div className="detail-section evidence-section">
-            <span className="detail-label">证据</span>
-            <div className="evidence-list">
-              <span>{item.source}</span>
-              {item.evidenceRefs.map((evidence) => (
-                <button key={evidence.uri} className="evidence-chip" title={evidence.uri}>
-                  {evidence.label}
-                </button>
-              ))}
-              <span>{Math.round(item.confidence * 100)}% 置信度</span>
-            </div>
+          <div className="detail-section source-section">
+            <span className="detail-label">来源</span>
+            <p>{formatDecisionSource(item)}</p>
+          </div>
+          <div className="detail-section suggestion-section">
+            <span className="detail-label">建议</span>
+            <p>{item.suggestedActions[0] ?? '让 Agent 先分析问题并明确下一步'}</p>
           </div>
           <div className="decision-actions">
-            <span className="decision-suggested-action">
-              <Sparkles size={14} />
-              <span><small>建议</small>{item.suggestedActions[0] ?? '让 Agent 先分析证据并明确下一步'}</span>
-            </span>
             <button className="primary-action" disabled={handling} onClick={() => void onHandle(item)}>
               {handling ? <LoaderCircle size={14} className="spin" /> : <Workflow size={14} />}
-              {handling ? '正在创建…' : '去处理'}
+              {handling ? '正在打开…' : item.status === 'in_progress' || item.status === 'waiting' ? '继续处理' : '去处理'}
             </button>
-            <span className="action-spacer" />
-            {item.status !== 'later' && (
-              <button className="icon-text-action" onClick={() => void onStatus(item.id, 'later')}>
-                <Clock3 size={14} />
-                稍后
-              </button>
-            )}
-            {item.status !== 'resolved' && (
-              <button className="icon-text-action" onClick={() => void onStatus(item.id, 'resolved')}>
-                <Check size={15} />
-                完成
-              </button>
-            )}
-            {item.status !== 'inbox' && (
-              <button className="icon-text-action" onClick={() => void onStatus(item.id, 'inbox')}>
-                <Inbox size={14} />
-                移回收件箱
-              </button>
-            )}
+            <button className="icon-text-action" onClick={() => void onStatus(item.id, 'ignored')}>
+              <ArchiveX size={14} />
+              忽略
+            </button>
           </div>
         </div>
       )}
@@ -345,18 +361,31 @@ function formatGoalDate(value: string | null): string {
   }).format(new Date(value))
 }
 
+function buildMilestoneDraftPrompt(project: Project, goal: ProjectGoal, milestone: GoalMilestone): string {
+  return `请开始推进项目“${project.name}”的 Milestone“${milestone.title}”。
+
+关联目标：${goal.title}
+目标说明：${goal.description}
+
+请先检查项目已配置的 Workspace Roots、README/AGENTS.md 和项目文件空间，确认已有证据、素材与产物，再给出并执行可以安全开始的第一步。代码、随产品发布的资源和仓库文档放在对应 Workspace；Marketing、运营、研究、报告和宣传素材等代码无关产物放在项目文件空间，并在回复中列出产物路径。不要因为开始执行就把 Milestone 标记为完成；涉及账号注册、登录、2FA、正式发布、付费或不可逆操作时先等待我确认。`
+}
+
 function GoalsView({
   goals,
   checkingGoalId,
   onCheck,
   onPriority,
-  onStartTask
+  onStartTask,
+  onCompleteMilestone,
+  onDeleteMilestone
 }: {
   goals: ProjectGoal[]
   checkingGoalId: string | null
   onCheck: (id: string) => Promise<void>
   onPriority: (id: string, priority: GoalPriority) => Promise<void>
   onStartTask: (goal: ProjectGoal, milestone: GoalMilestone) => void
+  onCompleteMilestone: (goalId: string, milestoneId: string) => Promise<void>
+  onDeleteMilestone: (goalId: string, milestoneId: string) => Promise<void>
 }): React.JSX.Element {
   const activeCount = goals.filter((goal) => goal.status === 'active').length
   const atRiskCount = goals.filter((goal) => goal.status === 'at-risk').length
@@ -447,7 +476,6 @@ function GoalsView({
               <span className="goal-section-label">里程碑</span>
               {goal.milestones.map((milestone) => (
                 <div className={`goal-milestone milestone-${milestone.status}`} key={milestone.id}>
-                  <span>{milestone.status === 'completed' ? <Check size={13} /> : milestone.status === 'blocked' ? <CircleAlert size={13} /> : null}</span>
                   <div>
                     <strong>{milestone.title}</strong>
                     <span className="goal-milestone-actions">
@@ -457,6 +485,24 @@ function GoalsView({
                           <Play size={11} fill="currentColor" /> 开始任务
                         </button>
                       )}
+                      <ActionMenu
+                        className="goal-milestone-menu"
+                        ariaLabel={`${milestone.title}操作`}
+                        trigger={<MoreHorizontal size={15} />}
+                        options={[
+                          ...(milestone.status === 'completed' ? [] : [{ value: 'complete' as const, label: '标记完成', icon: <Check size={13} /> }]),
+                          { value: 'delete' as const, label: '删除', icon: <Trash2 size={13} />, danger: true }
+                        ]}
+                        onSelect={(action) => {
+                          if (action === 'complete') {
+                            void onCompleteMilestone(goal.id, milestone.id)
+                            return
+                          }
+                          if (window.confirm(`确定删除里程碑“${milestone.title}”吗？`)) {
+                            void onDeleteMilestone(goal.id, milestone.id)
+                          }
+                        }}
+                      />
                     </span>
                   </div>
                 </div>
@@ -862,16 +908,6 @@ function ProjectSettingsView({
   )
 }
 
-function formatChatTimestamp(value: string): string {
-  const date = new Date(value)
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  }).format(date)
-}
-
 function MarkdownMessage({ content, streaming = false }: { content: string; streaming?: boolean }): React.JSX.Element {
   return (
     <div className={`chat-markdown ${streaming ? 'is-streaming' : ''}`}>
@@ -1107,13 +1143,96 @@ function MessageImageAttachments({
   )
 }
 
+function WorkAssistantActionCard({
+  messageId,
+  proposal,
+  busy,
+  onExecute
+}: {
+  messageId: string
+  proposal: WorkAssistantActionProposal
+  busy: boolean
+  onExecute: (messageId: string, proposalId: string, optionId: string) => Promise<void>
+}): React.JSX.Element | null {
+  const acceptedOption = proposal.options.find((option) => option.id === proposal.acceptedOptionId)
+  const options = proposal.options.filter((option) => option.capability !== 'agent-run.open')
+  if (options.length === 0 || acceptedOption?.capability === 'agent-run.open') return null
+  const accepted = proposal.status === 'accepted'
+  const includesLegacyRunLink = options.length !== proposal.options.length
+  return (
+    <section className={`work-assistant-action-card is-${proposal.status}`} aria-label={includesLegacyRunLink ? '创建新的 Agent Run' : proposal.title}>
+      <div className="work-assistant-action-heading">
+        <span>{accepted ? <CircleCheck size={17} /> : <Bot size={17} />}</span>
+        <div>
+          <strong>{includesLegacyRunLink ? '创建新的 Agent Run' : proposal.title}</strong>
+          {proposal.context && <small>{proposal.context}</small>}
+        </div>
+      </div>
+      <p>{includesLegacyRunLink ? '如果不继续已有 Run，也可以确认后创建一个新的 Draft Run。' : proposal.description}</p>
+      {proposal.status === 'pending' ? (
+        <div className="work-assistant-action-options">
+          {options.map((option) => (
+            <button
+              type="button"
+              key={option.id}
+              className={`is-${option.style}`}
+              disabled={busy}
+              onClick={() => void onExecute(messageId, proposal.id, option.id)}
+            >
+              {busy ? <LoaderCircle className="spin" size={14} /> : option.capability === 'agent-run.create' ? <Plus size={14} /> : <ChevronRight size={14} />}
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <small className="work-assistant-action-result">
+          <Check size={13} /> 已确认：{acceptedOption?.label ?? '已处理'}
+        </small>
+      )}
+    </section>
+  )
+}
+
+function workAssistantRunIds(message: BriefingMessage): string[] {
+  const runIds = new Set<string>()
+  if (message.linkedRunId) runIds.add(message.linkedRunId)
+  for (const proposal of message.actions ?? []) {
+    for (const option of proposal.options) {
+      if (option.capability === 'agent-run.open') runIds.add(option.payload.runId)
+    }
+  }
+  return [...runIds]
+}
+
+function workAssistantMessageContent(message: BriefingMessage): string {
+  if (!message.actions?.some((proposal) => proposal.options.some((option) => option.capability === 'agent-run.open'))) {
+    return message.content
+  }
+  return message.content
+    .replace('确认后会打开它并预填建议消息，不会自动发送。', '可以通过下方链接直接回到这个 Run。')
+    .replace('确认后会打开这个 Run 并预填建议消息，不会自动发送。', '可以通过下方链接直接打开这个 Run。')
+    .replace('确认后会打开这个 Run，不会追加或发送消息。', '可以通过下方链接直接打开这个 Run。')
+    .replace('请确认后打开。', '可以通过下方链接直接打开。')
+}
+
+function WorkAssistantRunLink({ run, onOpen }: { run: AgentRun; onOpen: () => void }): React.JSX.Element {
+  return (
+    <button className="work-assistant-run-card" type="button" onClick={onOpen}>
+      <Bot size={17} />
+      <span><strong>{run.title}</strong><small>{run.status === 'draft' ? '草稿 · 首条消息尚未发送' : `${run.provider} · ${run.status}`}</small></span>
+      <ChevronRight size={16} />
+    </button>
+  )
+}
+
 function WorkAssistantView({
   briefings,
   messages,
   ttsMode,
   generating,
-  taskHandoff,
-  onTaskHandoffConsumed,
+  runs,
+  onOpenRun,
+  onExecuteAction,
   onGenerate,
   onAsk
 }: {
@@ -1121,8 +1240,9 @@ function WorkAssistantView({
   messages: BriefingMessage[]
   ttsMode: TtsProviderMode
   generating: boolean
-  taskHandoff: WorkAssistantHandoff | null
-  onTaskHandoffConsumed: () => void
+  runs: AgentRun[]
+  onOpenRun: (runId: string) => void
+  onExecuteAction: (messageId: string, proposalId: string, optionId: string) => Promise<void>
   onGenerate: () => Promise<void>
   onAsk: (
     briefingId: string | null,
@@ -1136,6 +1256,7 @@ function WorkAssistantView({
   const [imageAttachments, setImageAttachments] = useState<WorkAssistantImageAttachment[]>([])
   const [imageError, setImageError] = useState<string | null>(null)
   const [asking, setAsking] = useState(false)
+  const [executingActionId, setExecutingActionId] = useState<string | null>(null)
   const [pendingTurn, setPendingTurn] = useState<{
     userMessage: BriefingMessage
     assistantContent: string
@@ -1143,7 +1264,6 @@ function WorkAssistantView({
     plan: AgentPlanEntry[]
   } | null>(null)
   const threadEndRef = useRef<HTMLDivElement | null>(null)
-  const handledHandoffRef = useRef<string | null>(null)
   useAutoDismissMessage(imageError, () => setImageError(null))
   const completedBriefings = briefings.filter((briefing) => briefing.status === 'completed')
   const latestBriefing = completedBriefings[0]
@@ -1228,40 +1348,19 @@ function WorkAssistantView({
     }
   }
 
-  useEffect(() => {
-    if (!taskHandoff || handledHandoffRef.current === taskHandoff.id || asking) return
-    handledHandoffRef.current = taskHandoff.id
-    onTaskHandoffConsumed()
-    void submitQuestion(taskHandoff.question, taskHandoff.taskContext, [])
-  }, [taskHandoff, asking])
-
   async function addImages(files: File[]): Promise<void> {
-    const availableSlots = maxWorkAssistantImages - imageAttachments.length
-    if (availableSlots <= 0) {
-      setImageError(`每条消息最多添加 ${maxWorkAssistantImages} 张图片。`)
-      return
-    }
-    const supported = files.filter((file) => {
-      if (!isWorkAssistantImageMimeType(file.type)) return false
-      return file.size <= maxWorkAssistantImageBytes
-    })
-    const selected = supported.slice(0, availableSlots)
-    const problems: string[] = []
-    if (files.some((file) => !isWorkAssistantImageMimeType(file.type))) {
-      problems.push('仅支持 PNG、JPEG、WEBP 和 GIF')
-    }
-    if (files.some((file) => file.size > maxWorkAssistantImageBytes)) {
-      problems.push('单张图片不能超过 5MB')
-    }
-    if (supported.length > availableSlots) {
-      problems.push(`每条消息最多添加 ${maxWorkAssistantImages} 张图片`)
-    }
+    const result = await prepareChatImages(files, imageAttachments.length)
+    setImageAttachments((current) => [...current, ...result.attachments].slice(0, maxChatImages))
+    setImageError(result.error)
+  }
+
+  async function executeAction(messageId: string, proposalId: string, optionId: string): Promise<void> {
+    if (executingActionId) return
+    setExecutingActionId(proposalId)
     try {
-      const next = await Promise.all(selected.map(readImageAttachment))
-      setImageAttachments((current) => [...current, ...next].slice(0, maxWorkAssistantImages))
-      setImageError(problems.length > 0 ? `${problems.join('；')}。` : null)
-    } catch (error) {
-      setImageError(error instanceof Error ? error.message : '图片读取失败。')
+      await onExecuteAction(messageId, proposalId, optionId)
+    } finally {
+      setExecutingActionId(null)
     }
   }
 
@@ -1282,10 +1381,10 @@ function WorkAssistantView({
           ) : timeline.map((item) => item.type === 'briefing' ? (
             <article className="chat-turn is-assistant is-briefing" key={item.id}>
               <div className="chat-turn-content">
-                <div className="chat-turn-meta">
-                  <strong>工作助理</strong>
-                  <time>{formatChatTimestamp(item.createdAt)}</time>
-                </div>
+                <ConversationMessageActions
+                  content={`${item.briefing.headline}\n\n${item.briefing.body}`}
+                  createdAt={item.createdAt}
+                />
                 <p className="briefing-delivery-copy">早上好，这是今天值得关注的项目变化。</p>
                 <AudioBriefingCard
                   briefing={item.briefing}
@@ -1299,15 +1398,25 @@ function WorkAssistantView({
           ) : (
             <article className={`chat-turn is-${item.message.role}`} key={item.id}>
               <div className="chat-turn-content">
-                <div className="chat-turn-meta">
-                  <strong>{item.message.role === 'user' ? '你' : '工作助理'}</strong>
-                  <time>{formatChatTimestamp(item.createdAt)}</time>
-                </div>
+                <ConversationMessageActions content={workAssistantMessageContent(item.message)} createdAt={item.createdAt} />
                 {item.message.role === 'user' && item.message.taskContext && <TaskContextBadge context={item.message.taskContext} />}
                 {item.message.role === 'user' && <MessageImageAttachments attachments={item.message.attachments} />}
                 {item.message.role === 'assistant'
-                  ? <MarkdownMessage content={item.message.content} />
-                  : <p className="chat-bubble">{item.message.content}</p>}
+                  ? <MarkdownMessage content={workAssistantMessageContent(item.message)} />
+                  : <p className="chat-bubble">{workAssistantMessageContent(item.message)}</p>}
+                {item.message.actions?.map((proposal) => (
+                  <WorkAssistantActionCard
+                    key={proposal.id}
+                    messageId={item.message.id}
+                    proposal={proposal}
+                    busy={executingActionId === proposal.id}
+                    onExecute={executeAction}
+                  />
+                ))}
+                {workAssistantRunIds(item.message).map((runId) => {
+                  const run = runs.find((candidate) => candidate.id === runId)
+                  return run ? <WorkAssistantRunLink key={run.id} run={run} onOpen={() => onOpenRun(run.id)} /> : null
+                })}
               </div>
             </article>
           ))}
@@ -1315,10 +1424,10 @@ function WorkAssistantView({
             <>
               <article className="chat-turn is-user is-pending">
                 <div className="chat-turn-content">
-                  <div className="chat-turn-meta">
-                    <strong>你</strong>
-                    <time>{formatChatTimestamp(pendingTurn.userMessage.createdAt)}</time>
-                  </div>
+                  <ConversationMessageActions
+                    content={pendingTurn.userMessage.content}
+                    createdAt={pendingTurn.userMessage.createdAt}
+                  />
                   {pendingTurn.userMessage.taskContext && <TaskContextBadge context={pendingTurn.userMessage.taskContext} />}
                   <MessageImageAttachments attachments={pendingTurn.userMessage.attachments} />
                   <p className="chat-bubble">{pendingTurn.userMessage.content}</p>
@@ -1326,10 +1435,6 @@ function WorkAssistantView({
               </article>
               <article className="chat-turn is-assistant is-pending">
                 <div className="chat-turn-content">
-                  <div className="chat-turn-meta">
-                    <strong>工作助理</strong>
-                    <time>正在回复</time>
-                  </div>
                   {pendingTurn.plan.length > 0 && (
                     <div className="agent-plan" aria-label="Agent 计划">
                       {pendingTurn.plan.map((entry, index) => (
@@ -1357,14 +1462,13 @@ function WorkAssistantView({
           onSubmit={submitQuestion}
           placeholder="和工作助理讨论任务、目标或项目问题…"
           busy={asking}
-          imageAttachments={imageAttachments}
-          imageError={imageError}
-          onImagesSelected={addImages}
-          onRemoveImage={(id) => {
+          attachments={imageAttachments}
+          attachmentError={imageError}
+          onAttachmentsSelected={addImages}
+          onRemoveAttachment={(id) => {
             setImageAttachments((current) => current.filter((attachment) => attachment.id !== id))
             setImageError(null)
           }}
-          showVoiceInput={false}
           submitAriaLabel="发送问题"
         />
       </footer>
@@ -2101,14 +2205,16 @@ function SettingsView({
             <h3>iPhone Companion</h3>
             <p>手机只作为安全客户端；Agent、工具和项目文件仍在这台 Mac 上运行。</p>
           </div>
-          <span className={`settings-value-pill ${companionStatus?.state === 'connected' ? 'is-ready' : ''}`}>
-            {companionStatus?.state === 'connected'
-              ? '已连接'
-              : companionStatus?.state === 'connecting'
-                ? '正在连接'
-                : companionStatus?.configuration
-                  ? '离线'
-                  : '未配对'}
+          <span className={`settings-value-pill ${companionStatus?.realtimeState === 'connected' ? 'is-ready' : ''}`}>
+            {!companionStatus?.configuration
+              ? '未配对'
+              : companionStatus.realtimeState === 'connected'
+                ? '实时在线'
+                : companionStatus.realtimeState === 'connecting'
+                  ? '实时连接中'
+                  : companionStatus.state === 'connected'
+                    ? '仅同步在线'
+                    : '离线'}
           </span>
         </div>
         <div className="companion-settings-card">
@@ -2128,7 +2234,8 @@ function SettingsView({
               <p>
                 Mac Device {companionStatus.configuration.macDeviceId.slice(0, 8)}
                 {' · '}{companionStatus.pendingEvents} 条待同步
-                {companionStatus.lastConnectedAt ? ` · 最近连接 ${formatRelativeTime(companionStatus.lastConnectedAt)}` : ''}
+                {companionStatus.lastConnectedAt ? ` · 实时响应 ${formatRelativeTime(companionStatus.lastConnectedAt)}` : ''}
+                {companionStatus.lastSyncedAt ? ` · 最近同步 ${formatRelativeTime(companionStatus.lastSyncedAt)}` : ''}
               </p>
             )}
             {companionPairing && (
@@ -2751,9 +2858,10 @@ export default function App(): React.JSX.Element {
   const [selectedProject, setSelectedProject] = useState<string | null>(null)
   const [projectSection, setProjectSection] = useState<ProjectSection>('inbox')
   const [decisionStatus, setDecisionStatus] = useState<DecisionStatus>('inbox')
-  const [composerTarget, setComposerTarget] = useState<ComposerTarget>('inbox')
   const [composerProjectId, setComposerProjectId] = useState<string | null>(null)
   const [composerText, setComposerText] = useState('')
+  const [composerAttachments, setComposerAttachments] = useState<WorkAssistantImageAttachment[]>([])
+  const [composerAttachmentError, setComposerAttachmentError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -2764,12 +2872,13 @@ export default function App(): React.JSX.Element {
   const [settingsSearch, setSettingsSearch] = useState('')
   const [settingsReturnNavigation, setSettingsReturnNavigation] = useState<Exclude<Navigation, 'settings'>>('briefing')
   const [checkingGoalId, setCheckingGoalId] = useState<string | null>(null)
-  const [workAssistantHandoff, setWorkAssistantHandoff] = useState<WorkAssistantHandoff | null>(null)
+  const startingMilestoneIdsRef = useRef<Set<string>>(new Set())
   const [selectedAgentRunId, setSelectedAgentRunId] = useState<string | null>(null)
   const [creatingAgentRun, setCreatingAgentRun] = useState(false)
-  const [agentRunHandoff, setAgentRunHandoff] = useState<AgentRunHandoff | null>(null)
+  const [agentRunPrefill, setAgentRunPrefill] = useState<{ runId: string; prompt: string; requestId: string } | null>(null)
   const [handlingDecisionId, setHandlingDecisionId] = useState<string | null>(null)
   useAutoDismissMessage(notice, () => setNotice(null))
+  useAutoDismissMessage(composerAttachmentError, () => setComposerAttachmentError(null))
 
   useEffect(() => {
     window.localStorage.setItem(sidebarWidthStorageKey, String(sidebarWidth))
@@ -2803,15 +2912,36 @@ export default function App(): React.JSX.Element {
   }
 
   useEffect(() => {
-    void window.projectAgent.getBootstrap().then(setBootstrap)
+    let active = true
+    let retryTimer: number | null = null
+    let consecutiveFailures = 0
     const refreshFromMain = (): void => {
-      void window.projectAgent.getBootstrap().then(setBootstrap)
+      void window.projectAgent.getBootstrap()
+        .then((nextBootstrap) => {
+          if (!active) return
+          consecutiveFailures = 0
+          setBootstrap(nextBootstrap)
+        })
+        .catch((error: unknown) => {
+          if (!active) return
+          consecutiveFailures += 1
+          if (consecutiveFailures <= 5) {
+            retryTimer = window.setTimeout(refreshFromMain, 400)
+            return
+          }
+          setNotice(error instanceof Error ? error.message : '无法读取应用数据，请重新启动。')
+        })
     }
+    refreshFromMain()
     const stopBriefings = window.projectAgent.onMorningBriefingReady(refreshFromMain)
     const stopAutomations = window.projectAgent.onAutomationsChanged(refreshFromMain)
+    const stopCompanionData = window.projectAgent.onCompanionDataChanged(refreshFromMain)
     return () => {
+      active = false
+      if (retryTimer !== null) window.clearTimeout(retryTimer)
       stopBriefings()
       stopAutomations()
+      stopCompanionData()
     }
   }, [])
 
@@ -2856,6 +2986,32 @@ export default function App(): React.JSX.Element {
     } : current)
   }
 
+  async function completeMilestone(goalId: string, milestoneId: string): Promise<void> {
+    try {
+      const updated = await window.projectAgent.completeGoalMilestone(goalId, milestoneId)
+      setBootstrap((current) => current ? {
+        ...current,
+        goals: current.goals.map((goal) => goal.id === goalId ? updated : goal)
+      } : current)
+      setNotice('里程碑已标记完成。')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '无法标记里程碑完成。')
+    }
+  }
+
+  async function deleteMilestone(goalId: string, milestoneId: string): Promise<void> {
+    try {
+      const updated = await window.projectAgent.deleteGoalMilestone(goalId, milestoneId)
+      setBootstrap((current) => current ? {
+        ...current,
+        goals: current.goals.map((goal) => goal.id === goalId ? updated : goal)
+      } : current)
+      setNotice('里程碑已删除。')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '无法删除里程碑。')
+    }
+  }
+
   async function checkGoal(id: string): Promise<void> {
     if (checkingGoalId) return
     setCheckingGoalId(id)
@@ -2871,28 +3027,41 @@ export default function App(): React.JSX.Element {
     }
   }
 
-  function startMilestoneTask(goal: ProjectGoal, milestone: GoalMilestone): void {
+  async function startMilestoneTask(goal: ProjectGoal, milestone: GoalMilestone): Promise<void> {
+    if (startingMilestoneIdsRef.current.has(milestone.id)) return
     const project = bootstrap?.projects.find((item) => item.id === goal.projectId)
     if (!project) {
       setNotice('没有找到这个任务所属的项目。')
       return
     }
-    setWorkAssistantHandoff({
-      id: crypto.randomUUID(),
-      question: '我想开始这项任务。请先确认完成标准，并和我一起确定可以立即执行的第一步；不要把它直接标记为完成。',
-      taskContext: {
-        projectId: project.id,
-        projectName: project.name,
-        goalId: goal.id,
-        goalTitle: goal.title,
-        milestoneId: milestone.id,
-        milestoneTitle: milestone.title
-      }
-    })
-    setNavigation('briefing')
-    setSidebarSelection('briefing')
-    setSelectedProject(null)
+    startingMilestoneIdsRef.current.add(milestone.id)
     setNotice(null)
+    try {
+      const existing = bootstrap?.runs.find((run) =>
+        run.projectId === project.id && run.goalId === goal.id && run.milestoneId === milestone.id
+        && run.status !== 'completed' && run.status !== 'cancelled'
+      )
+      const detail = existing
+        ? await window.projectAgent.getAgentRun(existing.id)
+        : await window.projectAgent.createAgentRunDraft({
+            projectId: project.id,
+            goalId: goal.id,
+            milestoneId: milestone.id,
+            title: milestone.title,
+            draftPrompt: buildMilestoneDraftPrompt(project, goal, milestone)
+          })
+      await refresh()
+      setNavigation('runs')
+      setSidebarSelection('runs')
+      setSelectedProject(null)
+      setComposerProjectId(null)
+      setSelectedAgentRunId(detail.run.id)
+      setCreatingAgentRun(false)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Agent Run 创建失败。')
+    } finally {
+      startingMilestoneIdsRef.current.delete(milestone.id)
+    }
   }
 
   async function handleDecision(item: DecisionItem): Promise<void> {
@@ -2900,16 +3069,19 @@ export default function App(): React.JSX.Element {
     setHandlingDecisionId(item.id)
     setNotice(null)
     try {
-      const detail = await window.projectAgent.createAgentRunDraft({
-        projectId: item.projectId,
-        provider: bootstrap?.providerSettings.codingAgents.defaultAgent ?? 'codex',
-        title: `处理 · ${item.title}`
-      })
-      setAgentRunHandoff({
-        id: crypto.randomUUID(),
-        runId: detail.run.id,
-        prompt: item.summary
-      })
+      const existing = bootstrap?.runs.find((run) =>
+        run.decisionId === item.id && run.status !== 'completed' && run.status !== 'cancelled'
+      )
+      const detail = existing
+        ? await window.projectAgent.getAgentRun(existing.id)
+        : await window.projectAgent.createAgentRunDraft({
+            projectId: item.projectId,
+            decisionId: item.id,
+            provider: bootstrap?.providerSettings.codingAgents.defaultAgent ?? 'codex',
+            title: `处理 · ${item.title}`,
+            draftPrompt: item.summary
+          })
+      await updateStatus(item.id, 'in_progress')
       await refresh()
       setNavigation('runs')
       setSidebarSelection('runs')
@@ -2926,34 +3098,39 @@ export default function App(): React.JSX.Element {
 
   async function submitComposer(): Promise<void> {
     const prompt = composerText.trim()
-    if (!prompt || submitting) return
+    if ((!prompt && composerAttachments.length === 0) || submitting) return
+    const submittedPrompt = prompt || '请分析附件并整理需要关注的事项。'
 
     setSubmitting(true)
     setNotice(null)
 
     try {
-      if (composerTarget === 'goal') {
-        if (!composerProjectId) {
-          setNotice('请先选择这个目标所属的项目。')
-          return
-        }
-        const goal = await window.projectAgent.createGoal({ projectId: composerProjectId, prompt })
-        setNotice(`目标“${goal.title}”已建立，Agent 会按 Check-in 节奏持续追踪。`)
-        setProjectSection('goals')
-      } else if (composerTarget === 'inbox') {
-        await window.projectAgent.createDecision({
-          projectId: composerProjectId,
-          title: prompt
-        })
-        setNotice('已投递到决策收件箱')
+      if (!composerProjectId) {
+        setNotice('请先选择这个目标所属的项目。')
+        return
       }
+      const goal = await window.projectAgent.createGoal({
+        projectId: composerProjectId,
+        prompt: submittedPrompt,
+        attachments: composerAttachments
+      })
+      setNotice(`目标“${goal.title}”已建立，Agent 会按 Check-in 节奏持续追踪。`)
+      setProjectSection('goals')
       setComposerText('')
+      setComposerAttachments([])
+      setComposerAttachmentError(null)
       await refresh()
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '操作失败，请稍后再试。')
     } finally {
       setSubmitting(false)
     }
+  }
+
+  async function addComposerAttachments(files: File[]): Promise<void> {
+    const result = await prepareChatImages(files, composerAttachments.length)
+    setComposerAttachments((current) => [...current, ...result.attachments].slice(0, maxChatImages))
+    setComposerAttachmentError(result.error)
   }
 
   async function generateMorningBriefing(): Promise<void> {
@@ -2987,10 +3164,39 @@ export default function App(): React.JSX.Element {
     await refresh()
   }
 
+  async function executeWorkAssistantAction(messageId: string, proposalId: string, optionId: string): Promise<void> {
+    try {
+      const result = await window.projectAgent.executeWorkAssistantAction({ messageId, proposalId, optionId })
+      setNotice(result.notice)
+      if (result.navigation?.kind === 'agent-run') {
+        setNavigation('runs')
+        setSidebarSelection('runs')
+        setSelectedProject(null)
+        setComposerProjectId(null)
+        setCreatingAgentRun(false)
+        setSelectedAgentRunId(result.navigation.id)
+        setAgentRunPrefill(result.navigation.draftPrompt ? {
+          runId: result.navigation.id,
+          prompt: result.navigation.draftPrompt,
+          requestId: crypto.randomUUID()
+        } : null)
+      } else if (result.navigation?.kind === 'project') {
+        setSelectedProject(result.navigation.id)
+        setComposerProjectId(result.navigation.id)
+        setSidebarSelection(`project:${result.navigation.id}`)
+        setProjectSection('settings')
+        setNavigation('inbox')
+      }
+      await refresh()
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Action 执行失败。')
+    }
+  }
+
   if (!bootstrap) {
     return (
       <main className="loading-screen">
-        <span className="app-mark"><Sparkles size={22} /></span>
+        <img className="loading-wordmark" src={fuddyWordmark} alt="Fuddy" />
         <LoaderCircle className="spin" size={20} />
       </main>
     )
@@ -3074,11 +3280,7 @@ export default function App(): React.JSX.Element {
         ) : (
         <>
         <div className="brand-row">
-          <span className="brand-mark"><Sparkles size={17} /></span>
-          <span className="brand-copy">
-            <strong>Project Agent</strong>
-            <small>个人项目助理</small>
-          </span>
+          <img className="brand-wordmark" src={fuddyWordmark} alt="Fuddy" />
           <button className="sidebar-icon-button" onClick={() => setSidebarOpen(false)} aria-label="收起侧边栏">
             <PanelLeft size={17} />
           </button>
@@ -3106,7 +3308,6 @@ export default function App(): React.JSX.Element {
               setComposerProjectId(null)
               setProjectSection('inbox')
               setDecisionStatus('inbox')
-              setComposerTarget('inbox')
             }}
           >
             <Inbox size={17} />
@@ -3156,7 +3357,6 @@ export default function App(): React.JSX.Element {
               setSidebarSelection('all-projects')
               setProjectSection('inbox')
               setDecisionStatus('inbox')
-              setComposerTarget('inbox')
               setNavigation('inbox')
             }}
           >
@@ -3173,7 +3373,6 @@ export default function App(): React.JSX.Element {
                 setSidebarSelection(`project:${project.id}`)
                 setProjectSection('inbox')
                 setDecisionStatus('inbox')
-                setComposerTarget('inbox')
                 setNavigation('inbox')
               }}
             >
@@ -3228,14 +3427,14 @@ export default function App(): React.JSX.Element {
       </aside>
 
       <main className="content-shell">
-        <div className="window-drag-region content-drag-region" />
+        {navigation !== 'runs' && <div className="window-drag-region content-drag-region" />}
         {!sidebarOpen && (
           <button className="floating-sidebar-button" onClick={() => setSidebarOpen(true)} aria-label="展开侧边栏">
             <PanelLeft size={18} />
           </button>
         )}
 
-        <div className={`content-column ${navigation === 'briefing' ? 'is-briefing' : ''} ${navigation === 'files' ? 'is-files' : ''} ${navigation === 'runs' ? 'is-runs' : ''} ${navigation === 'automations' ? 'is-automations' : ''} ${navigation === 'settings' ? 'is-settings' : ''} ${navigation === 'inbox' && projectSection === 'settings' ? 'is-project-settings' : ''} ${navigation === 'inbox' && projectSection === 'status' ? 'is-project-status' : ''}`}>
+        <div className={`content-column ${navigation === 'briefing' ? 'is-briefing' : ''} ${navigation === 'files' ? 'is-files' : ''} ${navigation === 'runs' ? 'is-runs' : ''} ${navigation === 'automations' ? 'is-automations' : ''} ${navigation === 'settings' ? 'is-settings' : ''} ${navigation === 'inbox' && projectSection === 'inbox' ? 'is-inbox-list' : ''} ${navigation === 'inbox' && projectSection === 'settings' ? 'is-project-settings' : ''} ${navigation === 'inbox' && projectSection === 'status' ? 'is-project-status' : ''}`}>
           {navigation === 'briefing' ? (
             <header className="briefing-page-header">
               <div>
@@ -3295,8 +3494,16 @@ export default function App(): React.JSX.Element {
               messages={bootstrap.briefingMessages}
               ttsMode={bootstrap.providerSettings.tts.primary.mode}
               generating={submitting}
-              taskHandoff={workAssistantHandoff}
-              onTaskHandoffConsumed={() => setWorkAssistantHandoff(null)}
+              runs={bootstrap.runs}
+              onOpenRun={(runId) => {
+                setNavigation('runs')
+                setSidebarSelection('runs')
+                setSelectedProject(null)
+                setComposerProjectId(null)
+                setSelectedAgentRunId(runId)
+                setCreatingAgentRun(false)
+              }}
+              onExecuteAction={executeWorkAssistantAction}
               onGenerate={generateMorningBriefing}
               onAsk={askMorningBriefing}
             />
@@ -3308,7 +3515,6 @@ export default function App(): React.JSX.Element {
                 <div className="project-primary-tabs">
                   <button className={projectSection === 'inbox' ? 'is-active' : ''} onClick={() => {
                     setProjectSection('inbox')
-                    setComposerTarget('inbox')
                   }}>
                     <Inbox size={14} /> 收件箱
                   </button>
@@ -3317,7 +3523,6 @@ export default function App(): React.JSX.Element {
                   </button>}
                   <button className={projectSection === 'goals' ? 'is-active' : ''} onClick={() => {
                     setProjectSection('goals')
-                    setComposerTarget('goal')
                   }}>
                     <Target size={14} /> 目标
                   </button>
@@ -3329,16 +3534,12 @@ export default function App(): React.JSX.Element {
 
               {projectSection === 'inbox' && <div className="inbox-toolbar inbox-status-toolbar">
                 <div className="filter-tabs">
-                  {(['inbox', 'later', 'resolved'] as DecisionStatus[]).map((status) => (
+                  {(['inbox', 'in_progress', 'waiting', 'resolved', 'ignored'] as DecisionStatus[]).map((status) => (
                     <button key={status} className={decisionStatus === status ? 'is-active' : ''} onClick={() => setDecisionStatus(status)}>
-                      {status === 'inbox' ? '待处理' : status === 'later' ? '稍后' : '已完成'}
+                      {status === 'inbox' ? '待处理' : status === 'in_progress' ? '进行中' : status === 'waiting' ? '等待中' : status === 'resolved' ? '已完成' : '已忽略'}
                     </button>
                   ))}
                 </div>
-                <span className="permission-pill" title="所有 Agent 工具调用默认自动批准并拥有完整本机访问权限">
-                  <ShieldCheck size={14} />
-                  Full access · 自动批准
-                </span>
               </div>}
 
               {projectSection === 'settings' && selectedProjectRecord ? (
@@ -3373,6 +3574,8 @@ export default function App(): React.JSX.Element {
                   onCheck={checkGoal}
                   onPriority={updateGoalPriority}
                   onStartTask={startMilestoneTask}
+                  onCompleteMilestone={completeMilestone}
+                  onDeleteMilestone={deleteMilestone}
                 />
               ) : (
                 <section className="decision-list">
@@ -3388,7 +3591,10 @@ export default function App(): React.JSX.Element {
                       />
                     ))
                   ) : (
-                    <EmptyState title="这里已经处理完了" detail="新的项目变化会继续投递到决策收件箱。" />
+                    <EmptyState
+                      title={decisionStatus === 'inbox' ? '没有待处理事项' : decisionStatus === 'in_progress' ? '没有进行中的事项' : decisionStatus === 'waiting' ? '没有等待中的事项' : decisionStatus === 'resolved' ? '还没有已完成事项' : '没有已忽略事项'}
+                      detail={decisionStatus === 'inbox' ? '新的项目变化会继续投递到决策收件箱。' : '事项状态发生变化后会显示在这里。'}
+                    />
                   )}
                 </section>
               )}
@@ -3408,8 +3614,8 @@ export default function App(): React.JSX.Element {
               goals={bootstrap.goals}
               selectedRunId={selectedAgentRunId}
               creating={creatingAgentRun}
-              handoff={agentRunHandoff}
-              onHandoffConsumed={() => setAgentRunHandoff(null)}
+              prefill={agentRunPrefill}
+              onPrefillConsumed={() => setAgentRunPrefill(null)}
               onSelectRun={(runId) => {
                 setCreatingAgentRun(false)
                 setSelectedAgentRunId(runId)
@@ -3446,7 +3652,7 @@ export default function App(): React.JSX.Element {
           )}
         </div>
 
-        {(navigation === 'inbox' || navigation === 'settings') && (
+        {(navigation === 'settings' || (navigation === 'inbox' && projectSection === 'goals')) && (
           <div className={`composer-area ${navigation === 'settings' ? 'is-settings' : ''}`}>
             {notice && (
               <div className="notice-toast">
@@ -3455,15 +3661,20 @@ export default function App(): React.JSX.Element {
                 <button onClick={() => setNotice(null)} aria-label="关闭提示"><X size={14} /></button>
               </div>
             )}
-            {navigation !== 'settings' && !(navigation === 'inbox' && (projectSection === 'status' || projectSection === 'settings')) && (
+            {navigation !== 'settings' && (
               <ChatComposer
                 value={composerText}
                 onChange={setComposerText}
                 onSubmit={submitComposer}
-                placeholder={composerTarget === 'inbox'
-                  ? '投递一个需要关注或决定的事项…'
-                  : '描述想达成的结果，Agent 会整理目标、指标和里程碑…'}
+                placeholder="描述想达成的结果，Agent 会整理目标、指标和里程碑…"
                 busy={submitting}
+                attachments={composerAttachments}
+                attachmentError={composerAttachmentError}
+                onAttachmentsSelected={addComposerAttachments}
+                onRemoveAttachment={(id) => {
+                  setComposerAttachments((current) => current.filter((attachment) => attachment.id !== id))
+                  setComposerAttachmentError(null)
+                }}
                 leftControls={(
                   <>
                     <SelectMenu
@@ -3483,25 +3694,13 @@ export default function App(): React.JSX.Element {
                       ariaLabel="任务所属项目"
                       position="up"
                     />
-                    <SelectMenu
-                      className="composer-select-menu composer-target-select"
-                      value={composerTarget}
-                      options={[
-                        { value: 'inbox', label: '投递收件箱' },
-                        { value: 'goal', label: '目标 Agent' }
-                      ]}
-                      onChange={setComposerTarget}
-                      ariaLabel="任务处理方式"
-                      leading={<Bot size={14} />}
-                      position="up"
-                    />
                   </>
                 )}
               />
             )}
           </div>
         )}
-        {notice && navigation !== 'inbox' && navigation !== 'settings' && (
+        {notice && navigation !== 'settings' && !(navigation === 'inbox' && projectSection === 'goals') && (
           <div className="notice-toast global-notice-toast">
             <Sparkles size={15} />
             <span>{notice}</span>

@@ -29,6 +29,7 @@ import type {
 } from '../../shared/contracts'
 import { evaluateAggressivePermission } from '../../shared/permissions'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
+import { buildAgentStoragePolicy } from './agent-runtime-context'
 import { AppDatabase } from './database'
 import { ProviderSettingsService, type RuntimeAgentEndpoint } from './provider-settings'
 import { ThirdPartyMcpRuntime } from './third-party-mcp-runtime'
@@ -59,6 +60,7 @@ function assistantText(message: AssistantMessage): string {
 }
 
 function historyMessage(message: AgentRunMessage): Message | null {
+  if (message.eventType === 'reasoning') return null
   if (message.role !== 'user' && message.role !== 'assistant') return null
   return message.role === 'user'
     ? { role: 'user', content: message.content, timestamp: new Date(message.createdAt).getTime() }
@@ -199,7 +201,7 @@ export class PiTaskHarness {
           if (event.type === 'tool_execution_start') {
             toolArguments.set(event.toolCallId, event.args)
             if (['write', 'edit', 'bash', 'update_project_info'].includes(event.toolName)) mutationOccurred = true
-            input.onUpdate({ type: 'tool', toolName: event.toolName, status: 'running', detail: JSON.stringify(event.args) })
+            input.onUpdate({ type: 'tool', toolCallId: event.toolCallId, toolName: event.toolName, status: 'running', detail: JSON.stringify(event.args) })
           }
           if (event.type === 'tool_execution_end') {
             const detail = textFromToolResult(event.result, event.toolName)
@@ -208,7 +210,7 @@ export class PiTaskHarness {
               : undefined
             input.onTool(event.toolName, detail, { ...(resultDetails ?? {}), arguments: toolArguments.get(event.toolCallId) ?? {} })
             toolArguments.delete(event.toolCallId)
-            input.onUpdate({ type: 'tool', toolName: event.toolName, status: event.isError ? 'failed' : 'completed', detail })
+            input.onUpdate({ type: 'tool', toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? 'failed' : 'completed', detail })
           }
           if (event.type === 'message_end' && event.message.role === 'assistant') {
             lastTurnAssistant = event.message
@@ -236,13 +238,9 @@ export class PiTaskHarness {
   }
 
   private systemPrompt(input: PiTaskTurnInput, mcpAvailability: string): string {
-    const roots = input.workspaceRoots.map((root, index) => `${index + 1}. ${root}${root === input.workingDirectory ? '（当前主目录）' : ''}`).join('\n')
     return `你是 Project Agent 中负责项目任务的执行 Agent，运行在一个可持续对话的 Agent Run Session 中。
 
-当前工作目录：${input.workingDirectory}
-项目允许的 Workspace Roots：
-${roots || `1. ${input.workingDirectory}`}
-项目产物目录：${input.filesDirectory}
+${buildAgentStoragePolicy(input)}
 
 当前项目与任务上下文：
 ${input.projectContext}
@@ -250,7 +248,6 @@ ${input.projectContext}
 你拥有 Pi Coding Agent 的 read、bash、edit、write、grep、find、ls 基础工具，也可以使用 update_project_info 修改当前项目配置。
 你还可以使用第三方 MCP：Browser Use 负责网页，Computer Use 负责没有结构化接口的本机 App。${mcpAvailability}
 先检查项目中的 AGENTS.md、README、已有脚本、数据库模型和 Skills，再基于实际证据行动。不要编造数据库内容或执行结果。
-所有独立运营、Marketing、分析和文档产物应写入项目产物目录；代码和项目内文档应写入对应 Workspace。
 修改项目 Workspace 后，新目录从下一回合开始生效。
 使用中文和 Markdown，先给结论，再给实际执行结果。`
   }

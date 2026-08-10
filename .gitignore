@@ -4,6 +4,10 @@ dist/
 release/
 coverage/
 .third-party-tools/
+.design-qa/
+build/
+**/xcuserdata/
+*.xcuserstate
 .DS_Store
 *.log
 .env
