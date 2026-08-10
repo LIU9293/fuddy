@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AppDatabase } from './database'
 
@@ -15,6 +16,30 @@ afterEach(() => {
 })
 
 describe('project settings persistence', () => {
+  it('adds the optional icon column to an existing projects table', () => {
+    temporaryDirectory = mkdtempSync(join(tmpdir(), 'project-agent-icon-migration-'))
+    const path = join(temporaryDirectory, 'app.sqlite')
+    const legacyDatabase = new DatabaseSync(path)
+    legacyDatabase.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        focus TEXT NOT NULL,
+        status TEXT NOT NULL,
+        accent TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        profile_json TEXT NOT NULL DEFAULT '{}'
+      )
+    `)
+    legacyDatabase.close()
+
+    database = new AppDatabase(path)
+    const project = database.listProjects()[0]
+    expect(project?.icon).toBeNull()
+    expect(database.updateProject({ ...project!, icon: '🚀' }).icon).toBe('🚀')
+  })
+
   it('keeps an edited project profile after the database is reopened', () => {
     temporaryDirectory = mkdtempSync(join(tmpdir(), 'project-agent-settings-'))
     const path = join(temporaryDirectory, 'app.sqlite')
@@ -24,6 +49,7 @@ describe('project settings persistence', () => {
 
     database.updateProject({
       ...roombase!,
+      icon: '🏠',
       summary: '更新后的项目介绍',
       profile: {
         ...roombase!.profile,
@@ -44,6 +70,7 @@ describe('project settings persistence', () => {
 
     const reopened = database.listProjects().find((project) => project.id === 'roombase')
     expect(reopened?.summary).toBe('更新后的项目介绍')
+    expect(reopened?.icon).toBe('🏠')
     expect(reopened?.profile.mission).toBe('帮助门店建立可持续的增长系统。')
     expect(reopened?.profile.vision).toBe('成为门店经营者每天依赖的工作平台。')
     expect(reopened?.profile.currentState).toMatchObject({

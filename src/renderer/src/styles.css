@@ -411,6 +411,57 @@ textarea:focus {
   font-size: 12.5px;
 }
 
+.project-icon {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 6px;
+  color: white;
+  background: var(--project-accent, #73736d);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 680;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.project-icon.has-image {
+  border: 1px solid rgba(40, 40, 35, 0.1);
+  background: #fff;
+}
+
+.project-icon.has-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.project-icon.is-wordmark {
+  font-size: 7px;
+  letter-spacing: -0.055em;
+}
+
+.project-icon.is-wordmark.is-sidebar,
+.project-icon.is-wordmark.is-agent-run-meta {
+  font-size: 7px;
+}
+
+.project-icon.is-wordmark.is-agent-run-info {
+  font-size: 9px;
+}
+
+.project-icon.is-sidebar {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 10px;
+}
+
 .project-dot {
   width: 7px;
   height: 7px;
@@ -2827,6 +2878,40 @@ textarea:focus {
   color: #3e3e39;
   background: rgba(255, 255, 253, 0.86);
   font-size: 10.5px;
+}
+
+.project-icon-field {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.project-icon-field .project-icon.is-preview {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 15px;
+}
+
+.project-icon-field .project-icon.is-wordmark.is-preview {
+  font-size: 10px;
+}
+
+.project-icon-image-label {
+  flex: 1;
+  color: #777771;
+  font-size: 10.5px;
+}
+
+.project-icon-remove {
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid rgba(40, 40, 35, 0.11);
+  border-radius: 7px;
+  color: #696963;
+  background: rgba(255, 255, 253, 0.8);
+  font-size: 10px;
 }
 
 .workspace-roots-field {
@@ -6728,6 +6813,27 @@ textarea:focus {
   color: #777771;
 }
 
+.agent-run-project-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.agent-run-project-meta > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-icon.is-agent-run-meta {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  font-size: 7.5px;
+}
+
 .agent-runs-sidebar-list > p {
   margin: 24px 8px;
   color: #969690;
@@ -7179,11 +7285,11 @@ textarea:focus {
 .agent-run-info-artifacts strong { color: #55554f; font-size: 10px; font-weight: 560; }
 .agent-run-info-artifacts small { color: #96968f; font-size: 8.5px; }
 
-.agent-run-project-name > span {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  border-radius: 50%;
+.project-icon.is-agent-run-info {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 9px;
 }
 
 .agent-run-project-name > strong { min-width: 0; flex: 1; color: #44443f; font-size: 11px; }

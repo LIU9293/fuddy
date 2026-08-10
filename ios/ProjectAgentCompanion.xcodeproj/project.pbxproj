@@ -42,7 +42,7 @@
 		B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		B5F5580905A2559653C6AE66 /* PairingCodeScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingCodeScanner.swift; sourceTree = "<group>"; };
 		B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectAgentCompanionApp.swift; sourceTree = "<group>"; };
-		B675BF1415AFA5806E4876DC /* ProjectAgentCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ProjectAgentCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B675BF1415AFA5806E4876DC /* ProjectAgentCompanion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ProjectAgentCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionStore.swift; sourceTree = "<group>"; };
 		D74F19EE816B043346AD6309 /* ProjectAgentCompanionTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ProjectAgentCompanionTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F0BC51CC42E21CDCBA0EE606 /* RootViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootViews.swift; sourceTree = "<group>"; };
@@ -147,7 +147,6 @@
 						DevelopmentTeam = "";
 					};
 					DF2EA02750B91C13CC9051DE = {
-						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -244,6 +243,7 @@
 				CODE_SIGN_ENTITLEMENTS = ProjectAgentCompanion/ProjectAgentCompanion.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 5PR3342M58;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ProjectAgentCompanion-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Fuddy;
@@ -409,6 +409,7 @@
 				CODE_SIGN_ENTITLEMENTS = ProjectAgentCompanion/ProjectAgentCompanion.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 5PR3342M58;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ProjectAgentCompanion-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Fuddy;

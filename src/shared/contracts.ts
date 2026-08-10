@@ -43,6 +43,7 @@ export interface ProjectProfile {
 export interface Project {
   id: string
   name: string
+  icon?: string | null
   summary: string
   focus: string
   status: 'active' | 'watching' | 'paused'
@@ -54,6 +55,7 @@ export type UpdateProjectInput = Project
 
 export interface CreateProjectInput {
   name: string
+  icon?: string | null
   summary: string
   focus: string
   mission: string

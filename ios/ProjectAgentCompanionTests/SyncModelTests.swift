@@ -52,14 +52,24 @@ final class SyncModelTests: XCTestCase {
     }
 
     func testProjectDecodesCurrentProfileAndLegacyCache() throws {
-        let current = #"{"id":"roombase","name":"Roombase","summary":"Summary","focus":"Focus","status":"active","accent":"indigo","profile":{"productType":"SaaS","stage":"Growth","mission":"","vision":"","repoPath":"/code/room","workspaceRoots":[{"id":"primary","label":"Room","path":"/code/room"}],"primaryWorkspaceRootId":"primary","defaultAgent":"claude","websiteUrl":"https://example.com","surfaces":["Dashboard"],"focusAreas":[],"dataSources":[],"nextMoves":[],"currentState":{"summary":"","facts":[],"source":"user","updatedAt":null}}}"#
+        let current = #"{"id":"roombase","name":"Roombase","icon":"🏠","summary":"Summary","focus":"Focus","status":"active","accent":"indigo","profile":{"productType":"SaaS","stage":"Growth","mission":"","vision":"","repoPath":"/code/room","workspaceRoots":[{"id":"primary","label":"Room","path":"/code/room"}],"primaryWorkspaceRootId":"primary","defaultAgent":"claude","websiteUrl":"https://example.com","surfaces":["Dashboard"],"focusAreas":[],"dataSources":[],"nextMoves":[],"currentState":{"summary":"","facts":[],"source":"user","updatedAt":null}}}"#
         let decoded = try JSONDecoder().decode(Project.self, from: Data(current.utf8))
         XCTAssertEqual(decoded.profile.workspaceRoots.first?.path, "/code/room")
         XCTAssertEqual(decoded.profile.defaultAgent, "claude")
+        XCTAssertEqual(decoded.icon, "🏠")
 
         let legacy = #"{"id":"legacy","name":"Legacy","summary":"Summary","focus":"Focus","status":"watching","accent":"gray"}"#
         let legacyDecoded = try JSONDecoder().decode(Project.self, from: Data(legacy.utf8))
         XCTAssertEqual(legacyDecoded.profile, .empty)
+        XCTAssertNil(legacyDecoded.icon)
+    }
+
+    func testProjectIconDecodesRasterImageDataURL() {
+        let bytes = Data([0x89, 0x50, 0x4e, 0x47])
+        let icon = "data:image/png;base64,\(bytes.base64EncodedString())"
+        XCTAssertEqual(projectIconImageData(icon), bytes)
+        XCTAssertNil(projectIconImageData("🚀"))
+        XCTAssertNil(projectIconImageData("data:image/svg+xml;base64,PHN2Zz4="))
     }
 
     func testToolCallsAreGroupedOnlyBetweenThinkingMessages() {

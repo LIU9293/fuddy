@@ -1,0 +1,27 @@
+diff --git a/node_modules/@trycua/cua-driver/dist/native/node-runtime.js b/node_modules/@trycua/cua-driver/dist/native/node-runtime.js
+index 55ab567..3257ccd 100644
+--- a/node_modules/@trycua/cua-driver/dist/native/node-runtime.js
++++ b/node_modules/@trycua/cua-driver/dist/native/node-runtime.js
+@@ -1,6 +1,7 @@
+ import { createRequire } from "node:module";
+ import { dirname, join } from "node:path";
+ import { resolveLibPath } from "@ubjs/node/typescript/dist/resolve-lib.js";
++const resolveRealLibPath = (options) => resolveLibPath(options).replace(/([\\/])app\.asar([\\/])/u, "$1app.asar.unpacked$2");
+ const FfiType = {
+     UInt8: { tag: "UInt8" },
+     Int8: { tag: "Int8" },
+@@ -23,7 +24,7 @@ const FfiType = {
+     Reference: (inner) => ({ tag: "Reference", inner }),
+     MutReference: (inner) => ({ tag: "MutReference", inner }),
+ };
+-const sdkLibrary = resolveLibPath({
++const sdkLibrary = resolveRealLibPath({
+     crateName: "cua_driver_sdk",
+     callerUrl: import.meta.url,
+     npmPackageBase: "@trycua/cua-driver-",
+@@ -32,4 +33,4 @@ const sdkLibrary = resolveLibPath({
+ const runtimePath = join(dirname(sdkLibrary), "cua_driver_node_runtime.node");
+ const require = createRequire(import.meta.url);
+ const { UniffiNativeModule } = require(runtimePath);
+-export default { FfiType, resolveLibPath, UniffiNativeModule };
++export default { FfiType, resolveLibPath: resolveRealLibPath, UniffiNativeModule };

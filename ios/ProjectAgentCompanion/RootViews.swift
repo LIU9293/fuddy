@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UIKit
 
 private let companionChatItemSpacing: CGFloat = 20
 private let companionChatHorizontalPadding: CGFloat = 20
@@ -2170,16 +2171,61 @@ struct ProjectListView: View {
     var body: some View {
         List(store.state.projects) { project in
             NavigationLink(value: CompanionRoute.project(id: project.id)) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(project.name).font(.headline)
-                    Text(project.summary).foregroundStyle(.secondary)
-                    Text(project.focus).font(.caption).foregroundStyle(.tertiary)
+                HStack(alignment: .top, spacing: 10) {
+                    ProjectIconView(project: project)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(project.name).font(.headline)
+                        Text(project.summary).foregroundStyle(.secondary)
+                        Text(project.focus).font(.caption).foregroundStyle(.tertiary)
+                    }
                 }.padding(.vertical, 4)
             }
         }
         .listStyle(.plain)
         .refreshable { await store.sync() }
     }
+}
+
+private struct ProjectIconView: View {
+    let project: Project
+
+    private var image: UIImage? {
+        guard let data = projectIconImageData(project.icon) else { return nil }
+        return UIImage(data: data)
+    }
+
+    private var text: String {
+        let custom = project.icon?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return custom.isEmpty ? String(project.name.trimmingCharacters(in: .whitespacesAndNewlines).first ?? "?") : custom
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Text(text)
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+            }
+        }
+            .frame(width: 30, height: 30)
+            .background(image == nil ? Color.accentColor : Color.white, in: RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.primary.opacity(image == nil ? 0 : 0.08)))
+            .accessibilityLabel("\(project.name) 图标")
+    }
+}
+
+func projectIconImageData(_ icon: String?) -> Data? {
+    guard let icon = icon?.trimmingCharacters(in: .whitespacesAndNewlines),
+          icon.range(of: #"^data:image/(png|jpeg|webp);base64,"#, options: [.regularExpression, .caseInsensitive]) != nil,
+          let comma = icon.firstIndex(of: ",") else { return nil }
+    return Data(base64Encoded: String(icon[icon.index(after: comma)...]))
 }
 
 struct ProjectDetailView: View {
@@ -2287,6 +2333,19 @@ private struct ProjectSettingsView: View {
         Form {
             Section {
                 TextField("项目名称", text: $draft.name)
+                if projectIconImageData(draft.icon) != nil {
+                    HStack {
+                        ProjectIconView(project: draft)
+                        Text("当前使用项目 Logo").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("移除", role: .destructive) { draft.icon = nil }
+                    }
+                } else {
+                    TextField("项目图标", text: Binding(
+                        get: { draft.icon ?? "" },
+                        set: { draft.icon = $0.isEmpty ? nil : String($0.prefix(16)) }
+                    ), prompt: Text("Emoji 或文字；留空使用项目名首字"))
+                }
                 Picker("状态", selection: $draft.status) {
                     Text("Active").tag("active")
                     Text("Watching").tag("watching")

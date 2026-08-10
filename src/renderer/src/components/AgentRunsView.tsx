@@ -45,6 +45,7 @@ import { normalizeChatMarkdown } from '../markdown'
 import { maxChatImages, prepareChatImages } from '../chat-attachments'
 import { ChatComposer } from './ChatComposer'
 import { ConversationMessageActions } from './ConversationMessageActions'
+import { ProjectIcon } from './ProjectIcon'
 import { SelectMenu } from './SelectMenu'
 
 const agentOptions = [
@@ -292,7 +293,7 @@ function AgentRunInfoSidebar({
         <section className="agent-run-info-section">
           <div className="agent-run-info-section-title"><span>当前项目</span></div>
           {project ? <div className="agent-run-project-summary">
-            <div className="agent-run-project-name"><span style={{ background: project.accent }} /><strong>{project.name}</strong><small>{projectStatusLabel(project.status)}</small></div>
+            <div className="agent-run-project-name"><ProjectIcon project={project} className="is-agent-run-info" /><strong>{project.name}</strong><small>{projectStatusLabel(project.status)}</small></div>
             {project.summary && <p>{project.summary}</p>}
             <dl>
               {project.profile.stage && <><dt>阶段</dt><dd>{project.profile.stage}</dd></>}
@@ -686,7 +687,10 @@ export function AgentRunsSidebar({
               {runIsActive(run) && <span className="run-status run-running"><LoaderCircle size={15} className="spin" /></span>}
               <span className="agent-runs-sidebar-copy">
                 <strong>{run.title}</strong>
-                <small>{runTime(run)} · {project?.name ?? '共享'} · {run.provider}</small>
+                <small className="agent-run-project-meta">
+                  {project && <ProjectIcon project={project} className="is-agent-run-meta" />}
+                  <span>{runTime(run)} · {project?.name ?? '共享'} · {run.provider}</span>
+                </small>
               </span>
             </button>
           )
@@ -1101,7 +1105,10 @@ export function AgentRunsView({
                   {runIsActive(run) && <span className="run-status run-running"><LoaderCircle size={15} className="spin" /></span>}
                   <span className="agent-session-main">
                     <span className="agent-session-title"><strong>{run.title}</strong></span>
-                    <span>{project?.name ?? '共享'} · {run.provider}</span>
+                    <span className="agent-run-project-meta">
+                      {project && <ProjectIcon project={project} className="is-agent-run-meta" />}
+                      <span>{project?.name ?? '共享'} · {run.provider}</span>
+                    </span>
                     {milestone && <small>{milestone.title}</small>}
                   </span>
                   <span className="agent-session-summary">{run.summary}</span>
@@ -1193,7 +1200,10 @@ export function AgentRunsView({
               <button type="button" disabled={sessionActionBusy} onClick={() => setRenamingTitle(null)}>取消</button>
             </form>
           )}
-          <small>{detailProject?.name ?? '共享任务'} · {detail.run.provider}</small>
+          <small className="agent-run-project-meta">
+            {detailProject && <ProjectIcon project={detailProject} className="is-agent-run-meta" />}
+            <span>{detailProject?.name ?? '共享任务'} · {detail.run.provider}</span>
+          </small>
         </div>
         <div className="agent-run-header-actions">
           <button

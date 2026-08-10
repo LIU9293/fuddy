@@ -1,5 +1,10 @@
 import { z } from 'zod'
 
+const projectIconSchema = z.union([
+  z.string().trim().max(16),
+  z.string().trim().max(100_000).regex(/^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/=]+$/i)
+]).nullable().optional()
+
 export const projectProfileSchema = z.object({
   productType: z.string().trim().min(1).max(200),
   stage: z.string().trim().min(1).max(200),
@@ -29,6 +34,7 @@ export const projectProfileSchema = z.object({
 export const updateProjectSchema = z.object({
   id: z.string().trim().min(1).max(200),
   name: z.string().trim().min(1).max(200),
+  icon: projectIconSchema,
   summary: z.string().trim().min(1).max(2_000),
   focus: z.string().trim().min(1).max(500),
   status: z.enum(['active', 'watching', 'paused']),
@@ -38,6 +44,7 @@ export const updateProjectSchema = z.object({
 
 export const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(200),
+  icon: projectIconSchema,
   summary: z.string().trim().min(1).max(2_000),
   focus: z.string().trim().min(1).max(500),
   mission: z.string().trim().min(1).max(2_000),

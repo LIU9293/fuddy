@@ -168,6 +168,7 @@ struct ProjectProfile: Codable, Hashable {
 struct Project: Codable, Identifiable, Hashable {
     let id: String
     var name: String
+    var icon: String?
     var summary: String
     var focus: String
     var status: String
@@ -177,6 +178,7 @@ struct Project: Codable, Identifiable, Hashable {
     init(
         id: String,
         name: String,
+        icon: String? = nil,
         summary: String,
         focus: String,
         status: String,
@@ -185,6 +187,7 @@ struct Project: Codable, Identifiable, Hashable {
     ) {
         self.id = id
         self.name = name
+        self.icon = icon
         self.summary = summary
         self.focus = focus
         self.status = status
@@ -196,6 +199,7 @@ struct Project: Codable, Identifiable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        icon = try container.decodeIfPresent(String.self, forKey: .icon)
         summary = try container.decode(String.self, forKey: .summary)
         focus = try container.decode(String.self, forKey: .focus)
         status = try container.decode(String.self, forKey: .status)

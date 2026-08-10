@@ -41,6 +41,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { ChatComposer } from './components/ChatComposer'
 import { AgentRunsSidebar, AgentRunsView } from './components/AgentRunsView'
 import { ConversationMessageActions } from './components/ConversationMessageActions'
+import { isProjectImageIcon, ProjectIcon } from './components/ProjectIcon'
 import { ActionMenu, SelectMenu, SuggestionInput } from './components/SelectMenu'
 import { WorkspaceFilesView } from './components/WorkspaceFilesView'
 import { AutomationsView } from './components/AutomationsView'
@@ -764,6 +765,28 @@ function ProjectSettingsView({
           <label>
             <span>项目名称</span>
             <input value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} />
+          </label>
+          <label>
+            <span>项目图标</span>
+            <span className="project-icon-field">
+              <ProjectIcon project={draft} className="is-preview" />
+              {isProjectImageIcon(draft.icon) ? (
+                <>
+                  <span className="project-icon-image-label">当前使用项目 Logo</span>
+                  <button type="button" className="project-icon-remove" onClick={() => setDraft((current) => ({ ...current, icon: null }))}>
+                    移除
+                  </button>
+                </>
+              ) : (
+                <input
+                  value={draft.icon ?? ''}
+                  maxLength={16}
+                  onChange={(event) => setDraft((current) => ({ ...current, icon: event.target.value || null }))}
+                  placeholder="Emoji 或文字；留空使用项目名首字"
+                  aria-label="项目图标"
+                />
+              )}
+            </span>
           </label>
           <div className="project-setting-field">
             <span>状态</span>
@@ -3366,7 +3389,7 @@ export default function App(): React.JSX.Element {
                 setNavigation('inbox')
               }}
             >
-              <span className="project-dot" style={{ background: project.accent }} />
+              <ProjectIcon project={project} className="is-sidebar" />
               {project.name}
             </button>
           ))}

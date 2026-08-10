@@ -182,6 +182,7 @@ export class AppDatabase {
       return {
         id: String(row.id),
         name: String(row.name),
+        icon: row.icon == null || !String(row.icon).trim() ? null : String(row.icon),
         summary: String(row.summary),
         focus: String(row.focus),
         status: row.status as Project['status'],
@@ -210,14 +211,16 @@ export class AppDatabase {
     const workspaces = normalizeWorkspaceRoots(project.profile)
     const normalizedProject: Project = {
       ...project,
+      icon: project.icon?.trim() || null,
       profile: { ...project.profile, ...workspaces }
     }
     const result = this.database.prepare(`
       UPDATE projects
-      SET name = ?, summary = ?, focus = ?, status = ?, accent = ?, profile_json = ?
+      SET name = ?, icon = ?, summary = ?, focus = ?, status = ?, accent = ?, profile_json = ?
       WHERE id = ?
     `).run(
       normalizedProject.name,
+      normalizedProject.icon ?? null,
       normalizedProject.summary,
       normalizedProject.focus,
       normalizedProject.status,
@@ -253,6 +256,7 @@ export class AppDatabase {
       const project: Project = {
         id,
         name: input.name.trim(),
+        icon: input.icon?.trim() || null,
         summary: input.summary.trim(),
         focus: input.focus.trim(),
         status: 'active',
@@ -281,9 +285,9 @@ export class AppDatabase {
       }
       const sortOrder = Number((this.database.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM projects').get() as SqlRow).value)
       this.database.prepare(`
-        INSERT INTO projects (id, name, summary, focus, status, accent, sort_order, profile_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(project.id, project.name, project.summary, project.focus, project.status, project.accent, sortOrder, JSON.stringify(project.profile))
+        INSERT INTO projects (id, name, icon, summary, focus, status, accent, sort_order, profile_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(project.id, project.name, project.icon ?? null, project.summary, project.focus, project.status, project.accent, sortOrder, JSON.stringify(project.profile))
       this.enqueueCompanionEvent('project.created', 'project', project.id, project)
       return project
     })
@@ -1862,6 +1866,7 @@ export class AppDatabase {
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
+        icon TEXT,
         summary TEXT NOT NULL,
         focus TEXT NOT NULL,
         status TEXT NOT NULL,
@@ -2239,6 +2244,9 @@ export class AppDatabase {
     }>
     if (!projectColumns.some((column) => column.name === 'profile_json')) {
       this.database.exec("ALTER TABLE projects ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}'")
+    }
+    if (!projectColumns.some((column) => column.name === 'icon')) {
+      this.database.exec('ALTER TABLE projects ADD COLUMN icon TEXT')
     }
 
     const workAssistantMessageColumns = this.database.prepare('PRAGMA table_info(work_assistant_messages)').all() as Array<{

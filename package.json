@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "electron-vite dev --watch",
     "build": "npm run typecheck && electron-vite build",
-    "postinstall": "install-electron",
+    "postinstall": "install-electron && patch-package",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -50,6 +50,7 @@
     "electron": "43.3.0",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
+    "patch-package": "^8.0.1",
     "typescript": "7.0.2",
     "vite": "7.3.6",
     "vitest": "4.1.10"
@@ -58,6 +59,9 @@
     "appId": "dev.ainative.projectagent",
     "productName": "Project Agent",
     "asar": true,
+    "asarUnpack": [
+      "node_modules/@trycua/cua-driver-darwin-*/**/*"
+    ],
     "files": [
       "out/**/*",
       "package.json"
