@@ -507,7 +507,11 @@ export class MorningBriefingService {
     const clearScope = /(?:退出|结束|清除|取消).{0,8}(?:当前)?(?:任务|上下文|run|session)/i.test(question)
     const lastMessage = previousHistory.at(-1)
     const mentionedProject = projects.find((project) => question.toLocaleLowerCase().includes(project.name.toLocaleLowerCase()))
-    const switchesProject = Boolean(mentionedProject && lastMessage?.taskContext && mentionedProject.id !== lastMessage.taskContext.projectId)
+    const linkedRunProjectId = lastMessage?.linkedRunId
+      ? this.database.listRuns().find((run) => run.id === lastMessage.linkedRunId)?.projectId ?? null
+      : null
+    const previousProjectId = lastMessage?.taskContext?.projectId ?? linkedRunProjectId
+    const switchesProject = Boolean(mentionedProject && previousProjectId && mentionedProject.id !== previousProjectId)
     const taskContext = clearScope ? null : explicitTaskContext ?? (switchesProject ? null : lastMessage?.taskContext ?? null)
     const activeRunId = clearScope || switchesProject || explicitTaskContext ? null : lastMessage?.linkedRunId ?? null
     const now = new Date().toISOString()
@@ -518,7 +522,7 @@ export class MorningBriefingService {
       content: question,
       attachments,
       taskContext,
-      linkedRunId: activeRunId,
+      linkedRunId: null,
       createdAt: now
     })
     const decisions = this.database.listDecisions().filter((item) => item.status !== 'ignored')
@@ -607,7 +611,7 @@ export class MorningBriefingService {
       content,
       attachments: [],
       taskContext,
-      linkedRunId: actionResult?.linkedRunId ?? activeRunId,
+      linkedRunId: actionResult?.linkedRunId ?? null,
       actions: actionResult?.proposals ?? [],
       createdAt: new Date().toISOString()
     })

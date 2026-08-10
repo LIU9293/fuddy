@@ -771,14 +771,7 @@ private struct AssistantMessageView: View {
     }
 
     private var linkedRunIDs: [String] {
-        var result: [String] = []
-        if let linkedRunId = message.linkedRunId { result.append(linkedRunId) }
-        for proposal in message.actions {
-            for option in proposal.options where option.capability == "agent-run.open" {
-                if let runId = option.payload.runId, !result.contains(runId) { result.append(runId) }
-            }
-        }
-        return result
+        workAssistantLinkedRunIDs(for: message)
     }
 
     private func execute(proposal: WorkAssistantActionProposal, option: WorkAssistantActionOption) async {
@@ -797,6 +790,26 @@ private struct AssistantMessageView: View {
         }
         executingProposalID = nil
     }
+}
+
+func workAssistantLinkedRunIDs(for message: WorkAssistantMessage) -> [String] {
+    guard message.role == "assistant" else { return [] }
+
+    var result: [String] = []
+    let acceptedCreateRun = message.actions.contains { proposal in
+        guard proposal.status == "accepted", let acceptedOptionID = proposal.acceptedOptionId else { return false }
+        return proposal.options.first(where: { $0.id == acceptedOptionID })?.capability == "agent-run.create"
+    }
+    if let linkedRunID = message.linkedRunId,
+       message.actions.isEmpty || acceptedCreateRun {
+        result.append(linkedRunID)
+    }
+    for proposal in message.actions {
+        for option in proposal.options where option.capability == "agent-run.open" {
+            if let runID = option.payload.runId, !result.contains(runID) { result.append(runID) }
+        }
+    }
+    return result
 }
 
 private struct WorkAssistantActionCard: View {
@@ -1570,10 +1583,9 @@ private struct ThinkingText: View {
                     .animation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true), value: pulsing)
                     .onAppear { pulsing = true }
             }
-            Text(content)
+            MarkdownText(content)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

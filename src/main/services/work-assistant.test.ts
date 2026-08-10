@@ -118,4 +118,48 @@ describe('Work Assistant task handoff', () => {
     expect(result.assistantMessage.attachments).toEqual([])
     database.close()
   })
+
+  it('does not copy a previous Run link onto later conversation messages', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'work-assistant-run-link-'))
+    directories.push(directory)
+    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const runtime = new OfflineRuntime()
+    const now = '2026-08-10T00:00:00.000Z'
+    database.createAgentRun({
+      id: 'old-roombase-run',
+      projectId: 'roombase',
+      decisionId: null,
+      goalId: null,
+      milestoneId: null,
+      provider: 'claude',
+      title: '处理 Roombase 入驻事项',
+      status: 'idle',
+      sessionId: null,
+      workingDirectory: null,
+      startedAt: now,
+      completedAt: null,
+      summary: '',
+      draftPrompt: null,
+      createdAt: now,
+      updatedAt: now
+    })
+    database.createBriefingMessage({
+      id: 'old-assistant-message',
+      briefingId: null,
+      role: 'assistant',
+      content: '可以通过下方链接打开。',
+      attachments: [],
+      taskContext: null,
+      linkedRunId: 'old-roombase-run',
+      actions: [],
+      createdAt: now
+    })
+    const service = new MorningBriefingService(database, {} as DailyBriefingService, runtime)
+
+    const result = await service.ask(null, '创建一个 Fuddy 的 Agent Run')
+
+    expect(result.userMessage.linkedRunId).toBeNull()
+    expect(result.assistantMessage.linkedRunId).toBeNull()
+    database.close()
+  })
 })

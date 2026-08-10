@@ -46,6 +46,7 @@ import { WorkspaceFilesView } from './components/WorkspaceFilesView'
 import { AutomationsView } from './components/AutomationsView'
 import { normalizeChatMarkdown } from './markdown'
 import { maxChatImages, prepareChatImages } from './chat-attachments'
+import { workAssistantRunIds } from './work-assistant-links'
 import fuddyWordmark from './assets/fuddy-wordmark.png'
 import type {
   AgentPlanEntry,
@@ -1191,17 +1192,6 @@ function WorkAssistantActionCard({
       )}
     </section>
   )
-}
-
-function workAssistantRunIds(message: BriefingMessage): string[] {
-  const runIds = new Set<string>()
-  if (message.linkedRunId) runIds.add(message.linkedRunId)
-  for (const proposal of message.actions ?? []) {
-    for (const option of proposal.options) {
-      if (option.capability === 'agent-run.open') runIds.add(option.payload.runId)
-    }
-  }
-  return [...runIds]
 }
 
 function workAssistantMessageContent(message: BriefingMessage): string {

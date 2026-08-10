@@ -39,6 +39,18 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(message.linkedRunId, "r1")
     }
 
+    func testWorkAssistantRunCardDoesNotLeakOntoLaterUserMessages() throws {
+        let json = #"{"id":"m1","briefingId":null,"role":"user","content":"创建 Fuddy Run","attachments":[],"linkedRunId":"old-roombase-run","createdAt":"2026-08-07T00:00:00.000Z"}"#
+        let message = try JSONDecoder().decode(WorkAssistantMessage.self, from: Data(json.utf8))
+        XCTAssertEqual(workAssistantLinkedRunIDs(for: message), [])
+    }
+
+    func testPendingCreateRunDoesNotDisplayAStaleLinkedRun() throws {
+        let json = #"{"id":"m1","briefingId":null,"role":"assistant","content":"请确认","attachments":[],"linkedRunId":"old-roombase-run","actions":[{"id":"p1","title":"创建 Run","description":"确认后创建","status":"pending","context":null,"options":[{"id":"create","label":"创建并打开","style":"primary","capability":"agent-run.create","payload":{"runId":null,"draftPrompt":"开始","projectId":"fuddy","decisionId":null,"goalId":null,"milestoneId":null,"title":"Fuddy 任务","name":null,"summary":null,"focus":null,"mission":null,"vision":null,"productType":null,"stage":null,"websiteUrl":null,"workspacePath":null,"defaultAgent":null}}],"acceptedOptionId":null,"createdAt":"2026-08-07T00:00:00.000Z","resolvedAt":null}],"createdAt":"2026-08-07T00:00:00.000Z"}"#
+        let message = try JSONDecoder().decode(WorkAssistantMessage.self, from: Data(json.utf8))
+        XCTAssertEqual(workAssistantLinkedRunIDs(for: message), [])
+    }
+
     func testProjectDecodesCurrentProfileAndLegacyCache() throws {
         let current = #"{"id":"roombase","name":"Roombase","summary":"Summary","focus":"Focus","status":"active","accent":"indigo","profile":{"productType":"SaaS","stage":"Growth","mission":"","vision":"","repoPath":"/code/room","workspaceRoots":[{"id":"primary","label":"Room","path":"/code/room"}],"primaryWorkspaceRootId":"primary","defaultAgent":"claude","websiteUrl":"https://example.com","surfaces":["Dashboard"],"focusAreas":[],"dataSources":[],"nextMoves":[],"currentState":{"summary":"","facts":[],"source":"user","updatedAt":null}}}"#
         let decoded = try JSONDecoder().decode(Project.self, from: Data(current.utf8))
