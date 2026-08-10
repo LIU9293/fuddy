@@ -37,12 +37,12 @@ The Mac database is authoritative.
 2. `CompanionSyncService` uploads pending events in insertion order. Failed events remain in the outbox with attempt count and error.
 3. The Durable Object assigns a monotonic sequence number and broadcasts the event.
 4. iOS asks for `events?after=<lastSequence>`, applies idempotent upserts, then atomically saves its cache.
-5. A phone action creates a command with a client UUID. The Mac stores that command before execution, so reconnects cannot execute a terminal command twice.
+5. A phone action creates a command with a client UUID. The Mac stores that command before execution, so reconnects cannot execute a terminal command twice. Every command transition is monotonic, and each update is also persisted to the ordered event log so an offline phone can recover completion or failure.
 6. Mac execution writes normal application mutations, which return through the same outbox as evidence of the result.
 
-The WebSocket is a wake-up hint, not the source of truth. Both clients replay the ordered HTTP event log after reconnecting. Mac also polls every two seconds while configured.
+The WebSocket is a wake-up hint, not the source of truth. Both clients replay the ordered HTTP event log after reconnecting, on launch or foreground activation, and when the user refreshes. While connected, Mac and foreground iOS rely on WebSocket notifications and retain only a 60-second replay fallback. Both clients send an application-level heartbeat every 20 seconds; one missed `pong` discards the stale socket and starts the 5, 15, then 60-second reconnect backoff instead of leaving a half-open connection marked as healthy. When iOS enters the background it explicitly cancels the fallback timer and closes the socket; foreground activation reconnects and immediately replays from the last persisted sequence.
 
-Each event page also carries current Durable Object presence. The iPhone distinguishes “Relay unreachable” from “Relay connected but Mac offline”; commands may still be queued in the second state and will execute when the Mac reconnects.
+Each event page and WebSocket presence frame also carries current Durable Object presence. The iPhone updates presence directly from `sync.ready` and `presence.updated`, and distinguishes “Relay unreachable” from “Relay connected but Mac offline”; commands may still be queued in the second state and will execute when the Mac reconnects. The Mac settings UI reports HTTP replay and realtime WebSocket health separately so a successful replay cannot hide a stale socket.
 
 ## Pairing and authentication
 
@@ -56,9 +56,11 @@ Each event page also carries current Durable Object presence. The iPhone disting
 
 Current transport is HTTPS and private Cloudflare storage. Before distributing the app beyond trusted personal devices, add application-layer end-to-end encryption so Cloudflare stores opaque event and attachment ciphertext, plus abuse protection or authenticated account creation on the public pairing endpoint.
 
+The current personal-device MVP retains ordered events, terminal commands, and R2 attachments until the Mac disconnects the account. Before long-lived multi-user rollout, add per-device replay acknowledgements, snapshot compaction, and attachment retention/garbage collection; deleting history without an acknowledged snapshot would create silent gaps for an offline phone.
+
 ## Foreground and background delivery
 
-While iOS is active, `URLSessionWebSocketTask` receives immediate event notifications and the app replays the event log. A WebSocket is not a reliable suspended-app channel. The relay therefore supports registering an APNs token and sending a collapsed, content-free background notification when an event arrives. iOS then fetches the event log.
+While iOS is active, `URLSessionWebSocketTask` receives immediate event notifications and the app replays the event log. A WebSocket is not a reliable suspended-app channel. The relay therefore sends a collapsed, content-free background notification only to iOS devices without an active socket. iOS then fetches the event log; invalid or unregistered APNs tokens are removed after provider rejection.
 
 Apple explicitly treats background notifications as low priority and does not guarantee delivery; they can be throttled. Therefore the app always refreshes on foreground entry and manual pull-to-refresh as well. See [Pushing background updates to your app](https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app).
 
@@ -78,10 +80,12 @@ Set `APNS_ENVIRONMENT` as a non-secret Worker variable (`development` or `produc
 
 Agent-generated files already become `AgentRunArtifact` records on Mac. Work Assistant image attachments use the same transport instead of syncing their inline `data:` URLs. During sync:
 
-1. Mac resolves the artifact relative to the Run working directory and rejects paths outside it.
+1. Mac first resolves project artifacts inside the registered project file space, then falls back to the Run working directory for coding-Agent artifacts; both paths enforce containment and reject missing files, directories, and traversal attempts.
 2. Files up to 100 MiB are streamed to a private R2 object under the account ID. The initial pairing snapshot uploads existing Run artifacts too, so historical Sessions are not display-only.
 3. The event contains filename, MIME type, size, SHA-256, and artifact linkage; it never exposes a local Mac path as a downloadable URL.
 4. iOS downloads with its device token, verifies the expected byte length and SHA-256 before moving the file into Caches, and opens the local file with Quick Look. Image, PDF, text, and video types use native previews.
+
+The initial pairing snapshot still uploads descriptors and bytes for historical artifacts. If an artifact descriptor is missing later, the Session's “信息与文件” Modal sends the persisted `artifact.request-upload` command. An online Mac resolves and streams that one file, then returns its verified descriptor through the durable `command.updated` event; WebSocket delivery is only the fast wake-up path and ordered replay remains the fallback. The chat timeline itself does not duplicate the artifact list.
 
 The local path remains visible only as descriptive metadata. R2 objects are not public and cannot be enumerated without a valid paired device token. iOS preserves the original filename extension in its private cache so Quick Look can select the correct native previewer.
 
@@ -91,7 +95,7 @@ The local path remains visible only as descriptive metadata. R2 objects are not 
 - `RelayClient`: pairing, authenticated REST calls, WebSocket wake-ups, push-token registration, and attachment downloads.
 - `KeychainStore`: device credentials.
 - `WorkAssistantView`: the cross-project assistant timeline and constrained remote message command.
-- `RunsListView` / `RunDetailView`: persistent Session list and native chat UI; active runs show a spinner; tool calls use collapsed `DisclosureGroup` rows.
+- `RunsListView` / `RunDetailView`: persistent Session list and native chat UI; active runs show a spinner; tool calls use collapsed `DisclosureGroup` rows; Session metadata and artifacts live in the top-right “信息与文件” Modal instead of the message timeline.
 - `DecisionListView`: inbox and constrained status commands.
 - `ProjectDetailView`: project status, goals, progress, and milestones from the same Mac snapshot/event log.
 - `ArtifactRow`: authenticated download and `QLPreviewController` presentation.

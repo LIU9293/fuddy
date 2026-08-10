@@ -47,6 +47,7 @@ describe('CompanionSyncService live relay', () => {
       startedAt: now,
       completedAt: null,
       summary: 'Ready',
+      draftPrompt: null,
       createdAt: now,
       updatedAt: now
     })
@@ -142,6 +143,22 @@ describe('CompanionSyncService live relay', () => {
     expect(commandResponse.status).toBe(201)
     await service.syncNow()
     expect(database.getAgentRun('companion-live-run').title).toBe('Renamed from iPhone')
+
+    const project = database.listProjects()[0]
+    const projectCommandResponse = await fetch(authenticatedUrl('/v1/commands', pairingPayload.accountId, phoneId), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.deviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId: crypto.randomUUID(),
+        protocolVersion: 1,
+        type: 'project.update',
+        payload: { project: { ...project, focus: 'Updated from iPhone' } },
+        createdAt: new Date().toISOString()
+      })
+    })
+    expect(projectCommandResponse.status).toBe(201)
+    await service.syncNow()
+    expect(database.listProjects().find((item) => item.id === project.id)?.focus).toBe('Updated from iPhone')
     expect(service.getStatus().pendingEvents).toBe(0)
     await service.disconnect()
     database.close()

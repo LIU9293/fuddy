@@ -198,7 +198,7 @@ export function buildRoombaseDailySignals(
 
 function buildAgentPrompt(
   data: Record<string, unknown>,
-  currentInbox: Array<Pick<DecisionItem, 'id' | 'dedupeKey' | 'title' | 'summary' | 'lastSeenAt'>>
+  currentInbox: Array<Pick<DecisionItem, 'id' | 'dedupeKey' | 'title' | 'summary' | 'status' | 'waitingReason' | 'resolutionSummary' | 'lastSeenAt'>>
 ): string {
   return `你是 Roombase 的每日项目助理。请根据下面由只读 SQL 已计算好的聚合数据，写一份中文每日项目总结。
 
@@ -207,7 +207,7 @@ function buildAgentPrompt(
 - 核心变化必须优先对比此前 7 个完整自然日均值，也可补充前一日。
 - firstBookingUsers 不是同日注册转化率，不得写成转化率。
 - 小绝对值噪音不要升级成风险。
-- “当前收件箱”中的持续问题不是今天的新问题；如果今天仍存在，要写成继续跟进，并引用最新证据更新描述。
+- “相关历史事项”包含待处理、进行中、等待中和已完成记录；同一 dedupeKey 不是今天的新问题。如果新证据与已完成状态冲突，应描述为问题仍存在或重新出现。
 - 不要因为今天没有新动作就重复创建建议，也不要仅凭缺少数据宣称问题已经完成。
 - 最多 3 个发现、3 个动作，明确哪些原因仍未知。
 - 输出 Markdown。第一段使用引用块写一句结论，然后是“关键变化”“今天建议”“口径提醒”。
@@ -215,7 +215,7 @@ function buildAgentPrompt(
 聚合数据：
 ${JSON.stringify(data, null, 2)}
 
-当前收件箱：
+相关历史事项：
 ${JSON.stringify(currentInbox, null, 2)}`
 }
 
@@ -256,12 +256,15 @@ export class DailyBriefingService {
       if (this.agentRuntime.isConfigured()) {
         try {
           const currentInbox = this.database.listDecisions()
-            .filter((item) => item.projectId === projectId && item.status === 'inbox')
+            .filter((item) => item.projectId === projectId)
             .map((item) => ({
               id: item.id,
               dedupeKey: item.dedupeKey,
               title: item.title,
               summary: item.summary,
+              status: item.status,
+              waitingReason: item.waitingReason,
+              resolutionSummary: item.resolutionSummary,
               lastSeenAt: item.lastSeenAt
             }))
           body = await this.agentRuntime.run(buildAgentPrompt(data, currentInbox))

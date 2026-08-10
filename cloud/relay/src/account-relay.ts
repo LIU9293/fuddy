@@ -58,6 +58,13 @@ interface SocketAttachment {
   role: CompanionDeviceRole
 }
 
+interface PushDeviceRow extends Record<string, SqlStorageValue> {
+  id: string
+  push_token: string
+}
+
+const lastSeenWriteIntervalMs = 5 * 60_000
+
 function randomToken(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength)
   crypto.getRandomValues(bytes)
@@ -136,6 +143,8 @@ function mapCommand(row: CommandRow): CompanionCommand {
 }
 
 export class AccountRelay extends DurableObject<Env> {
+  private apnsAuthorization: { value: string; expiresAt: number } | null = null
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.ctx.storage.sql.exec(`
@@ -228,12 +237,12 @@ export class AccountRelay extends DurableObject<Env> {
   async claimPairing(input: CompanionPairingClaimInput): Promise<
     { result: CompanionPairingClaimResult; error: null } | { result: null; error: string }
   > {
+    const suppliedHash = await secretHash(input.pairingSecret)
     const pairing = this.ctx.storage.sql.exec<{
       secret_hash: string
       expires_at: string
       claimed_at: string | null
     }>('SELECT secret_hash, expires_at, claimed_at FROM pairing WHERE id = 1').toArray()[0]
-    const suppliedHash = await secretHash(input.pairingSecret)
     if (!pairing || pairing.claimed_at || Date.parse(pairing.expires_at) <= Date.now() || !secretsEqual(pairing.secret_hash, suppliedHash)) {
       return { result: null, error: '配对信息无效或已经过期。' }
     }
@@ -264,14 +273,16 @@ export class AccountRelay extends DurableObject<Env> {
   }
 
   async authorize(deviceId: string, token: string, requiredRole?: CompanionDeviceRole): Promise<CompanionDevice | null> {
+    const suppliedHash = await secretHash(token)
     const row = this.ctx.storage.sql.exec<DeviceRow>(
       'SELECT * FROM devices WHERE id = ? AND revoked_at IS NULL',
       deviceId
     ).toArray()[0]
-    const suppliedHash = await secretHash(token)
     if (!row || !secretsEqual(row.token_hash, suppliedHash) || (requiredRole && row.role !== requiredRole)) {
       return null
     }
+    const previousLastSeen = row.last_seen_at ? Date.parse(row.last_seen_at) : 0
+    if (Date.now() - previousLastSeen < lastSeenWriteIntervalMs) return mapDevice(row)
     const lastSeenAt = new Date().toISOString()
     this.ctx.storage.sql.exec('UPDATE devices SET last_seen_at = ? WHERE id = ?', lastSeenAt, deviceId)
     return { ...mapDevice(row), lastSeenAt }
@@ -279,27 +290,8 @@ export class AccountRelay extends DurableObject<Env> {
 
   async appendEvent(deviceId: string, token: string, input: CompanionSyncEventInput): Promise<CompanionSyncEvent> {
     await this.requireAuthorization(deviceId, token, 'mac')
-    this.ctx.storage.sql.exec(
-      `INSERT OR IGNORE INTO events (
-        event_id, protocol_version, type, entity_type, entity_id, revision,
-        payload_json, source_device_id, occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      input.eventId,
-      input.protocolVersion,
-      input.type,
-      input.entityType,
-      input.entityId,
-      input.revision,
-      JSON.stringify(input.payload),
-      deviceId,
-      input.occurredAt
-    )
-    const event = mapEvent(this.ctx.storage.sql.exec<EventRow>(
-      'SELECT * FROM events WHERE event_id = ?',
-      input.eventId
-    ).one())
-    this.broadcast({ type: 'sync.event', event })
-    this.ctx.waitUntil(this.sendBackgroundPush(event))
+    const { event, inserted } = this.persistEvent(input, deviceId)
+    if (inserted) this.notifyEvent(event, true)
     return event
   }
 
@@ -320,11 +312,11 @@ export class AccountRelay extends DurableObject<Env> {
 
   async createCommand(deviceId: string, token: string, input: CompanionCommandInput): Promise<CompanionCommand> {
     await this.requireAuthorization(deviceId, token, 'ios')
-    this.ctx.storage.sql.exec(
+    const inserted = this.ctx.storage.sql.exec<CommandRow>(
       `INSERT OR IGNORE INTO commands (
         command_id, protocol_version, type, payload_json, source_device_id,
         status, result_json, error, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'queued', NULL, NULL, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, 'queued', NULL, NULL, ?, ?) RETURNING *`,
       input.commandId,
       input.protocolVersion,
       input.type,
@@ -332,12 +324,11 @@ export class AccountRelay extends DurableObject<Env> {
       deviceId,
       input.createdAt,
       input.createdAt
-    )
-    const command = mapCommand(this.ctx.storage.sql.exec<CommandRow>(
-      'SELECT * FROM commands WHERE command_id = ?',
-      input.commandId
+    ).toArray()[0]
+    const command = mapCommand(inserted ?? this.ctx.storage.sql.exec<CommandRow>(
+      'SELECT * FROM commands WHERE command_id = ?', input.commandId
     ).one())
-    this.broadcast({ type: 'command.created', command }, 'role:mac')
+    if (inserted) this.broadcast({ type: 'command.created', command }, 'role:mac')
     return command
   }
 
@@ -355,20 +346,48 @@ export class AccountRelay extends DurableObject<Env> {
     update: CompanionCommandUpdate
   ): Promise<CompanionCommand> {
     await this.requireAuthorization(deviceId, token, 'mac')
+    const existing = this.ctx.storage.sql.exec<CommandRow>(
+      'SELECT * FROM commands WHERE command_id = ?', commandId
+    ).toArray()[0]
+    if (!existing) throw new Error('远程命令不存在。')
+    if (existing.status === 'completed' || existing.status === 'failed') {
+      if (existing.status === update.status) return mapCommand(existing)
+      throw new Error('远程命令已经结束，不能修改状态。')
+    }
+    const allowedTransitions: Record<CompanionCommand['status'], CompanionCommandUpdate['status'][]> = {
+      queued: ['delivered', 'executing', 'completed', 'failed'],
+      delivered: ['executing', 'completed', 'failed'],
+      executing: ['completed', 'failed'],
+      completed: [],
+      failed: []
+    }
+    if (!allowedTransitions[existing.status].includes(update.status)) {
+      throw new Error(`远程命令不能从 ${existing.status} 回退到 ${update.status}。`)
+    }
     const updatedAt = new Date().toISOString()
-    this.ctx.storage.sql.exec(
-      `UPDATE commands SET status = ?, result_json = ?, error = ?, updated_at = ? WHERE command_id = ?`,
+    const updated = this.ctx.storage.sql.exec<CommandRow>(
+      `UPDATE commands SET status = ?, result_json = ?, error = ?, updated_at = ?
+       WHERE command_id = ? RETURNING *`,
       update.status,
       update.result === undefined ? null : JSON.stringify(update.result),
       update.error ?? null,
       updatedAt,
       commandId
-    )
-    const command = mapCommand(this.ctx.storage.sql.exec<CommandRow>(
-      'SELECT * FROM commands WHERE command_id = ?',
-      commandId
-    ).one())
+    ).one()
+    const command = mapCommand(updated)
+    const commandRevision = update.status === 'delivered' ? 1 : update.status === 'executing' ? 2 : 3
+    const { event, inserted } = this.persistEvent({
+      eventId: `${commandId}:${update.status}`,
+      protocolVersion: companionProtocolVersion,
+      type: 'command.updated',
+      entityType: 'command',
+      entityId: commandId,
+      revision: commandRevision,
+      payload: command,
+      occurredAt: updatedAt
+    }, deviceId)
     this.broadcast({ type: 'command.updated', command })
+    if (inserted) this.notifyEvent(event, false)
     return command
   }
 
@@ -439,6 +458,36 @@ export class AccountRelay extends DurableObject<Env> {
     this.broadcastPresence()
   }
 
+  private persistEvent(
+    input: CompanionSyncEventInput,
+    sourceDeviceId: string
+  ): { event: CompanionSyncEvent; inserted: boolean } {
+    const inserted = this.ctx.storage.sql.exec<EventRow>(
+      `INSERT OR IGNORE INTO events (
+        event_id, protocol_version, type, entity_type, entity_id, revision,
+        payload_json, source_device_id, occurred_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+      input.eventId,
+      input.protocolVersion,
+      input.type,
+      input.entityType,
+      input.entityId,
+      input.revision,
+      JSON.stringify(input.payload),
+      sourceDeviceId,
+      input.occurredAt
+    ).toArray()[0]
+    const row = inserted ?? this.ctx.storage.sql.exec<EventRow>(
+      'SELECT * FROM events WHERE event_id = ?', input.eventId
+    ).one()
+    return { event: mapEvent(row), inserted: inserted !== undefined }
+  }
+
+  private notifyEvent(event: CompanionSyncEvent, broadcast: boolean): void {
+    if (broadcast) this.broadcast({ type: 'sync.event', event })
+    this.ctx.waitUntil(this.sendBackgroundPush(event))
+  }
+
   private broadcast(message: CompanionSocketMessage, tag?: string): void {
     const payload = JSON.stringify(message)
     for (const socket of this.ctx.getWebSockets(tag)) {
@@ -466,16 +515,16 @@ export class AccountRelay extends DurableObject<Env> {
 
   private async sendBackgroundPush(event: CompanionSyncEvent): Promise<void> {
     if (!this.env.APNS_TEAM_ID || !this.env.APNS_KEY_ID || !this.env.APNS_PRIVATE_KEY || !this.env.APNS_TOPIC) return
-    const tokens = this.ctx.storage.sql.exec<{ push_token: string }>(`
-      SELECT push_token FROM devices
+    const devices = this.ctx.storage.sql.exec<PushDeviceRow>(`
+      SELECT id, push_token FROM devices
       WHERE role = 'ios' AND revoked_at IS NULL AND push_token IS NOT NULL
-    `).toArray()
-    if (tokens.length === 0) return
-    const jwt = await createApnsJwt(this.env.APNS_TEAM_ID, this.env.APNS_KEY_ID, this.env.APNS_PRIVATE_KEY)
+    `).toArray().filter((device) => this.ctx.getWebSockets(`device:${device.id}`).length === 0)
+    if (devices.length === 0) return
+    const jwt = await this.apnsAuthorizationToken()
     const host = this.env.APNS_ENVIRONMENT === 'production'
       ? 'https://api.push.apple.com'
       : 'https://api.sandbox.push.apple.com'
-    await Promise.all(tokens.map(async ({ push_token: pushToken }) => {
+    await Promise.all(devices.map(async ({ id: deviceId, push_token: pushToken }) => {
       const response = await fetch(`${host}/3/device/${pushToken}`, {
         method: 'POST',
         headers: {
@@ -489,13 +538,32 @@ export class AccountRelay extends DurableObject<Env> {
         body: JSON.stringify({ aps: { 'content-available': 1 }, sequence: event.sequence })
       })
       if (!response.ok) {
+        const body = await response.json().catch(() => null) as { reason?: unknown } | null
+        const reason = typeof body?.reason === 'string' ? body.reason : 'Unknown'
+        if (response.status === 410 || ['BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered'].includes(reason)) {
+          this.ctx.storage.sql.exec('UPDATE devices SET push_token = NULL WHERE id = ?', deviceId)
+        }
         console.error(JSON.stringify({
           message: 'companion APNs delivery failed',
           status: response.status,
-          deviceTokenSuffix: pushToken.slice(-6)
+          reason,
+          deviceId
         }))
       }
     }))
+  }
+
+  private async apnsAuthorizationToken(): Promise<string> {
+    if (this.apnsAuthorization && this.apnsAuthorization.expiresAt > Date.now()) {
+      return this.apnsAuthorization.value
+    }
+    const value = await createApnsJwt(
+      this.env.APNS_TEAM_ID as string,
+      this.env.APNS_KEY_ID as string,
+      this.env.APNS_PRIVATE_KEY as string
+    )
+    this.apnsAuthorization = { value, expiresAt: Date.now() + 50 * 60_000 }
+    return value
   }
 }
 

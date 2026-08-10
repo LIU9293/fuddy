@@ -29,8 +29,12 @@ struct ArtifactRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(downloading)
         .sheet(item: $previewItem) { QuickLookPreview(url: $0.url) }
-        .alert("无法打开附件", isPresented: .constant(error != nil)) {
+        .alert("无法打开附件", isPresented: Binding(
+            get: { error != nil },
+            set: { presented in if !presented { error = nil } }
+        )) {
             Button("好") { error = nil }
         } message: { Text(error ?? "") }
     }
@@ -44,13 +48,114 @@ struct ArtifactRow: View {
     }
 
     private func open() async {
-        guard let attachment = store.attachment(for: artifact.id) else {
-            error = "这个附件尚未从 Mac 上传。"
-            return
-        }
         downloading = true; defer { downloading = false }
-        do { previewItem = PreviewItem(url: try await store.download(attachment)) }
+        do { previewItem = PreviewItem(url: try await store.openArtifact(artifact)) }
         catch { self.error = error.localizedDescription }
+    }
+}
+
+struct RunInfoSheet: View {
+    private enum Tab: String, CaseIterable, Identifiable {
+        case overview = "基本信息"
+        case files = "文件"
+        var id: String { rawValue }
+    }
+
+    @EnvironmentObject private var store: CompanionStore
+    @Environment(\.dismiss) private var dismiss
+    let runID: String
+    @State private var tab: Tab = .overview
+
+    private var detail: RunDetail? { store.state.runs.first { $0.run.id == runID } }
+    private var project: Project? {
+        guard let projectID = detail?.run.projectId else { return nil }
+        return store.state.projects.first { $0.id == projectID }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("Session 信息", selection: $tab) {
+                    ForEach(Tab.allCases) { tab in Text(tab.rawValue).tag(tab) }
+                }
+                .pickerStyle(.segmented)
+                .padding()
+
+                if let detail {
+                    switch tab {
+                    case .overview: overview(detail)
+                    case .files: files(detail)
+                    }
+                } else {
+                    ProgressView("正在同步 Session…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .navigationTitle("Session 信息")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func overview(_ detail: RunDetail) -> some View {
+        List {
+            Section("Session") {
+                LabeledContent("标题", value: detail.run.title)
+                LabeledContent("Agent", value: detail.run.provider)
+                LabeledContent("状态", value: statusLabel(detail.run.status))
+                if !detail.run.summary.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("概览").font(.caption).foregroundStyle(.secondary)
+                        Text(detail.run.summary)
+                    }
+                }
+            }
+            if let project {
+                Section("当前项目") {
+                    LabeledContent("名称", value: project.name)
+                    if !project.summary.isEmpty { Text(project.summary).foregroundStyle(.secondary) }
+                    if !project.focus.isEmpty { LabeledContent("当前重点", value: project.focus) }
+                }
+            }
+            Section("Workspace") {
+                Text(detail.run.workingDirectory ?? "未配置")
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private func files(_ detail: RunDetail) -> some View {
+        List {
+            if detail.artifacts.isEmpty {
+                ContentUnavailableView("暂无文件", systemImage: "doc", description: Text("这个 Session 还没有产物。"))
+            } else {
+                Section("产物 \(detail.artifacts.count)") {
+                    ForEach(detail.artifacts) { artifact in ArtifactRow(artifact: artifact) }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private func statusLabel(_ status: String) -> String {
+        switch status {
+        case "draft": "草稿"
+        case "queued": "等待中"
+        case "running": "运行中"
+        case "completed": "已完成"
+        case "failed": "失败"
+        case "cancelled": "已取消"
+        default: status
+        }
     }
 }
 
@@ -81,7 +186,10 @@ struct RemoteAttachmentRow: View {
         }
         .buttonStyle(.plain)
         .sheet(item: $previewItem) { QuickLookPreview(url: $0.url) }
-        .alert("无法打开附件", isPresented: .constant(error != nil)) {
+        .alert("无法打开附件", isPresented: Binding(
+            get: { error != nil },
+            set: { presented in if !presented { error = nil } }
+        )) {
             Button("好") { error = nil }
         } message: { Text(error ?? "") }
     }

@@ -39,17 +39,76 @@ describe('TaskDispatcher project agent defaults', () => {
       {} as CliAgentRuntime
     )
 
-    const detail = dispatcher.createDraft({ projectId: 'roombase', title: '处理 · 等待平台处理' })
+    const decisionId = database.createDecision({
+      projectId: 'roombase',
+      title: '等待平台处理',
+      summary: '生产仍有等待平台处理的事项。'
+    }).id
+    const detail = dispatcher.createDraft({
+      projectId: 'roombase',
+      decisionId,
+      title: '处理 · 等待平台处理'
+    })
 
     expect(detail.run).toMatchObject({
       projectId: 'roombase',
+      decisionId,
       provider: 'claude',
       workingDirectory: root,
       title: '处理 · 等待平台处理',
       status: 'draft',
       summary: '等待首次消息'
     })
+    expect(detail.run.draftPrompt).toBeNull()
     expect(detail.messages).toEqual([])
+    database.close()
+  })
+
+  it('persists a draft prompt, clears it on first send, and registers changed project files as artifacts', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'project-agent-draft-prompt-'))
+    temporaryDirectories.push(root)
+    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const vows = database.listProjects().find((project) => project.id === 'vows')!
+    database.updateProject({
+      ...vows,
+      profile: {
+        ...vows.profile,
+        repoPath: root,
+        workspaceRoots: [{ id: 'primary', label: 'Vows', path: root }],
+        primaryWorkspaceRootId: 'primary',
+        defaultAgent: 'codex'
+      }
+    })
+    const files = new WorkspaceFilesService(database, join(root, 'files'))
+    const runTurn = vi.fn(async (input: CliAgentTurnInput) => {
+      files.write('vows', 'marketing/social/setup.md', '# 已整理')
+      return { text: '已整理宣传资料。', sessionId: 'draft-session' }
+    })
+    const dispatcher = new TaskDispatcher(
+      database,
+      {} as PiTaskHarness,
+      files,
+      { runTurn } as unknown as CliAgentRuntime
+    )
+    const draft = dispatcher.createDraft({
+      projectId: 'vows',
+      title: '整理社交媒体资料',
+      draftPrompt: '先查找 Logo，再整理小红书和抖音资料。'
+    })
+
+    expect(draft.run.draftPrompt).toContain('查找 Logo')
+    expect(draft.messages).toEqual([])
+
+    const edited = database.updateAgentRunDraftPrompt(draft.run.id, '先复用已有 Logo，再整理两个平台的资料。')
+    expect(edited.draftPrompt).toContain('复用已有 Logo')
+
+    const completed = await dispatcher.sendMessage(draft.run.id, edited.draftPrompt!)
+
+    expect(completed.run.draftPrompt).toBeNull()
+    expect(completed.messages[0]).toMatchObject({ role: 'user', content: expect.stringContaining('复用已有 Logo') })
+    expect(completed.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ relativePath: 'marketing/social/setup.md' })
+    ]))
     database.close()
   })
 
@@ -153,6 +212,7 @@ describe('TaskDispatcher project agent defaults', () => {
       startedAt: timestamp,
       completedAt: null,
       summary: '运行中',
+      draftPrompt: null,
       createdAt: timestamp,
       updatedAt: timestamp
     })
@@ -187,6 +247,7 @@ describe('TaskDispatcher project agent defaults', () => {
       startedAt: timestamp,
       completedAt: null,
       summary: 'Ready',
+      draftPrompt: null,
       createdAt: timestamp,
       updatedAt: timestamp
     })

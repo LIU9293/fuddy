@@ -11,11 +11,12 @@ export class DailyBriefingScheduler {
   constructor(
     private readonly database: AppDatabase,
     private readonly service: MorningBriefingService,
-    private readonly onReady?: (headline: string) => void
+    private readonly onReady?: (headline: string) => void,
+    private readonly onError?: (error: unknown) => void
   ) {}
 
   start(): void {
-    void this.catchUp()
+    void this.catchUp().catch((error: unknown) => this.onError?.(error))
     this.scheduleNext()
   }
 
@@ -37,6 +38,8 @@ export class DailyBriefingScheduler {
       try {
         const result = await this.service.generate()
         if (result.briefing.status === 'completed') this.onReady?.(result.briefing.headline)
+      } catch (error) {
+        this.onError?.(error)
       } finally {
         this.scheduleNext()
       }

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 const relayUrl = process.env.COMPANION_RELAY_URL ?? 'https://project-agent-companion-relay.moghub.workers.dev'
 
@@ -76,12 +76,14 @@ if (!commands.commands.some((command) => command.commandId === commandId)) throw
 
 const attachmentId = randomUUID()
 const attachment = new TextEncoder().encode('Project Agent companion attachment smoke test')
+const attachmentSha256 = createHash('sha256').update(attachment).digest('hex')
 await json(await fetch(authenticatedUrl(`/v1/attachments/${attachmentId}`, pairing.accountId, macDeviceId), {
   method: 'PUT',
   headers: {
     Authorization: `Bearer ${pairing.macToken}`,
     'Content-Type': 'text/plain',
-    'Content-Length': String(attachment.byteLength)
+    'Content-Length': String(attachment.byteLength),
+    'X-Content-SHA256': attachmentSha256
   },
   body: attachment
 }))

@@ -1,4 +1,5 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { DecisionStatus, GoalStatus, PermissionIntent } from '../shared/contracts'
 import { evaluateAggressivePermission } from '../shared/permissions'
@@ -18,53 +19,32 @@ import { listProjectAnalyticsProfileSummaries } from './analytics/project-analyt
 import { ProjectAgentIntegrationService } from './services/project-agent-integration'
 import { discoverCodingAgentModels } from './services/coding-agent-models'
 import { CompanionSyncService } from './services/companion-sync'
+import { createProjectSchema, updateProjectSchema } from '../shared/project-validation'
+import { DecisionRemediationService } from './services/decision-remediation'
+import { collectGitWorkingTreeSummary } from './services/git-working-tree'
+
+const workAssistantImageSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  name: z.string().trim().min(1).max(200),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+  dataUrl: z.string().max(7_100_000)
+}).superRefine((image, context) => {
+  if (!image.dataUrl.startsWith(`data:${image.mimeType};base64,`)) {
+    context.addIssue({ code: 'custom', path: ['dataUrl'], message: '图片数据格式无效' })
+  }
+})
 
 const createDecisionSchema = z.object({
   projectId: z.string().nullable(),
   goalId: z.string().nullable().optional(),
   title: z.string().trim().min(1).max(200),
-  summary: z.string().trim().max(2_000).optional()
-})
-
-const projectProfileSchema = z.object({
-  productType: z.string().trim().min(1).max(200),
-  stage: z.string().trim().min(1).max(200),
-  mission: z.string().trim().min(1).max(2_000),
-  vision: z.string().trim().min(1).max(2_000),
-  repoPath: z.string().trim().max(2_000),
-  workspaceRoots: z.array(z.object({
-    id: z.string().trim().min(1).max(100),
-    label: z.string().trim().min(1).max(200),
-    path: z.string().trim().min(1).max(2_000)
-  })).max(12),
-  primaryWorkspaceRootId: z.string().trim().min(1).max(100).nullable(),
-  defaultAgent: z.enum(['pi', 'codex', 'claude', 'opencode']),
-  websiteUrl: z.url().nullable(),
-  surfaces: z.array(z.string().trim().min(1).max(200)).max(30),
-  focusAreas: z.array(z.string().trim().min(1).max(200)).max(30),
-  dataSources: z.array(z.string().trim().min(1).max(300)).max(50),
-  nextMoves: z.array(z.string().trim().min(1).max(500)).max(30),
-  currentState: z.object({
-    summary: z.string().trim().min(1).max(2_000),
-    facts: z.array(z.string().trim().min(1).max(500)).max(30),
-    source: z.enum(['user', 'agent', 'connector']),
-    updatedAt: z.iso.datetime().nullable()
-  })
-})
-
-const updateProjectSchema = z.object({
-  id: z.string().trim().min(1).max(200),
-  name: z.string().trim().min(1).max(200),
-  summary: z.string().trim().min(1).max(2_000),
-  focus: z.string().trim().min(1).max(500),
-  status: z.enum(['active', 'watching', 'paused']),
-  accent: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-  profile: projectProfileSchema
+  summary: z.string().trim().max(2_000).optional(),
+  attachments: z.array(workAssistantImageSchema).max(4).optional()
 })
 
 const updateDecisionSchema = z.object({
   id: z.string().min(1),
-  status: z.enum(['inbox', 'later', 'resolved'])
+  status: z.enum(['inbox', 'in_progress', 'waiting', 'resolved', 'ignored'])
 })
 
 const permissionIntentSchema = z.object({
@@ -86,6 +66,7 @@ const permissionIntentSchema = z.object({
 const dispatchTaskSchema = z.object({
   requestId: z.string().trim().min(1).max(200),
   projectId: z.string().nullable(),
+  decisionId: z.string().trim().min(1).max(200).nullable().optional(),
   goalId: z.string().nullable().optional(),
   milestoneId: z.string().nullable().optional(),
   provider: z.enum(['pi', 'codex', 'claude', 'opencode']).optional(),
@@ -95,7 +76,8 @@ const dispatchTaskSchema = z.object({
 })
 
 const createAgentRunDraftSchema = dispatchTaskSchema.omit({ requestId: true, prompt: true }).extend({
-  title: z.string().trim().min(1).max(200)
+  title: z.string().trim().min(1).max(200),
+  draftPrompt: z.string().trim().max(20_000).nullable().optional()
 })
 
 const dispatchProjectAgentSchema = z.object({
@@ -107,7 +89,8 @@ const dispatchProjectAgentSchema = z.object({
 const sendAgentRunMessageSchema = z.object({
   requestId: z.string().trim().min(1).max(200),
   runId: z.string().trim().min(1).max(200),
-  prompt: z.string().trim().min(1).max(20_000)
+  prompt: z.string().trim().min(1).max(20_000),
+  attachments: z.array(workAssistantImageSchema).max(4).optional()
 })
 
 const renameAgentRunSchema = z.object({
@@ -180,17 +163,6 @@ const ttsEndpointSchema = z.object({
   apiKey: z.string().trim().max(4_000).optional()
 })
 
-const workAssistantImageSchema = z.object({
-  id: z.string().trim().min(1).max(200),
-  name: z.string().trim().min(1).max(200),
-  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
-  dataUrl: z.string().max(7_100_000)
-}).superRefine((image, context) => {
-  if (!image.dataUrl.startsWith(`data:${image.mimeType};base64,`)) {
-    context.addIssue({ code: 'custom', path: ['dataUrl'], message: '图片数据格式无效' })
-  }
-})
-
 const saveAutomationSchema = z.object({
   id: z.string().trim().min(1).max(200).optional(),
   projectId: z.string().trim().min(1).max(200).nullable(),
@@ -211,6 +183,7 @@ export function registerIpc(
   database: AppDatabase,
   dispatcher: TaskDispatcher,
   connectorRuntime: ConnectorRuntime,
+  decisionRemediationService: DecisionRemediationService,
   credentialVault: CredentialVault,
   dailyBriefingService: DailyBriefingService,
   morningBriefingService: MorningBriefingService,
@@ -222,6 +195,21 @@ export function registerIpc(
   projectAgentIntegration: ProjectAgentIntegrationService,
   companionSync: CompanionSyncService
 ): void {
+  const persistAttachments = (
+    projectId: string | null,
+    scope: string,
+    attachments: z.infer<typeof workAssistantImageSchema>[] = []
+  ): Array<{ label: string; uri: string }> => attachments.map((attachment) => {
+    const safeName = attachment.name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'attachment'
+    const relativePath = `_attachments/${scope}/${attachment.id}-${safeName}`
+    workspaceFiles.writeDataUrl(projectId, relativePath, attachment.dataUrl)
+    const logicalPath = relativePath.split('/').map(encodeURIComponent).join('/')
+    return {
+      label: attachment.name,
+      uri: `project-agent://files/${encodeURIComponent(projectId ?? '_shared')}/${logicalPath}`
+    }
+  })
+
   ipcMain.handle('app:get-bootstrap', () => {
     const settings = providerSettings.getPublicSettings()
     return database.getBootstrap(
@@ -251,16 +239,24 @@ export function registerIpc(
     return database.updateProject(updateProjectSchema.parse(rawInput))
   })
 
+  ipcMain.handle('project:create', (_event, rawInput: unknown) => {
+    return database.createProject(createProjectSchema.parse(rawInput))
+  })
+
   ipcMain.handle('goal:create', (_event, rawInput: unknown) => {
     const input = z.object({
       projectId: z.string().trim().min(1).max(200),
       prompt: z.string().trim().min(1).max(4_000),
+      attachments: z.array(workAssistantImageSchema).max(4).optional(),
       priority: z.enum(['P0', 'P1', 'P2']).optional(),
       status: z.enum(['planned', 'active']).optional()
     }).parse(rawInput)
+    const evidenceRefs = persistAttachments(input.projectId, `goals/${randomUUID()}`, input.attachments)
     return goalTrackingService.createFromPrompt(input.projectId, input.prompt, {
       priority: input.priority,
-      status: input.status
+      status: input.status,
+      attachments: input.attachments,
+      evidenceRefs
     })
   })
 
@@ -284,8 +280,25 @@ export function registerIpc(
     return database.updateGoalPriority(input.id, input.priority)
   })
 
+  const goalMilestoneSchema = z.object({
+    goalId: z.string().trim().min(1).max(200),
+    milestoneId: z.string().trim().min(1).max(200)
+  })
+
+  ipcMain.handle('goal:complete-milestone', (_event, rawInput: unknown) => {
+    const input = goalMilestoneSchema.parse(rawInput)
+    return database.completeGoalMilestone(input.goalId, input.milestoneId)
+  })
+
+  ipcMain.handle('goal:delete-milestone', (_event, rawInput: unknown) => {
+    const input = goalMilestoneSchema.parse(rawInput)
+    return database.deleteGoalMilestone(input.goalId, input.milestoneId)
+  })
+
   ipcMain.handle('decision:create', (_event, rawInput: unknown) => {
-    return database.createDecision(createDecisionSchema.parse(rawInput))
+    const input = createDecisionSchema.parse(rawInput)
+    const evidenceRefs = persistAttachments(input.projectId, `decisions/${randomUUID()}`, input.attachments)
+    return database.createDecision({ ...input, evidenceRefs })
   })
 
   ipcMain.handle('decision:update-status', (_event, rawInput: unknown) => {
@@ -331,6 +344,14 @@ export function registerIpc(
     return database.renameAgentRun(input.id, input.title)
   })
 
+  ipcMain.handle('agent-run:update-draft-prompt', (_event, rawInput: unknown) => {
+    const input = z.object({
+      id: z.string().trim().min(1).max(200),
+      draftPrompt: z.string().max(20_000)
+    }).parse(rawInput)
+    return database.updateAgentRunDraftPrompt(input.id, input.draftPrompt)
+  })
+
   ipcMain.handle('agent-run:archive', (_event, rawId: unknown) => {
     database.archiveAgentRun(z.string().trim().min(1).max(200).parse(rawId))
   })
@@ -351,7 +372,37 @@ export function registerIpc(
       if (!event.sender.isDestroyed()) {
         event.sender.send('agent-run:update', { requestId: input.requestId, runId: input.runId, update })
       }
-    })
+    }, undefined, input.attachments)
+  })
+
+  ipcMain.handle('agent-run:git-summary', async (_event, rawId: unknown) => {
+    const id = z.string().trim().min(1).max(200).parse(rawId)
+    const run = database.getAgentRun(id)
+    if (!run) throw new Error('Agent Run 不存在。')
+    if (!run.workingDirectory) {
+      return {
+        available: false,
+        repoRoot: null,
+        branch: null,
+        head: null,
+        additions: 0,
+        deletions: 0,
+        changedFileCount: 0,
+        changes: [],
+        error: '当前 Session 没有 Workspace。'
+      }
+    }
+    return collectGitWorkingTreeSummary(run.workingDirectory)
+  })
+
+  ipcMain.handle('agent-run:artifact-preview', (_event, rawInput: unknown) => {
+    const input = z.object({
+      runId: z.string().trim().min(1).max(200),
+      artifactId: z.string().trim().min(1).max(200)
+    }).parse(rawInput)
+    const artifact = database.getAgentRunArtifact(input.artifactId)
+    if (!artifact || artifact.runId !== input.runId) throw new Error('Session 产物不存在。')
+    return workspaceFiles.previewArtifact(artifact)
   })
 
   ipcMain.handle('agent-run:approval', (_event, rawInput: unknown) => {
@@ -413,7 +464,10 @@ export function registerIpc(
 
   ipcMain.handle('connector:run-all', (_event, rawProjectId: unknown) => {
     const projectId = z.string().nullable().parse(rawProjectId)
-    return connectorRuntime.runConnectors(projectId)
+    return connectorRuntime.runConnectors(projectId).then(async (result) => {
+      await decisionRemediationService.sync(projectId)
+      return result
+    })
   })
 
   ipcMain.handle('connector:set-enabled', (_event, rawInput: unknown) => {
@@ -461,6 +515,15 @@ export function registerIpc(
         })
       }
     })
+  })
+
+  ipcMain.handle('work-assistant:execute-action', (_event, rawInput: unknown) => {
+    const input = z.object({
+      messageId: z.string().trim().min(1).max(200),
+      proposalId: z.string().trim().min(1).max(200),
+      optionId: z.string().trim().min(1).max(300)
+    }).parse(rawInput)
+    return morningBriefingService.executeAction(input)
   })
 
   ipcMain.handle('provider:configure-agent', (_event, rawInput: unknown) => {

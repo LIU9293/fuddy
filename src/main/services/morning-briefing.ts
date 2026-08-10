@@ -7,6 +7,9 @@ import type {
   BriefingMessage,
   DailyBriefing,
   DecisionItem,
+  ExecuteWorkAssistantActionInput,
+  ExecuteWorkAssistantActionResult,
+  DecisionRemediation,
   GenerateMorningBriefingResult,
   MorningBriefing,
   Project,
@@ -22,6 +25,8 @@ import type { AgentRuntime } from './pi-runtime'
 import type { GoalTrackingService } from './goal-tracking'
 import { buildProjectPulses, type ProjectPulse } from './project-pulse'
 import type { WorkspaceAgentActions } from './workspace-agent-actions'
+import { capabilityPromptCatalog } from './work-assistant-capabilities'
+import type { DecisionRemediationService } from './decision-remediation'
 
 const MAX_NARRATION_CHARACTERS = 620
 const CHINESE_CHARACTERS_PER_SECOND = 4
@@ -61,7 +66,7 @@ function rankDecision(item: DecisionItem): number {
 
 function topDecisions(decisions: DecisionItem[]): DecisionItem[] {
   return decisions
-    .filter((item) => item.status === 'inbox')
+    .filter((item) => item.status === 'inbox' || item.status === 'in_progress' || item.status === 'waiting')
     .sort((a, b) => rankDecision(b) - rankDecision(a) || b.createdAt.localeCompare(a.createdAt))
     .slice(0, 4)
 }
@@ -70,11 +75,13 @@ export function buildMorningBriefingContent(input: {
   reportDate: string
   roombaseBriefing: DailyBriefing | null
   decisions: DecisionItem[]
+  remediations?: DecisionRemediation[]
   projects: Project[]
   goals?: ProjectGoal[]
   runs?: AgentRun[]
   artifacts?: AgentRunArtifact[]
   generatedAt?: string
+  executionWindowStartAt?: string | null
   pulses?: ProjectPulse[]
 }): Pick<MorningBriefing, 'headline' | 'body' | 'narration' | 'estimatedDurationSeconds' | 'signalIds'> {
   const { reportDate, roombaseBriefing, projects } = input
@@ -92,12 +99,14 @@ export function buildMorningBriefingContent(input: {
     projects,
     goals: input.goals ?? [],
     decisions: input.decisions,
+    remediations: input.remediations ?? [],
     runs: input.runs ?? [],
     artifacts: input.artifacts ?? [],
     projectBriefings: roombaseBriefing ? [roombaseBriefing] : [],
     dataSummaries: roombaseLine ? { roombase: roombaseLine } : {},
     reportDate,
-    generatedAt: input.generatedAt ?? `${reportDate}T16:00:00.000Z`
+    generatedAt: input.generatedAt ?? `${reportDate}T16:00:00.000Z`,
+    executionWindowStartAt: input.executionWindowStartAt
   })
   const attention = pulses.filter((pulse) => pulse.status === 'attention')
   const stale = pulses.filter((pulse) => pulse.status === 'stale')
@@ -185,6 +194,8 @@ JSON 结构：
 - 每个项目说明当前焦点、已验证变化、待处理事项和一个今天下一步。
 - 没有业务 Connector 不等于没有内容；可以总结目标、任务、Run 与产物，但不得推测业务变化。
 - 未解决事项即使不是今天新出现的，也要继续提醒；不要声称创建了新的收件箱事项。
+- 如果 Project Pulse 已提供 PR、CI、Review 或发布进度，必须保留对应 PR 编号和“生产问题是否仍存在”的事实，下一步使用 Pulse 给出的当前关口，不得退回最初的排查建议。
+- PR 已提交、CI 通过或已经合并都不等于生产问题解决；只有 Pulse 明确写明生产问题已解除时才能这样表述。
 - narration 是自然的中文口播，最多 ${MAX_NARRATION_CHARACTERS} 个字符、三分钟内；优先讲需要跟进、停滞和有新产物的项目。
 - 只能使用输入事实，不得添加数字、原因、完成状态或用户反馈。
 - headline 最多 80 个中文字符。
@@ -209,6 +220,9 @@ function parseAgentBriefing(
     const narration = typeof parsed.narration === 'string' ? shortenNarration(parsed.narration) : ''
     if (!headline || !body || !narration) return null
     if (!projects.every((project) => body.includes(project.projectName))) return null
+    const requiredPullRequests = [...new Set(projects.flatMap((project) =>
+      `${project.verifiedChanges.join(' ')} ${project.nextAction}`.match(/PR #\d+/g) ?? []))]
+    if (!requiredPullRequests.every((reference) => body.includes(reference))) return null
     return {
       headline: headline.slice(0, 160),
       body,
@@ -228,6 +242,8 @@ function buildQuestionPrompt(input: {
   goals: ProjectGoal[]
   projects: Project[]
   taskContext: WorkAssistantTaskContext | null
+  activeRunId?: string | null
+  toolContext?: string | null
 }): string {
   return `你是用户的工作助理。这个频道用于跨项目讨论、规划和推进工作；每日简报只是频道中的一种上下文，不是对话边界。
 
@@ -237,22 +253,42 @@ function buildQuestionPrompt(input: {
 - 简单问题直接回答；复杂问题才使用短标题或列表，不要机械套模板。
 - 建议必须具体、可执行，并说明最关键的判断依据。
 - 使用提供的项目现状、目标、里程碑、决策和简报上下文；不知道就明确说明。
+- App 已配置的项目 Workspace 和项目文件空间应通过工作助理工具检查；已知项目不要反问用户仓库路径。
+- 工作助理可以创建、查看、重命名、归档和继续 Agent Run。创建 Run 默认只建立草稿并预填首条任务，不自动发送。
+- 工作助理通过统一能力目录工作。只读能力可以直接检查；会改变 App 状态的能力先展示确认 Action；启动 Agent 或归档内容必须由用户明确触发。
+- 如果工具检查已经返回 Action 提案，只解释为什么推荐它，不要声称任务已经开始执行。
+- 项目代码和仓库文件位于 Workspace；Marketing、运营、研究、报告、品牌与宣传素材等代码无关产物位于项目文件空间。
 - 如果有“当前开始的任务”，先确认完成标准，再给出可以立即执行的第一步；不要因为开始任务就把里程碑标记为完成。
 - 不要编造项目数据或原因。
 - 不要输出隐藏思考过程，只给结论、证据和必要说明。
 - 最多 400 个中文字。
 
+能力目录：
+${capabilityPromptCatalog()}
+
 当前开始的任务：
 ${input.taskContext ? JSON.stringify(input.taskContext, null, 2) : '无'}
 
+当前激活的 Agent Run：${input.activeRunId ?? '无'}
+
+本轮工具检查结果：
+${input.toolContext ?? '无'}
+
 项目现状：
 ${JSON.stringify(input.projects.map((project) => ({
-    id: project.id,
-    name: project.name,
-    stage: project.profile.stage,
-    mission: project.profile.mission,
-    vision: project.profile.vision,
-    currentState: project.profile.currentState
+  id: project.id,
+  name: project.name,
+  status: project.status,
+  summary: project.summary,
+  focus: project.focus,
+  stage: project.profile.stage,
+  productType: project.profile.productType,
+  mission: project.profile.mission,
+  vision: project.profile.vision,
+  surfaces: project.profile.surfaces,
+  nextMoves: project.profile.nextMoves,
+  workspaceRoots: project.profile.workspaceRoots.map((root) => ({ id: root.id, label: root.label })),
+  currentState: project.profile.currentState
   })), null, 2)}
 
 最近一份每日简报：
@@ -363,7 +399,8 @@ export class MorningBriefingService {
     private readonly dailyBriefingService: DailyBriefingService,
     private readonly agentRuntime: AgentRuntime,
     private readonly goalTrackingService?: GoalTrackingService,
-    private readonly workspaceAgentActions?: WorkspaceAgentActions
+    private readonly workspaceAgentActions?: WorkspaceAgentActions,
+    private readonly decisionRemediationService?: DecisionRemediationService
   ) {}
 
   async generate(): Promise<GenerateMorningBriefingResult> {
@@ -375,12 +412,20 @@ export class MorningBriefingService {
       // A goal check failure must not prevent the morning briefing from arriving.
     }
     const projectResult = await this.dailyBriefingService.generate('roombase')
+    try {
+      await this.decisionRemediationService?.sync()
+    } catch {
+      // GitHub state is enrichment. Missing remote evidence must not erase the last verified state.
+    }
     const projects = this.database.listProjects().filter((project) => project.status === 'active')
     const decisions = this.database.listDecisions()
+    const remediations = this.database.listDecisionRemediations()
     const goals = this.database.listGoals()
     const runs = this.database.listRuns()
     const artifacts = runs.flatMap((run) => this.database.listAgentRunArtifacts(run.id))
     const roombaseBriefing = projectResult.briefing.status === 'completed' ? projectResult.briefing : null
+    const previousMorningBriefing = this.database.listMorningBriefings()
+      .find((item) => item.status === 'completed' && item.id !== `morning-${reportDate}`) ?? null
     let roombaseLine: string | null = null
     if (roombaseBriefing?.metrics) {
       const data = roombaseBriefing.metrics
@@ -394,22 +439,26 @@ export class MorningBriefingService {
       projects,
       goals,
       decisions,
+      remediations,
       runs,
       artifacts,
       projectBriefings: roombaseBriefing ? [roombaseBriefing] : [],
       dataSummaries: roombaseLine ? { roombase: roombaseLine } : {},
       reportDate,
-      generatedAt
+      generatedAt,
+      executionWindowStartAt: previousMorningBriefing?.generatedAt ?? null
     })
     const deterministicContent = buildMorningBriefingContent({
       reportDate,
       roombaseBriefing,
       decisions,
+      remediations,
       projects,
       goals,
       runs,
       artifacts,
       generatedAt,
+      executionWindowStartAt: previousMorningBriefing?.generatedAt ?? null,
       pulses
     })
     let content = deterministicContent
@@ -452,7 +501,15 @@ export class MorningBriefingService {
     const requestedBriefing = briefingId ? this.database.getMorningBriefingById(briefingId) : null
     if (briefingId && !requestedBriefing) throw new Error('没有找到这份每日简报。')
     const briefing = requestedBriefing ?? this.database.listMorningBriefings().find((item) => item.status === 'completed') ?? null
-    const taskContext = resolveTaskContext(this.database, taskReference)
+    const previousHistory = this.database.listBriefingMessages()
+    const projects = this.database.listProjects()
+    const explicitTaskContext = resolveTaskContext(this.database, taskReference)
+    const clearScope = /(?:退出|结束|清除|取消).{0,8}(?:当前)?(?:任务|上下文|run|session)/i.test(question)
+    const lastMessage = previousHistory.at(-1)
+    const mentionedProject = projects.find((project) => question.toLocaleLowerCase().includes(project.name.toLocaleLowerCase()))
+    const switchesProject = Boolean(mentionedProject && lastMessage?.taskContext && mentionedProject.id !== lastMessage.taskContext.projectId)
+    const taskContext = clearScope ? null : explicitTaskContext ?? (switchesProject ? null : lastMessage?.taskContext ?? null)
+    const activeRunId = clearScope || switchesProject || explicitTaskContext ? null : lastMessage?.linkedRunId ?? null
     const now = new Date().toISOString()
     const userMessage = this.database.createBriefingMessage({
       id: randomUUID(),
@@ -461,31 +518,48 @@ export class MorningBriefingService {
       content: question,
       attachments,
       taskContext,
+      linkedRunId: activeRunId,
       createdAt: now
     })
-    const decisions = this.database.listDecisions().filter((item) => item.status === 'inbox')
+    const decisions = this.database.listDecisions().filter((item) => item.status !== 'ignored')
     const history = this.database.listBriefingMessages()
     const goals = this.database.listGoals()
-    const projects = this.database.listProjects()
     let content: string
     const recentImages = history
       .slice(-6)
       .flatMap((message) => message.attachments)
       .slice(-4)
     const actionResult = attachments.length === 0
-      ? await this.workspaceAgentActions?.tryExecute(question)
+      ? await this.workspaceAgentActions?.tryExecuteDetailed(question, taskContext, activeRunId)
       : null
     if (actionResult) {
-      content = actionResult
-      onUpdate({
-        sessionUpdate: 'agent_message_chunk',
-        messageId: randomUUID(),
-        content: { type: 'text', text: content }
-      })
+      if (actionResult.requiresSynthesis && this.agentRuntime.isConfigured()) {
+        try {
+          content = await this.agentRuntime.runStream(
+            buildQuestionPrompt({ briefing, question, decisions, history, goals, projects, taskContext, activeRunId, toolContext: actionResult.toolContext }),
+            onUpdate,
+            recentImages
+          )
+        } catch {
+          content = actionResult.content
+          onUpdate({
+            sessionUpdate: 'agent_message_chunk',
+            messageId: randomUUID(),
+            content: { type: 'text', text: content }
+          })
+        }
+      } else {
+        content = actionResult.content
+        onUpdate({
+          sessionUpdate: 'agent_message_chunk',
+          messageId: randomUUID(),
+          content: { type: 'text', text: content }
+        })
+      }
     } else if (this.agentRuntime.isConfigured()) {
       try {
         content = await this.agentRuntime.runStream(
-          buildQuestionPrompt({ briefing, question, decisions, history, goals, projects, taskContext }),
+          buildQuestionPrompt({ briefing, question, decisions, history, goals, projects, taskContext, activeRunId }),
           onUpdate,
           recentImages
         )
@@ -533,8 +607,15 @@ export class MorningBriefingService {
       content,
       attachments: [],
       taskContext,
+      linkedRunId: actionResult?.linkedRunId ?? activeRunId,
+      actions: actionResult?.proposals ?? [],
       createdAt: new Date().toISOString()
     })
     return { userMessage, assistantMessage }
+  }
+
+  executeAction(input: ExecuteWorkAssistantActionInput): ExecuteWorkAssistantActionResult {
+    if (!this.workspaceAgentActions) throw new Error('工作助理能力尚未初始化。')
+    return this.workspaceAgentActions.executeProposal(input)
   }
 }

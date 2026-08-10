@@ -46,6 +46,7 @@ export interface CompanionPairingClaimResult {
 }
 
 export type CompanionEntityType =
+  | 'command'
   | 'snapshot'
   | 'project'
   | 'goal'
@@ -53,6 +54,7 @@ export type CompanionEntityType =
   | 'agent-run'
   | 'agent-message'
   | 'artifact'
+  | 'morning-briefing'
   | 'work-assistant-message'
 
 export interface CompanionSyncEventInput<TPayload = unknown> {
@@ -73,10 +75,15 @@ export interface CompanionSyncEvent<TPayload = unknown> extends CompanionSyncEve
 
 export type CompanionCommandType =
   | 'assistant.send-message'
+  | 'assistant.execute-action'
   | 'agent.send-message'
   | 'agent.rename-session'
+  | 'agent.update-draft-prompt'
   | 'agent.archive-session'
+  | 'artifact.request-upload'
   | 'decision.update-status'
+  | 'decision.handle'
+  | 'project.update'
 
 export type CompanionCommandStatus = 'queued' | 'delivered' | 'executing' | 'completed' | 'failed'
 
@@ -148,11 +155,14 @@ export interface CompanionMacConfiguration {
 }
 
 export type CompanionConnectionState = 'not-configured' | 'connecting' | 'connected' | 'disconnected' | 'error'
+export type CompanionRealtimeConnectionState = 'disconnected' | 'connecting' | 'connected'
 
 export interface CompanionMacStatus {
   configuration: CompanionMacConfiguration | null
   state: CompanionConnectionState
+  realtimeState: CompanionRealtimeConnectionState
   lastConnectedAt: string | null
+  lastSyncedAt: string | null
   lastError: string | null
   pendingEvents: number
 }
@@ -173,6 +183,7 @@ export interface CompanionSnapshotPayload {
   projects: unknown[]
   goals: unknown[]
   decisions: unknown[]
+  morningBriefings: unknown[]
   workAssistantMessages: unknown[]
   attachments: CompanionAttachmentDescriptor[]
   runs: Array<{

@@ -4,6 +4,7 @@ import type { AgentApprovalDecision, AgentApprovalRequest, AgentRunProvider, Age
 import { resolveCliBinary } from './cli-executables'
 import type { ProviderSettingsService } from './provider-settings'
 import type { McpServerLaunchConfig } from './third-party-mcp-runtime'
+import { buildAgentStoragePolicy } from './agent-runtime-context'
 
 export interface McpLaunchConfigProvider {
   getLaunchConfigs(scope?: string): Promise<McpServerLaunchConfig[]>
@@ -60,13 +61,17 @@ export function codexReasoningSummaryDelta(method: string, params: JsonRecord): 
   return method === 'item/reasoning/summaryTextDelta' ? streamTextValue(params.delta) : ''
 }
 
+export function codexReasoningSegmentId(params: JsonRecord): string | undefined {
+  return textValue(params.itemId) || textValue(params.item_id) || undefined
+}
+
 function recordSessionId(record: JsonRecord): string | null {
   return textValue(record.thread_id) || textValue(record.session_id) || textValue(record.sessionID) || null
 }
 
 function codexRecord(record: JsonRecord): {
   assistant?: string
-  tool?: { name: string; detail: string }
+  tool?: { id?: string; name: string; detail: string }
 } {
   const item = record.item && typeof record.item === 'object' ? record.item as JsonRecord : null
   if (!item) return {}
@@ -75,15 +80,20 @@ function codexRecord(record: JsonRecord): {
   if (itemType === 'command_execution') {
     const command = textValue(item.command)
     const output = textValue(item.aggregated_output)
-    return { tool: { name: 'command', detail: [command, output].filter(Boolean).join('\n').slice(0, 4_000) } }
+    return { tool: { id: textValue(item.id) || undefined, name: 'command', detail: [command, output].filter(Boolean).join('\n').slice(0, 4_000) } }
   }
   if (itemType && itemType !== 'reasoning') {
-    return { tool: { name: itemType, detail: textValue(item.text) || textValue(item.status) || itemType } }
+    return { tool: { id: textValue(item.id) || undefined, name: itemType, detail: textValue(item.text) || textValue(item.status) || itemType } }
   }
   return {}
 }
 
-export function claudeRecord(record: JsonRecord): { assistant?: string; reasoning?: string; tool?: { name: string; detail: string } } {
+export function claudeRecord(record: JsonRecord): {
+  assistant?: string
+  reasoning?: string
+  reasoningSegmentId?: string
+  tool?: { id?: string; name: string; detail: string }
+} {
   if (record.type === 'result') return { assistant: textValue(record.result) }
   if (record.type === 'assistant' && record.message && typeof record.message === 'object') {
     const content = (record.message as JsonRecord).content
@@ -102,17 +112,23 @@ export function claudeRecord(record: JsonRecord): { assistant?: string; reasonin
     if (event.type === 'content_block_delta' && event.delta && typeof event.delta === 'object') {
       const delta = event.delta as JsonRecord
       if (delta.type === 'text_delta') return { assistant: streamTextValue(delta.text) }
-      if (delta.type === 'thinking_delta') return { reasoning: streamTextValue(delta.thinking) }
+      if (delta.type === 'thinking_delta') {
+        const index = typeof event.index === 'number' ? event.index : null
+        return {
+          reasoning: streamTextValue(delta.thinking),
+          ...(index === null ? {} : { reasoningSegmentId: `claude-thinking-${index}` })
+        }
+      }
     }
   }
   return {}
 }
 
-function opencodeRecord(record: JsonRecord): { assistant?: string; tool?: { name: string; detail: string } } {
+function opencodeRecord(record: JsonRecord): { assistant?: string; tool?: { id?: string; name: string; detail: string } } {
   const part = record.part && typeof record.part === 'object' ? record.part as JsonRecord : record
   if (part.type === 'text') return { assistant: textValue(part.text) }
   if (part.type === 'tool') {
-    return { tool: { name: textValue(part.tool) || 'tool', detail: JSON.stringify(part.state ?? part).slice(0, 4_000) } }
+    return { tool: { id: textValue(part.id) || undefined, name: textValue(part.tool) || 'tool', detail: JSON.stringify(part.state ?? part).slice(0, 4_000) } }
   }
   return {}
 }
@@ -149,7 +165,7 @@ export function buildCliArgs(input: CliAgentTurnInput, mcpServers: McpServerLaun
           ...(server.env ? { env: server.env } : {})
         }]))
       }),
-      '--append-system-prompt', `这是 Project Agent 中的代码 Session。工作目录是 ${input.workingDirectory}，项目产物目录是 ${input.filesDirectory}。`,
+      '--append-system-prompt', `这是 Project Agent 中的持续 Agent Run。\n\n${buildAgentStoragePolicy(input)}`,
       ...session,
       ...additionalDirectories.flatMap((directory) => ['--add-dir', directory]),
       '--tools', 'default',
@@ -280,7 +296,11 @@ export class CliAgentRuntime {
         input.onSessionId(found)
       }
       const parsed = claudeRecord(record)
-      if (parsed.reasoning) input.onUpdate({ type: 'reasoning_delta', delta: parsed.reasoning })
+      if (parsed.reasoning) input.onUpdate({
+        type: 'reasoning_delta',
+        segmentId: parsed.reasoningSegmentId,
+        delta: parsed.reasoning
+      })
       if (record.type === 'assistant' && record.message && typeof record.message === 'object') {
         const content = (record.message as JsonRecord).content
         if (Array.isArray(content)) {
@@ -290,7 +310,13 @@ export class CliAgentRuntime {
             if (tool.type !== 'tool_use') continue
             const name = textValue(tool.name) || 'tool'
             const detail = JSON.stringify(tool.input ?? {}).slice(0, 4_000)
-            input.onUpdate({ type: 'tool', toolName: name, status: 'running', detail })
+            input.onUpdate({
+              type: 'tool',
+              toolCallId: textValue(tool.id) || undefined,
+              toolName: name,
+              status: 'running',
+              detail
+            })
             input.onTool(name, detail, tool)
           }
         }
@@ -385,17 +411,39 @@ export class CliAgentRuntime {
         }
         const params = record.params && typeof record.params === 'object' ? record.params as JsonRecord : {}
         const reasoningDelta = codexReasoningSummaryDelta(method, params)
-        if (reasoningDelta) input.onUpdate({ type: 'reasoning_delta', delta: reasoningDelta })
+        if (reasoningDelta) input.onUpdate({
+          type: 'reasoning_delta',
+          segmentId: codexReasoningSegmentId(params),
+          delta: reasoningDelta
+        })
         if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
           streamedText += params.delta
           input.onUpdate({ type: 'message_delta', messageId: `stream-${sessionId ?? 'new'}`, delta: params.delta })
+        }
+        if (method === 'item/started' && params.item && typeof params.item === 'object') {
+          const item = params.item as JsonRecord
+          if (item.type === 'commandExecution') {
+            input.onUpdate({
+              type: 'tool',
+              toolCallId: textValue(item.id) || undefined,
+              toolName: 'command',
+              status: 'running',
+              detail: textValue(item.command) || '正在执行命令'
+            })
+          }
         }
         if (method === 'item/completed' && params.item && typeof params.item === 'object') {
           const item = params.item as JsonRecord
           if (item.type === 'agentMessage' && !streamedText && typeof item.text === 'string') streamedText = item.text
           if (item.type === 'commandExecution') {
             const detail = [textValue(item.command), textValue(item.aggregatedOutput)].filter(Boolean).join('\n').slice(0, 4_000)
-            input.onUpdate({ type: 'tool', toolName: 'command', status: item.status === 'failed' ? 'failed' : 'completed', detail })
+            input.onUpdate({
+              type: 'tool',
+              toolCallId: textValue(item.id) || undefined,
+              toolName: 'command',
+              status: item.status === 'failed' ? 'failed' : 'completed',
+              detail
+            })
             input.onTool('command', detail, item)
           }
         }
@@ -440,7 +488,7 @@ export class CliAgentRuntime {
               cwd: input.workingDirectory, approvalPolicy: CODEX_APPROVAL_POLICY, sandbox: CODEX_THREAD_SANDBOX,
               ...(input.model ? { model: input.model } : {}),
               runtimeWorkspaceRoots,
-              developerInstructions: `这是 Project Agent 中的代码 Session。项目产物目录是 ${input.filesDirectory}。`
+              developerInstructions: `这是 Project Agent 中的持续 Agent Run。\n\n${buildAgentStoragePolicy(input)}`
             })
         const thread = threadResult.thread && typeof threadResult.thread === 'object' ? threadResult.thread as JsonRecord : {}
         const found = textValue(thread.id) || input.sessionId
@@ -506,7 +554,13 @@ export class CliAgentRuntime {
             ? claudeRecord(record)
             : opencodeRecord(record)
         if (parsed.tool) {
-          input.onUpdate({ type: 'tool', toolName: parsed.tool.name, status: 'completed', detail: parsed.tool.detail })
+          input.onUpdate({
+            type: 'tool',
+            toolCallId: parsed.tool.id,
+            toolName: parsed.tool.name,
+            status: 'completed',
+            detail: parsed.tool.detail
+          })
           input.onTool(parsed.tool.name, parsed.tool.detail, record)
         }
         if (parsed.assistant) {

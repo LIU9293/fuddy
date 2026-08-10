@@ -8,7 +8,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
-import type { Project, WorkspaceFileContent, WorkspaceFileEntry } from '../../shared/contracts'
+import type { AgentRunArtifact, AgentRunArtifactPreview, Project, WorkspaceFileContent, WorkspaceFileEntry } from '../../shared/contracts'
 import { AppDatabase } from './database'
 
 const editableExtensions = new Set([
@@ -32,6 +32,7 @@ const mimeTypes: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
   '.pdf': 'application/pdf',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -94,6 +95,39 @@ export class WorkspaceFilesService {
     return { entry, content: readFileSync(absolutePath, 'utf8') }
   }
 
+  previewArtifact(artifact: AgentRunArtifact): AgentRunArtifactPreview {
+    const root = this.getRoot(artifact.projectId)
+    const normalized = normalizeRelativePath(artifact.relativePath)
+    const absolutePath = this.resolveInside(root, normalized)
+    const entry = this.toEntry(artifact.projectId, root, normalized)
+    if (entry.kind !== 'file') throw new Error('产物不是文件。')
+
+    if (entry.editable) {
+      if (entry.size > 2 * 1024 * 1024) throw new Error('文本文件超过 2 MB，请在 Finder 中打开。')
+      const extension = extname(absolutePath).toLowerCase()
+      return {
+        artifact,
+        kind: extension === '.md' || extension === '.markdown' ? 'markdown' : 'text',
+        content: readFileSync(absolutePath, 'utf8'),
+        dataUrl: null,
+        size: entry.size
+      }
+    }
+
+    if (entry.mimeType?.startsWith('image/')) {
+      if (entry.size > 12 * 1024 * 1024) throw new Error('图片超过 12 MB，请在 Finder 中打开。')
+      return {
+        artifact,
+        kind: 'image',
+        content: null,
+        dataUrl: `data:${entry.mimeType};base64,${readFileSync(absolutePath).toString('base64')}`,
+        size: entry.size
+      }
+    }
+
+    return { artifact, kind: 'unsupported', content: null, dataUrl: null, size: entry.size }
+  }
+
   write(projectId: string | null, relativePath: string, content: string): WorkspaceFileEntry {
     const root = this.getRoot(projectId)
     const normalized = normalizeRelativePath(relativePath)
@@ -102,6 +136,19 @@ export class WorkspaceFilesService {
     mkdirSync(dirname(absolutePath), { recursive: true })
     writeFileSync(absolutePath, content, 'utf8')
     return this.toEntry(projectId, root, normalized)
+  }
+
+  writeDataUrl(projectId: string | null, relativePath: string, dataUrl: string): WorkspaceFileEntry {
+    const normalized = normalizeRelativePath(relativePath)
+    if (!normalized) throw new Error('请输入文件名。')
+    const separator = dataUrl.indexOf(',')
+    if (separator < 0 || !dataUrl.slice(0, separator).endsWith(';base64')) {
+      throw new Error('附件数据格式无效。')
+    }
+    const absolutePath = this.resolveInside(this.getRoot(projectId), normalized)
+    mkdirSync(dirname(absolutePath), { recursive: true })
+    writeFileSync(absolutePath, Buffer.from(dataUrl.slice(separator + 1), 'base64'))
+    return this.toEntry(projectId, this.getRoot(projectId), normalized)
   }
 
   createFolder(projectId: string | null, relativePath: string): WorkspaceFileEntry {

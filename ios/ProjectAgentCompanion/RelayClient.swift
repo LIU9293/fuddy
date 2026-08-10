@@ -1,11 +1,27 @@
 import CryptoKit
 import Foundation
 
-final class RelayClient: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+let companionFallbackSyncIntervalSeconds: TimeInterval = 60
+let companionSocketHeartbeatIntervalSeconds: TimeInterval = 20
+
+func companionReconnectDelaySeconds(forAttempt attempt: Int) -> TimeInterval {
+    [5, 15, 60][min(max(0, attempt), 2)]
+}
+
+func companionSocketHeartbeatShouldReconnect(awaitingPong: Bool) -> Bool {
+    awaitingPong
+}
+
+@MainActor
+final class RelayClient {
     private let credentials: CompanionCredentials
-    private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+    private lazy var session = URLSession(configuration: .default)
     private var socket: URLSessionWebSocketTask?
-    private var onPush: (@Sendable () -> Void)?
+    private var onPush: ((SocketEnvelope) -> Void)?
+    private var reconnectTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
+    private var reconnectAttempt = 0
+    private var awaitingPong = false
 
     init(credentials: CompanionCredentials) { self.credentials = credentials }
 
@@ -47,9 +63,13 @@ final class RelayClient: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
         return try JSONDecoder().decode(SyncEventPage.self, from: data)
     }
 
-    func sendCommand<Payload: Codable>(type: String, payload: Payload) async throws -> CommandResult {
+    func sendCommand<Payload: Codable>(
+        commandID: String = UUID().uuidString,
+        type: String,
+        payload: Payload
+    ) async throws -> CommandResult {
         let command = CommandInput(
-            commandId: UUID().uuidString,
+            commandId: commandID,
             protocolVersion: companionProtocolVersion,
             type: type,
             payload: payload,
@@ -71,6 +91,30 @@ final class RelayClient: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
         request.httpBody = try JSONEncoder().encode(PushTokenRegistration(token: token))
         let (data, response) = try await session.data(for: request)
         try Self.validate(response: response, data: data)
+    }
+
+    func uploadAttachment(_ attachment: PendingAttachment) async throws -> AttachmentDescriptor {
+        let digest = SHA256.hash(data: attachment.data).map { String(format: "%02x", $0) }.joined()
+        var request = authorizedRequest(url: authenticatedComponents(path: "/v1/attachments/\(attachment.id)").url!)
+        request.httpMethod = "PUT"
+        request.setValue(attachment.mimeType, forHTTPHeaderField: "Content-Type")
+        request.setValue(String(attachment.data.count), forHTTPHeaderField: "Content-Length")
+        request.setValue(digest, forHTTPHeaderField: "X-Content-SHA256")
+        let (data, response) = try await session.upload(for: request, from: attachment.data)
+        try Self.validate(response: response, data: data)
+        return AttachmentDescriptor(
+            id: attachment.id,
+            messageId: nil,
+            artifactId: nil,
+            filename: attachment.name,
+            mimeType: attachment.mimeType,
+            size: attachment.data.count,
+            sha256: digest,
+            width: nil,
+            height: nil,
+            thumbnailAttachmentId: nil,
+            createdAt: ISO8601DateFormatter().string(from: Date())
+        )
     }
 
     func downloadAttachment(_ attachment: AttachmentDescriptor) async throws -> URL {
@@ -97,39 +141,114 @@ final class RelayClient: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
         return destination
     }
 
-    func connect(onPush: @escaping @Sendable () -> Void) {
+    func connect(onPush: @escaping (SocketEnvelope) -> Void) {
         self.onPush = onPush
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttempt = 0
+        openSocket()
+    }
+
+    private func openSocket() {
+        guard socket == nil, onPush != nil else { return }
         var components = authenticatedComponents(path: "/v1/connect")
         components.scheme = components.scheme == "https" ? "wss" : "ws"
         var request = authorizedRequest(url: components.url!)
         request.timeoutInterval = 30
-        socket = session.webSocketTask(with: request)
-        socket?.resume()
-        receiveNext()
+        let task = session.webSocketTask(with: request)
+        socket = task
+        task.resume()
+        startHeartbeat(on: task)
+        receiveNext(on: task)
     }
 
     func disconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        reconnectAttempt = 0
+        awaitingPong = false
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         onPush = nil
     }
 
-    private func receiveNext() {
-        socket?.receive { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success:
-                self.onPush?()
-                self.receiveNext()
-            case .failure:
-                self.socket = nil
-                guard let onPush = self.onPush else { return }
-                Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    guard self.onPush != nil else { return }
-                    self.connect(onPush: onPush)
+    private func receiveNext(on task: URLSessionWebSocketTask) {
+        task.receive { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self, self.socket === task else { return }
+                switch result {
+                case .success(let message):
+                    self.reconnectAttempt = 0
+                    self.awaitingPong = false
+                    if !self.isPong(message), let envelope = self.decodeEnvelope(message) {
+                        self.onPush?(envelope)
+                    }
+                    self.receiveNext(on: task)
+                case .failure:
+                    self.handleSocketFailure(task)
                 }
             }
+        }
+    }
+
+    private func startHeartbeat(on task: URLSessionWebSocketTask) {
+        heartbeatTask?.cancel()
+        awaitingPong = false
+        heartbeatTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(companionSocketHeartbeatIntervalSeconds)) }
+                catch { return }
+                guard let self, self.socket === task else { return }
+                if companionSocketHeartbeatShouldReconnect(awaitingPong: self.awaitingPong) {
+                    self.handleSocketFailure(task)
+                    return
+                }
+                self.awaitingPong = true
+                do { try await task.send(.string("ping")) }
+                catch {
+                    self.handleSocketFailure(task)
+                    return
+                }
+            }
+        }
+    }
+
+    private func handleSocketFailure(_ task: URLSessionWebSocketTask) {
+        guard socket === task else { return }
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        awaitingPong = false
+        task.cancel(with: .goingAway, reason: nil)
+        socket = nil
+        scheduleReconnect()
+    }
+
+    private func isPong(_ message: URLSessionWebSocketTask.Message) -> Bool {
+        if case .string(let value) = message { return value == "pong" }
+        return false
+    }
+
+    private func decodeEnvelope(_ message: URLSessionWebSocketTask.Message) -> SocketEnvelope? {
+        let data: Data
+        switch message {
+        case .string(let value): data = Data(value.utf8)
+        case .data(let value): data = value
+        @unknown default: return nil
+        }
+        return try? JSONDecoder().decode(SocketEnvelope.self, from: data)
+    }
+
+    private func scheduleReconnect() {
+        guard onPush != nil, reconnectTask == nil else { return }
+        let delay = companionReconnectDelaySeconds(forAttempt: reconnectAttempt)
+        reconnectAttempt += 1
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, self.onPush != nil else { return }
+            self.reconnectTask = nil
+            self.openSocket()
         }
     }
 

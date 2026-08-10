@@ -3,6 +3,7 @@ import type {
   AgentRunArtifact,
   DailyBriefing,
   DecisionItem,
+  DecisionRemediation,
   GoalMilestone,
   Project,
   ProjectGoal
@@ -27,12 +28,14 @@ interface BuildProjectPulsesInput {
   projects: Project[]
   goals: ProjectGoal[]
   decisions: DecisionItem[]
+  remediations?: DecisionRemediation[]
   runs: AgentRun[]
   artifacts: AgentRunArtifact[]
   projectBriefings: DailyBriefing[]
   dataSummaries?: Record<string, string>
   reportDate: string
   generatedAt: string
+  executionWindowStartAt?: string | null
 }
 
 const priorityRank: Record<ProjectGoal['priority'], number> = { P0: 0, P1: 1, P2: 2 }
@@ -80,7 +83,7 @@ function firstPendingMilestone(goal: ProjectGoal | null): GoalMilestone | null {
 
 function openDecisions(decisions: DecisionItem[]): DecisionItem[] {
   return decisions
-    .filter((decision) => decision.status === 'inbox')
+    .filter((decision) => decision.status === 'inbox' || decision.status === 'in_progress' || decision.status === 'waiting')
     .sort((left, right) => urgencyRank[left.urgency] - urgencyRank[right.urgency] || left.createdAt.localeCompare(right.createdAt))
 }
 
@@ -124,39 +127,68 @@ function runNextAction(
   return null
 }
 
+function isExecutionActivity(
+  value: string,
+  generatedAt: string,
+  generatedDate: string,
+  windowStartAt?: string | null
+): boolean {
+  if (windowStartAt) return value > windowStartAt && value <= generatedAt
+  return shanghaiDate(value) === generatedDate
+}
+
 export function buildProjectPulses(input: BuildProjectPulsesInput): ProjectPulse[] {
   const generatedDate = shanghaiDate(input.generatedAt)
 
   return input.projects.map((project) => {
     const goals = input.goals.filter((goal) => goal.projectId === project.id)
     const decisions = openDecisions(input.decisions.filter((decision) => decision.projectId === project.id))
+    const remediations = input.remediations ?? []
     const runs = input.runs.filter((run) => run.projectId === project.id)
     const artifacts = input.artifacts.filter((artifact) => artifact.projectId === project.id)
     const briefing = input.projectBriefings.find((item) => item.projectId === project.id && item.status === 'completed') ?? null
     const focusGoal = activeGoal(goals)
     const milestone = firstPendingMilestone(focusGoal)
     const run = latestRun(runs)
+    const runIsCurrent = run
+      ? isExecutionActivity(run.updatedAt, input.generatedAt, generatedDate, input.executionWindowStartAt)
+      : false
     const verifiedChanges: string[] = []
     const pendingItems: string[] = []
+    const topDecision = decisions[0] ?? null
+    const remediation = topDecision
+      ? remediations
+          .filter((item) => item.decisionId === topDecision.id)
+          .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt))[0] ?? null
+      : null
 
     if (briefing) {
       verifiedChanges.push(input.dataSummaries?.[project.id] ?? `最新业务数据结论：${briefing.headline}`)
     }
+    if (remediation) verifiedChanges.push(remediation.summary)
 
-    if (focusGoal && shanghaiDate(focusGoal.updatedAt) === input.reportDate) {
+    if (focusGoal && isExecutionActivity(
+      focusGoal.updatedAt,
+      input.generatedAt,
+      generatedDate,
+      input.executionWindowStartAt
+    )) {
       verifiedChanges.push(`${focusGoal.priority} 目标「${focusGoal.title}」当前进度 ${Math.round(focusGoal.progress * 100)}%。`)
     }
 
-    if (run && shanghaiDate(run.updatedAt) === input.reportDate) {
+    if (run && runIsCurrent && !remediation) {
       verifiedChanges.push(runChange(run, artifacts, milestone))
     }
 
-    const topDecision = decisions[0] ?? null
     if (topDecision) {
-      const age = daysBetween(shanghaiDate(topDecision.createdAt), generatedDate)
-      pendingItems.push(age > 0
-        ? `「${topDecision.title}」已待处理 ${age} 天。`
-        : `「${topDecision.title}」仍待处理。`)
+      if (remediation) {
+        pendingItems.push(`生产问题仍未解除：${topDecision.summary}`)
+      } else {
+        const age = daysBetween(shanghaiDate(topDecision.createdAt), generatedDate)
+        pendingItems.push(age > 0
+          ? `「${topDecision.title}」已待处理 ${age} 天。`
+          : `「${topDecision.title}」仍待处理。`)
+      }
     }
 
     const activityAt = goalActivityAt(focusGoal, runs)
@@ -165,8 +197,8 @@ export function buildProjectPulses(input: BuildProjectPulsesInput): ProjectPulse
       pendingItems.push(`目标「${focusGoal.title}」连续 ${inactiveDays} 天没有已验证的推进记录。`)
     }
 
-    if (run?.status === 'failed') pendingItems.push(`Agent Run「${run.title}」执行失败。`)
-    if (run?.status === 'idle' && inactiveDays >= 3) pendingItems.push(`Agent Run「${run.title}」已等待继续 ${inactiveDays} 天。`)
+    if (run?.status === 'failed' && runIsCurrent) pendingItems.push(`Agent Run「${run.title}」执行失败。`)
+    if (run?.status === 'idle' && runIsCurrent && inactiveDays >= 3) pendingItems.push(`Agent Run「${run.title}」已等待继续 ${inactiveDays} 天。`)
 
     const currentFocus = focusGoal?.title
       || topDecision?.title
@@ -174,14 +206,15 @@ export function buildProjectPulses(input: BuildProjectPulsesInput): ProjectPulse
       || project.profile.currentState.summary
       || '尚未确认当前焦点'
 
-    const nextAction = topDecision?.suggestedActions[0]
+    const nextAction = remediation?.nextAction
+      ?? topDecision?.suggestedActions[0]
       ?? (run ? runNextAction(run, artifacts, milestone) : null)
       ?? (milestone ? `开始推进「${milestone.title}」。` : null)
       ?? project.profile.nextMoves.find(Boolean)
       ?? '确认这个项目当前最重要的结果，并创建一个可追踪目标。'
 
     const hasBusinessData = Boolean(briefing)
-    const hasExecutionData = Boolean(focusGoal || run || topDecision || verifiedChanges.length > 0)
+    const hasExecutionData = Boolean(focusGoal || run || topDecision || remediation || verifiedChanges.length > 0)
     const dataCoverage: ProjectPulse['dataCoverage'] = hasBusinessData && hasExecutionData
       ? 'business-and-execution'
       : hasBusinessData
@@ -192,13 +225,25 @@ export function buildProjectPulses(input: BuildProjectPulsesInput): ProjectPulse
 
     let status: ProjectPulseStatus = 'quiet'
     let headline = '没有新的异常，按当前计划继续推进。'
-    if (topDecision?.urgency === 'high' || run?.status === 'failed') {
+    if (remediation && ['review_required', 'ready_to_merge', 'merged_awaiting_deploy', 'blocked'].includes(remediation.state)) {
+      status = 'attention'
+      headline = remediation.state === 'review_required'
+        ? '问题仍在，但根因已确认；修复 PR 当前需要处理 Review。'
+        : remediation.state === 'ready_to_merge'
+          ? '问题仍在，修复已经可合并，下一步是发布并验证生产结果。'
+          : remediation.state === 'merged_awaiting_deploy'
+            ? '修复已合并，等待发布、迁移和生产验证。'
+            : '修复工作当前受阻，需要先解除阻塞。'
+    } else if (remediation) {
+      status = 'moving'
+      headline = '生产问题仍在，但修复工作已有可核验进展。'
+    } else if (topDecision?.urgency === 'high' || (run?.status === 'failed' && runIsCurrent)) {
       status = 'attention'
       headline = '有高优先级事项尚未处理。'
     } else if (pendingItems.length > 0) {
       status = 'stale'
       headline = '存在等待处理或长时间没有推进的事项。'
-    } else if (run && shanghaiDate(run.updatedAt) === input.reportDate) {
+    } else if (run && runIsCurrent) {
       status = 'moving'
       headline = artifacts.some((artifact) => artifact.runId === run.id)
         ? '已有新产物，等待确认后继续推进。'

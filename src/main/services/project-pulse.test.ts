@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentRun, AgentRunArtifact, DecisionItem, Project, ProjectGoal } from '../../shared/contracts'
+import type { AgentRun, AgentRunArtifact, DecisionItem, DecisionRemediation, Project, ProjectGoal } from '../../shared/contracts'
 import { buildProjectPulses } from './project-pulse'
 
 function project(id: string, name: string, nextMove: string): Project {
@@ -75,6 +75,7 @@ const vowsRun: AgentRun = {
   startedAt: '2026-08-06T12:00:00.000Z',
   completedAt: null,
   summary: '已生成第一版资料包。',
+  draftPrompt: null,
   createdAt: '2026-08-06T12:00:00.000Z',
   updatedAt: '2026-08-06T13:00:00.000Z'
 }
@@ -119,7 +120,8 @@ describe('project pulse', () => {
       artifacts: [artifact],
       projectBriefings: [],
       reportDate: '2026-08-06',
-      generatedAt: '2026-08-07T01:00:00.000Z'
+      generatedAt: '2026-08-07T01:00:00.000Z',
+      executionWindowStartAt: '2026-08-06T01:00:00.000Z'
     })
 
     const roombase = pulses.find((pulse) => pulse.projectId === 'roombase')
@@ -134,5 +136,50 @@ describe('project pulse', () => {
     expect(vows?.nextAction).toContain('完成首批社交媒体账号 Setup')
     expect(marketing?.status).toBe('setup')
     expect(marketing?.nextAction).toBe('定义试点验收指标')
+  })
+
+  it('reports a linked PR gate instead of repeating the original investigation action', () => {
+    const remediation: DecisionRemediation = {
+      id: 'remediation-pr-351',
+      decisionId: roombaseDecision.id,
+      sourceType: 'github-pr',
+      sourceRef: 'https://github.com/LIU9293/shopmy/pull/351',
+      state: 'review_required',
+      summary: 'PR #351 已提交，CI 已通过；仍有 2 条当前 Review 意见待处理。',
+      nextAction: '处理 PR #351 的 2 条当前 Review 意见，然后重新确认 CI 与可合并状态。',
+      evidenceRefs: [],
+      metadata: {},
+      firstSeenAt: '2026-08-08T16:37:05.923Z',
+      lastSeenAt: '2026-08-09T01:00:00.000Z'
+    }
+    const run: AgentRun = {
+      ...vowsRun,
+      id: 'run-roombase',
+      projectId: 'roombase',
+      decisionId: roombaseDecision.id,
+      goalId: null,
+      milestoneId: null,
+      title: '处理 · Roombase 有长期等待平台处理的入驻事项',
+      updatedAt: '2026-08-08T16:37:05.923Z'
+    }
+
+    const [pulse] = buildProjectPulses({
+      projects: [project('roombase', 'Roombase', '建立获客漏斗基线')],
+      goals: [],
+      decisions: [roombaseDecision],
+      remediations: [remediation],
+      runs: [run],
+      artifacts: [],
+      projectBriefings: [],
+      reportDate: '2026-08-08',
+      generatedAt: '2026-08-09T01:00:00.000Z',
+      executionWindowStartAt: '2026-08-08T01:00:00.000Z'
+    })
+
+    expect(pulse.status).toBe('attention')
+    expect(pulse.verifiedChanges.join('')).toContain('PR #351')
+    expect(pulse.pendingItems[0]).toContain('生产问题仍未解除')
+    expect(pulse.nextAction).toBe(remediation.nextAction)
+    expect(pulse.nextAction).not.toContain('平台工单号')
   })
 })

@@ -45,7 +45,7 @@ describe('companion relay', () => {
     expect(await response.json()).toEqual({
       status: 'ok',
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-08.4'
+      build: '2026-08-08.5'
     })
   })
 
@@ -89,6 +89,13 @@ describe('companion relay', () => {
     const created = await createdResponse.json<CompanionSyncEvent>()
     expect(created.sequence).toBe(1)
 
+    const duplicateResponse = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(input)
+    })
+    expect((await duplicateResponse.json<CompanionSyncEvent>()).sequence).toBe(created.sequence)
+
     const pageResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
@@ -128,6 +135,18 @@ describe('companion relay', () => {
       body: JSON.stringify({ status: 'completed', result: { accepted: true } })
     })
     expect((await completedResponse.json<CompanionCommand>()).status).toBe('completed')
+
+    const updatesResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    const updates = await updatesResponse.json<CompanionEventPage>()
+    expect(updates.events).toHaveLength(1)
+    expect(updates.events[0]).toMatchObject({
+      type: 'command.updated',
+      entityType: 'command',
+      entityId: commandId,
+      payload: { commandId, status: 'completed' }
+    })
   })
 
   it('pushes queued commands to an authenticated Mac WebSocket', async () => {
@@ -149,8 +168,8 @@ describe('companion relay', () => {
       body: JSON.stringify({
         commandId,
         protocolVersion: companionProtocolVersion,
-        type: 'agent.archive-session',
-        payload: { runId: 'run-1' },
+        type: 'artifact.request-upload',
+        payload: { artifactId: 'artifact-1' },
         createdAt: new Date().toISOString()
       })
     })
@@ -165,12 +184,15 @@ describe('companion relay', () => {
     const attachmentId = crypto.randomUUID()
     const macUrl = authenticatedUrl(`/v1/attachments/${attachmentId}`, pairing.accountId, pairing.macDeviceId)
     const content = 'attachment body'
+    const sha256 = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content))
+      .then((digest) => Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join(''))
     const put = await SELF.fetch(macUrl, {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${pairing.macToken}`,
         'Content-Type': 'text/plain',
-        'Content-Length': String(content.length)
+        'Content-Length': String(content.length),
+        'X-Content-SHA256': sha256
       },
       body: content
     })
@@ -182,16 +204,52 @@ describe('companion relay', () => {
     expect(get.status).toBe(200)
     expect(await get.text()).toBe(content)
 
-    const rejectedPhoneUpload = await SELF.fetch(authenticatedUrl(`/v1/attachments/${crypto.randomUUID()}`, pairing.accountId, phone.device.id), {
+    const phoneAttachmentId = crypto.randomUUID()
+    const phoneUpload = await SELF.fetch(authenticatedUrl(`/v1/attachments/${phoneAttachmentId}`, pairing.accountId, phone.device.id), {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${phone.deviceToken}`,
         'Content-Type': 'text/plain',
-        'Content-Length': String(content.length)
+        'Content-Length': String(content.length),
+        'X-Content-SHA256': sha256
       },
       body: content
     })
-    expect(rejectedPhoneUpload.status).toBe(401)
+    expect(phoneUpload.status).toBe(201)
+
+    const macDownload = await SELF.fetch(authenticatedUrl(`/v1/attachments/${phoneAttachmentId}`, pairing.accountId, pairing.macDeviceId), {
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
+    })
+    expect(macDownload.status).toBe(200)
+    expect(await macDownload.text()).toBe(content)
+
+    const overwrite = await SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      phone.device.id
+    ), {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${phone.deviceToken}`,
+        'Content-Type': 'text/plain',
+        'Content-Length': String(content.length),
+        'X-Content-SHA256': sha256
+      },
+      body: content
+    })
+    expect(overwrite.status).toBe(409)
+
+    const retry = await SELF.fetch(macUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${pairing.macToken}`,
+        'Content-Type': 'text/plain',
+        'Content-Length': String(content.length),
+        'X-Content-SHA256': sha256
+      },
+      body: content
+    })
+    expect(retry.status).toBe(200)
   })
 
   it('rejects malformed JSON and oversized bodies without relying on Content-Length', async () => {

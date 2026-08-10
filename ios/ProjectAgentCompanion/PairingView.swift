@@ -81,7 +81,10 @@ struct PairingView: View {
                     }
                 }
             }
-            .alert("无法扫描", isPresented: .constant(scannerError != nil)) {
+            .alert("无法扫描", isPresented: Binding(
+                get: { scannerError != nil },
+                set: { presented in if !presented { scannerError = nil } }
+            )) {
                 Button("好") { scannerError = nil }
             } message: {
                 Text(scannerError ?? "")

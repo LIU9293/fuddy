@@ -1,5 +1,12 @@
 export type DecisionKind = 'risk' | 'opportunity' | 'decision' | 'result' | 'info'
-export type DecisionStatus = 'inbox' | 'later' | 'resolved'
+export type DecisionStatus = 'inbox' | 'in_progress' | 'waiting' | 'resolved' | 'ignored'
+export type DecisionWaitingReason =
+  | 'deployment'
+  | 'verification'
+  | 'external'
+  | 'measurement'
+  | 'user'
+  | 'scheduled'
 export type Urgency = 'low' | 'medium' | 'high'
 export type CodingAgentProvider = 'codex' | 'claude' | 'opencode'
 
@@ -45,6 +52,19 @@ export interface Project {
 
 export type UpdateProjectInput = Project
 
+export interface CreateProjectInput {
+  name: string
+  summary: string
+  focus: string
+  mission: string
+  vision: string
+  productType: string
+  stage: string
+  websiteUrl?: string | null
+  workspacePath?: string | null
+  defaultAgent?: AgentRunProvider
+}
+
 export interface EvidenceRef {
   label: string
   uri: string
@@ -65,6 +85,10 @@ export interface DecisionItem {
   suggestedActions: string[]
   evidenceRefs: EvidenceRef[]
   status: DecisionStatus
+  waitingReason?: DecisionWaitingReason | null
+  statusSummary?: string | null
+  statusUpdatedAt?: string
+  reopenCount?: number
   source: string
   createdAt: string
   firstSeenAt?: string
@@ -74,6 +98,28 @@ export interface DecisionItem {
   resolutionSummary?: string | null
 }
 
+export type DecisionRemediationState =
+  | 'investigating'
+  | 'in_progress'
+  | 'review_required'
+  | 'ready_to_merge'
+  | 'merged_awaiting_deploy'
+  | 'blocked'
+
+export interface DecisionRemediation {
+  id: string
+  decisionId: string
+  sourceType: 'github-pr'
+  sourceRef: string
+  state: DecisionRemediationState
+  summary: string
+  nextAction: string
+  evidenceRefs: EvidenceRef[]
+  metadata: Record<string, unknown>
+  firstSeenAt: string
+  lastSeenAt: string
+}
+
 export type AgentRunProvider = 'pi' | CodingAgentProvider
 export type AgentRunStatus = 'draft' | 'queued' | 'running' | 'idle' | 'completed' | 'failed' | 'cancelled'
 export type AgentRunMessageRole = 'user' | 'assistant' | 'system' | 'tool'
@@ -81,6 +127,7 @@ export type AgentRunMessageRole = 'user' | 'assistant' | 'system' | 'tool'
 export interface AgentRun {
   id: string
   projectId: string | null
+  decisionId?: string | null
   goalId?: string | null
   milestoneId?: string | null
   provider: AgentRunProvider
@@ -91,6 +138,8 @@ export interface AgentRun {
   startedAt: string | null
   completedAt: string | null
   summary: string
+  /** Composer seed for a draft Run. It is not a chat message and is cleared after the first send. */
+  draftPrompt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -116,6 +165,14 @@ export interface AgentRunArtifact {
   createdAt: string
 }
 
+export interface AgentRunArtifactPreview {
+  artifact: AgentRunArtifact
+  kind: 'markdown' | 'text' | 'image' | 'unsupported'
+  content: string | null
+  dataUrl: string | null
+  size: number
+}
+
 export interface AgentApprovalRequest {
   id: string
   runId: string
@@ -136,12 +193,29 @@ export interface AgentRunDetail {
   artifacts: AgentRunArtifact[]
 }
 
+export interface GitWorkingTreeChange {
+  path: string
+  status: string
+}
+
+export interface GitWorkingTreeSummary {
+  available: boolean
+  repoRoot: string | null
+  branch: string | null
+  head: string | null
+  additions: number
+  deletions: number
+  changedFileCount: number
+  changes: GitWorkingTreeChange[]
+  error: string | null
+}
+
 export type AgentRunStreamUpdate =
   | { type: 'created'; run: AgentRun }
   | { type: 'status'; status: AgentRunStatus; detail?: string }
   | { type: 'message_delta'; messageId: string; delta: string }
-  | { type: 'reasoning_delta'; delta: string }
-  | { type: 'tool'; toolName: string; status: 'running' | 'completed' | 'failed'; detail: string }
+  | { type: 'reasoning_delta'; segmentId?: string; delta: string }
+  | { type: 'tool'; toolCallId?: string; toolName: string; status: 'running' | 'completed' | 'failed'; detail: string }
   | { type: 'approval'; request: AgentApprovalRequest }
 
 export interface AgentRunStreamEnvelope {
@@ -227,6 +301,7 @@ export interface ProjectGoal {
 export interface CreateGoalInput {
   projectId: string
   prompt: string
+  attachments?: WorkAssistantImageAttachment[]
   priority?: GoalPriority
   status?: Extract<GoalStatus, 'planned' | 'active'>
 }
@@ -381,7 +456,99 @@ export interface BriefingMessage {
   content: string
   attachments: WorkAssistantImageAttachment[]
   taskContext: WorkAssistantTaskContext | null
+  linkedRunId?: string | null
+  actions?: WorkAssistantActionProposal[]
   createdAt: string
+}
+
+export type WorkAssistantCapabilityAccess = 'read' | 'confirm' | 'explicit'
+
+export type WorkAssistantCapabilityId =
+  | 'project.list'
+  | 'project.inspect'
+  | 'project.create'
+  | 'project.update'
+  | 'project.pause'
+  | 'agent-run.find'
+  | 'agent-run.inspect'
+  | 'agent-run.open'
+  | 'agent-run.create'
+  | 'agent-run.update'
+  | 'agent-run.archive'
+  | 'agent-run.send'
+  | 'goal.manage'
+  | 'inbox.manage'
+  | 'files.search'
+  | 'files.read'
+  | 'web.search'
+  | 'web.read'
+  | 'briefing.read'
+  | 'briefing.generate'
+  | 'automation.manage'
+
+export interface WorkAssistantCapabilityDescriptor {
+  id: WorkAssistantCapabilityId
+  label: string
+  access: WorkAssistantCapabilityAccess
+  description: string
+}
+
+export type WorkAssistantActionOption =
+  | {
+      id: string
+      label: string
+      style: 'primary' | 'secondary' | 'quiet'
+      capability: Extract<WorkAssistantCapabilityId, 'agent-run.open'>
+      payload: { runId: string; decisionId?: string | null; draftPrompt: string | null }
+    }
+  | {
+      id: string
+      label: string
+      style: 'primary' | 'secondary' | 'quiet'
+      capability: Extract<WorkAssistantCapabilityId, 'agent-run.create'>
+      payload: {
+        projectId: string | null
+        decisionId: string | null
+        goalId: string | null
+        milestoneId: string | null
+        title: string
+        draftPrompt: string
+      }
+    }
+  | {
+      id: string
+      label: string
+      style: 'primary' | 'secondary' | 'quiet'
+      capability: Extract<WorkAssistantCapabilityId, 'project.create'>
+      payload: CreateProjectInput
+    }
+
+export interface WorkAssistantActionProposal {
+  id: string
+  title: string
+  description: string
+  status: 'pending' | 'accepted' | 'dismissed' | 'expired'
+  context: string | null
+  options: WorkAssistantActionOption[]
+  acceptedOptionId: string | null
+  createdAt: string
+  resolvedAt: string | null
+}
+
+export interface ExecuteWorkAssistantActionInput {
+  messageId: string
+  proposalId: string
+  optionId: string
+}
+
+export interface ExecuteWorkAssistantActionResult {
+  message: BriefingMessage
+  notice: string
+  navigation: null | {
+    kind: 'agent-run' | 'project'
+    id: string
+    draftPrompt?: string | null
+  }
 }
 
 export type AgentProviderMode = 'cc-switch-codex-oauth' | 'openai-compatible'
@@ -686,6 +853,7 @@ export interface AppBootstrap {
   projects: Project[]
   goals: ProjectGoal[]
   decisions: DecisionItem[]
+  decisionRemediations: DecisionRemediation[]
   runs: AgentRun[]
   connectors: ConnectorInstance[]
   connectorRuns: ConnectorRun[]
@@ -707,10 +875,13 @@ export interface CreateDecisionInput {
   goalId?: string | null
   title: string
   summary?: string
+  attachments?: WorkAssistantImageAttachment[]
+  evidenceRefs?: EvidenceRef[]
 }
 
 export interface DispatchTaskInput {
   projectId: string | null
+  decisionId?: string | null
   goalId?: string | null
   milestoneId?: string | null
   /** Uses the project's default agent when omitted. */
@@ -744,6 +915,7 @@ export interface SendAgentRunMessageInput {
   requestId: string
   runId: string
   prompt: string
+  attachments?: WorkAssistantImageAttachment[]
 }
 
 export interface RespondAgentApprovalInput {
@@ -756,12 +928,15 @@ export interface CreateAgentRunInput extends DispatchTaskInput {
 }
 
 export interface CreateAgentRunDraftInput {
+  id?: string
   projectId: string | null
+  decisionId?: string | null
   goalId?: string | null
   milestoneId?: string | null
   /** Uses the project's default agent when omitted. */
   provider?: AgentRunProvider
   title: string
+  draftPrompt?: string | null
   workingDirectory?: string | null
 }
 
@@ -780,10 +955,13 @@ export interface DesktopApi {
   getBootstrap(): Promise<AppBootstrap>
   requestComputerUsePermissions(): Promise<Capability[]>
   updateProject(input: UpdateProjectInput): Promise<Project>
+  createProject(input: CreateProjectInput): Promise<Project>
   createGoal(input: CreateGoalInput): Promise<ProjectGoal>
   checkGoal(id: string): Promise<CheckGoalResult>
   updateGoalStatus(id: string, status: GoalStatus): Promise<ProjectGoal>
   updateGoalPriority(id: string, priority: GoalPriority): Promise<ProjectGoal>
+  completeGoalMilestone(goalId: string, milestoneId: string): Promise<ProjectGoal>
+  deleteGoalMilestone(goalId: string, milestoneId: string): Promise<ProjectGoal>
   createDecision(input: CreateDecisionInput): Promise<DecisionItem>
   updateDecisionStatus(id: string, status: DecisionStatus): Promise<DecisionItem>
   evaluatePermission(intent: PermissionIntent): Promise<PermissionEvaluation>
@@ -797,7 +975,10 @@ export interface DesktopApi {
     onUpdate: (update: AgentRunStreamUpdate) => void
   ): Promise<DispatchProjectAgentResult>
   getAgentRun(id: string): Promise<AgentRunDetail>
+  getAgentRunGitSummary(id: string): Promise<GitWorkingTreeSummary>
+  getAgentRunArtifactPreview(runId: string, artifactId: string): Promise<AgentRunArtifactPreview>
   renameAgentRun(id: string, title: string): Promise<AgentRun>
+  updateAgentRunDraftPrompt(id: string, draftPrompt: string): Promise<AgentRun>
   archiveAgentRun(id: string): Promise<void>
   getCompanionStatus(): Promise<import('./companion-sync').CompanionMacStatus>
   beginCompanionPairing(relayUrl: string): Promise<import('./companion-sync').CompanionPairingSession>
@@ -806,6 +987,7 @@ export interface DesktopApi {
   onCompanionStatusChanged(
     callback: (status: import('./companion-sync').CompanionMacStatus) => void
   ): () => void
+  onCompanionDataChanged(callback: () => void): () => void
   sendAgentRunMessage(
     input: SendAgentRunMessageInput,
     onUpdate: (update: AgentRunStreamUpdate) => void
@@ -828,6 +1010,7 @@ export interface DesktopApi {
     input: AskMorningBriefingInput,
     onUpdate: (update: AgentSessionUpdate) => void
   ): Promise<AskMorningBriefingResult>
+  executeWorkAssistantAction(input: ExecuteWorkAssistantActionInput): Promise<ExecuteWorkAssistantActionResult>
   configureAgentProvider(input: ConfigureAgentProviderInput): Promise<ProviderSettings>
   configureCodingAgents(input: ConfigureCodingAgentSettingsInput): Promise<ProviderSettings>
   listCodingAgentModels(): Promise<CodingAgentModelCatalog>
