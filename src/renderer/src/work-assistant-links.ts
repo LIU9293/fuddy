@@ -17,7 +17,9 @@ export function workAssistantRunIds(message: BriefingMessage): string[] {
   }
   for (const proposal of actions) {
     for (const option of proposal.options) {
-      if (option.capability === 'agent-run.open') runIds.add(option.payload.runId)
+      if (option.capability === 'agent-run.open' && typeof option.payload.runId === 'string') {
+        runIds.add(option.payload.runId)
+      }
     }
   }
   return [...runIds]

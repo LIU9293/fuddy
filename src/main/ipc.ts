@@ -12,6 +12,7 @@ import { ProviderSettingsService } from './services/provider-settings'
 import { AppDatabase } from './services/database'
 import { TaskDispatcher } from './services/task-dispatcher'
 import { TtsService } from './services/tts-service'
+import { AsrService } from './services/asr-service'
 import { GoalTrackingService } from './services/goal-tracking'
 import { WorkspaceFilesService } from './services/workspace-files'
 import { AutomationRuntime } from './services/automation-runtime'
@@ -189,6 +190,7 @@ export function registerIpc(
   morningBriefingService: MorningBriefingService,
   goalTrackingService: GoalTrackingService,
   providerSettings: ProviderSettingsService,
+  asrService: AsrService,
   ttsService: TtsService,
   workspaceFiles: WorkspaceFilesService,
   automationRuntime: AutomationRuntime,
@@ -372,7 +374,11 @@ export function registerIpc(
       if (!event.sender.isDestroyed()) {
         event.sender.send('agent-run:update', { requestId: input.requestId, runId: input.runId, update })
       }
-    }, undefined, input.attachments)
+    }, input.requestId, input.attachments)
+  })
+
+  ipcMain.handle('agent-run:stop', (_event, rawId: unknown) => {
+    return dispatcher.stopMessage(z.string().trim().min(1).max(200).parse(rawId))
   })
 
   ipcMain.handle('agent-run:git-summary', async (_event, rawId: unknown) => {
@@ -536,7 +542,10 @@ export function registerIpc(
   })
 
   ipcMain.handle('provider:configure-coding-agents', (_event, rawInput: unknown) => {
-    const model = z.object({ defaultModel: z.string().trim().max(300) })
+    const model = z.object({
+      defaultModel: z.string().trim().max(300),
+      defaultReasoningEffort: z.string().trim().max(100)
+    })
     const input = z.object({
       defaultAgent: z.enum(['codex', 'claude', 'opencode']),
       codex: model,
@@ -547,6 +556,29 @@ export function registerIpc(
   })
 
   ipcMain.handle('provider:list-coding-agent-models', () => discoverCodingAgentModels())
+
+  ipcMain.handle('provider:configure-asr', (_event, rawInput: unknown) => {
+    const input = z.object({
+      mode: z.enum(['local-first', 'cloud']),
+      cloudBaseUrl: z.string().trim().min(1).max(1_000),
+      cloudModel: z.string().trim().min(1).max(200),
+      cloudApiKey: z.string().trim().max(4_000).optional(),
+      fallbackToCloud: z.boolean()
+    }).parse(rawInput)
+    return providerSettings.configureAsr(input)
+  })
+
+  ipcMain.handle('asr:model-status', () => asrService.getModelStatus())
+  ipcMain.handle('asr:download-model', () => asrService.downloadModel())
+  ipcMain.handle('asr:delete-model', () => asrService.deleteModel())
+  ipcMain.handle('asr:transcribe', (_event, rawInput: unknown) => {
+    const input = z.object({
+      audioDataUrl: z.string().max(35_000_000),
+      language: z.string().trim().max(20).optional(),
+      prompt: z.string().trim().max(1_000).optional()
+    }).parse(rawInput)
+    return asrService.transcribe(input)
+  })
 
   ipcMain.handle('provider:configure-tts', (_event, rawInput: unknown) => {
     const input = z.object({

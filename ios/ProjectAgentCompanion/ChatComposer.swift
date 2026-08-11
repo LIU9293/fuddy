@@ -205,14 +205,21 @@ struct CompanionChatComposer: View {
     let sending: Bool
     var imageOnly = false
     var disabled = false
+    var active = false
     let onSend: () -> Void
+    var onStop: (() -> Void)? = nil
 
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var importingFiles = false
     @State private var attachmentError: String?
+    @StateObject private var voiceInput = CompanionVoiceInput()
 
     private var canSend: Bool {
         (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty) && !sending && !disabled
+    }
+
+    private var canStop: Bool {
+        active && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty && !sending && onStop != nil
     }
 
     var body: some View {
@@ -240,8 +247,8 @@ struct CompanionChatComposer: View {
                 }
             }
 
-            if let attachmentError {
-                Text(attachmentError).font(.caption).foregroundStyle(.red)
+            if let error = attachmentError ?? voiceInput.error {
+                Text(error).font(.caption).foregroundStyle(.red)
             }
 
             HStack(alignment: .bottom, spacing: 10) {
@@ -271,21 +278,55 @@ struct CompanionChatComposer: View {
                     .textFieldStyle(.plain)
                     .padding(.vertical, 9)
 
-                Button(action: onSend) {
+                Button {
+                    Task {
+                        if voiceInput.state == .recording {
+                            if let transcript = await voiceInput.stopAndTranscribe(
+                                prompt: "Project Agent，项目，目标，决策收件箱，工作助理，Agent Run"
+                            ), !transcript.isEmpty {
+                                text = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    ? transcript
+                                    : "\(text.trimmingCharacters(in: .whitespacesAndNewlines)) \(transcript)"
+                            }
+                        } else {
+                            await voiceInput.start()
+                        }
+                    }
+                } label: {
+                    Group {
+                        switch voiceInput.state {
+                        case .idle: Image(systemName: "mic")
+                        case .recording: Image(systemName: "stop.fill").foregroundStyle(.red)
+                        case .transcribing: ProgressView().controlSize(.small)
+                        }
+                    }
+                    .font(.body.weight(.medium))
+                    .frame(width: 34, height: 38)
+                    .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(disabled || sending || voiceInput.state == .transcribing)
+                .accessibilityLabel(voiceInput.state == .recording ? "停止录音并转写" : "语音输入")
+
+                Button(action: { canStop ? onStop?() : onSend() }) {
                     ZStack {
-                        Circle().fill(canSend ? Color.accentColor : Color.secondary.opacity(0.18))
+                        Circle().fill((canSend || canStop) ? Color.primary : Color.secondary.opacity(0.18))
                         if sending {
                             ProgressView().tint(.white).controlSize(.small)
+                        } else if canStop {
+                            Image(systemName: "stop.fill")
+                                .font(.caption.bold())
+                                .foregroundStyle(Color(uiColor: .systemBackground))
                         } else {
                             Image(systemName: "arrow.up")
                                 .font(.body.bold())
-                                .foregroundStyle(canSend ? Color.white : Color.secondary)
+                                .foregroundStyle(canSend ? Color(uiColor: .systemBackground) : Color.secondary)
                         }
                     }
                     .frame(width: 38, height: 38)
                 }
                 .buttonStyle(.plain)
-                .disabled(!canSend)
+                .disabled(!canSend && !canStop)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)

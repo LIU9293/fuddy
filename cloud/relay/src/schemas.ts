@@ -40,6 +40,10 @@ export const syncEventSchema = z.object({
   occurredAt: isoDate
 })
 
+export const syncEventBatchSchema = z.object({
+  events: z.array(syncEventSchema).min(1).max(100)
+})
+
 export const commandSchema = z.object({
   commandId: identifier,
   protocolVersion: z.literal(companionProtocolVersion),
@@ -47,6 +51,7 @@ export const commandSchema = z.object({
     'assistant.send-message',
     'assistant.execute-action',
     'agent.send-message',
+    'agent.stop-message',
     'agent.rename-session',
     'agent.update-draft-prompt',
     'agent.archive-session',

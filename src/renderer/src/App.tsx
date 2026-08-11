@@ -15,15 +15,16 @@ import {
   Headphones,
   Inbox,
   Lightbulb,
+  LayoutGrid,
   LoaderCircle,
   MoreHorizontal,
   PanelLeft,
   Pause,
+  Pencil,
   Play,
   Plus,
   Plug,
   RefreshCw,
-  Search,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -39,7 +40,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { QRCodeSVG } from 'qrcode.react'
 import { ChatComposer } from './components/ChatComposer'
-import { AgentRunsSidebar, AgentRunsView } from './components/AgentRunsView'
+import { AgentRunsView } from './components/AgentRunsView'
 import { ConversationMessageActions } from './components/ConversationMessageActions'
 import { isProjectImageIcon, ProjectIcon } from './components/ProjectIcon'
 import { ActionMenu, SelectMenu, SuggestionInput } from './components/SelectMenu'
@@ -56,6 +57,7 @@ import type {
   AgentSessionUpdate,
   AgentEndpointSettings,
   AppBootstrap,
+  AsrModelStatus,
   Capability,
   CodingAgentModelCatalog,
   CodingAgentProvider,
@@ -86,9 +88,9 @@ import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import type { CompanionMacStatus, CompanionPairingSession } from '../../shared/companion-sync'
 import { defaultCompanionRelayUrl } from '../../shared/companion-sync'
 
-type Navigation = 'briefing' | 'inbox' | 'files' | 'runs' | 'automations' | 'settings'
+type Navigation = 'briefing' | 'inbox' | 'projects' | 'files' | 'runs' | 'automations' | 'settings'
 type ProjectSection = 'inbox' | 'status' | 'goals' | 'settings'
-type SidebarSelection = 'briefing' | 'inbox' | 'files' | 'runs' | 'automations' | 'all-projects' | `project:${string}`
+type SidebarSelection = 'briefing' | 'inbox' | 'projects' | 'files' | 'runs' | 'automations'
 type SettingsSection = 'general' | 'models' | 'voice' | 'connectors' | 'permissions'
 
 const decisionWaitingReasonLabels: Record<DecisionWaitingReason, string> = {
@@ -119,20 +121,20 @@ function initialSidebarWidth(): number {
   return Number.isFinite(stored) ? clampSidebarWidth(stored) : defaultSidebarWidth
 }
 
-const settingsSectionMeta: Record<SettingsSection, { title: string; description: string }> = {
-  general: { title: '通用', description: '查看工作助理、每日简报、项目和运行能力的全局状态。' },
-  models: { title: '模型', description: '配置项目助理用于总结、分析和对话的模型 Provider。' },
-  voice: { title: '语音与 TTS', description: '配置每日简报的云端语音模型、声音和表达风格。' },
-  connectors: { title: '连接器', description: '管理项目数据源、巡检任务和 Connector 能力。' },
-  permissions: { title: '权限与安全', description: '管理审批策略、危险操作门禁、凭证和审计规则。' }
+const settingsSectionTitles: Record<SettingsSection, string> = {
+  general: '通用',
+  models: '模型',
+  voice: '语音与 TTS',
+  connectors: '连接器',
+  permissions: '权限与安全'
 }
 
 const settingsNavigationItems = [
-  { id: 'general', label: '通用', keywords: '工作助理 每日简报 项目 工作区 能力', icon: Settings2 },
-  { id: 'models', label: '模型', keywords: 'Agent LLM Provider Backup', icon: Bot },
-  { id: 'voice', label: '语音与 TTS', keywords: '声音 ElevenLabs OpenAI Backup', icon: Headphones },
-  { id: 'permissions', label: '权限与安全', keywords: '审批 危险操作 凭证 审计', icon: ShieldCheck }
-] satisfies Array<{ id: Exclude<SettingsSection, 'connectors'>; label: string; keywords: string; icon: typeof Settings2 }>
+  { id: 'general', label: '通用', icon: Settings2 },
+  { id: 'models', label: '模型', icon: Bot },
+  { id: 'voice', label: '语音与 TTS', icon: Headphones },
+  { id: 'permissions', label: '权限与安全', icon: ShieldCheck }
+] satisfies Array<{ id: Exclude<SettingsSection, 'connectors'>; label: string; icon: typeof Settings2 }>
 
 const kindLabels: Record<DecisionKind, string> = {
   risk: '风险',
@@ -1182,6 +1184,7 @@ function WorkAssistantActionCard({
   const options = proposal.options.filter((option) => option.capability !== 'agent-run.open')
   if (options.length === 0 || acceptedOption?.capability === 'agent-run.open') return null
   const accepted = proposal.status === 'accepted'
+  const dismissed = proposal.status === 'dismissed'
   const includesLegacyRunLink = options.length !== proposal.options.length
   return (
     <section className={`work-assistant-action-card is-${proposal.status}`} aria-label={includesLegacyRunLink ? '创建新的 Agent Run' : proposal.title}>
@@ -1203,14 +1206,14 @@ function WorkAssistantActionCard({
               disabled={busy}
               onClick={() => void onExecute(messageId, proposal.id, option.id)}
             >
-              {busy ? <LoaderCircle className="spin" size={14} /> : option.capability === 'agent-run.create' ? <Plus size={14} /> : <ChevronRight size={14} />}
+              {busy ? <LoaderCircle className="spin" size={13} /> : option.capability === 'agent-run.create' ? <Plus size={13} /> : null}
               {option.label}
             </button>
           ))}
         </div>
       ) : (
         <small className="work-assistant-action-result">
-          <Check size={13} /> 已确认：{acceptedOption?.label ?? '已处理'}
+          <Check size={13} /> {dismissed ? '已取消' : `已确认：${acceptedOption?.label ?? '已处理'}`}
         </small>
       )}
     </section>
@@ -1525,11 +1528,14 @@ function SettingsView({
   const [codingAgents, setCodingAgents] = useState<CodingAgentSettings>(bootstrap.providerSettings.codingAgents)
   const [codingAgentModels, setCodingAgentModels] = useState<CodingAgentModelCatalog | null>(null)
   const [codingModelsLoading, setCodingModelsLoading] = useState(false)
+  const [asrSettings, setAsrSettings] = useState(bootstrap.providerSettings.asr)
+  const [asrApiKey, setAsrApiKey] = useState('')
+  const [asrModelStatus, setAsrModelStatus] = useState<AsrModelStatus | null>(null)
   const [ttsPrimary, setTtsPrimary] = useState(bootstrap.providerSettings.tts.primary)
   const [ttsBackup, setTtsBackup] = useState(bootstrap.providerSettings.tts.backup)
   const [ttsBackupEnabled, setTtsBackupEnabled] = useState(bootstrap.providerSettings.tts.backupEnabled)
   const [ttsApiKeys, setTtsApiKeys] = useState({ primary: '', backup: '' })
-  const [providerBusy, setProviderBusy] = useState<'agent' | 'coding-agents' | 'coding-detect' | 'tts' | 'tts-test' | 'tts-voice-design' | null>(null)
+  const [providerBusy, setProviderBusy] = useState<'agent' | 'coding-agents' | 'coding-detect' | 'asr' | 'asr-download' | 'asr-delete' | 'tts' | 'tts-test' | 'tts-voice-design' | null>(null)
   const [providerError, setProviderError] = useState<string | null>(null)
   const [requestingComputerPermissions, setRequestingComputerPermissions] = useState(false)
   const [projectAgentBusy, setProjectAgentBusy] = useState<string | null>(null)
@@ -1545,7 +1551,9 @@ function SettingsView({
   const visibleConnectors = bootstrap.connectors.filter(
     (connector) => !projectId || connector.projectId === projectId
   )
-  const catalogConnectors = bootstrap.connectorCatalog.filter((item) => item.kind !== 'repo')
+  const catalogConnectors = bootstrap.connectorCatalog.filter(
+    (item) => item.kind !== 'repo' && (item.kind === 'postgres' || item.availability === 'built-in')
+  )
   const selectedProject = bootstrap.projects.find((project) => project.id === projectId)
   const selectedPostgres = bootstrap.connectors.find(
     (connector) => connector.projectId === projectId && connector.kind === 'postgres'
@@ -1556,10 +1564,32 @@ function SettingsView({
     setAgentBackup(bootstrap.providerSettings.agent.backup)
     setAgentBackupEnabled(bootstrap.providerSettings.agent.backupEnabled)
     setCodingAgents(bootstrap.providerSettings.codingAgents)
+    setAsrSettings(bootstrap.providerSettings.asr)
     setTtsPrimary(bootstrap.providerSettings.tts.primary)
     setTtsBackup(bootstrap.providerSettings.tts.backup)
     setTtsBackupEnabled(bootstrap.providerSettings.tts.backupEnabled)
   }, [bootstrap.providerSettings])
+
+  useEffect(() => {
+    if (section !== 'voice') return
+    let active = true
+    void window.projectAgent.getAsrModelStatus().then((status) => {
+      if (active) setAsrModelStatus(status)
+    }).catch((error: unknown) => {
+      if (active) setProviderError(error instanceof Error ? error.message : '无法读取 Whisper 模型状态。')
+    })
+    const unsubscribe = window.projectAgent.onAsrDownloadProgress((progress) => {
+      if (!active) return
+      setAsrModelStatus({
+        state: 'downloading',
+        model: 'large-v3-turbo-q5_0',
+        bytesDownloaded: progress.bytesDownloaded,
+        totalBytes: progress.totalBytes,
+        error: null
+      })
+    })
+    return () => { active = false; unsubscribe() }
+  }, [section])
 
   useEffect(() => {
     let active = true
@@ -1922,7 +1952,7 @@ function SettingsView({
     setProviderError(null)
     try {
       await window.projectAgent.configureCodingAgents(codingAgents)
-      onNotice('默认 Coding Agent 和模型配置已保存。')
+      onNotice('默认 Coding Agent、模型与 Reasoning Effort 配置已保存。')
       await onRefresh()
     } catch (error) {
       setProviderError(error instanceof Error ? error.message : 'Coding Agent 配置保存失败。')
@@ -1940,7 +1970,7 @@ function SettingsView({
         window.projectAgent.listCodingAgentModels()
       ])
       setCodingAgentModels(catalog)
-      onNotice('已重新检测 Coding Agent 并读取可用模型。')
+      onNotice('已重新检测 Coding Agent，并读取可用模型与 Reasoning Effort。')
     } catch (error) {
       setProviderError(error instanceof Error ? error.message : 'Coding Agent 检测失败。')
     } finally {
@@ -1982,6 +2012,54 @@ function SettingsView({
       await onRefresh()
     } catch (error) {
       setProviderError(error instanceof Error ? error.message : 'TTS Provider 请求失败。')
+    } finally {
+      setProviderBusy(null)
+    }
+  }
+
+  async function saveAsrProvider(): Promise<void> {
+    setProviderBusy('asr')
+    setProviderError(null)
+    try {
+      await window.projectAgent.configureAsrProvider({
+        mode: asrSettings.mode,
+        cloudBaseUrl: asrSettings.cloudBaseUrl,
+        cloudModel: asrSettings.cloudModel,
+        cloudApiKey: asrApiKey.trim() || undefined,
+        fallbackToCloud: asrSettings.fallbackToCloud
+      })
+      setAsrApiKey('')
+      onNotice('语音输入配置已保存。')
+      await onRefresh()
+    } catch (error) {
+      setProviderError(error instanceof Error ? error.message : 'ASR 配置保存失败。')
+    } finally {
+      setProviderBusy(null)
+    }
+  }
+
+  async function downloadAsrModel(): Promise<void> {
+    setProviderBusy('asr-download')
+    setProviderError(null)
+    try {
+      setAsrModelStatus(await window.projectAgent.downloadAsrModel())
+      onNotice('Whisper large-v3-turbo Q5 已下载，可离线使用。')
+    } catch (error) {
+      setProviderError(error instanceof Error ? error.message : 'Whisper 模型下载失败。')
+      setAsrModelStatus(await window.projectAgent.getAsrModelStatus())
+    } finally {
+      setProviderBusy(null)
+    }
+  }
+
+  async function deleteAsrModel(): Promise<void> {
+    setProviderBusy('asr-delete')
+    setProviderError(null)
+    try {
+      setAsrModelStatus(await window.projectAgent.deleteAsrModel())
+      onNotice('本地 Whisper 模型已删除。')
+    } catch (error) {
+      setProviderError(error instanceof Error ? error.message : 'Whisper 模型删除失败。')
     } finally {
       setProviderBusy(null)
     }
@@ -2366,7 +2444,7 @@ function SettingsView({
 
         <div className="settings-group-heading coding-agent-settings-heading">
           <h2>Coding Agents</h2>
-          <p>选择默认 Coding Agent，并为每个本机 Agent 配置运行时使用的模型。</p>
+          <p>选择默认 Coding Agent，并为每个本机 Agent 配置运行时使用的模型与 Reasoning Effort。</p>
         </div>
         <div className="coding-agent-default-control">
           <div>
@@ -2388,7 +2466,9 @@ function SettingsView({
             const capability = bootstrap.capabilities.find((item) => item.id === option.id)
             const installed = capability?.status === 'ready'
             const catalog = codingAgentModels?.[option.id]
-            const savedModel = codingAgents[option.id].defaultModel
+            const savedSettings = codingAgents[option.id]
+            const savedModel = savedSettings.defaultModel
+            const savedReasoningEffort = savedSettings.defaultReasoningEffort
             const discoveredModels = catalog?.models ?? []
             const savedModelWasDiscovered = discoveredModels.some((model) => model.id === savedModel)
             const modelOptions = [
@@ -2402,6 +2482,24 @@ function SettingsView({
                 : [])
             ]
             const selectedModel = discoveredModels.find((model) => model.id === savedModel)
+            const reasoningEfforts = savedModel
+              ? selectedModel?.reasoningEfforts ?? []
+              : catalog?.defaultReasoningEfforts ?? []
+            const defaultReasoningEffort = savedModel
+              ? selectedModel?.defaultReasoningEffort ?? null
+              : catalog?.defaultReasoningEffort ?? null
+            const savedReasoningEffortWasDiscovered = reasoningEfforts.some((effort) => effort.id === savedReasoningEffort)
+            const reasoningEffortOptions = [
+              { value: '', label: `使用 ${option.label} 默认 Effort` },
+              ...reasoningEfforts.map((effort) => ({
+                value: effort.id,
+                label: `${effort.label}${effort.id === defaultReasoningEffort ? ' · Agent 推荐' : ''}`
+              })),
+              ...(savedReasoningEffort && !savedReasoningEffortWasDiscovered
+                ? [{ value: savedReasoningEffort, label: `${savedReasoningEffort} · 已保存，当前未返回` }]
+                : [])
+            ]
+            const selectedReasoningEffort = reasoningEfforts.find((effort) => effort.id === savedReasoningEffort)
             return (
               <article key={option.id}>
                 <div className="coding-agent-config-heading">
@@ -2415,28 +2513,62 @@ function SettingsView({
                   </span>
                 </div>
                 <div className="coding-agent-config-controls">
-                  <label>
-                    <span>默认模型</span>
-                    <SelectMenu
-                      value={savedModel}
-                      options={modelOptions}
-                      onChange={(value) => setCodingAgents((current) => ({
-                        ...current,
-                        [option.id]: { defaultModel: value }
-                      }))}
-                      ariaLabel={`${option.label} 默认模型`}
-                      disabled={codingModelsLoading && !catalog}
-                      position={option.id === 'opencode' ? 'up' : 'down'}
-                    />
-                  </label>
+                  <div className="coding-agent-config-fields">
+                    <label>
+                      <span>默认模型</span>
+                      <SelectMenu
+                        value={savedModel}
+                        options={modelOptions}
+                        onChange={(value) => {
+                          const nextReasoningEfforts = value
+                            ? discoveredModels.find((model) => model.id === value)?.reasoningEfforts ?? []
+                            : catalog?.defaultReasoningEfforts ?? []
+                          setCodingAgents((current) => {
+                            const currentSettings = current[option.id]
+                            const keepReasoningEffort = !currentSettings.defaultReasoningEffort
+                              || nextReasoningEfforts.some((effort) => effort.id === currentSettings.defaultReasoningEffort)
+                            return {
+                              ...current,
+                              [option.id]: {
+                                ...currentSettings,
+                                defaultModel: value,
+                                defaultReasoningEffort: keepReasoningEffort ? currentSettings.defaultReasoningEffort : ''
+                              }
+                            }
+                          })
+                        }}
+                        ariaLabel={`${option.label} 默认模型`}
+                        disabled={codingModelsLoading && !catalog}
+                        position={option.id === 'opencode' ? 'up' : 'down'}
+                      />
+                    </label>
+                    <label>
+                      <span>Reasoning Effort</span>
+                      <SelectMenu
+                        value={savedReasoningEffort}
+                        options={reasoningEffortOptions}
+                        onChange={(value) => setCodingAgents((current) => ({
+                          ...current,
+                          [option.id]: { ...current[option.id], defaultReasoningEffort: value }
+                        }))}
+                        ariaLabel={`${option.label} Reasoning Effort`}
+                        disabled={(codingModelsLoading && !catalog) || (reasoningEfforts.length === 0 && !savedReasoningEffort)}
+                        position={option.id === 'opencode' ? 'up' : 'down'}
+                      />
+                    </label>
+                  </div>
                   <p className={`coding-agent-model-detail ${catalog?.error ? 'is-error' : ''}`}>
                     {codingModelsLoading && !catalog
-                      ? '正在读取支持的模型…'
+                      ? '正在读取支持的模型和 Reasoning Effort…'
                       : catalog?.error
                         ? catalog.error
-                        : savedModel
-                          ? selectedModel?.description ?? savedModel
-                          : '运行时不传 model 参数，使用 Agent 自己的默认配置。'}
+                        : savedReasoningEffort
+                          ? selectedReasoningEffort?.description ?? `${savedReasoningEffort} · 运行时显式传入`
+                          : reasoningEfforts.length === 0
+                            ? savedModel
+                              ? '当前模型没有返回可选 Reasoning Effort；运行时使用 Agent 默认配置。'
+                              : '选择模型后读取可用 Reasoning Effort；留空使用 Agent 默认配置。'
+                            : selectedModel?.description ?? '未选择 Effort 时不传参数，使用 Agent 自己的默认配置。'}
                   </p>
                 </div>
               </article>
@@ -2457,7 +2589,80 @@ function SettingsView({
 
       {section === 'voice' && <section className="provider-config-page">
         <div className="settings-group-heading">
-          <h2>语音优先级</h2>
+          <h2>语音输入</h2>
+          <p>优先在 Mac 本地转写；模型未下载或运行失败时，可按配置回退到云端。</p>
+        </div>
+        <div className="provider-config-group">
+          <div className="provider-config-block">
+            <div className="provider-config-heading">
+              <div>
+                <span>ASR</span>
+                <strong>Whisper large-v3-turbo Q5</strong>
+                <p>本地模型约 547 MiB，按需下载；录音不会在本地模式下离开设备。</p>
+              </div>
+              <span className={`provider-ready-pill ${asrModelStatus?.state === 'installed' ? 'is-ready' : ''}`}>
+                {asrModelStatus?.state === 'installed' ? '已下载' : asrModelStatus?.state === 'downloading' ? '下载中' : '未下载'}
+              </span>
+            </div>
+            <div className="provider-fields">
+              <div className="provider-field">
+                <span>输入方式</span>
+                <SelectMenu
+                  value={asrSettings.mode}
+                  options={[
+                    { value: 'local-first', label: '本地 Whisper，失败时回退云端' },
+                    { value: 'cloud', label: '仅使用云端 ASR' }
+                  ]}
+                  onChange={(mode) => setAsrSettings((current) => ({ ...current, mode: mode as typeof current.mode }))}
+                  ariaLabel="语音输入方式"
+                />
+              </div>
+              <label>
+                <span>Cloud Base URL</span>
+                <input value={asrSettings.cloudBaseUrl} onChange={(event) => setAsrSettings((current) => ({ ...current, cloudBaseUrl: event.target.value }))} placeholder="https://api.openai.com/v1" />
+              </label>
+              <label>
+                <span>Cloud Model</span>
+                <input value={asrSettings.cloudModel} onChange={(event) => setAsrSettings((current) => ({ ...current, cloudModel: event.target.value }))} placeholder="gpt-transcribe" />
+              </label>
+              <label>
+                <span>Cloud API Key</span>
+                <input type="password" autoComplete="off" value={asrApiKey} onChange={(event) => setAsrApiKey(event.target.value)} placeholder={asrSettings.cloudApiKeyConfigured ? '已保存；留空保持不变' : '使用云端或回退时需要'} />
+              </label>
+              {asrSettings.mode === 'local-first' && (
+                <div className="provider-field">
+                  <span>自动回退</span>
+                  <label className="provider-toggle">
+                    <input type="checkbox" checked={asrSettings.fallbackToCloud} onChange={(event) => setAsrSettings((current) => ({ ...current, fallbackToCloud: event.target.checked }))} />
+                    <i /><span>{asrSettings.fallbackToCloud ? '已启用' : '未启用'}</span>
+                  </label>
+                </div>
+              )}
+            </div>
+            {asrModelStatus?.state === 'downloading' && (
+              <div className="asr-download-progress" aria-label="Whisper 模型下载进度">
+                <i style={{ width: `${Math.min(100, asrModelStatus.bytesDownloaded / asrModelStatus.totalBytes * 100)}%` }} />
+              </div>
+            )}
+            <div className="provider-page-actions">
+              {asrModelStatus?.state === 'installed' ? (
+                <button className="secondary-action-button" onClick={() => void deleteAsrModel()} disabled={providerBusy !== null}>
+                  {providerBusy === 'asr-delete' ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />} 删除本地模型
+                </button>
+              ) : (
+                <button className="secondary-action-button" onClick={() => void downloadAsrModel()} disabled={providerBusy !== null}>
+                  {providerBusy === 'asr-download' ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />} 下载本地模型
+                </button>
+              )}
+              <button className="provider-save-button" onClick={() => void saveAsrProvider()} disabled={providerBusy !== null}>
+                {providerBusy === 'asr' ? <LoaderCircle className="spin" size={13} /> : <ShieldCheck size={13} />} 保存语音输入配置
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="settings-group-heading">
+          <h2>语音输出优先级</h2>
           <p>云端语音不可用时，自动切换到备用声音继续播报。</p>
         </div>
         <div className="provider-config-group">
@@ -2850,17 +3055,38 @@ function SettingsView({
                 <button disabled={!projectId} onClick={openPostgresForm}>
                   {!projectId ? '先选择项目' : selectedPostgres ? '编辑连接' : '配置'}
                 </button>
-              ) : item.availability === 'built-in' ? (
+              ) : (
                 <button disabled={!projectId} onClick={() => openConnectorForm(item.kind as Exclude<ConnectorKind, 'repo' | 'postgres'>)}>
                   {!projectId ? '先选择项目' : bootstrap.connectors.some((connector) => connector.projectId === projectId && connector.kind === item.kind) ? '编辑连接' : '配置'}
                 </button>
-              ) : <button disabled>即将支持</button>}
+              )}
             </article>
           ))}
         </div>
       </section>
       </>}
     </div>
+  )
+}
+
+function ProjectsView({ projects, onOpen }: { projects: Project[]; onOpen: (projectId: string) => void }): React.JSX.Element {
+  return (
+    <section className="projects-list-view" aria-label="项目列表">
+      {projects.map((project) => (
+        <button className="projects-list-item" key={project.id} onClick={() => onOpen(project.id)}>
+          <ProjectIcon project={project} className="is-project-list" />
+          <span className="projects-list-copy">
+            <span className="projects-list-heading">
+              <strong>{project.name}</strong>
+            </span>
+            {project.summary && <span>{project.summary}</span>}
+            <small>{project.profile.productType || project.profile.stage || project.profile.defaultAgent}</small>
+          </span>
+          <ChevronRight size={17} />
+        </button>
+      ))}
+      {projects.length === 0 && <EmptyState title="还没有项目" detail="可以让工作助理创建并配置第一个项目。" />}
+    </section>
   )
 }
 
@@ -2882,12 +3108,14 @@ export default function App(): React.JSX.Element {
   const [resizingSidebar, setResizingSidebar] = useState(false)
   const sidebarResizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
-  const [settingsSearch, setSettingsSearch] = useState('')
   const [settingsReturnNavigation, setSettingsReturnNavigation] = useState<Exclude<Navigation, 'settings'>>('briefing')
   const [checkingGoalId, setCheckingGoalId] = useState<string | null>(null)
   const startingMilestoneIdsRef = useRef<Set<string>>(new Set())
   const [selectedAgentRunId, setSelectedAgentRunId] = useState<string | null>(null)
   const [creatingAgentRun, setCreatingAgentRun] = useState(false)
+  const [sidebarRunRenameTarget, setSidebarRunRenameTarget] = useState<AgentRun | null>(null)
+  const [sidebarRunRenameTitle, setSidebarRunRenameTitle] = useState('')
+  const [sidebarRunActionBusy, setSidebarRunActionBusy] = useState(false)
   const [agentRunPrefill, setAgentRunPrefill] = useState<{ runId: string; prompt: string; requestId: string } | null>(null)
   const [handlingDecisionId, setHandlingDecisionId] = useState<string | null>(null)
   useAutoDismissMessage(notice, () => setNotice(null))
@@ -2958,9 +3186,7 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
-  const projectViewId = sidebarSelection.startsWith('project:')
-    ? sidebarSelection.slice('project:'.length)
-    : null
+  const projectViewId = selectedProject
 
   const filteredDecisions = useMemo(() => {
     if (!bootstrap || projectSection !== 'inbox') return []
@@ -3196,13 +3422,47 @@ export default function App(): React.JSX.Element {
       } else if (result.navigation?.kind === 'project') {
         setSelectedProject(result.navigation.id)
         setComposerProjectId(result.navigation.id)
-        setSidebarSelection(`project:${result.navigation.id}`)
+        setSidebarSelection('projects')
         setProjectSection('settings')
         setNavigation('inbox')
       }
       await refresh()
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Action 执行失败。')
+    }
+  }
+
+  async function renameSidebarRun(): Promise<void> {
+    if (!sidebarRunRenameTarget || !sidebarRunRenameTitle.trim() || sidebarRunActionBusy) return
+    setSidebarRunActionBusy(true)
+    try {
+      await window.projectAgent.renameAgentRun(sidebarRunRenameTarget.id, sidebarRunRenameTitle.trim())
+      setSidebarRunRenameTarget(null)
+      setSidebarRunRenameTitle('')
+      await refresh()
+      setNotice('Session 已重命名。')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Session 重命名失败。')
+    } finally {
+      setSidebarRunActionBusy(false)
+    }
+  }
+
+  async function archiveSidebarRun(run: AgentRun): Promise<void> {
+    if (sidebarRunActionBusy || run.status === 'running' || run.status === 'queued') return
+    setSidebarRunActionBusy(true)
+    try {
+      await window.projectAgent.archiveAgentRun(run.id)
+      if (selectedAgentRunId === run.id) {
+        setSelectedAgentRunId(null)
+        setCreatingAgentRun(false)
+      }
+      await refresh()
+      setNotice('Session 已归档。')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Session 归档失败。')
+    } finally {
+      setSidebarRunActionBusy(false)
     }
   }
 
@@ -3217,9 +3477,23 @@ export default function App(): React.JSX.Element {
 
   const selectedProjectRecord = bootstrap.projects.find((project) => project.id === projectViewId)
   const inboxCount = bootstrap.decisions.filter((item) => item.status === 'inbox').length
-  const filteredSettingsNavigation = settingsNavigationItems.filter((item) =>
-    `${item.label} ${item.keywords}`.toLocaleLowerCase().includes(settingsSearch.trim().toLocaleLowerCase())
-  )
+  const pageTitle = navigation === 'inbox'
+    ? projectSection === 'settings'
+      ? '项目设置'
+      : projectSection === 'status'
+        ? '项目状态'
+        : projectSection === 'goals'
+          ? '目标'
+          : '决策收件箱'
+    : navigation === 'projects'
+      ? '项目'
+      : navigation === 'files'
+        ? '文件'
+        : navigation === 'automations'
+          ? '自动化'
+          : navigation === 'settings'
+            ? settingsSectionTitles[settingsSection]
+            : ''
   return (
     <div
       className={`app-shell ${sidebarOpen ? '' : 'sidebar-collapsed'} ${resizingSidebar ? 'is-resizing-sidebar' : ''}`}
@@ -3242,25 +3516,8 @@ export default function App(): React.JSX.Element {
                 <PanelLeft size={17} />
               </button>
             </div>
-            <div className="settings-sidebar-title">
-              <Settings2 size={16} />
-              <strong>所有设置</strong>
-              <ChevronDown size={14} />
-            </div>
-            <label className="settings-search-field">
-              <Search size={15} />
-              <input
-                value={settingsSearch}
-                onChange={(event) => setSettingsSearch(event.target.value)}
-                placeholder="搜索设置…"
-              />
-              {settingsSearch && (
-                <button onClick={() => setSettingsSearch('')} aria-label="清除搜索"><X size={13} /></button>
-              )}
-            </label>
-            <span className="settings-nav-group-label">个人</span>
             <nav className="settings-secondary-nav" aria-label="设置导航">
-              {filteredSettingsNavigation.map((item) => {
+              {settingsNavigationItems.map((item) => {
                 const NavigationIcon = item.icon
                 return (
                   <button className={settingsSection === item.id ? 'is-active' : ''} onClick={() => setSettingsSection(item.id)} key={item.id}>
@@ -3268,28 +3525,8 @@ export default function App(): React.JSX.Element {
                   </button>
                 )
               })}
-              {filteredSettingsNavigation.length === 0 && <p className="settings-search-empty">没有匹配的设置</p>}
             </nav>
           </>
-        ) : navigation === 'runs' && (selectedAgentRunId || creatingAgentRun) ? (
-          <AgentRunsSidebar
-            runs={bootstrap.runs}
-            projects={bootstrap.projects}
-            selectedRunId={selectedAgentRunId}
-            onSelectRun={(runId) => {
-              setCreatingAgentRun(false)
-              setSelectedAgentRunId(runId)
-            }}
-            onNewRun={() => {
-              setSelectedAgentRunId(null)
-              setCreatingAgentRun(true)
-            }}
-            onBack={() => {
-              setSelectedAgentRunId(null)
-              setCreatingAgentRun(false)
-            }}
-            onCollapse={() => setSidebarOpen(false)}
-          />
         ) : (
         <>
         <div className="brand-row">
@@ -3336,16 +3573,16 @@ export default function App(): React.JSX.Element {
             <Folder size={17} />
             文件
           </button>
-          <button className={sidebarSelection === 'runs' ? 'is-active' : ''} onClick={() => {
-            setNavigation('runs')
-            setSidebarSelection('runs')
+          <button className={sidebarSelection === 'projects' ? 'is-active' : ''} onClick={() => {
+            setNavigation('projects')
+            setSidebarSelection('projects')
             setSelectedProject(null)
             setComposerProjectId(null)
             setSelectedAgentRunId(null)
             setCreatingAgentRun(false)
           }}>
-            <Workflow size={17} />
-            Agent Runs
+            <LayoutGrid size={17} />
+            项目
           </button>
           <button className={sidebarSelection === 'automations' ? 'is-active' : ''} onClick={() => {
             setNavigation('automations')
@@ -3358,42 +3595,70 @@ export default function App(): React.JSX.Element {
           </button>
         </nav>
 
-        <div className="sidebar-section-title">
-          <span>项目</span>
-        </div>
-        <div className="project-nav">
-          <button
-            className={sidebarSelection === 'all-projects' ? 'is-selected' : ''}
-            onClick={() => {
-              setSelectedProject(null)
-              setComposerProjectId(null)
-              setSidebarSelection('all-projects')
-              setProjectSection('inbox')
-              setDecisionStatus('inbox')
-              setNavigation('inbox')
-            }}
-          >
-            <span className="project-dot all-projects-dot" />
-            全部项目
-          </button>
-          {bootstrap.projects.map((project) => (
+        <section className="sidebar-runs-section" aria-label="Agent Runs">
+          <div className="sidebar-runs-heading">
+            <span>Agent Runs</span>
+            <small>{bootstrap.runs.length}</small>
             <button
-              key={project.id}
-              className={sidebarSelection === `project:${project.id}` ? 'is-selected' : ''}
+              type="button"
               onClick={() => {
-                setSelectedProject(project.id)
-                setComposerProjectId(project.id)
-                setSidebarSelection(`project:${project.id}`)
-                setProjectSection('inbox')
-                setDecisionStatus('inbox')
-                setNavigation('inbox')
+                setNavigation('runs')
+                setSidebarSelection('runs')
+                setSelectedProject(null)
+                setComposerProjectId(null)
+                setSelectedAgentRunId(null)
+                setCreatingAgentRun(true)
               }}
-            >
-              <ProjectIcon project={project} className="is-sidebar" />
-              {project.name}
-            </button>
-          ))}
-        </div>
+              aria-label="新建 Agent Run"
+            ><Plus size={14} /></button>
+          </div>
+          <nav className="sidebar-run-list" aria-label="Agent Run 列表">
+            {bootstrap.runs.map((run) => {
+              const project = bootstrap.projects.find((item) => item.id === run.projectId)
+              const active = run.status === 'running' || run.status === 'queued'
+              return (
+                <div className={`sidebar-run-row ${selectedAgentRunId === run.id && navigation === 'runs' ? 'is-active' : ''}`} key={run.id}>
+                  <button
+                    type="button"
+                    className="sidebar-run-open"
+                    onClick={() => {
+                      setNavigation('runs')
+                      setSidebarSelection('runs')
+                      setSelectedProject(null)
+                      setComposerProjectId(null)
+                      setCreatingAgentRun(false)
+                      setSelectedAgentRunId(run.id)
+                    }}
+                  >
+                    <span>
+                      <strong>{run.title}</strong>
+                      <small>{project?.name ?? '共享'} · {run.provider}</small>
+                    </span>
+                    {active && <LoaderCircle size={14} className="spin" />}
+                  </button>
+                  <ActionMenu
+                    className="sidebar-run-actions"
+                    ariaLabel={`${run.title} 操作`}
+                    trigger={<MoreHorizontal size={14} />}
+                    options={[
+                      { value: 'rename', label: '重命名', icon: <Pencil size={13} /> },
+                      ...(!active ? [{ value: 'archive' as const, label: '归档', icon: <ArchiveX size={13} />, danger: true }] : [])
+                    ]}
+                    onSelect={(action) => {
+                      if (action === 'rename') {
+                        setSidebarRunRenameTarget(run)
+                        setSidebarRunRenameTitle(run.title)
+                      } else {
+                        void archiveSidebarRun(run)
+                      }
+                    }}
+                  />
+                </div>
+              )
+            })}
+            {bootstrap.runs.length === 0 && <p>还没有 Agent Run</p>}
+          </nav>
+        </section>
 
         <div className="sidebar-footer">
           <button
@@ -3401,7 +3666,6 @@ export default function App(): React.JSX.Element {
             onClick={() => {
               setSettingsReturnNavigation(navigation)
               setSettingsSection('general')
-              setSettingsSearch('')
               setNavigation('settings')
             }}
           >
@@ -3447,59 +3711,40 @@ export default function App(): React.JSX.Element {
           </button>
         )}
 
-        <div className={`content-column ${navigation === 'briefing' ? 'is-briefing' : ''} ${navigation === 'files' ? 'is-files' : ''} ${navigation === 'runs' ? 'is-runs' : ''} ${navigation === 'automations' ? 'is-automations' : ''} ${navigation === 'settings' ? 'is-settings' : ''} ${navigation === 'inbox' && projectSection === 'inbox' ? 'is-inbox-list' : ''} ${navigation === 'inbox' && projectSection === 'settings' ? 'is-project-settings' : ''} ${navigation === 'inbox' && projectSection === 'status' ? 'is-project-status' : ''}`}>
+        {navigation !== 'briefing' && navigation !== 'runs' && (
+          <header className="main-area-header">
+            <div className="main-area-header-title">
+              {navigation === 'inbox' && selectedProjectRecord && (
+                <button
+                  type="button"
+                  className="main-area-header-back"
+                  onClick={() => {
+                    setNavigation('projects')
+                    setSidebarSelection('projects')
+                    setSelectedProject(null)
+                    setComposerProjectId(null)
+                  }}
+                  aria-label="返回项目列表"
+                >
+                  <ArrowLeft size={18} />
+                </button>
+              )}
+              {navigation === 'inbox' && selectedProjectRecord && <ProjectIcon project={selectedProjectRecord} className="is-page-header" />}
+              <div>
+                <h1>{pageTitle}</h1>
+                {navigation === 'inbox' && selectedProjectRecord && <span>{selectedProjectRecord.name}</span>}
+              </div>
+            </div>
+          </header>
+        )}
+
+        <div className={`content-column ${navigation === 'briefing' ? 'is-briefing' : ''} ${navigation === 'projects' ? 'is-projects' : ''} ${navigation === 'files' ? 'is-files' : ''} ${navigation === 'runs' ? 'is-runs' : ''} ${navigation === 'automations' ? 'is-automations' : ''} ${navigation === 'settings' ? 'is-settings' : ''} ${navigation === 'inbox' && projectSection === 'inbox' ? 'is-inbox-list' : ''} ${navigation === 'inbox' && projectSection === 'settings' ? 'is-project-settings' : ''} ${navigation === 'inbox' && projectSection === 'status' ? 'is-project-status' : ''}`}>
           {navigation === 'briefing' ? (
             <header className="briefing-page-header">
-              <div>
-                <strong>工作助理</strong>
-                <small>讨论和推进所有项目 · 每天 09:00 发送简报</small>
-              </div>
+              <strong>工作助理</strong>
               <span className="briefing-header-status"><i /> 在线</span>
             </header>
-          ) : navigation === 'runs' ? null : (
-            <header className="page-header">
-              <div>
-                <span className="eyebrow">
-                  {navigation === 'settings'
-                    ? '设置'
-                    : selectedProjectRecord?.name ?? '全部项目'}
-                </span>
-                <h1>
-                  {navigation === 'inbox'
-                    ? projectSection === 'settings'
-                      ? '项目设置'
-                      : projectSection === 'status'
-                        ? '项目状态'
-                      : projectSection === 'goals'
-                        ? '目标'
-                        : '决策收件箱'
-                    : navigation === 'files'
-                      ? '文件'
-                      : navigation === 'automations'
-                        ? '自动化'
-                        : settingsSectionMeta[settingsSection].title}
-                </h1>
-                <p>
-                  {navigation === 'inbox'
-                    ? projectSection === 'settings'
-                      ? '管理项目身份、入口、数据源与 Connector。'
-                      : projectSection === 'status'
-                        ? '统一维护项目使命、愿景、当前现状和已确认事实。'
-                      : projectSection === 'goals'
-                        ? '把结果、指标、里程碑和证据放在同一条持续追踪的链路里。'
-                        : '项目与 Agent 把真正需要关注的变化投递到这里。'
-                    : navigation === 'files'
-                      ? '集中保存运营、Marketing、分析与 Agent 生成的项目产物。'
-                      : navigation === 'automations'
-                        ? '按计划运行 Agent、Connector、目标检查和简报，并保留完整历史。'
-                        : settingsSectionMeta[settingsSection].description}
-                </p>
-              </div>
-              <div className="header-actions">
-                {navigation !== 'settings' && <button className="round-icon-button" aria-label="搜索"><Search size={17} /></button>}
-              </div>
-            </header>
-          )}
+          ) : null}
 
           {navigation === 'briefing' && (
             <WorkAssistantView
@@ -3613,6 +3858,19 @@ export default function App(): React.JSX.Element {
               )}
             </>
           )}
+          {navigation === 'projects' && (
+            <ProjectsView
+              projects={bootstrap.projects}
+              onOpen={(projectId) => {
+                setSelectedProject(projectId)
+                setComposerProjectId(projectId)
+                setSidebarSelection('projects')
+                setProjectSection('inbox')
+                setDecisionStatus('inbox')
+                setNavigation('inbox')
+              }}
+            />
+          )}
           {navigation === 'files' && (
             <WorkspaceFilesView
               projects={bootstrap.projects}
@@ -3721,6 +3979,30 @@ export default function App(): React.JSX.Element {
           </div>
         )}
       </main>
+      {sidebarRunRenameTarget && (
+        <div
+          className="agent-session-rename-backdrop"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target && !sidebarRunActionBusy) setSidebarRunRenameTarget(null)
+          }}
+        >
+          <form className="agent-session-rename-dialog" onSubmit={(event) => { event.preventDefault(); void renameSidebarRun() }}>
+            <strong>重命名 Session</strong>
+            <input
+              autoFocus
+              value={sidebarRunRenameTitle}
+              maxLength={200}
+              onChange={(event) => setSidebarRunRenameTitle(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Escape' && !sidebarRunActionBusy) setSidebarRunRenameTarget(null) }}
+              aria-label="Session 新标题"
+            />
+            <div>
+              <button type="button" disabled={sidebarRunActionBusy} onClick={() => setSidebarRunRenameTarget(null)}>取消</button>
+              <button type="submit" disabled={!sidebarRunRenameTitle.trim() || sidebarRunActionBusy}>保存</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }

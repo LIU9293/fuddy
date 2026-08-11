@@ -15,6 +15,8 @@ export interface CliAgentTurnInput {
   provider: Exclude<AgentRunProvider, 'pi'>
   /** Empty or omitted means the coding agent's own configured default. */
   model?: string | null
+  /** Empty or omitted means the coding agent's own configured default. */
+  reasoningEffort?: string | null
   prompt: string
   sessionId: string | null
   workingDirectory: string
@@ -33,6 +35,7 @@ export interface CliAgentTurnResult {
 }
 
 type JsonRecord = Record<string, unknown>
+type ClaudeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 // Codex app-server deliberately uses different casing for the legacy thread
 // sandbox enum and the structured turn sandbox policy discriminant.
@@ -63,6 +66,24 @@ export function codexReasoningSummaryDelta(method: string, params: JsonRecord): 
 
 export function codexReasoningSegmentId(params: JsonRecord): string | undefined {
   return textValue(params.itemId) || textValue(params.item_id) || undefined
+}
+
+export function claudeSdkReasoningOptions(reasoningEffort?: string | null): { effort?: ClaudeEffort } {
+  return reasoningEffort ? { effort: reasoningEffort as ClaudeEffort } : {}
+}
+
+export function buildCodexTurnStartParams(
+  threadId: string,
+  prompt: string,
+  reasoningEffort?: string | null
+): JsonRecord {
+  return {
+    threadId,
+    input: [{ type: 'text', text: prompt }],
+    approvalPolicy: CODEX_APPROVAL_POLICY,
+    sandboxPolicy: { type: CODEX_TURN_SANDBOX_POLICY },
+    ...(reasoningEffort ? { effort: reasoningEffort } : {})
+  }
 }
 
 function recordSessionId(record: JsonRecord): string | null {
@@ -140,6 +161,7 @@ export function buildCliArgs(input: CliAgentTurnInput, mcpServers: McpServerLaun
     const common = [
       'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
       ...(input.model ? ['--model', input.model] : []),
+      ...(input.reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`] : []),
       ...additionalDirectories.flatMap((directory) => ['--add-dir', directory]),
       ...mcpServers.flatMap((server) => [
         '-c', `mcp_servers.${server.name}.command=${JSON.stringify(server.command)}`,
@@ -158,6 +180,7 @@ export function buildCliArgs(input: CliAgentTurnInput, mcpServers: McpServerLaun
     return [
       '--print', '--verbose', '--output-format', 'stream-json', '--include-partial-messages',
       ...(input.model ? ['--model', input.model] : []),
+      ...(input.reasoningEffort ? ['--effort', input.reasoningEffort] : []),
       '--mcp-config', JSON.stringify({
         mcpServers: Object.fromEntries(mcpServers.map((server) => [server.name, {
           command: server.command,
@@ -177,6 +200,7 @@ export function buildCliArgs(input: CliAgentTurnInput, mcpServers: McpServerLaun
   return [
     'run', '--auto', '--format', 'json', '--dir', input.workingDirectory,
     ...(input.model ? ['--model', input.model] : []),
+    ...(input.reasoningEffort ? ['--variant', input.reasoningEffort] : []),
     ...(input.sessionId ? ['--session', input.sessionId] : []),
     input.prompt
   ]
@@ -233,7 +257,13 @@ export class CliAgentRuntime {
 
   async runTurn(input: CliAgentTurnInput): Promise<CliAgentTurnResult> {
     const configuredModel = input.model?.trim() || this.providerSettings?.getCodingAgentDefaultModel(input.provider)
-    const resolvedInput = { ...input, model: configuredModel || null }
+    const configuredReasoningEffort = input.reasoningEffort?.trim()
+      || this.providerSettings?.getCodingAgentDefaultReasoningEffort(input.provider)
+    const resolvedInput = {
+      ...input,
+      model: configuredModel || null,
+      reasoningEffort: configuredReasoningEffort || null
+    }
     const scope = `${input.provider}-${input.sessionId ?? crypto.randomUUID()}`
     const mcpServers = await this.mcpProvider.getLaunchConfigs(scope)
     if (input.projectId && this.projectAgentMcpScript && this.databasePath) {
@@ -271,6 +301,7 @@ export class CliAgentRuntime {
         abortController: input.abortController,
         cwd: input.workingDirectory,
         ...(input.model ? { model: input.model } : {}),
+        ...claudeSdkReasoningOptions(input.reasoningEffort),
         ...(input.sessionId ? { resume: input.sessionId } : {}),
         pathToClaudeCodeExecutable: executable,
         env: buildCliEnv('claude', mcpServers),
@@ -495,12 +526,7 @@ export class CliAgentRuntime {
         if (!found) throw new Error('Codex app-server 没有返回 thread id。')
         sessionId = found
         if (found !== input.sessionId) input.onSessionId(found)
-        await request('turn/start', {
-          threadId: found,
-          input: [{ type: 'text', text: input.prompt }],
-          approvalPolicy: CODEX_APPROVAL_POLICY,
-          sandboxPolicy: { type: CODEX_TURN_SANDBOX_POLICY }
-        })
+        await request('turn/start', buildCodexTurnStartParams(found, input.prompt, input.reasoningEffort))
       })().catch(finishError)
     })
   }

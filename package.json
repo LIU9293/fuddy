@@ -16,11 +16,13 @@
     "relay:typecheck": "npm --prefix cloud/relay run typecheck",
     "relay:test": "npm --prefix cloud/relay run test",
     "relay:deploy": "npm --prefix cloud/relay run deploy",
-    "ios:generate": "cd ios && xcodegen generate",
+    "ios:generate": "npm run prepare:whisper:ios && cd ios && xcodegen generate",
     "ios:typecheck": "zsh scripts/typecheck-ios.sh",
     "metrics:roombase:daily": "node scripts/roombase-daily-metrics.mjs",
     "prepare:agent-tools": "node scripts/prepare-agent-tools.mjs",
-    "dist:mac": "npm run prepare:agent-tools && npm run build && electron-builder --mac dmg"
+    "prepare:whisper": "node scripts/prepare-whisper.mjs",
+    "prepare:whisper:ios": "node scripts/prepare-whisper.mjs --ios",
+    "dist:mac": "npm run prepare:agent-tools && npm run prepare:whisper && npm run build && electron-builder --mac dmg"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.224",
@@ -76,6 +78,10 @@
         "to": "third-party/cua-driver/cua-driver"
       },
       {
+        "from": ".third-party-tools/whisper/darwin-${arch}",
+        "to": "third-party/whisper"
+      },
+      {
         "from": "resources/branding/fuddy-mac-icon-light.png",
         "to": "branding/fuddy-mac-icon-light.png"
       },
@@ -89,6 +95,9 @@
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "将你的语音在本机转写为项目消息；未安装本地模型时可按设置使用云端 ASR。"
+      },
       "target": [
         "dmg"
       ]

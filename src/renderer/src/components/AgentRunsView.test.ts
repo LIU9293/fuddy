@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentRunMessage, AgentRunStreamUpdate } from '../../../shared/contracts'
 import {
   applyAgentLiveUpdate,
+  applyAgentLiveUpdateForRun,
   findArtifactForHref,
   formatAgentProcessDuration,
   groupLiveActivities,
@@ -25,6 +26,28 @@ function message(input: Partial<AgentRunMessage> & Pick<AgentRunMessage, 'id' | 
 }
 
 describe('Agent Run live activity timeline', () => {
+  it('keeps live messages scoped to the Agent Run that emitted them', () => {
+    const withFirstRun = applyAgentLiveUpdateForRun({}, 'run-1', {
+      type: 'reasoning_delta',
+      segmentId: 'thinking-1',
+      delta: '正在检查第一个 Run。'
+    })
+    const withBothRuns = applyAgentLiveUpdateForRun(withFirstRun, 'run-2', {
+      type: 'message_delta',
+      messageId: 'message-2',
+      delta: '第二个 Run 的回复'
+    })
+
+    expect(withBothRuns['run-1']).toMatchObject({
+      streamingText: '',
+      activities: [{ kind: 'thinking', value: { content: '正在检查第一个 Run。' } }]
+    })
+    expect(withBothRuns['run-2']).toMatchObject({
+      streamingText: '第二个 Run 的回复',
+      activities: []
+    })
+  })
+
   it('matches relative and absolute Markdown links to registered artifacts', () => {
     const artifacts = [{
       id: 'artifact-1',

@@ -372,6 +372,7 @@ struct AgentMessage: Codable, Identifiable, Hashable {
     let content: String
     let eventType: String?
     let toolName: String?
+    var toolStatus: String? = nil
     let createdAt: String
 }
 

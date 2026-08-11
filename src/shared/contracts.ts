@@ -495,35 +495,13 @@ export interface WorkAssistantCapabilityDescriptor {
   description: string
 }
 
-export type WorkAssistantActionOption =
-  | {
-      id: string
-      label: string
-      style: 'primary' | 'secondary' | 'quiet'
-      capability: Extract<WorkAssistantCapabilityId, 'agent-run.open'>
-      payload: { runId: string; decisionId?: string | null; draftPrompt: string | null }
-    }
-  | {
-      id: string
-      label: string
-      style: 'primary' | 'secondary' | 'quiet'
-      capability: Extract<WorkAssistantCapabilityId, 'agent-run.create'>
-      payload: {
-        projectId: string | null
-        decisionId: string | null
-        goalId: string | null
-        milestoneId: string | null
-        title: string
-        draftPrompt: string
-      }
-    }
-  | {
-      id: string
-      label: string
-      style: 'primary' | 'secondary' | 'quiet'
-      capability: Extract<WorkAssistantCapabilityId, 'project.create'>
-      payload: CreateProjectInput
-    }
+export interface WorkAssistantActionOption {
+  id: string
+  label: string
+  style: 'primary' | 'secondary' | 'quiet'
+  capability: WorkAssistantCapabilityId | 'assistant.dismiss'
+  payload: Record<string, unknown>
+}
 
 export interface WorkAssistantActionProposal {
   id: string
@@ -585,8 +563,55 @@ export interface TtsProviderSettings {
   backupEnabled: boolean
 }
 
+export type AsrProviderMode = 'local-first' | 'cloud'
+
+export interface AsrProviderSettings {
+  mode: AsrProviderMode
+  cloudBaseUrl: string
+  cloudModel: string
+  cloudApiKeyConfigured: boolean
+  fallbackToCloud: boolean
+}
+
+export interface ConfigureAsrProviderInput {
+  mode: AsrProviderMode
+  cloudBaseUrl: string
+  cloudModel: string
+  cloudApiKey?: string
+  fallbackToCloud: boolean
+}
+
+export type AsrLocalModelState = 'not-downloaded' | 'downloading' | 'installed' | 'error'
+
+export interface AsrModelStatus {
+  state: AsrLocalModelState
+  model: 'large-v3-turbo-q5_0'
+  bytesDownloaded: number
+  totalBytes: number
+  error: string | null
+}
+
+export interface AsrDownloadProgress {
+  bytesDownloaded: number
+  totalBytes: number
+}
+
+export interface TranscribeAudioInput {
+  audioDataUrl: string
+  language?: string
+  prompt?: string
+}
+
+export interface TranscriptionResult {
+  text: string
+  provider: 'local-whisper' | 'cloud'
+  fallbackUsed: boolean
+  durationMilliseconds: number
+}
+
 export interface CodingAgentModelSettings {
   defaultModel: string
+  defaultReasoningEffort: string
 }
 
 export interface CodingAgentSettings extends Record<CodingAgentProvider, CodingAgentModelSettings> {
@@ -595,16 +620,26 @@ export interface CodingAgentSettings extends Record<CodingAgentProvider, CodingA
 
 export type ConfigureCodingAgentSettingsInput = CodingAgentSettings
 
+export interface CodingAgentReasoningEffortOption {
+  id: string
+  label: string
+  description: string | null
+}
+
 export interface CodingAgentModelOption {
   id: string
   label: string
   description: string | null
   isDefault: boolean
+  reasoningEfforts: CodingAgentReasoningEffortOption[]
+  defaultReasoningEffort: string | null
 }
 
 export interface CodingAgentModelCatalogEntry {
   provider: CodingAgentProvider
   models: CodingAgentModelOption[]
+  defaultReasoningEfforts: CodingAgentReasoningEffortOption[]
+  defaultReasoningEffort: string | null
   error: string | null
 }
 
@@ -629,6 +664,7 @@ export interface ConfigureTtsEndpointInput {
 export interface ProviderSettings {
   agent: AgentProviderSettings
   codingAgents: CodingAgentSettings
+  asr: AsrProviderSettings
   tts: TtsProviderSettings
 }
 
@@ -994,6 +1030,7 @@ export interface DesktopApi {
     input: SendAgentRunMessageInput,
     onUpdate: (update: AgentRunStreamUpdate) => void
   ): Promise<AgentRunDetail>
+  stopAgentRunMessage(runId: string): Promise<AgentRunDetail>
   respondAgentApproval(input: RespondAgentApprovalInput): Promise<void>
   listWorkspaceFiles(projectId: string | null): Promise<WorkspaceFileEntry[]>
   readWorkspaceFile(projectId: string | null, relativePath: string): Promise<WorkspaceFileContent>
@@ -1016,6 +1053,12 @@ export interface DesktopApi {
   configureAgentProvider(input: ConfigureAgentProviderInput): Promise<ProviderSettings>
   configureCodingAgents(input: ConfigureCodingAgentSettingsInput): Promise<ProviderSettings>
   listCodingAgentModels(): Promise<CodingAgentModelCatalog>
+  configureAsrProvider(input: ConfigureAsrProviderInput): Promise<ProviderSettings>
+  getAsrModelStatus(): Promise<AsrModelStatus>
+  downloadAsrModel(): Promise<AsrModelStatus>
+  deleteAsrModel(): Promise<AsrModelStatus>
+  transcribeAudio(input: TranscribeAudioInput): Promise<TranscriptionResult>
+  onAsrDownloadProgress(callback: (progress: AsrDownloadProgress) => void): () => void
   configureTtsProvider(input: ConfigureTtsProviderInput): Promise<ProviderSettings>
   getMorningBriefingAudio(briefingId: string): Promise<BriefingAudioResult>
   testTtsProvider(): Promise<BriefingAudioResult>

@@ -242,7 +242,17 @@ final class SyncModelTests: XCTestCase {
 
     func testCompanionTransportUsesEventDrivenFallbackPolicy() {
         XCTAssertEqual(companionFallbackSyncIntervalSeconds, 60)
+        XCTAssertEqual(companionConnectedFallbackSyncIntervalSeconds, 300)
+        XCTAssertEqual(companionFallbackSyncIntervalSeconds(realtimeConnected: false), 60)
+        XCTAssertEqual(companionFallbackSyncIntervalSeconds(realtimeConnected: true), 300)
         XCTAssertEqual([0, 1, 2, 3, 10].map(companionReconnectDelaySeconds), [5, 15, 60, 60, 60])
+    }
+
+    func testRelayToolSummaryDecodesStatus() throws {
+        let json = #"{"id":"tool-1","runId":"run-1","role":"tool","content":"short summary","eventType":"tool","toolName":"Bash","toolStatus":"failed","createdAt":"2026-08-11T00:00:00Z"}"#
+        let message = try JSONDecoder().decode(AgentMessage.self, from: Data(json.utf8))
+        XCTAssertEqual(message.toolStatus, "failed")
+        XCTAssertEqual(message.content, "short summary")
     }
 
     func testCompanionTransportRunsOnlyWhileSceneIsActive() {

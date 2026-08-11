@@ -4,6 +4,7 @@ dist/
 release/
 coverage/
 .third-party-tools/
+ios/ProjectAgentCompanion/Resources/Whisper/*.bin
 .design-qa/
 build/
 **/xcuserdata/

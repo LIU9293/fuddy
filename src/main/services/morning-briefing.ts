@@ -14,6 +14,7 @@ import type {
   MorningBriefing,
   Project,
   ProjectGoal,
+  WorkAssistantActionProposal,
   WorkAssistantImageAttachment,
   WorkAssistantTaskContext,
   WorkAssistantTaskReference
@@ -25,8 +26,8 @@ import type { AgentRuntime } from './pi-runtime'
 import type { GoalTrackingService } from './goal-tracking'
 import { buildProjectPulses, type ProjectPulse } from './project-pulse'
 import type { WorkspaceAgentActions } from './workspace-agent-actions'
-import { capabilityPromptCatalog } from './work-assistant-capabilities'
 import type { DecisionRemediationService } from './decision-remediation'
+import type { WorkAssistantAgentRuntime } from './work-assistant-agent'
 
 const MAX_NARRATION_CHARACTERS = 620
 const CHINESE_CHARACTERS_PER_SECOND = 4
@@ -234,148 +235,6 @@ function parseAgentBriefing(
   }
 }
 
-function buildQuestionPrompt(input: {
-  briefing: MorningBriefing | null
-  question: string
-  decisions: DecisionItem[]
-  history: BriefingMessage[]
-  goals: ProjectGoal[]
-  projects: Project[]
-  taskContext: WorkAssistantTaskContext | null
-  activeRunId?: string | null
-  toolContext?: string | null
-}): string {
-  return `你是用户的工作助理。这个频道用于跨项目讨论、规划和推进工作；每日简报只是频道中的一种上下文，不是对话边界。
-
-要求：
-- 使用 Markdown 和简洁中文，先给结论，再给依据和下一步。
-- Markdown 加粗结束符后如果紧跟正文，必须加一个空格，例如“**结论：** 下一步”，不要输出“**结论：**下一步”。
-- 简单问题直接回答；复杂问题才使用短标题或列表，不要机械套模板。
-- 建议必须具体、可执行，并说明最关键的判断依据。
-- 使用提供的项目现状、目标、里程碑、决策和简报上下文；不知道就明确说明。
-- App 已配置的项目 Workspace 和项目文件空间应通过工作助理工具检查；已知项目不要反问用户仓库路径。
-- 工作助理可以创建、查看、重命名、归档和继续 Agent Run。创建 Run 默认只建立草稿并预填首条任务，不自动发送。
-- 工作助理通过统一能力目录工作。只读能力可以直接检查；会改变 App 状态的能力先展示确认 Action；启动 Agent 或归档内容必须由用户明确触发。
-- 如果工具检查已经返回 Action 提案，只解释为什么推荐它，不要声称任务已经开始执行。
-- 项目代码和仓库文件位于 Workspace；Marketing、运营、研究、报告、品牌与宣传素材等代码无关产物位于项目文件空间。
-- 如果有“当前开始的任务”，先确认完成标准，再给出可以立即执行的第一步；不要因为开始任务就把里程碑标记为完成。
-- 不要编造项目数据或原因。
-- 不要输出隐藏思考过程，只给结论、证据和必要说明。
-- 最多 400 个中文字。
-
-能力目录：
-${capabilityPromptCatalog()}
-
-当前开始的任务：
-${input.taskContext ? JSON.stringify(input.taskContext, null, 2) : '无'}
-
-当前激活的 Agent Run：${input.activeRunId ?? '无'}
-
-本轮工具检查结果：
-${input.toolContext ?? '无'}
-
-项目现状：
-${JSON.stringify(input.projects.map((project) => ({
-  id: project.id,
-  name: project.name,
-  status: project.status,
-  summary: project.summary,
-  focus: project.focus,
-  stage: project.profile.stage,
-  productType: project.profile.productType,
-  mission: project.profile.mission,
-  vision: project.profile.vision,
-  surfaces: project.profile.surfaces,
-  nextMoves: project.profile.nextMoves,
-  workspaceRoots: project.profile.workspaceRoots.map((root) => ({ id: root.id, label: root.label })),
-  currentState: project.profile.currentState
-  })), null, 2)}
-
-最近一份每日简报：
-${input.briefing?.body ?? '尚未生成；仍可根据项目、目标和对话上下文工作。'}
-
-当前待处理决策：
-${JSON.stringify(input.decisions.slice(0, 8).map((item) => ({
-    projectId: item.projectId,
-    title: item.title,
-    summary: item.summary,
-    urgency: item.urgency,
-    actions: item.suggestedActions
-  })), null, 2)}
-
-当前项目目标：
-${JSON.stringify(input.goals.slice(0, 12).map((goal) => ({
-    projectId: goal.projectId,
-    title: goal.title,
-    priority: goal.priority,
-    status: goal.status,
-    progress: goal.progress,
-    metric: goal.metric,
-    deadline: goal.deadline,
-    agentSummary: goal.agentSummary,
-    milestones: goal.milestones.map((item) => ({ title: item.title, status: item.status }))
-  })), null, 2)}
-
-最近对话：
-${input.history.slice(-6).map((message) => `${message.role}: ${message.content}${
-    message.attachments.length > 0
-      ? ` [图片：${message.attachments.map((attachment) => attachment.name).join('、')}]`
-      : ''
-  }`).join('\n')}
-
-用户问题：${input.question}`
-}
-
-function deterministicAnswer(
-  question: string,
-  briefing: MorningBriefing | null,
-  decisions: DecisionItem[],
-  projects: Project[],
-  projectBriefings: DailyBriefing[],
-  goals: ProjectGoal[],
-  taskContext: WorkAssistantTaskContext | null
-): string {
-  const priorities = topDecisions(decisions)
-  const normalized = question.toLowerCase()
-  const roombase = projectBriefings.find((item) => item.projectId === 'roombase')
-
-  if (taskContext) {
-    return `已进入 **${taskContext.projectName}** 的任务“**${taskContext.milestoneTitle}**”。先确认完成标准：需要有可核验的产出，并能说明它如何推进目标“${taskContext.goalTitle}”。第一步建议先列出现状、缺口和需要的账号或素材；确认后再决定由我调用 Browser、Computer Use 或 Coding Agent 执行哪一部分。开始任务不会自动把里程碑标记为完成。`
-  }
-
-  if (/目标|进度|里程碑|milestone/.test(normalized)) {
-    const relevant = goals.filter((goal) => goal.status === 'active' || goal.status === 'at-risk')
-    if (relevant.length === 0) return '当前还没有正在追踪的项目目标。你可以进入项目的「目标」页，让 Agent 根据结果描述创建目标和里程碑。'
-    const risky = relevant.filter((goal) => goal.status === 'at-risk')
-    return risky.length > 0
-      ? `当前有 ${risky.length} 个目标存在风险：${risky.map((goal) => `“${goal.title}”`).join('、')}。建议先查看对应 Check-in 和证据，再决定是否调整执行路径。`
-      : `当前有 ${relevant.length} 个目标按计划追踪：${relevant.slice(0, 4).map((goal) => `“${goal.title}” ${Math.round(goal.progress * 100)}%`).join('；')}。`
-  }
-
-  if (/最重要|优先|先做|今天做什么/.test(question)) {
-    const item = priorities[0]
-    return item
-      ? `今天最优先处理“${item.title}”。依据是：${item.summary} 建议先做：${item.suggestedActions[0] ?? '确认负责人和完成时间'}。`
-      : '今天没有高优先级待处理项，可以按项目既定计划推进。'
-  }
-  if (/roombase|营收|实收|预订|用户|经营数据/.test(normalized) && roombase?.metrics) {
-    const data = roombase.metrics
-    const users = metric(data, 'newUsers')
-    const first = metric(data, 'firstBookingUsers')
-    const bookings = metric(data, 'bookings')
-    const paid = metric(data, 'netPaidCny')
-    return `Roombase ${roombase.reportDate}：新用户 ${number(users.value)}（较 7 日均值 ${pct(users.vsSevenDayAveragePct)}），首次预订用户 ${number(first.value)}（${pct(first.vsSevenDayAveragePct)}），预订 ${number(bookings.value)}（${pct(bookings.vsSevenDayAveragePct)}），净实收 ¥${number(paid.value).toLocaleString('zh-CN')}（${pct(paid.vsSevenDayAveragePct)}）。当前数字只能确认变化，原因还需要进一步分群分析。`
-  }
-  const project = projects.find((item) => normalized.includes(item.name.toLowerCase()))
-  if (project) {
-    const projectDecision = priorities.find((item) => item.projectId === project.id)
-    return projectDecision
-      ? `${project.name} 当前最值得推进的是“${projectDecision.title}”。${projectDecision.summary} 下一步建议：${projectDecision.suggestedActions[0] ?? project.profile.nextMoves[0]}。`
-      : `${project.name} 当前没有新的数据异常；既定目标是${project.profile.mission}，建议继续推进“${project.profile.nextMoves[0]}”。`
-  }
-  return `${briefing ? `基于最近一份简报，${briefing.headline}` : '当前还没有每日简报，但工作助理仍可继续处理项目任务。'}${priorities[0] ? ` 当前最高优先级是“${priorities[0].title}”。` : ''} 我可以先按已有项目现状、目标和决策回答；更开放的原因分析需要可用的 LLM Provider。`
-}
-
 function resolveTaskContext(
   database: AppDatabase,
   reference: WorkAssistantTaskReference | null
@@ -400,7 +259,8 @@ export class MorningBriefingService {
     private readonly agentRuntime: AgentRuntime,
     private readonly goalTrackingService?: GoalTrackingService,
     private readonly workspaceAgentActions?: WorkspaceAgentActions,
-    private readonly decisionRemediationService?: DecisionRemediationService
+    private readonly decisionRemediationService?: DecisionRemediationService,
+    private readonly workAssistantAgent?: WorkAssistantAgentRuntime
   ) {}
 
   async generate(): Promise<GenerateMorningBriefingResult> {
@@ -502,18 +362,8 @@ export class MorningBriefingService {
     if (briefingId && !requestedBriefing) throw new Error('没有找到这份每日简报。')
     const briefing = requestedBriefing ?? this.database.listMorningBriefings().find((item) => item.status === 'completed') ?? null
     const previousHistory = this.database.listBriefingMessages()
-    const projects = this.database.listProjects()
     const explicitTaskContext = resolveTaskContext(this.database, taskReference)
-    const clearScope = /(?:退出|结束|清除|取消).{0,8}(?:当前)?(?:任务|上下文|run|session)/i.test(question)
-    const lastMessage = previousHistory.at(-1)
-    const mentionedProject = projects.find((project) => question.toLocaleLowerCase().includes(project.name.toLocaleLowerCase()))
-    const linkedRunProjectId = lastMessage?.linkedRunId
-      ? this.database.listRuns().find((run) => run.id === lastMessage.linkedRunId)?.projectId ?? null
-      : null
-    const previousProjectId = lastMessage?.taskContext?.projectId ?? linkedRunProjectId
-    const switchesProject = Boolean(mentionedProject && previousProjectId && mentionedProject.id !== previousProjectId)
-    const taskContext = clearScope ? null : explicitTaskContext ?? (switchesProject ? null : lastMessage?.taskContext ?? null)
-    const activeRunId = clearScope || switchesProject || explicitTaskContext ? null : lastMessage?.linkedRunId ?? null
+    const taskContext = explicitTaskContext
     const now = new Date().toISOString()
     const userMessage = this.database.createBriefingMessage({
       id: randomUUID(),
@@ -525,84 +375,27 @@ export class MorningBriefingService {
       linkedRunId: null,
       createdAt: now
     })
-    const decisions = this.database.listDecisions().filter((item) => item.status !== 'ignored')
-    const history = this.database.listBriefingMessages()
-    const goals = this.database.listGoals()
     let content: string
-    const recentImages = history
-      .slice(-6)
-      .flatMap((message) => message.attachments)
-      .slice(-4)
-    const actionResult = attachments.length === 0
-      ? await this.workspaceAgentActions?.tryExecuteDetailed(question, taskContext, activeRunId)
-      : null
-    if (actionResult) {
-      if (actionResult.requiresSynthesis && this.agentRuntime.isConfigured()) {
-        try {
-          content = await this.agentRuntime.runStream(
-            buildQuestionPrompt({ briefing, question, decisions, history, goals, projects, taskContext, activeRunId, toolContext: actionResult.toolContext }),
-            onUpdate,
-            recentImages
-          )
-        } catch {
-          content = actionResult.content
-          onUpdate({
-            sessionUpdate: 'agent_message_chunk',
-            messageId: randomUUID(),
-            content: { type: 'text', text: content }
-          })
-        }
-      } else {
-        content = actionResult.content
-        onUpdate({
-          sessionUpdate: 'agent_message_chunk',
-          messageId: randomUUID(),
-          content: { type: 'text', text: content }
-        })
-      }
-    } else if (this.agentRuntime.isConfigured()) {
+    let proposals: WorkAssistantActionProposal[] = []
+    let linkedRunId: string | null = null
+    if (this.workAssistantAgent?.isConfigured()) {
       try {
-        content = await this.agentRuntime.runStream(
-          buildQuestionPrompt({ briefing, question, decisions, history, goals, projects, taskContext, activeRunId }),
-          onUpdate,
-          recentImages
-        )
+        const result = await this.workAssistantAgent.runTurn({
+          question,
+          attachments,
+          taskContext,
+          history: previousHistory,
+          onUpdate
+        })
+        content = result.content
+        proposals = result.proposals
+        linkedRunId = result.linkedRunId
       } catch (error) {
         const reason = error instanceof Error ? error.message : '未知错误'
-        const fallback = deterministicAnswer(
-          question,
-          briefing,
-          decisions,
-          projects,
-          this.database.listDailyBriefings(),
-          goals,
-          taskContext
-        )
-        const imageNotice = attachments.length > 0 ? '\n\n**图片尚未被分析**：当前模型 Provider 不可用。' : ''
-        content = `**LLM 当前不可用**（${reason}）${imageNotice}\n\n以下是本地规则给出的临时结果：\n\n${fallback}`
-        onUpdate({
-          sessionUpdate: 'agent_message_chunk',
-          messageId: randomUUID(),
-          content: { type: 'text', text: content }
-        })
+        content = `**工作助理 Agent 当前不可用**（${reason}）\n\n本轮没有执行任何工具或修改。`
       }
     } else {
-      const fallback = deterministicAnswer(
-        question,
-        briefing,
-        decisions,
-        projects,
-        this.database.listDailyBriefings(),
-        goals,
-        taskContext
-      )
-      const imageNotice = attachments.length > 0 ? '\n\n**图片尚未被分析**：请先配置支持图片输入的模型 Provider。' : ''
-      content = `**尚未配置可用的 LLM Provider**${imageNotice}\n\n以下是本地规则给出的临时结果：\n\n${fallback}`
-      onUpdate({
-        sessionUpdate: 'agent_message_chunk',
-        messageId: randomUUID(),
-        content: { type: 'text', text: content }
-      })
+      content = '**尚未配置可用的工作助理 Agent**\n\n本轮没有执行任何工具或修改。'
     }
     const assistantMessage = this.database.createBriefingMessage({
       id: randomUUID(),
@@ -611,15 +404,15 @@ export class MorningBriefingService {
       content,
       attachments: [],
       taskContext,
-      linkedRunId: actionResult?.linkedRunId ?? null,
-      actions: actionResult?.proposals ?? [],
+      linkedRunId,
+      actions: proposals,
       createdAt: new Date().toISOString()
     })
     return { userMessage, assistantMessage }
   }
 
-  executeAction(input: ExecuteWorkAssistantActionInput): ExecuteWorkAssistantActionResult {
+  async executeAction(input: ExecuteWorkAssistantActionInput): Promise<ExecuteWorkAssistantActionResult> {
     if (!this.workspaceAgentActions) throw new Error('工作助理能力尚未初始化。')
-    return this.workspaceAgentActions.executeProposal(input)
+    return await this.workspaceAgentActions.executeProposal(input)
   }
 }

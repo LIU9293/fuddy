@@ -76,7 +76,7 @@ function historyMessage(message: AgentRunMessage): Message | null {
       }
 }
 
-async function runtimeForEndpoint(endpoint: RuntimeAgentEndpoint): Promise<{
+export async function createPiModelRuntimeForEndpoint(endpoint: RuntimeAgentEndpoint): Promise<{
   modelRuntime: ModelRuntime
   model: Model<Api>
 }> {
@@ -158,7 +158,7 @@ export class PiTaskHarness {
       let mutationOccurred = false
       let session: AgentSession | null = null
       try {
-        const { modelRuntime, model } = await runtimeForEndpoint(endpoint)
+        const { modelRuntime, model } = await createPiModelRuntimeForEndpoint(endpoint)
         const sessionManager = input.sessionId && existsSync(input.sessionId)
           ? SessionManager.open(input.sessionId, this.sessionDirectory, input.workingDirectory)
           : SessionManager.create(input.workingDirectory, this.sessionDirectory, { id: input.runId })

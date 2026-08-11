@@ -845,7 +845,7 @@ private struct WorkAssistantActionCard: View {
                                 if busy { ProgressView().controlSize(.mini) }
                                 Text(option.label)
                             }
-                            .font(.subheadline.weight(.semibold))
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(option.style == "primary" ? Color.white : Color.primary)
                             .padding(.horizontal, 12)
                             .frame(minHeight: 36)
@@ -860,7 +860,9 @@ private struct WorkAssistantActionCard: View {
                 }
             } else {
                 Label(
-                    "已确认：\(options.first(where: { $0.id == proposal.acceptedOptionId })?.label ?? "已处理")",
+                    proposal.status == "dismissed"
+                        ? "已取消"
+                        : "已确认：\(options.first(where: { $0.id == proposal.acceptedOptionId })?.label ?? "已处理")",
                     systemImage: "checkmark"
                 )
                 .font(.caption)
@@ -1068,13 +1070,14 @@ struct RunsListView: View {
     var body: some View {
         List(store.runs) { detail in
             NavigationLink(value: CompanionRoute.run(id: detail.run.id, prefill: "")) {
-                HStack(alignment: .top, spacing: 12) {
-                    if detail.run.status == "running" || detail.run.status == "queued" { ProgressView().controlSize(.small) }
+                HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(detail.run.title).font(.headline).lineLimit(2)
                         Text(runMetadata(detail.run)).font(.caption).foregroundStyle(.secondary)
                         if !detail.run.summary.isEmpty { Text(detail.run.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
                     }
+                    Spacer(minLength: 8)
+                    if detail.run.status == "running" || detail.run.status == "queued" { ProgressView().controlSize(.small) }
                 }
                 .padding(.vertical, 3)
             }
@@ -1219,7 +1222,7 @@ struct RunDetailView: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: companionChatItemSpacing) {
-                                let blocks = groupRunMessages(detail.messages)
+                                let blocks = groupRunMessages(visibleMessages(in: detail))
                                 ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                                     let active = index == blocks.count - 1 && ["running", "queued"].contains(detail.run.status)
                                     Group {
@@ -1346,8 +1349,9 @@ struct RunDetailView: View {
                             attachments: $attachments,
                             placeholder: "给 \(detail.run.provider) 发送消息",
                             sending: sending,
-                            disabled: ["running", "queued"].contains(detail.run.status),
-                            onSend: { Task { await send() } }
+                            active: ["running", "queued"].contains(detail.run.status),
+                            onSend: { Task { await send() } },
+                            onStop: { Task { await stop() } }
                         )
                     }
                 }
@@ -1396,6 +1400,17 @@ struct RunDetailView: View {
     private var latestAnchorID: String { "agent-run-latest-\(runID)" }
     private var scrollCoordinateSpace: String { "agent-run-scroll-\(runID)" }
 
+    private func visibleMessages(in detail: RunDetail) -> [AgentMessage] {
+        guard ["running", "queued"].contains(detail.run.status),
+              let lastUserIndex = detail.messages.lastIndex(where: { $0.role == "user" }),
+              !detail.messages[(lastUserIndex + 1)...].contains(where: {
+                  $0.role == "assistant" && $0.eventType != "reasoning"
+              }) else { return detail.messages }
+        return detail.messages.enumerated().compactMap { index, message in
+            index > lastUserIndex && message.eventType == "reasoning" ? nil : message
+        }
+    }
+
     private func refreshMessagesAtBottom() {
         guard !refreshingAtBottom else { return }
         refreshingAtBottom = true
@@ -1423,6 +1438,15 @@ struct RunDetailView: View {
         do {
             try await store.sendMessage(runID: runID, prompt: text.isEmpty ? "请查看我附加的文件。" : text, attachments: attachments)
             prompt = ""; attachments = []
+            await store.sync()
+        } catch { self.error = error.localizedDescription }
+        sending = false
+    }
+
+    private func stop() async {
+        sending = true; error = nil
+        do {
+            try await store.stopMessage(runID: runID)
             await store.sync()
         } catch { self.error = error.localizedDescription }
         sending = false
@@ -1505,29 +1529,36 @@ private struct ToolCallGroupView: View {
     private let maximumExpandedHeight: CGFloat = 320
 
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            ViewThatFits(in: .vertical) {
-                toolItems
-                    .fixedSize(horizontal: false, vertical: true)
-                ScrollView(.vertical) {
-                    toolItems
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(messages.count == 1 ? (messages[0].toolName ?? "工具调用") : "\(messages.count) 个工具调用")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if active { ProgressView().controlSize(.small) }
                 }
-                .scrollIndicators(.visible)
+                .contentShape(Rectangle())
             }
-            .frame(maxHeight: maximumExpandedHeight, alignment: .top)
-            .padding(.top, 10)
-            .padding(.leading, 4)
-        } label: {
-            HStack(spacing: 8) {
-                Text(messages.count == 1 ? (messages[0].toolName ?? "工具调用") : "\(messages.count) 个工具调用")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if active { ProgressView().controlSize(.small) }
+            .buttonStyle(.plain)
+            .accessibilityHint(expanded ? "轻点收起" : "轻点展开")
+
+            if expanded {
+                ViewThatFits(in: .vertical) {
+                    toolItems
+                        .fixedSize(horizontal: false, vertical: true)
+                    ScrollView(.vertical) {
+                        toolItems
+                    }
+                    .scrollIndicators(.visible)
+                }
+                .frame(maxHeight: maximumExpandedHeight, alignment: .top)
+                .padding(.top, 10)
+                .padding(.leading, 4)
             }
-            .contentShape(Rectangle())
         }
-        .tint(.secondary)
         .padding(.vertical, 2)
     }
 
@@ -1535,9 +1566,16 @@ private struct ToolCallGroupView: View {
         VStack(alignment: .leading, spacing: 14) {
             ForEach(messages) { message in
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(message.toolName ?? "工具调用")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Text(message.toolName ?? "工具调用")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        if let status = message.toolStatus {
+                            Text(status == "failed" ? "失败" : "已完成")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(status == "failed" ? Color.red : Color.secondary)
+                        }
+                    }
                     Text(message.content)
                         .font(.subheadline.monospaced())
                         .foregroundStyle(.tertiary)

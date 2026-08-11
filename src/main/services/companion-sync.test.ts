@@ -3,14 +3,23 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { CompanionCommand, CompanionMacConfiguration } from '../../shared/companion-sync'
+import type { AgentRunMessage } from '../../shared/contracts'
 import {
+  companionAgentMessageForRelay,
+  companionCommandUpdateForRelay,
   companionCommandRecovery,
+  companionConnectedFallbackSyncIntervalMs,
+  companionEventBatchMaximumBytes,
+  companionEventBatchMaximumCount,
+  companionFallbackSyncIntervalForState,
   companionFallbackSyncIntervalMs,
   companionReconnectDelayMs,
   companionRequestTimeoutMs,
   companionSocketHeartbeatIntervalMs,
   companionSocketHeartbeatShouldReconnect,
   companionSocketMessageRequestsSync,
+  companionToolSummaryMaximumCharacters,
+  partitionCompanionEventBatches,
   CompanionSyncService
 } from './companion-sync'
 import type { CredentialVault } from './credential-vault'
@@ -35,6 +44,51 @@ function jsonResponse(value: unknown, status = 200): Response {
 describe('Companion sync transport policy', () => {
   it('uses a one-minute fallback instead of high-frequency polling', () => {
     expect(companionFallbackSyncIntervalMs).toBe(60_000)
+    expect(companionConnectedFallbackSyncIntervalMs).toBe(300_000)
+    expect(companionFallbackSyncIntervalForState('connected')).toBe(300_000)
+    expect(companionFallbackSyncIntervalForState('disconnected')).toBe(60_000)
+  })
+
+  it('partitions relay events by count and serialized byte size', () => {
+    const event = (index: number, payload = 'small') => ({
+      eventId: `event-${index}`,
+      protocolVersion: 1 as const,
+      type: 'agent-message.created',
+      entityType: 'agent-message' as const,
+      entityId: `message-${index}`,
+      revision: index,
+      payload,
+      occurredAt: new Date().toISOString()
+    })
+    const byCount = partitionCompanionEventBatches(
+      Array.from({ length: companionEventBatchMaximumCount + 1 }, (_, index) => event(index))
+    )
+    expect(byCount.map((batch) => batch.length)).toEqual([companionEventBatchMaximumCount, 1])
+
+    const byBytes = partitionCompanionEventBatches([
+      event(1, 'a'.repeat(companionEventBatchMaximumBytes / 2)),
+      event(2, 'b'.repeat(companionEventBatchMaximumBytes / 2))
+    ])
+    expect(byBytes).toHaveLength(2)
+  })
+
+  it('keeps full tool output local and sends only a bounded relay summary', () => {
+    const message: AgentRunMessage = {
+      id: 'tool-1',
+      runId: 'run-1',
+      role: 'tool',
+      content: `first line\n${'secret-output '.repeat(100)}`,
+      eventType: 'tool',
+      toolName: 'Bash',
+      metadata: { status: 'failed', arguments: { command: 'private command' } },
+      createdAt: new Date().toISOString()
+    }
+    const relayMessage = companionAgentMessageForRelay(message)
+    expect(relayMessage.content.length).toBeLessThanOrEqual(companionToolSummaryMaximumCharacters + 1)
+    expect(relayMessage.content).not.toContain('\n')
+    expect(relayMessage.metadata).toBeNull()
+    expect(relayMessage.toolStatus).toBe('failed')
+    expect(message.content.length).toBeGreaterThan(relayMessage.content.length)
   })
 
   it('backs WebSocket reconnects off to one minute', () => {
@@ -73,6 +127,18 @@ describe('Companion sync transport policy', () => {
     expect(companionCommandRecovery('executing')).toBe('fail-interrupted')
     expect(companionCommandRecovery('completed')).toBe('ack-terminal')
     expect(companionCommandRecovery('failed')).toBe('ack-terminal')
+  })
+
+  it('keeps full command results local unless iPhone needs the artifact descriptor', () => {
+    const largeResult = { detail: 'x'.repeat(3 * 1024 * 1024) }
+    expect(companionCommandUpdateForRelay('agent.send-message', {
+      status: 'completed',
+      result: largeResult
+    })).toEqual({ status: 'completed' })
+    expect(companionCommandUpdateForRelay('artifact.request-upload', {
+      status: 'completed',
+      result: largeResult
+    })).toEqual({ status: 'completed', result: largeResult })
   })
 
   it('continues publishing Agent progress while a remote turn is still running', async () => {
@@ -123,10 +189,13 @@ describe('Companion sync transport policy', () => {
         remoteStatus = update.status
         return jsonResponse({ command: { ...command, status: remoteStatus } })
       }
-      if (url.pathname === '/v1/events' && method === 'POST') {
-        const event = JSON.parse(String(init.body)) as { type: string }
-        publishedEventTypes.push(event.type)
-        return jsonResponse({ accepted: true }, 201)
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ type: string }> }
+        publishedEventTypes.push(...body.events.map((event) => event.type))
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.type, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
       }
       throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
     })
@@ -219,7 +288,13 @@ describe('Companion sync transport policy', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
       const url = new URL(String(input))
       const method = init.method ?? 'GET'
-      if (url.pathname === '/v1/events' && method === 'POST') return jsonResponse({ accepted: true }, 201)
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: unknown[] }
+        return jsonResponse({
+          accepted: body.events.map((_, index) => ({ eventId: `event-${index}`, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
       if (url.pathname === '/v1/commands/pending' && method === 'GET') {
         return jsonResponse({ commands: remoteStatus === 'queued' ? [command] : [] })
       }

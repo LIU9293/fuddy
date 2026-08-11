@@ -28,6 +28,13 @@ type ResolvedDispatchTaskInput = Omit<DispatchTaskInput, 'provider'> & {
 
 export const AGENT_RUN_INACTIVITY_TIMEOUT_MS = 10 * 60_000
 
+class AgentRunStoppedError extends Error {
+  constructor() {
+    super('Agent Run 当前回复已停止。')
+    this.name = 'AgentRunStoppedError'
+  }
+}
+
 function runWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolvePromise, rejectPromise) => {
     const rejectForAbort = (): void => {
@@ -63,6 +70,11 @@ function isWithinWorkspace(target: string, root: string): boolean {
 }
 
 export class TaskDispatcher {
+  private readonly turnQueueTails = new Map<string, Promise<AgentRunDetail>>()
+  private readonly activeTurns = new Map<string, {
+    abortController: AbortController
+    settled: Promise<void>
+  }>()
   private readonly pendingApprovals = new Map<string, {
     runId: string
     auditId: string
@@ -125,7 +137,7 @@ export class TaskDispatcher {
     }
     this.database.createAgentRun(run)
     onUpdate({ type: 'created', run })
-    const detail = await this.executeTurn(run.id, input.prompt, onUpdate)
+    const detail = await this.sendMessage(run.id, input.prompt, onUpdate)
     return { detail, message: detail.run.summary }
   }
 
@@ -189,9 +201,39 @@ export class TaskDispatcher {
     userMessageId?: string,
     attachments: WorkAssistantImageAttachment[] = []
   ): Promise<AgentRunDetail> {
-    const run = this.database.getAgentRun(runId)
-    if (run.status === 'running') throw new Error('这个 Agent Run 正在执行，请等待当前回合结束。')
-    return this.executeTurn(runId, prompt, onUpdate, userMessageId, attachments)
+    this.database.getAgentRun(runId)
+    const previous = this.turnQueueTails.get(runId)
+    if (previous) onUpdate({ type: 'status', status: 'queued' })
+    const execute = (): Promise<AgentRunDetail> => this.executeTurn(
+      runId,
+      prompt,
+      onUpdate,
+      userMessageId,
+      attachments
+    )
+    const turn = previous ? previous.then(execute, execute) : execute()
+    this.turnQueueTails.set(runId, turn)
+    const clearQueueTail = (): void => {
+      if (this.turnQueueTails.get(runId) === turn) this.turnQueueTails.delete(runId)
+    }
+    void turn.then(clearQueueTail, clearQueueTail)
+    return turn
+  }
+
+  async stopMessage(runId: string): Promise<AgentRunDetail> {
+    this.database.getAgentRun(runId)
+    const active = this.activeTurns.get(runId)
+    if (!active) return this.database.getAgentRunDetail(runId)
+    active.abortController.abort(new AgentRunStoppedError())
+    for (const [requestId, approval] of this.pendingApprovals) {
+      if (approval.runId !== runId) continue
+      clearTimeout(approval.timer)
+      this.pendingApprovals.delete(requestId)
+      this.database.updateAuditOutcome(approval.auditId, 'rejected')
+      approval.resolve('deny')
+    }
+    await active.settled
+    return this.database.getAgentRunDetail(runId)
   }
 
   private async executeTurn(
@@ -202,6 +244,8 @@ export class TaskDispatcher {
     attachments: WorkAssistantImageAttachment[] = []
   ): Promise<AgentRunDetail> {
     const abortController = new AbortController()
+    let settleActiveTurn = (): void => undefined
+    const settled = new Promise<void>((resolve) => { settleActiveTurn = resolve })
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null
     let activeReasoning: {
       id: string
@@ -315,6 +359,7 @@ export class TaskDispatcher {
       completedAt: null,
       updatedAt: startedAt
     })
+    this.activeTurns.set(runId, { abortController, settled })
     trackedUpdate({ type: 'status', status: 'running' })
 
     const recordTool = (toolName: string, detail: string, metadata?: Record<string, unknown>): void => {
@@ -425,6 +470,17 @@ export class TaskDispatcher {
     } catch (error) {
       flushReasoning()
       flushVisibleTextAsReasoning()
+      if (error instanceof AgentRunStoppedError || abortController.signal.reason instanceof AgentRunStoppedError) {
+        run = this.database.updateAgentRun({
+          ...run,
+          status: 'idle',
+          summary: run.summary === '等待首次消息' ? '当前回复已停止' : run.summary,
+          updatedAt: new Date().toISOString()
+        })
+        onUpdate({ type: 'status', status: 'idle', detail: '当前回复已停止。' })
+        this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
+        return this.database.getAgentRunDetail(run.id)
+      }
       const message = error instanceof Error ? error.message : 'Agent Run 执行失败。'
       const systemMessage: AgentRunMessage = {
         id: randomUUID(),
@@ -448,6 +504,8 @@ export class TaskDispatcher {
       return this.database.getAgentRunDetail(run.id)
     } finally {
       if (inactivityTimer) clearTimeout(inactivityTimer)
+      if (this.activeTurns.get(runId)?.abortController === abortController) this.activeTurns.delete(runId)
+      settleActiveTurn()
     }
   }
 

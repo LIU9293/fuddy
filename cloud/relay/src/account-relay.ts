@@ -5,6 +5,7 @@ import type {
   CompanionCommandUpdate,
   CompanionDevice,
   CompanionDeviceRole,
+  CompanionEventBatchResult,
   CompanionEventPage,
   CompanionPairingClaimInput,
   CompanionPairingClaimResult,
@@ -64,6 +65,23 @@ interface PushDeviceRow extends Record<string, SqlStorageValue> {
 }
 
 const lastSeenWriteIntervalMs = 5 * 60_000
+const artifactCommandResultMaximumBytes = 128 * 1024
+
+function persistedCommandUpdate(
+  commandType: CompanionCommand['type'],
+  update: CompanionCommandUpdate
+): CompanionCommandUpdate {
+  if (commandType !== 'artifact.request-upload' || update.result === undefined) {
+    const { result: _discardedResult, ...statusOnlyUpdate } = update
+    return statusOnlyUpdate
+  }
+  const serialized = JSON.stringify(update.result)
+  if (new TextEncoder().encode(serialized).byteLength <= artifactCommandResultMaximumBytes) return update
+  return {
+    status: 'failed',
+    error: '附件上传结果过大，Relay 未保存；请从 iPhone 重新请求附件。'
+  }
+}
 
 function randomToken(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength)
@@ -288,11 +306,33 @@ export class AccountRelay extends DurableObject<Env> {
     return { ...mapDevice(row), lastSeenAt }
   }
 
-  async appendEvent(deviceId: string, token: string, input: CompanionSyncEventInput): Promise<CompanionSyncEvent> {
-    await this.requireAuthorization(deviceId, token, 'mac')
+  async appendEvent(
+    deviceId: string,
+    token: string,
+    input: CompanionSyncEventInput
+  ): Promise<CompanionSyncEvent | null> {
+    const device = await this.authorize(deviceId, token, 'mac')
+    if (!device) return null
     const { event, inserted } = this.persistEvent(input, deviceId)
-    if (inserted) this.notifyEvent(event, true)
+    if (inserted) this.notifyEventsAvailable([event])
     return event
+  }
+
+  async appendEvents(
+    deviceId: string,
+    token: string,
+    inputs: CompanionSyncEventInput[]
+  ): Promise<CompanionEventBatchResult | null> {
+    const device = await this.authorize(deviceId, token, 'mac')
+    if (!device) return null
+    const persisted = this.ctx.storage.transactionSync(() => inputs.map((input) => this.persistEvent(input, deviceId)))
+    const inserted = persisted.filter((result) => result.inserted).map((result) => result.event)
+    if (inserted.length > 0) this.notifyEventsAvailable(inserted)
+    const events = persisted.map((result) => result.event)
+    return {
+      accepted: events.map((event) => ({ eventId: event.eventId, sequence: event.sequence })),
+      lastSequence: events.reduce((latest, event) => Math.max(latest, event.sequence), 0)
+    }
   }
 
   async registerPushToken(deviceId: string, token: string, pushToken: string): Promise<void> {
@@ -308,6 +348,26 @@ export class AccountRelay extends DurableObject<Env> {
       limit
     ).toArray().map(mapEvent)
     return { events, lastSequence: events.at(-1)?.sequence ?? after }
+  }
+
+  async syncPage(
+    deviceId: string,
+    token: string,
+    after: number,
+    limit: number
+  ): Promise<CompanionEventPage | null> {
+    const device = await this.authorize(deviceId, token)
+    if (!device) return null
+    const events = this.ctx.storage.sql.exec<EventRow>(
+      'SELECT * FROM events WHERE sequence > ? ORDER BY sequence ASC LIMIT ?',
+      after,
+      limit
+    ).toArray().map(mapEvent)
+    return {
+      events,
+      lastSequence: events.at(-1)?.sequence ?? after,
+      presence: this.getPresence()
+    }
   }
 
   async createCommand(deviceId: string, token: string, input: CompanionCommandInput): Promise<CompanionCommand> {
@@ -339,6 +399,14 @@ export class AccountRelay extends DurableObject<Env> {
     ).toArray().map(mapCommand)
   }
 
+  async pendingCommands(deviceId: string, token: string): Promise<CompanionCommand[] | null> {
+    const device = await this.authorize(deviceId, token, 'mac')
+    if (!device) return null
+    return this.ctx.storage.sql.exec<CommandRow>(
+      `SELECT * FROM commands WHERE status IN ('queued', 'delivered', 'executing') ORDER BY created_at ASC LIMIT 100`
+    ).toArray().map(mapCommand)
+  }
+
   async updateCommand(
     deviceId: string,
     token: string,
@@ -364,18 +432,19 @@ export class AccountRelay extends DurableObject<Env> {
     if (!allowedTransitions[existing.status].includes(update.status)) {
       throw new Error(`远程命令不能从 ${existing.status} 回退到 ${update.status}。`)
     }
+    const persistedUpdate = persistedCommandUpdate(existing.type, update)
     const updatedAt = new Date().toISOString()
     const updated = this.ctx.storage.sql.exec<CommandRow>(
       `UPDATE commands SET status = ?, result_json = ?, error = ?, updated_at = ?
        WHERE command_id = ? RETURNING *`,
-      update.status,
-      update.result === undefined ? null : JSON.stringify(update.result),
-      update.error ?? null,
+      persistedUpdate.status,
+      persistedUpdate.result === undefined ? null : JSON.stringify(persistedUpdate.result),
+      persistedUpdate.error ?? null,
       updatedAt,
       commandId
     ).one()
     const command = mapCommand(updated)
-    const commandRevision = update.status === 'delivered' ? 1 : update.status === 'executing' ? 2 : 3
+    const commandRevision = persistedUpdate.status === 'delivered' ? 1 : persistedUpdate.status === 'executing' ? 2 : 3
     const { event, inserted } = this.persistEvent({
       eventId: `${commandId}:${update.status}`,
       protocolVersion: companionProtocolVersion,
@@ -418,15 +487,18 @@ export class AccountRelay extends DurableObject<Env> {
     ).one().sequence ?? 0
   }
 
-  fetch(request: Request): Response {
+  async fetch(request: Request): Promise<Response> {
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return Response.json({ error: 'WebSocket upgrade required.' }, { status: 426 })
     }
-    const deviceId = request.headers.get('X-Companion-Device-Id')
-    const role = request.headers.get('X-Companion-Device-Role') as CompanionDeviceRole | null
-    if (!deviceId || (role !== 'mac' && role !== 'ios')) {
-      return Response.json({ error: 'Missing trusted device context.' }, { status: 401 })
-    }
+    const url = new URL(request.url)
+    const deviceId = url.searchParams.get('deviceId')?.trim() ?? ''
+    const authorization = request.headers.get('Authorization') ?? ''
+    const token = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length).trim() : ''
+    if (!deviceId || !token) return Response.json({ error: '设备认证失败。' }, { status: 401 })
+    const device = await this.authorize(deviceId, token)
+    if (!device) return Response.json({ error: '设备认证失败。' }, { status: 401 })
+    const role = device.role
     const pair = new WebSocketPair()
     const client = pair[0]
     const server = pair[1]
@@ -486,6 +558,12 @@ export class AccountRelay extends DurableObject<Env> {
   private notifyEvent(event: CompanionSyncEvent, broadcast: boolean): void {
     if (broadcast) this.broadcast({ type: 'sync.event', event })
     this.ctx.waitUntil(this.sendBackgroundPush(event))
+  }
+
+  private notifyEventsAvailable(events: CompanionSyncEvent[]): void {
+    const latest = events.reduce((current, event) => event.sequence > current.sequence ? event : current)
+    this.broadcast({ type: 'sync.available', lastSequence: latest.sequence })
+    this.ctx.waitUntil(this.sendBackgroundPush(latest))
   }
 
   private broadcast(message: CompanionSocketMessage, tag?: string): void {

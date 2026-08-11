@@ -3,7 +3,9 @@ import type { CliAgentTurnInput } from './cli-agent-runtime'
 import {
   buildCliArgs,
   buildCliEnv,
+  buildCodexTurnStartParams,
   buildCodexAppServerArgs,
+  claudeSdkReasoningOptions,
   codingAgentRuntimeRoots,
   codexReasoningSummaryDelta,
   CODEX_APPROVAL_POLICY,
@@ -164,5 +166,25 @@ describe('coding CLI MCP injection', () => {
     expect(codex).toEqual(expect.arrayContaining(['--model', 'gpt-codex-test']))
     expect(claude).toEqual(expect.arrayContaining(['--model', 'claude-test']))
     expect(opencode).toEqual(expect.arrayContaining(['--model', 'provider/model-test']))
+  })
+
+  it('passes provider-native reasoning effort arguments only when configured', () => {
+    const codex = buildCliArgs({ ...input('codex'), reasoningEffort: 'high' }, [])
+    const claude = buildCliArgs({ ...input('claude'), reasoningEffort: 'max' }, [])
+    const opencode = buildCliArgs({ ...input('opencode'), reasoningEffort: 'medium' }, [])
+
+    expect(codex).toEqual(expect.arrayContaining(['-c', 'model_reasoning_effort="high"']))
+    expect(claude).toEqual(expect.arrayContaining(['--effort', 'max']))
+    expect(opencode).toEqual(expect.arrayContaining(['--variant', 'medium']))
+    expect(buildCliArgs(input('codex'), []).join(' ')).not.toContain('model_reasoning_effort')
+    expect(buildCliArgs(input('claude'), [])).not.toContain('--effort')
+    expect(buildCliArgs(input('opencode'), [])).not.toContain('--variant')
+  })
+
+  it('passes configured effort to the active Codex app-server turn and Claude SDK', () => {
+    expect(buildCodexTurnStartParams('thread', 'test', 'xhigh')).toMatchObject({ effort: 'xhigh' })
+    expect(buildCodexTurnStartParams('thread', 'test')).not.toHaveProperty('effort')
+    expect(claudeSdkReasoningOptions('max')).toEqual({ effort: 'max' })
+    expect(claudeSdkReasoningOptions()).toEqual({})
   })
 })

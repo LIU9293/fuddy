@@ -78,9 +78,16 @@ final class CompanionStore: ObservableObject {
         pollingTask?.cancel()
         pollingTask = Task { [weak self] in
             await self?.sync()
+            var elapsedSeconds: TimeInterval = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(companionFallbackSyncIntervalSeconds))
                 guard !Task.isCancelled else { return }
+                elapsedSeconds += companionFallbackSyncIntervalSeconds
+                let interval = companionFallbackSyncIntervalSeconds(
+                    realtimeConnected: self?.client?.realtimeConnected == true
+                )
+                guard elapsedSeconds >= interval else { continue }
+                elapsedSeconds = 0
                 await self?.sync()
             }
         }
@@ -222,6 +229,14 @@ final class CompanionStore: ObservableObject {
             persistCache()
             throw error
         }
+    }
+
+    func stopMessage(runID: String) async throws {
+        guard let client else { throw RelayError.invalidResponse }
+        _ = try await client.sendCommand(
+            type: "agent.stop-message",
+            payload: AgentArchivePayload(runId: runID)
+        )
     }
 
     func sendWorkAssistantMessage(_ prompt: String, attachments: [PendingAttachment] = []) async throws {
@@ -532,9 +547,6 @@ final class CompanionStore: ObservableObject {
             detail.messages.contains(where: { $0.id == messageID && $0.eventType == "pending" })
         }) else { return }
         state.runs[runIndex].messages.removeAll { $0.id == messageID && $0.eventType == "pending" }
-        if state.runs[runIndex].run.status == "running" {
-            state.runs[runIndex].run.status = "idle"
-        }
         persistCache()
     }
 

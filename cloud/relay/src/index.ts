@@ -1,5 +1,6 @@
 import type {
   CompanionDevice,
+  CompanionEventBatchResult,
   CompanionEventPage,
   CompanionPairingStartResult,
   CompanionPairingClaimResult
@@ -12,6 +13,7 @@ import {
   pairingClaimSchema,
   pairingStartSchema,
   pushRegistrationSchema,
+  syncEventBatchSchema,
   syncEventSchema
 } from './schemas'
 
@@ -19,7 +21,7 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 const maximumAttachmentBytes = 100 * 1024 * 1024
-const relayBuild = '2026-08-08.5'
+const relayBuild = '2026-08-11.2'
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -65,6 +67,17 @@ function requiredSearchParam(url: URL, name: string): string {
 
 function relay(env: Env, accountId: string): DurableObjectStub<AccountRelay> {
   return env.ACCOUNT_RELAY.getByName(accountId)
+}
+
+function relayRequestContext(request: Request, env: Env, url: URL): {
+  accountId: string
+  deviceId: string
+  token: string
+  stub: DurableObjectStub<AccountRelay>
+} {
+  const accountId = requiredSearchParam(url, 'accountId')
+  const deviceId = requiredSearchParam(url, 'deviceId')
+  return { accountId, deviceId, token: bearerToken(request), stub: relay(env, accountId) }
 }
 
 async function authenticatedContext(
@@ -135,25 +148,41 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === 'GET' && url.pathname === '/v1/connect') {
-    const context = await authenticatedContext(request, env, url)
-    const headers = new Headers(request.headers)
-    headers.set('X-Companion-Device-Id', context.device.id)
-    headers.set('X-Companion-Device-Role', context.device.role)
-    return await context.stub.fetch(new Request(request, { headers }))
+    const context = relayRequestContext(request, env, url)
+    return await context.stub.fetch(request)
   }
 
   if (request.method === 'GET' && url.pathname === '/v1/events') {
-    const context = await authenticatedContext(request, env, url)
+    const context = relayRequestContext(request, env, url)
     const after = Math.max(0, Number.parseInt(url.searchParams.get('after') ?? '0', 10) || 0)
     const limit = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get('limit') ?? '200', 10) || 200))
-    const page = await context.stub.listEvents(context.deviceId, context.token, after, limit) as CompanionEventPage
-    return Response.json({ ...page, presence: await context.stub.getPresence() })
+    const page = await context.stub.syncPage(context.deviceId, context.token, after, limit) as CompanionEventPage | null
+    if (!page) throw new HttpError(401, '设备认证失败。')
+    return Response.json(page)
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/events') {
-    const context = await authenticatedContext(request, env, url, 'mac')
+    const context = relayRequestContext(request, env, url)
     const input = syncEventSchema.parse(await readJson(request))
-    return Response.json(await context.stub.appendEvent(context.deviceId, context.token, input), { status: 201 })
+    const event = await context.stub.appendEvent(
+      context.deviceId,
+      context.token,
+      input
+    )
+    if (!event) throw new HttpError(401, '设备认证失败。')
+    return Response.json(event, { status: 201 })
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/events/batch') {
+    const context = relayRequestContext(request, env, url)
+    const input = syncEventBatchSchema.parse(await readJson(request))
+    const result = await context.stub.appendEvents(
+      context.deviceId,
+      context.token,
+      input.events
+    ) as CompanionEventBatchResult | null
+    if (!result) throw new HttpError(401, '设备认证失败。')
+    return Response.json(result, { status: 201 })
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/commands') {
@@ -170,8 +199,10 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === 'GET' && url.pathname === '/v1/commands/pending') {
-    const context = await authenticatedContext(request, env, url, 'mac')
-    return Response.json({ commands: await context.stub.listPendingCommands(context.deviceId, context.token) })
+    const context = relayRequestContext(request, env, url)
+    const commands = await context.stub.pendingCommands(context.deviceId, context.token)
+    if (!commands) throw new HttpError(401, '设备认证失败。')
+    return Response.json({ commands })
   }
 
   const commandMatch = url.pathname.match(/^\/v1\/commands\/([^/]+)$/)

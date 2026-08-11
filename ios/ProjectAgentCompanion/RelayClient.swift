@@ -2,7 +2,12 @@ import CryptoKit
 import Foundation
 
 let companionFallbackSyncIntervalSeconds: TimeInterval = 60
+let companionConnectedFallbackSyncIntervalSeconds: TimeInterval = 5 * 60
 let companionSocketHeartbeatIntervalSeconds: TimeInterval = 20
+
+func companionFallbackSyncIntervalSeconds(realtimeConnected: Bool) -> TimeInterval {
+    realtimeConnected ? companionConnectedFallbackSyncIntervalSeconds : companionFallbackSyncIntervalSeconds
+}
 
 func companionReconnectDelaySeconds(forAttempt attempt: Int) -> TimeInterval {
     [5, 15, 60][min(max(0, attempt), 2)]
@@ -22,6 +27,7 @@ final class RelayClient {
     private var heartbeatTask: Task<Void, Never>?
     private var reconnectAttempt = 0
     private var awaitingPong = false
+    private(set) var realtimeConnected = false
 
     init(credentials: CompanionCredentials) { self.credentials = credentials }
 
@@ -169,6 +175,7 @@ final class RelayClient {
         heartbeatTask = nil
         reconnectAttempt = 0
         awaitingPong = false
+        realtimeConnected = false
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         onPush = nil
@@ -180,6 +187,7 @@ final class RelayClient {
                 guard let self, self.socket === task else { return }
                 switch result {
                 case .success(let message):
+                    self.realtimeConnected = true
                     self.reconnectAttempt = 0
                     self.awaitingPong = false
                     if !self.isPong(message), let envelope = self.decodeEnvelope(message) {
@@ -220,6 +228,7 @@ final class RelayClient {
         heartbeatTask?.cancel()
         heartbeatTask = nil
         awaitingPong = false
+        realtimeConnected = false
         task.cancel(with: .goingAway, reason: nil)
         socket = nil
         scheduleReconnect()

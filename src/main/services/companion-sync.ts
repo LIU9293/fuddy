@@ -7,20 +7,23 @@ import { Readable } from 'node:stream'
 import WebSocket from 'ws'
 import type {
   CompanionCommand,
+  CompanionCommandType,
   CompanionCommandUpdate,
+  CompanionEventBatchResult,
   CompanionMacConfiguration,
   CompanionMacStatus,
   CompanionRealtimeConnectionState,
   CompanionPairingSession,
   CompanionPairingStartResult,
   CompanionSocketMessage,
+  CompanionSyncEventInput,
   CompanionOutboxEvent,
   CompanionAttachmentDescriptor,
   CompanionSnapshotPayload
 } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
-import type { AgentRunArtifact, BriefingMessage } from '../../shared/contracts'
+import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
 import { updateProjectSchema } from '../../shared/project-validation'
 import { AppDatabase } from './database'
 import { CredentialVault } from './credential-vault'
@@ -29,10 +32,14 @@ import type { WorkspaceFilesService } from './workspace-files'
 
 const configurationKey = 'companion.mac-configuration'
 export const companionFallbackSyncIntervalMs = 60_000
+export const companionConnectedFallbackSyncIntervalMs = 5 * 60_000
 export const companionRequestTimeoutMs = 30_000
 export const companionSocketHeartbeatIntervalMs = 20_000
+export const companionEventBatchMaximumCount = 100
+export const companionEventBatchMaximumBytes = 512 * 1024
+export const companionToolSummaryMaximumCharacters = 600
 const companionAttachmentRequestTimeoutMs = 120_000
-const companionEventSyncDebounceMs = 150
+const companionEventSyncDebounceMs = 500
 const reconnectDelaysMs = [5_000, 15_000, 60_000] as const
 
 export function companionReconnectDelayMs(attempt: number): number {
@@ -41,6 +48,52 @@ export function companionReconnectDelayMs(attempt: number): number {
 
 export function companionSocketMessageRequestsSync(message: CompanionSocketMessage): boolean {
   return message.type === 'sync.ready' || message.type === 'command.created'
+}
+
+export function companionFallbackSyncIntervalForState(
+  state: CompanionRealtimeConnectionState
+): number {
+  return state === 'connected' ? companionConnectedFallbackSyncIntervalMs : companionFallbackSyncIntervalMs
+}
+
+export function companionAgentMessageForRelay(
+  message: AgentRunMessage
+): AgentRunMessage & { toolStatus?: 'completed' | 'failed' } {
+  if (message.role !== 'tool') return message
+  const normalized = message.content.replace(/\s+/g, ' ').trim() || message.toolName || '工具调用'
+  const content = normalized.length > companionToolSummaryMaximumCharacters
+    ? `${normalized.slice(0, companionToolSummaryMaximumCharacters).trimEnd()}…`
+    : normalized
+  const nativeStatus = message.metadata?.status
+  const failed = nativeStatus === 'failed'
+    || message.metadata?.isError === true
+    || message.metadata?.is_error === true
+  return {
+    ...message,
+    content,
+    metadata: null,
+    toolStatus: failed ? 'failed' : 'completed'
+  }
+}
+
+export function partitionCompanionEventBatches<T extends CompanionSyncEventInput>(events: T[]): T[][] {
+  const batches: T[][] = []
+  let current: T[] = []
+  for (const event of events) {
+    const candidate = [...current, event]
+    const candidateBytes = Buffer.byteLength(JSON.stringify({ events: candidate }), 'utf8')
+    if (current.length > 0 && (
+      candidate.length > companionEventBatchMaximumCount
+      || candidateBytes > companionEventBatchMaximumBytes
+    )) {
+      batches.push(current)
+      current = [event]
+    } else {
+      current = candidate
+    }
+  }
+  if (current.length > 0) batches.push(current)
+  return batches
 }
 
 export function companionSocketHeartbeatShouldReconnect(awaitingPong: boolean): boolean {
@@ -53,6 +106,15 @@ export function companionCommandRecovery(
   if (status === 'completed' || status === 'failed') return 'ack-terminal'
   if (status === 'executing') return 'fail-interrupted'
   return 'execute'
+}
+
+export function companionCommandUpdateForRelay(
+  commandType: CompanionCommandType,
+  update: CompanionCommandUpdate
+): CompanionCommandUpdate {
+  if (commandType === 'artifact.request-upload' || update.result === undefined) return update
+  const { result: _localResult, ...relayUpdate } = update
+  return relayUpdate
 }
 
 function fetchWithTimeout(
@@ -88,7 +150,7 @@ export class CompanionSyncService {
   private socket: WebSocket | null = null
   private socketHeartbeatTimer: ReturnType<typeof setInterval> | null = null
   private awaitingSocketPong = false
-  private timer: ReturnType<typeof setInterval> | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private eventSyncTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
@@ -175,7 +237,7 @@ export class CompanionSyncService {
     }
     this.credentials.set(this.tokenReference(pairing.accountId), pairing.macToken)
     this.database.setSetting(configurationKey, this.configuration)
-    this.database.enqueueCompanionSnapshot()
+    this.database.enqueueCompanionPairingSnapshot()
     this.state = 'connecting'
     this.lastError = null
     this.emitStatus()
@@ -253,34 +315,62 @@ export class CompanionSyncService {
 
   private async flushOutbox(): Promise<void> {
     const context = this.authenticatedContext()
-    for (const event of this.database.listPendingCompanionEvents()) {
-      try {
-        const payload = await this.prepareEventPayload(event)
-        const response = await fetchWithTimeout(this.authenticatedUrl('/v1/events', context.configuration), {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${context.token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            eventId: event.eventId,
-            protocolVersion: event.protocolVersion,
-            type: event.type,
-            entityType: event.entityType,
-            entityId: event.entityId,
-            revision: event.revision,
-            payload,
-            occurredAt: event.occurredAt
-          })
+    while (true) {
+      const pending = this.database.listPendingCompanionEvents(companionEventBatchMaximumCount)
+      if (pending.length === 0) return
+      const prepared: CompanionSyncEventInput[] = []
+      for (const event of pending) {
+        prepared.push({
+          eventId: event.eventId,
+          protocolVersion: event.protocolVersion,
+          type: event.type,
+          entityType: event.entityType,
+          entityId: event.entityId,
+          revision: event.revision,
+          payload: await this.prepareEventPayload(event),
+          occurredAt: event.occurredAt
         })
-        await responseJson(response)
-        this.database.markCompanionEventPublished(event.eventId, new Date().toISOString())
-      } catch (error) {
-        const message = error instanceof Error ? error.message : '事件上传失败。'
-        this.database.markCompanionEventFailed(event.eventId, message)
-        throw error
+      }
+      for (const batch of partitionCompanionEventBatches(prepared)) {
+        try {
+          await this.publishEventBatch(batch, context)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '事件上传失败。'
+          for (const event of batch) this.database.markCompanionEventFailed(event.eventId, message)
+          throw error
+        }
       }
     }
+  }
+
+  private async publishEventBatch(
+    events: CompanionSyncEventInput[],
+    context: { configuration: CompanionMacConfiguration; token: string }
+  ): Promise<void> {
+    const headers = {
+      Authorization: `Bearer ${context.token}`,
+      'Content-Type': 'application/json'
+    }
+    const response = await fetchWithTimeout(this.authenticatedUrl('/v1/events/batch', context.configuration), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ events })
+    })
+    if (response.status === 404 || response.status === 405) {
+      for (const event of events) {
+        const fallback = await fetchWithTimeout(this.authenticatedUrl('/v1/events', context.configuration), {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(event)
+        })
+        await responseJson(fallback)
+        this.database.markCompanionEventPublished(event.eventId, new Date().toISOString())
+      }
+      return
+    }
+    await responseJson<CompanionEventBatchResult>(response)
+    const publishedAt = new Date().toISOString()
+    for (const event of events) this.database.markCompanionEventPublished(event.eventId, publishedAt)
   }
 
   private async prepareEventPayload(event: CompanionOutboxEvent): Promise<unknown> {
@@ -294,10 +384,17 @@ export class CompanionSyncService {
       return {
         ...snapshot,
         attachments,
+        runs: snapshot.runs.map((detail) => ({
+          ...detail,
+          messages: detail.messages.map((message) => companionAgentMessageForRelay(message as AgentRunMessage))
+        })),
         workAssistantMessages: await Promise.all(
           (snapshot.workAssistantMessages ?? []).map((message) => this.prepareWorkAssistantMessage(message as BriefingMessage))
         )
       }
+    }
+    if (event.type === 'agent-message.created') {
+      return companionAgentMessageForRelay(event.payload as AgentRunMessage)
     }
     if (event.type === 'work-assistant-message.created') {
       return await this.prepareWorkAssistantMessage(event.payload as BriefingMessage)
@@ -471,7 +568,7 @@ export class CompanionSyncService {
     const existing = this.database.getCompanionCommand(remoteCommand.commandId)
     const recovery = companionCommandRecovery(existing?.status ?? null)
     if (recovery === 'ack-terminal' && existing) {
-      await this.updateRemoteCommand(existing.commandId, {
+      await this.updateRemoteCommand(existing.commandId, existing.type, {
         status: existing.status === 'completed' ? 'completed' : 'failed',
         result: existing.result,
         error: existing.error
@@ -482,12 +579,12 @@ export class CompanionSyncService {
       const error = 'Mac 在执行远程操作期间中断；为避免重复执行，请确认结果后重新操作。'
       this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, error)
       this.emitDataChanged()
-      await this.updateRemoteCommand(remoteCommand.commandId, { status: 'failed', error })
+      await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'failed', error })
       return
     }
     this.database.upsertCompanionCommand(remoteCommand)
     this.database.updateCompanionCommand(remoteCommand.commandId, 'executing')
-    await this.updateRemoteCommand(remoteCommand.commandId, { status: 'executing' })
+    await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'executing' })
     let result: unknown
     try {
       result = await this.performCommand(remoteCommand)
@@ -495,12 +592,12 @@ export class CompanionSyncService {
       const message = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
       this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, message)
       this.emitDataChanged()
-      await this.updateRemoteCommand(remoteCommand.commandId, { status: 'failed', error: message })
+      await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'failed', error: message })
       return
     }
     this.database.updateCompanionCommand(remoteCommand.commandId, 'completed', result)
     this.emitDataChanged()
-    await this.updateRemoteCommand(remoteCommand.commandId, { status: 'completed', result })
+    await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'completed', result })
     this.scheduleEventSync()
   }
 
@@ -544,6 +641,8 @@ export class CompanionSyncService {
           clientMessageId
         )
       }
+      case 'agent.stop-message':
+        return await this.dispatcher.stopMessage(this.requiredString(payload, 'runId'))
       case 'agent.rename-session':
         return this.database.renameAgentRun(
           this.requiredString(payload, 'runId'),
@@ -641,12 +740,16 @@ export class CompanionSyncService {
     return results
   }
 
-  private async updateRemoteCommand(commandId: string, update: CompanionCommandUpdate): Promise<void> {
+  private async updateRemoteCommand(
+    commandId: string,
+    commandType: CompanionCommandType,
+    update: CompanionCommandUpdate
+  ): Promise<void> {
     const context = this.authenticatedContext()
     const response = await fetchWithTimeout(this.authenticatedUrl(`/v1/commands/${encodeURIComponent(commandId)}`, context.configuration), {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${context.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(update)
+      body: JSON.stringify(companionCommandUpdateForRelay(commandType, update))
     })
     await responseJson(response)
   }
@@ -670,6 +773,7 @@ export class CompanionSyncService {
       this.lastError = null
       this.reconnectAttempt = 0
       this.startSocketHeartbeat(socket)
+      this.resetFallbackTimer()
       this.emitStatus()
     })
     socket.on('message', (data) => {
@@ -701,6 +805,7 @@ export class CompanionSyncService {
       if (!this.stopped && this.configuration) {
         this.realtimeState = 'disconnected'
         this.state = 'disconnected'
+        this.resetFallbackTimer()
         this.emitStatus()
         const delay = companionReconnectDelayMs(this.reconnectAttempt)
         this.reconnectAttempt += 1
@@ -775,9 +880,18 @@ export class CompanionSyncService {
   }
 
   private ensureTimer(): void {
-    if (this.timer) return
-    this.timer = setInterval(() => void this.syncNow(), companionFallbackSyncIntervalMs)
+    if (this.timer || !this.configuration || this.stopped) return
+    this.timer = setTimeout(() => {
+      this.timer = null
+      void this.syncNow().finally(() => this.ensureTimer())
+    }, companionFallbackSyncIntervalForState(this.realtimeState))
     this.timer.unref?.()
+  }
+
+  private resetFallbackTimer(): void {
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = null
+    this.ensureTimer()
   }
 
   private scheduleEventSync(): void {
@@ -790,7 +904,7 @@ export class CompanionSyncService {
   }
 
   private closeTransports(): void {
-    if (this.timer) clearInterval(this.timer)
+    if (this.timer) clearTimeout(this.timer)
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     if (this.eventSyncTimer) clearTimeout(this.eventSyncTimer)
     this.timer = null

@@ -6,6 +6,7 @@ import type {
   AgentSessionUpdate,
   AgentStreamEnvelope,
   ConfigureAgentProviderInput,
+  ConfigureAsrProviderInput,
   ConfigureCodingAgentSettingsInput,
   ConfigureConnectorInput,
   ConfigurePostgresInput,
@@ -27,7 +28,9 @@ import type {
   WriteWorkspaceFileInput,
   DispatchProjectAgentInput,
   ExecuteWorkAssistantActionInput,
-  RespondAgentApprovalInput
+  RespondAgentApprovalInput,
+  TranscribeAudioInput,
+  AsrDownloadProgress
 } from '../shared/contracts'
 import type { CompanionMacStatus } from '../shared/companion-sync'
 
@@ -111,6 +114,7 @@ const api: DesktopApi = {
       ipcRenderer.removeListener('agent-run:update', listener)
     })
   },
+  stopAgentRunMessage: (runId: string) => ipcRenderer.invoke('agent-run:stop', runId),
   respondAgentApproval: (input: RespondAgentApprovalInput) =>
     ipcRenderer.invoke('agent-run:approval', input),
   listWorkspaceFiles: (projectId: string | null) => ipcRenderer.invoke('workspace-files:list', projectId),
@@ -153,6 +157,17 @@ const api: DesktopApi = {
   configureCodingAgents: (input: ConfigureCodingAgentSettingsInput) =>
     ipcRenderer.invoke('provider:configure-coding-agents', input),
   listCodingAgentModels: () => ipcRenderer.invoke('provider:list-coding-agent-models'),
+  configureAsrProvider: (input: ConfigureAsrProviderInput) =>
+    ipcRenderer.invoke('provider:configure-asr', input),
+  getAsrModelStatus: () => ipcRenderer.invoke('asr:model-status'),
+  downloadAsrModel: () => ipcRenderer.invoke('asr:download-model'),
+  deleteAsrModel: () => ipcRenderer.invoke('asr:delete-model'),
+  transcribeAudio: (input: TranscribeAudioInput) => ipcRenderer.invoke('asr:transcribe', input),
+  onAsrDownloadProgress: (callback: (progress: AsrDownloadProgress) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: AsrDownloadProgress): void => callback(progress)
+    ipcRenderer.on('asr:download-progress', listener)
+    return () => ipcRenderer.removeListener('asr:download-progress', listener)
+  },
   configureTtsProvider: (input: ConfigureTtsProviderInput) =>
     ipcRenderer.invoke('provider:configure-tts', input),
   getMorningBriefingAudio: (briefingId: string) =>

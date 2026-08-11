@@ -12,6 +12,7 @@ import { MorningBriefingService } from './services/morning-briefing'
 import { ProviderSettingsService } from './services/provider-settings'
 import { TaskDispatcher } from './services/task-dispatcher'
 import { TtsService } from './services/tts-service'
+import { AsrService } from './services/asr-service'
 import { GoalTrackingService } from './services/goal-tracking'
 import { WorkspaceAgentActions } from './services/workspace-agent-actions'
 import { DecisionRemediationService } from './services/decision-remediation'
@@ -27,6 +28,7 @@ import { SENTRY_DSN, SENTRY_PROJECT } from '../shared/sentry'
 import { hydrateProcessEnvironmentFromZsh } from './services/shell-environment'
 import { CompanionSyncService } from './services/companion-sync'
 import { WebResearchService } from './services/web-research'
+import { PiWorkAssistantAgent } from './services/work-assistant-agent'
 
 Sentry.init({
   dsn: SENTRY_DSN,
@@ -153,7 +155,7 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     splashWindow?.close()
-    mainWindow?.show()
+    showMainWindow()
   })
   mainWindow.on('closed', () => {
     mainWindow = null
@@ -162,6 +164,17 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isSafeExternalUrl(url)) void shell.openExternal(url)
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.session.setPermissionCheckHandler((webContents, permission, _requestingOrigin, details) => {
+    if (webContents?.id !== mainWindow?.webContents.id || permission !== 'media') return false
+    return details.mediaType === 'audio' || details.mediaType === 'unknown'
+  })
+  mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const sameWindow = webContents.id === mainWindow?.webContents.id
+    const mediaTypes = 'mediaTypes' in details ? details.mediaTypes : []
+    const audioOnly = mediaTypes?.includes('audio') && !mediaTypes.includes('video')
+    callback(Boolean(sameWindow && permission === 'media' && audioOnly))
   })
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -177,16 +190,21 @@ function createWindow(): void {
   }
 }
 
+function showMainWindow(): void {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  if (process.platform === 'darwin') app.focus({ steal: true })
+  mainWindow.focus()
+}
+
 const hasLock = app.requestSingleInstanceLock()
 
 if (!hasLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-    }
+    showMainWindow()
   })
 
   app.whenReady().then(async () => {
@@ -199,6 +217,17 @@ if (!hasLock) {
     database = new AppDatabase(databasePath)
     const credentialVault = new CredentialVault(join(userDataPath, 'credentials.enc'))
     const providerSettings = new ProviderSettingsService(database, credentialVault)
+    const whisperRoot = app.isPackaged
+      ? join(process.resourcesPath, 'third-party', 'whisper')
+      : join(app.getAppPath(), '.third-party-tools', 'whisper', `darwin-${process.arch === 'arm64' ? 'arm64' : 'x64'}`)
+    const asrService = new AsrService(providerSettings, {
+      modelDirectory: join(userDataPath, 'asr-models'),
+      helperPath: join(whisperRoot, 'whisper-helper'),
+      temporaryDirectory: join(userDataPath, 'asr-temp'),
+      onDownloadProgress: (progress) => {
+        if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('asr:download-progress', progress)
+      }
+    })
     const connectorRuntime = new ConnectorRuntime(database, credentialVault)
     const runtime = new PiAgentRuntime(providerSettings)
     const decisionRemediationService = new DecisionRemediationService(database)
@@ -242,13 +271,21 @@ if (!hasLock) {
       new ProjectInspectionService(database, workspaceFiles),
       new WebResearchService()
     )
+    const workAssistantAgent = new PiWorkAssistantAgent(
+      providerSettings,
+      database,
+      workspaceAgentActions,
+      join(userDataPath, 'work-assistant-pi-session'),
+      userDataPath
+    )
     const morningBriefingService = new MorningBriefingService(
       database,
       dailyBriefingService,
       runtime,
       goalTrackingService,
       workspaceAgentActions,
-      decisionRemediationService
+      decisionRemediationService,
+      workAssistantAgent
     )
     workspaceAgentActions.setMorningBriefingGenerator(() => morningBriefingService.generate())
     companionSync = new CompanionSyncService(
@@ -296,6 +333,7 @@ if (!hasLock) {
         return result.briefing.headline
       }
     })
+    workspaceAgentActions.setAutomationRuntime(automationRuntime)
     automationRuntime.onChanged(() => {
       if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('automation:changed')
     })
@@ -335,6 +373,7 @@ if (!hasLock) {
       morningBriefingService,
       goalTrackingService,
       providerSettings,
+      asrService,
       ttsService,
       workspaceFiles,
       automationRuntime,
@@ -359,6 +398,7 @@ if (!hasLock) {
 
     app.on('activate', () => {
       if (!mainWindow) createWindow()
+      else showMainWindow()
     })
   }).catch(async (error: unknown) => {
     splashWindow?.close()

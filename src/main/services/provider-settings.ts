@@ -1,7 +1,9 @@
 import type {
   AgentProviderMode,
+  AsrProviderMode,
   ConfigureAgentEndpointInput,
   ConfigureAgentProviderInput,
+  ConfigureAsrProviderInput,
   ConfigureCodingAgentSettingsInput,
   ConfigureTtsEndpointInput,
   ConfigureTtsProviderInput,
@@ -13,11 +15,13 @@ import { AppDatabase } from './database'
 
 const AGENT_KEY = 'provider.agent'
 const CODING_AGENTS_KEY = 'provider.coding-agents'
+const ASR_KEY = 'provider.asr'
 const TTS_KEY = 'provider.tts'
 const AGENT_PRIMARY_CREDENTIAL = 'provider:agent:api-key'
 const AGENT_BACKUP_CREDENTIAL = 'provider:agent:backup:api-key'
 const TTS_PRIMARY_CREDENTIAL = 'provider:tts:api-key'
 const TTS_BACKUP_CREDENTIAL = 'provider:tts:backup:api-key'
+const ASR_CLOUD_CREDENTIAL = 'provider:asr:cloud:api-key'
 
 interface StoredAgentEndpoint {
   mode: AgentProviderMode
@@ -45,6 +49,13 @@ interface StoredTtsProvider {
   backupEnabled: boolean
 }
 
+interface StoredAsrProvider {
+  mode: AsrProviderMode
+  cloudBaseUrl: string
+  cloudModel: string
+  fallbackToCloud: boolean
+}
+
 export type RuntimeAgentEndpoint = StoredAgentEndpoint & { apiKey: string | null }
 export type RuntimeTtsEndpoint = StoredTtsEndpoint & { apiKey: string | null }
 
@@ -59,6 +70,8 @@ export interface RuntimeTtsSettings {
   backup: RuntimeTtsEndpoint
   backupEnabled: boolean
 }
+
+export type RuntimeAsrSettings = StoredAsrProvider & { cloudApiKey: string | null }
 
 const voiceInstructions = '使用自然、沉稳、清晰的普通话，像一位可信赖的个人助理做晨间汇报。语速适中，数字读得清楚，不要夸张。'
 
@@ -98,15 +111,22 @@ const defaultAgent: StoredAgentProvider = {
 
 const defaultCodingAgents: ConfigureCodingAgentSettingsInput = {
   defaultAgent: 'codex',
-  codex: { defaultModel: '' },
-  claude: { defaultModel: '' },
-  opencode: { defaultModel: '' }
+  codex: { defaultModel: '', defaultReasoningEffort: '' },
+  claude: { defaultModel: '', defaultReasoningEffort: '' },
+  opencode: { defaultModel: '', defaultReasoningEffort: '' }
 }
 
 const defaultTts: StoredTtsProvider = {
   primary: defaultTtsPrimary,
   backup: defaultTtsBackup,
   backupEnabled: false
+}
+
+const defaultAsr: StoredAsrProvider = {
+  mode: 'local-first',
+  cloudBaseUrl: 'https://api.openai.com/v1',
+  cloudModel: 'gpt-transcribe',
+  fallbackToCloud: true
 }
 
 function normalizeBaseUrl(value: string): string {
@@ -209,6 +229,17 @@ function migrateTts(raw: unknown): StoredTtsProvider {
   return defaultTts
 }
 
+function migrateAsr(raw: unknown): StoredAsrProvider {
+  if (!raw || typeof raw !== 'object') return defaultAsr
+  const value = raw as Partial<StoredAsrProvider>
+  return {
+    mode: value.mode === 'cloud' ? 'cloud' : 'local-first',
+    cloudBaseUrl: typeof value.cloudBaseUrl === 'string' ? value.cloudBaseUrl : defaultAsr.cloudBaseUrl,
+    cloudModel: typeof value.cloudModel === 'string' ? value.cloudModel : defaultAsr.cloudModel,
+    fallbackToCloud: value.fallbackToCloud !== false
+  }
+}
+
 function normalizeAgentEndpoint(input: ConfigureAgentEndpointInput, label: string): StoredAgentEndpoint {
   const baseUrl = normalizeBaseUrl(input.baseUrl)
   if (input.mode === 'cc-switch-codex-oauth' && !isCcSwitchBaseUrl(baseUrl)) {
@@ -246,28 +277,42 @@ export class ProviderSettingsService {
     return migrateTts(this.database.getSetting<unknown>(TTS_KEY, defaultTts))
   }
 
+  private readAsr(): StoredAsrProvider {
+    return migrateAsr(this.database.getSetting<unknown>(ASR_KEY, defaultAsr))
+  }
+
   private readCodingAgents(): ConfigureCodingAgentSettingsInput {
     const stored = this.database.getSetting<unknown>(CODING_AGENTS_KEY, defaultCodingAgents)
     if (!stored || typeof stored !== 'object') return defaultCodingAgents
     const value = stored as {
       defaultAgent?: unknown
-      codex?: { defaultModel?: unknown }
-      claude?: { defaultModel?: unknown }
-      opencode?: { defaultModel?: unknown }
+      codex?: { defaultModel?: unknown; defaultReasoningEffort?: unknown }
+      claude?: { defaultModel?: unknown; defaultReasoningEffort?: unknown }
+      opencode?: { defaultModel?: unknown; defaultReasoningEffort?: unknown }
     }
     return {
       defaultAgent: value.defaultAgent === 'claude' || value.defaultAgent === 'opencode' || value.defaultAgent === 'codex'
         ? value.defaultAgent
         : defaultCodingAgents.defaultAgent,
-      codex: { defaultModel: typeof value.codex?.defaultModel === 'string' ? value.codex.defaultModel : '' },
-      claude: { defaultModel: typeof value.claude?.defaultModel === 'string' ? value.claude.defaultModel : '' },
-      opencode: { defaultModel: typeof value.opencode?.defaultModel === 'string' ? value.opencode.defaultModel : '' }
+      codex: {
+        defaultModel: typeof value.codex?.defaultModel === 'string' ? value.codex.defaultModel : '',
+        defaultReasoningEffort: typeof value.codex?.defaultReasoningEffort === 'string' ? value.codex.defaultReasoningEffort : ''
+      },
+      claude: {
+        defaultModel: typeof value.claude?.defaultModel === 'string' ? value.claude.defaultModel : '',
+        defaultReasoningEffort: typeof value.claude?.defaultReasoningEffort === 'string' ? value.claude.defaultReasoningEffort : ''
+      },
+      opencode: {
+        defaultModel: typeof value.opencode?.defaultModel === 'string' ? value.opencode.defaultModel : '',
+        defaultReasoningEffort: typeof value.opencode?.defaultReasoningEffort === 'string' ? value.opencode.defaultReasoningEffort : ''
+      }
     }
   }
 
   getPublicSettings(): ProviderSettings {
     const agent = this.readAgent()
     const tts = this.readTts()
+    const asr = this.readAsr()
     return {
       agent: {
         primary: { ...agent.primary, apiKeyConfigured: Boolean(this.vault.get(AGENT_PRIMARY_CREDENTIAL)) },
@@ -275,6 +320,10 @@ export class ProviderSettingsService {
         backupEnabled: agent.backupEnabled
       },
       codingAgents: this.readCodingAgents(),
+      asr: {
+        ...asr,
+        cloudApiKeyConfigured: Boolean(this.vault.get(ASR_CLOUD_CREDENTIAL))
+      },
       tts: {
         primary: { ...tts.primary, apiKeyConfigured: Boolean(this.vault.get(TTS_PRIMARY_CREDENTIAL)) },
         backup: { ...tts.backup, apiKeyConfigured: Boolean(this.vault.get(TTS_BACKUP_CREDENTIAL)) },
@@ -286,15 +335,28 @@ export class ProviderSettingsService {
   configureCodingAgents(input: ConfigureCodingAgentSettingsInput): ProviderSettings {
     this.database.setSetting<ConfigureCodingAgentSettingsInput>(CODING_AGENTS_KEY, {
       defaultAgent: input.defaultAgent,
-      codex: { defaultModel: input.codex.defaultModel.trim() },
-      claude: { defaultModel: input.claude.defaultModel.trim() },
-      opencode: { defaultModel: input.opencode.defaultModel.trim() }
+      codex: {
+        defaultModel: input.codex.defaultModel.trim(),
+        defaultReasoningEffort: input.codex.defaultReasoningEffort.trim()
+      },
+      claude: {
+        defaultModel: input.claude.defaultModel.trim(),
+        defaultReasoningEffort: input.claude.defaultReasoningEffort.trim()
+      },
+      opencode: {
+        defaultModel: input.opencode.defaultModel.trim(),
+        defaultReasoningEffort: input.opencode.defaultReasoningEffort.trim()
+      }
     })
     return this.getPublicSettings()
   }
 
   getCodingAgentDefaultModel(provider: 'codex' | 'claude' | 'opencode'): string | null {
     return this.readCodingAgents()[provider].defaultModel.trim() || null
+  }
+
+  getCodingAgentDefaultReasoningEffort(provider: 'codex' | 'claude' | 'opencode'): string | null {
+    return this.readCodingAgents()[provider].defaultReasoningEffort.trim() || null
   }
 
   configureAgent(input: ConfigureAgentProviderInput): ProviderSettings {
@@ -319,6 +381,17 @@ export class ProviderSettingsService {
     return this.getPublicSettings()
   }
 
+  configureAsr(input: ConfigureAsrProviderInput): ProviderSettings {
+    this.database.setSetting<StoredAsrProvider>(ASR_KEY, {
+      mode: input.mode,
+      cloudBaseUrl: normalizeBaseUrl(input.cloudBaseUrl),
+      cloudModel: required(input.cloudModel, 'Cloud ASR Model'),
+      fallbackToCloud: input.fallbackToCloud
+    })
+    if (input.cloudApiKey?.trim()) this.vault.set(ASR_CLOUD_CREDENTIAL, input.cloudApiKey.trim())
+    return this.getPublicSettings()
+  }
+
   getAgentRuntimeSettings(): RuntimeAgentSettings {
     const stored = this.readAgent()
     return {
@@ -334,6 +407,13 @@ export class ProviderSettingsService {
       primary: { ...stored.primary, apiKey: this.vault.get(TTS_PRIMARY_CREDENTIAL) },
       backup: { ...stored.backup, apiKey: this.vault.get(TTS_BACKUP_CREDENTIAL) },
       backupEnabled: stored.backupEnabled
+    }
+  }
+
+  getAsrRuntimeSettings(): RuntimeAsrSettings {
+    return {
+      ...this.readAsr(),
+      cloudApiKey: this.vault.get(ASR_CLOUD_CREDENTIAL)
     }
   }
 

@@ -77,6 +77,7 @@ export type CompanionCommandType =
   | 'assistant.send-message'
   | 'assistant.execute-action'
   | 'agent.send-message'
+  | 'agent.stop-message'
   | 'agent.rename-session'
   | 'agent.update-draft-prompt'
   | 'agent.archive-session'
@@ -115,6 +116,11 @@ export interface CompanionEventPage {
   presence?: CompanionPresence
 }
 
+export interface CompanionEventBatchResult {
+  accepted: Array<{ eventId: string; sequence: number }>
+  lastSequence: number
+}
+
 export interface CompanionPresence {
   macOnline: boolean
   iosDevicesOnline: number
@@ -123,6 +129,7 @@ export interface CompanionPresence {
 
 export type CompanionSocketMessage =
   | { type: 'sync.ready'; presence: CompanionPresence; lastSequence: number }
+  | { type: 'sync.available'; lastSequence: number }
   | { type: 'sync.event'; event: CompanionSyncEvent }
   | { type: 'command.created'; command: CompanionCommand }
   | { type: 'command.updated'; command: CompanionCommand }

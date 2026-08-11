@@ -8,6 +8,11 @@ import type { DailyBriefingService } from './daily-briefing'
 import { GoalTrackingService } from './goal-tracking'
 import { MorningBriefingService } from './morning-briefing'
 import type { AgentRuntime } from './pi-runtime'
+import type {
+  WorkAssistantAgentRuntime,
+  WorkAssistantAgentTurnInput,
+  WorkAssistantAgentTurnResult
+} from './work-assistant-agent'
 
 class OfflineRuntime implements AgentRuntime {
   isConfigured(): boolean {
@@ -26,29 +31,18 @@ class OfflineRuntime implements AgentRuntime {
   }
 }
 
-class VisionRuntime implements AgentRuntime {
-  receivedImages: WorkAssistantImageAttachment[] = []
+class TestWorkAssistantAgent implements WorkAssistantAgentRuntime {
+  inputs: WorkAssistantAgentTurnInput[] = []
 
-  isConfigured(): boolean {
-    return true
-  }
+  constructor(private readonly respond: (input: WorkAssistantAgentTurnInput) => WorkAssistantAgentTurnResult = () => ({
+    content: '已处理。', proposals: [], linkedRunId: null
+  })) {}
 
-  async run(): Promise<string> {
-    return '已分析图片'
-  }
+  isConfigured(): boolean { return true }
 
-  async runStream(
-    _prompt: string,
-    onUpdate: (update: AgentSessionUpdate) => void,
-    images: WorkAssistantImageAttachment[] = []
-  ): Promise<string> {
-    this.receivedImages = images
-    onUpdate({
-      sessionUpdate: 'agent_message_chunk',
-      messageId: 'vision-response',
-      content: { type: 'text', text: '已分析图片' }
-    })
-    return '已分析图片'
+  async runTurn(input: WorkAssistantAgentTurnInput): Promise<WorkAssistantAgentTurnResult> {
+    this.inputs.push(input)
+    return this.respond(input)
   }
 }
 
@@ -66,10 +60,21 @@ describe('Work Assistant task handoff', () => {
     const runtime = new OfflineRuntime()
     const goal = await new GoalTrackingService(database, runtime).createFromPrompt('vows', '建立社交媒体账号')
     const milestone = goal.milestones[0]
+    const agent = new TestWorkAssistantAgent((input) => ({
+      content: input.taskContext
+        ? '我会先确认完成标准。开始任务不会自动把里程碑标记为完成。'
+        : '我仍记得之前的任务上下文。',
+      proposals: [],
+      linkedRunId: null
+    }))
     const service = new MorningBriefingService(
       database,
       {} as DailyBriefingService,
-      runtime
+      runtime,
+      undefined,
+      undefined,
+      undefined,
+      agent
     )
 
     const result = await service.ask(null, '我想开始这项任务。', {
@@ -85,8 +90,8 @@ describe('Work Assistant task handoff', () => {
     expect(database.listBriefingMessages()).toHaveLength(2)
 
     const followUp = await service.ask(null, '那先找一下现有素材。')
-    expect(followUp.userMessage.taskContext?.milestoneId).toBe(milestone.id)
-    expect(followUp.assistantMessage.taskContext?.projectId).toBe('vows')
+    expect(followUp.userMessage.taskContext).toBeNull()
+    expect(agent.inputs[1].history.at(-1)?.content).toContain('开始任务不会自动把里程碑标记为完成')
 
     const switched = await service.ask(null, 'Roombase 现在最重要的事情是什么？')
     expect(switched.userMessage.taskContext).toBeNull()
@@ -97,11 +102,16 @@ describe('Work Assistant task handoff', () => {
     const directory = mkdtempSync(join(tmpdir(), 'work-assistant-image-'))
     directories.push(directory)
     const database = new AppDatabase(join(directory, 'test.sqlite'))
-    const runtime = new VisionRuntime()
+    const runtime = new OfflineRuntime()
+    const agent = new TestWorkAssistantAgent(() => ({ content: '已分析图片', proposals: [], linkedRunId: null }))
     const service = new MorningBriefingService(
       database,
       {} as DailyBriefingService,
-      runtime
+      runtime,
+      undefined,
+      undefined,
+      undefined,
+      agent
     )
     const attachment: WorkAssistantImageAttachment = {
       id: 'image-1',
@@ -112,7 +122,7 @@ describe('Work Assistant task handoff', () => {
 
     const result = await service.ask(null, '请分析这张图。', null, [attachment])
 
-    expect(runtime.receivedImages).toEqual([attachment])
+    expect(agent.inputs[0].attachments).toEqual([attachment])
     expect(result.userMessage.attachments).toEqual([attachment])
     expect(database.listBriefingMessages()[0]?.attachments).toEqual([attachment])
     expect(result.assistantMessage.attachments).toEqual([])
@@ -154,12 +164,48 @@ describe('Work Assistant task handoff', () => {
       actions: [],
       createdAt: now
     })
-    const service = new MorningBriefingService(database, {} as DailyBriefingService, runtime)
+    const agent = new TestWorkAssistantAgent(() => ({ content: '已准备新的 Action。', proposals: [], linkedRunId: null }))
+    const service = new MorningBriefingService(
+      database, {} as DailyBriefingService, runtime, undefined, undefined, undefined, agent
+    )
 
     const result = await service.ask(null, '创建一个 Fuddy 的 Agent Run')
 
     expect(result.userMessage.linkedRunId).toBeNull()
     expect(result.assistantMessage.linkedRunId).toBeNull()
+    database.close()
+  })
+
+  it('passes “跑一次每日总结” directly to the Agent and persists its ask_user buttons', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'work-assistant-briefing-confirm-'))
+    directories.push(directory)
+    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const runtime = new OfflineRuntime()
+    const agent = new TestWorkAssistantAgent((input) => ({
+      content: '可以，我先请你确认。',
+      linkedRunId: null,
+      proposals: [{
+        id: 'confirm-generate-briefing',
+        title: '运行一次每日总结',
+        description: '巡检全部项目并生成新的每日简报。',
+        status: 'pending',
+        context: null,
+        options: [{ id: 'generate', label: '开始生成', style: 'primary', capability: 'briefing.generate', payload: {} }],
+        acceptedOptionId: null,
+        createdAt: '2026-08-10T10:00:00.000Z',
+        resolvedAt: null
+      }]
+    }))
+    const service = new MorningBriefingService(
+      database, {} as DailyBriefingService, runtime, undefined, undefined, undefined, agent
+    )
+
+    const result = await service.ask(null, '跑一次每日总结')
+
+    expect(agent.inputs[0].question).toBe('跑一次每日总结')
+    expect(result.assistantMessage.actions).toEqual([
+      expect.objectContaining({ title: '运行一次每日总结', status: 'pending' })
+    ])
     database.close()
   })
 })

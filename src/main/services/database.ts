@@ -1675,6 +1675,13 @@ export class AppDatabase {
     return this.enqueueCompanionEvent('snapshot.created', 'snapshot', 'current', snapshot)
   }
 
+  enqueueCompanionPairingSnapshot(): CompanionOutboxEvent {
+    return this.companionTransaction(() => {
+      this.database.prepare('DELETE FROM companion_sync_outbox WHERE published_at IS NULL').run()
+      return this.enqueueCompanionSnapshot()
+    })
+  }
+
   listPendingCompanionEvents(limit = 100): CompanionOutboxEvent[] {
     const rows = this.database.prepare(`
       SELECT * FROM companion_sync_outbox

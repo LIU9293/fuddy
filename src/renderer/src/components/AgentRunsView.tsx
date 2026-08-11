@@ -14,7 +14,6 @@ import {
   Ellipsis,
   LoaderCircle,
   MessageSquare,
-  PanelLeft,
   PanelRight,
   Paperclip,
   Pencil,
@@ -67,15 +66,6 @@ function clampAgentRunInfoWidth(value: number): number {
 function initialAgentRunInfoWidth(): number {
   const stored = Number.parseFloat(window.localStorage.getItem(agentRunInfoWidthStorageKey) ?? '')
   return Number.isFinite(stored) ? clampAgentRunInfoWidth(stored) : defaultAgentRunInfoWidth
-}
-
-function runTime(run: AgentRun): string {
-  const value = run.updatedAt || run.startedAt || run.createdAt
-  const diffMinutes = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 60_000))
-  if (diffMinutes < 1) return '刚刚'
-  if (diffMinutes < 60) return `${diffMinutes} 分钟前`
-  if (diffMinutes < 1_440) return `${Math.round(diffMinutes / 60)} 小时前`
-  return `${Math.round(diffMinutes / 1_440)} 天前`
 }
 
 function formatTimestamp(value: string): string {
@@ -396,7 +386,6 @@ function ToolCallItem({ tool }: { tool: ToolActivity }): React.JSX.Element {
         onClick={() => setExpanded((current) => !current)}
         title={toolSummary(tool.detail)}
       >
-        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <span className="agent-tool-call-icon"><Wrench size={12} /></span>
         <strong>{tool.name}</strong>
         <span className="agent-tool-call-preview">{toolSummary(tool.detail)}</span>
@@ -424,7 +413,6 @@ function ToolCallGroup({ tools }: { tools: ToolActivity[] }): React.JSX.Element 
         onClick={() => setExpanded((current) => !current)}
         title={toolSummary(latest.detail)}
       >
-        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <span className="agent-tool-call-icon"><Wrench size={12} /></span>
         <strong>{latest.name}</strong>
         <span className="agent-tool-call-preview">{toolSummary(latest.detail)}</span>
@@ -512,6 +500,71 @@ export function applyAgentLiveUpdate(activities: LiveActivity[], update: AgentRu
     return completeLiveActivities(activities)
   }
   return activities
+}
+
+export type AgentRunLiveState = {
+  busy: boolean
+  streamingText: string
+  activities: LiveActivity[]
+  pendingApproval: AgentApprovalRequest | null
+  visibleThinkingIndex: number
+}
+
+type QueuedRunMessage = {
+  requestId: string
+  content: string
+  attachments: WorkAssistantImageAttachment[]
+}
+
+function emptyAgentRunLiveState(busy = false): AgentRunLiveState {
+  return {
+    busy,
+    streamingText: '',
+    activities: [],
+    pendingApproval: null,
+    visibleThinkingIndex: 0
+  }
+}
+
+export function applyScopedAgentLiveUpdate(
+  state: AgentRunLiveState,
+  update: AgentRunStreamUpdate
+): AgentRunLiveState {
+  let streamingText = state.streamingText
+  let activities = state.activities
+  let visibleThinkingIndex = state.visibleThinkingIndex
+
+  if (update.type === 'message_delta') streamingText += update.delta
+  if (update.type === 'tool' && streamingText.trim()) {
+    const content = streamingText.trim()
+    const segmentId = `visible-thinking-${visibleThinkingIndex++}`
+    streamingText = ''
+    activities = applyAgentLiveUpdate(
+      applyAgentLiveUpdate(activities, { type: 'reasoning_delta', segmentId, delta: content }),
+      update
+    ).slice(-16)
+  } else {
+    activities = applyAgentLiveUpdate(activities, update).slice(-16)
+  }
+
+  return {
+    ...state,
+    streamingText,
+    activities,
+    visibleThinkingIndex,
+    pendingApproval: update.type === 'approval' ? update.request : state.pendingApproval
+  }
+}
+
+export function applyAgentLiveUpdateForRun(
+  states: Record<string, AgentRunLiveState>,
+  runId: string,
+  update: AgentRunStreamUpdate
+): Record<string, AgentRunLiveState> {
+  return {
+    ...states,
+    [runId]: applyScopedAgentLiveUpdate(states[runId] ?? emptyAgentRunLiveState(true), update)
+  }
 }
 
 export function groupLiveActivities(activities: LiveActivity[]): LiveActivityBlock[] {
@@ -649,58 +702,6 @@ function MessageAttachments({ metadata }: { metadata: Record<string, unknown> | 
   )
 }
 
-export function AgentRunsSidebar({
-  runs,
-  projects,
-  selectedRunId,
-  onSelectRun,
-  onNewRun,
-  onBack,
-  onCollapse
-}: {
-  runs: AgentRun[]
-  projects: Project[]
-  selectedRunId: string | null
-  onSelectRun: (runId: string) => void
-  onNewRun: () => void
-  onBack: () => void
-  onCollapse: () => void
-}): React.JSX.Element {
-  return (
-    <>
-      <div className="agent-runs-sidebar-header">
-        <button onClick={onBack} aria-label="返回 Agent Runs 概览"><ArrowLeft size={17} /></button>
-        <strong>Agent Runs</strong>
-        <button onClick={onCollapse} aria-label="收起侧边栏"><PanelLeft size={17} /></button>
-      </div>
-      <button className="agent-runs-sidebar-new" onClick={onNewRun}><Plus size={15} /> 新建 Run</button>
-      <div className="agent-runs-sidebar-label"><span>Sessions</span><small>{runs.length}</small></div>
-      <nav className="agent-runs-sidebar-list" aria-label="Agent Run Sessions">
-        {runs.map((run) => {
-          const project = projects.find((item) => item.id === run.projectId)
-          return (
-            <button
-              className={`${run.id === selectedRunId ? 'is-active' : ''} ${runIsActive(run) ? 'has-running-status' : ''}`.trim()}
-              key={run.id}
-              onClick={() => onSelectRun(run.id)}
-            >
-              {runIsActive(run) && <span className="run-status run-running"><LoaderCircle size={15} className="spin" /></span>}
-              <span className="agent-runs-sidebar-copy">
-                <strong>{run.title}</strong>
-                <small className="agent-run-project-meta">
-                  {project && <ProjectIcon project={project} className="is-agent-run-meta" />}
-                  <span>{runTime(run)} · {project?.name ?? '共享'} · {run.provider}</span>
-                </small>
-              </span>
-            </button>
-          )
-        })}
-        {runs.length === 0 && <p>还没有 Agent Run</p>}
-      </nav>
-    </>
-  )
-}
-
 export function AgentRunsView({
   runs,
   projects,
@@ -728,16 +729,13 @@ export function AgentRunsView({
 }): React.JSX.Element {
   const [detail, setDetail] = useState<AgentRunDetail | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [streamingText, setStreamingText] = useState('')
-  const [liveActivities, setLiveActivities] = useState<LiveActivity[]>([])
-  const [pendingApproval, setPendingApproval] = useState<AgentApprovalRequest | null>(null)
+  const [creatingBusy, setCreatingBusy] = useState(false)
+  const [liveStateByRunId, setLiveStateByRunId] = useState<Record<string, AgentRunLiveState>>({})
+  const [queuedMessagesByRunId, setQueuedMessagesByRunId] = useState<Record<string, QueuedRunMessage[]>>({})
   const [reply, setReply] = useState('')
   const [replyAttachments, setReplyAttachments] = useState<WorkAssistantImageAttachment[]>([])
   const [replyAttachmentError, setReplyAttachmentError] = useState<string | null>(null)
   const [renamingTitle, setRenamingTitle] = useState<string | null>(null)
-  const [listRenameTarget, setListRenameTarget] = useState<AgentRun | null>(null)
-  const [listRenameTitle, setListRenameTitle] = useState('')
   const [sessionActionBusy, setSessionActionBusy] = useState(false)
   const [infoSidebarOpen, setInfoSidebarOpen] = useState(false)
   const [infoSidebarWidth, setInfoSidebarWidth] = useState(initialAgentRunInfoWidth)
@@ -753,12 +751,21 @@ export function AgentRunsView({
   const [title, setTitle] = useState('')
   const threadEndRef = useRef<HTMLDivElement | null>(null)
   const previousCreatingRef = useRef(creating)
-  const streamingTextRef = useRef('')
-  const visibleThinkingIndexRef = useRef(0)
+  const selectedRunIdRef = useRef(selectedRunId)
+  const activeRequestIdByRunRef = useRef(new Map<string, string>())
   const persistedDraftPromptRef = useRef<{ runId: string; prompt: string } | null>(null)
   const infoSidebarResizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null)
   const infoSidebarRunIdRef = useRef<string | null>(null)
   const selectedRunUpdatedAt = runs.find((run) => run.id === selectedRunId)?.updatedAt
+  selectedRunIdRef.current = selectedRunId
+
+  const visibleLiveState = detail ? liveStateByRunId[detail.run.id] : undefined
+  const runBusy = visibleLiveState?.busy ?? false
+  const queuedMessages = detail ? queuedMessagesByRunId[detail.run.id] ?? [] : []
+  const runActive = Boolean(detail && (runBusy || runIsActive(detail.run) || queuedMessages.length > 0))
+  const streamingText = visibleLiveState?.streamingText ?? ''
+  const liveActivities = visibleLiveState?.activities ?? []
+  const pendingApproval = visibleLiveState?.pendingApproval ?? null
 
   useEffect(() => {
     window.localStorage.setItem(agentRunInfoWidthStorageKey, String(infoSidebarWidth))
@@ -818,10 +825,6 @@ export function AgentRunsView({
       setInfoSidebarTab('info')
       setSelectedArtifactId(null)
     }
-    setStreamingText('')
-    streamingTextRef.current = ''
-    setLiveActivities([])
-    setPendingApproval(null)
     setRenamingTitle(null)
     void window.projectAgent.getAgentRun(selectedRunId).then((nextDetail) => {
       if (!cancelled) {
@@ -889,32 +892,71 @@ export function AgentRunsView({
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ block: 'end' })
-  }, [detail?.messages.length, busy, liveActivities, streamingText])
+  }, [detail?.messages.length, runBusy, liveActivities, streamingText])
 
-  function handleStream(update: AgentRunStreamUpdate): void {
-    if (update.type === 'message_delta') {
-      streamingTextRef.current += update.delta
-      setStreamingText(streamingTextRef.current)
+  function appendOptimisticMessage(
+    runId: string,
+    requestId: string,
+    content: string,
+    attachments: WorkAssistantImageAttachment[]
+  ): void {
+    setDetail((current) => {
+      if (current?.run.id !== runId || current.messages.some((message) => message.id === requestId)) return current
+      return {
+        ...current,
+        messages: [...current.messages, {
+          id: requestId,
+          runId,
+          role: 'user',
+          content,
+          eventType: null,
+          toolName: null,
+          metadata: { attachments: attachments.map(({ id, name, mimeType }) => ({ id, name, mimeType })) },
+          createdAt: new Date().toISOString()
+        }]
+      }
+    })
+  }
+
+  function removeQueuedMessage(runId: string, requestId: string): void {
+    setQueuedMessagesByRunId((current) => ({
+      ...current,
+      [runId]: (current[runId] ?? []).filter((message) => message.requestId !== requestId)
+    }))
+  }
+
+  function handleStream(
+    runId: string,
+    requestId: string,
+    content: string,
+    attachments: WorkAssistantImageAttachment[],
+    update: AgentRunStreamUpdate
+  ): void {
+    if (update.type === 'status' && update.status === 'queued') return
+    if (update.type === 'status' && update.status === 'running') {
+      activeRequestIdByRunRef.current.set(runId, requestId)
+      removeQueuedMessage(runId, requestId)
+      appendOptimisticMessage(runId, requestId, content, attachments)
+      setLiveStateByRunId((current) => ({ ...current, [runId]: emptyAgentRunLiveState(true) }))
+      void onRefresh()
     }
-    if (update.type === 'tool' && streamingTextRef.current.trim()) {
-      const content = streamingTextRef.current.trim()
-      const segmentId = `visible-thinking-${visibleThinkingIndexRef.current++}`
-      streamingTextRef.current = ''
-      setStreamingText('')
-      setLiveActivities((current) => applyAgentLiveUpdate(
-        applyAgentLiveUpdate(current, { type: 'reasoning_delta', segmentId, delta: content }),
-        update
-      ).slice(-16))
-    } else {
-      setLiveActivities((current) => applyAgentLiveUpdate(current, update).slice(-16))
+    if (activeRequestIdByRunRef.current.get(runId) !== requestId) return
+    setLiveStateByRunId((current) => applyAgentLiveUpdateForRun(current, runId, update))
+    if (update.type === 'status') {
+      setDetail((current) => current?.run.id === runId
+        ? { ...current, run: { ...current.run, status: update.status, updatedAt: new Date().toISOString() } }
+        : current)
     }
-    if (update.type === 'approval') setPendingApproval(update.request)
   }
 
   async function respondToApproval(decision: 'approve' | 'deny'): Promise<void> {
-    if (!pendingApproval) return
+    if (!detail || !pendingApproval) return
+    const runId = detail.run.id
     const request = pendingApproval
-    setPendingApproval(null)
+    setLiveStateByRunId((current) => ({
+      ...current,
+      [runId]: { ...(current[runId] ?? emptyAgentRunLiveState(true)), pendingApproval: null }
+    }))
     try {
       await window.projectAgent.respondAgentApproval({ requestId: request.id, decision })
       onNotice(decision === 'approve' ? '已批准这一次操作。' : '已拒绝这一次操作，Agent 会继续尝试安全路径。')
@@ -929,10 +971,6 @@ export function AgentRunsView({
 
   function resetNewRun(): void {
     setDetail(null)
-    setStreamingText('')
-    streamingTextRef.current = ''
-    setLiveActivities([])
-    setPendingApproval(null)
     setProvider(projectDefaultAgent(projectId))
     setMilestoneValue('')
     setTitle('')
@@ -945,9 +983,9 @@ export function AgentRunsView({
   }, [creating])
 
   async function createRun(): Promise<void> {
-    if (!title.trim() || busy) return
+    if (!title.trim() || creatingBusy) return
     const [goalId, milestoneId] = milestoneValue ? milestoneValue.split(':') : [null, null]
-    setBusy(true)
+    setCreatingBusy(true)
     try {
       const result = await window.projectAgent.createAgentRunDraft({
         projectId,
@@ -963,52 +1001,69 @@ export function AgentRunsView({
     } catch (error) {
       onNotice(error instanceof Error ? error.message : 'Agent Run 创建失败。')
     } finally {
-      setBusy(false)
+      setCreatingBusy(false)
     }
   }
 
   async function sendReply(): Promise<void> {
-    if (!detail || (!reply.trim() && replyAttachments.length === 0) || busy) return
+    if (!detail || (!reply.trim() && replyAttachments.length === 0)) return
+    const runId = detail.run.id
+    const requestId = crypto.randomUUID()
     const question = reply.trim() || '请查看附件并分析其中的内容。'
     const attachments = replyAttachments
+    const queueBehindActiveTurn = runActive
     setReply('')
     setReplyAttachments([])
     setReplyAttachmentError(null)
-    setBusy(true)
-    setStreamingText('')
-    streamingTextRef.current = ''
-    visibleThinkingIndexRef.current = 0
-    setLiveActivities([])
-    setDetail((current) => current ? {
-      ...current,
-      messages: [...current.messages, {
-        id: `optimistic-${Date.now()}`,
-        runId: current.run.id,
-        role: 'user',
-        content: question,
-        eventType: null,
-        toolName: null,
-        metadata: { attachments: attachments.map(({ id, name, mimeType }) => ({ id, name, mimeType })) },
-        createdAt: new Date().toISOString()
-      }]
-    } : current)
+    if (queueBehindActiveTurn) {
+      setQueuedMessagesByRunId((current) => ({
+        ...current,
+        [runId]: [...(current[runId] ?? []), { requestId, content: question, attachments }]
+      }))
+    } else {
+      activeRequestIdByRunRef.current.set(runId, requestId)
+      setLiveStateByRunId((current) => ({ ...current, [runId]: emptyAgentRunLiveState(true) }))
+      appendOptimisticMessage(runId, requestId, question, attachments)
+    }
     try {
       const updated = await window.projectAgent.sendAgentRunMessage({
-        requestId: crypto.randomUUID(),
-        runId: detail.run.id,
+        requestId,
+        runId,
         prompt: question,
         attachments
-      }, handleStream)
-      setDetail(updated)
+      }, (update) => handleStream(runId, requestId, question, attachments, update))
+      if (selectedRunIdRef.current === runId && activeRequestIdByRunRef.current.get(runId) === requestId) {
+        setDetail(updated)
+      }
       await onRefresh()
     } catch (error) {
+      removeQueuedMessage(runId, requestId)
       onNotice(error instanceof Error ? error.message : '消息发送失败。')
-      setDetail(await window.projectAgent.getAgentRun(detail.run.id))
+      const failedDetail = await window.projectAgent.getAgentRun(runId)
+      if (selectedRunIdRef.current === runId && activeRequestIdByRunRef.current.get(runId) === requestId) {
+        setDetail(failedDetail)
+      }
     } finally {
-      setBusy(false)
-      setStreamingText('')
-      streamingTextRef.current = ''
-      setLiveActivities([])
+      if (activeRequestIdByRunRef.current.get(runId) === requestId) {
+        activeRequestIdByRunRef.current.delete(runId)
+        setLiveStateByRunId((current) => {
+          const next = { ...current }
+          delete next[runId]
+          return next
+        })
+      }
+    }
+  }
+
+  async function stopCurrentReply(): Promise<void> {
+    if (!detail || !runActive) return
+    const runId = detail.run.id
+    try {
+      const updated = await window.projectAgent.stopAgentRunMessage(runId)
+      if (selectedRunIdRef.current === runId && !activeRequestIdByRunRef.current.has(runId)) setDetail(updated)
+      await onRefresh()
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : '停止当前回复失败。')
     }
   }
 
@@ -1050,92 +1105,15 @@ export function AgentRunsView({
     }
   }
 
-  async function renameListedSession(): Promise<void> {
-    if (!listRenameTarget || !listRenameTitle.trim() || sessionActionBusy) return
-    setSessionActionBusy(true)
-    try {
-      await window.projectAgent.renameAgentRun(listRenameTarget.id, listRenameTitle.trim())
-      setListRenameTarget(null)
-      setListRenameTitle('')
-      await onRefresh()
-      onNotice('Session 已重命名。')
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Session 重命名失败。')
-    } finally {
-      setSessionActionBusy(false)
-    }
-  }
-
-  async function archiveListedSession(run: AgentRun): Promise<void> {
-    if (sessionActionBusy || runIsActive(run)) return
-    setSessionActionBusy(true)
-    try {
-      await window.projectAgent.archiveAgentRun(run.id)
-      await onRefresh()
-      onNotice('Session 已归档。')
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Session 归档失败。')
-    } finally {
-      setSessionActionBusy(false)
-    }
-  }
-
   if (!selectedRunId && !creating) {
     return (
-      <section className="agent-runs-view agent-runs-overview">
-        <div className="agent-runs-toolbar">
-          <div><strong>{runs.length} 个 Session</strong><span>选择一个 Session，在完整聊天视图中继续工作。</span></div>
+      <section className="agent-runs-view agent-run-chat-view">
+        <header className="agent-run-page-header"><div><strong>Agent Runs</strong></div></header>
+        <div className="agent-runs-empty">
+          <MessageSquare size={28} />
+          <strong>{runs.length === 0 ? '还没有 Agent Run' : '选择一个 Agent Run'}</strong>
           <button className="primary-small-button" onClick={() => onCreatingChange(true)}><Plus size={14} /> 新建 Run</button>
         </div>
-        <div className="agent-session-list">
-          {runs.length === 0 ? (
-            <div className="agent-runs-empty">
-              <MessageSquare size={28} />
-              <strong>还没有 Agent Run</strong>
-              <span>选择项目和 Agent，创建一个可以持续对话的 Session。</span>
-              <button className="primary-small-button" onClick={() => onCreatingChange(true)}><Plus size={14} /> 新建第一个 Run</button>
-            </div>
-          ) : runs.map((run) => {
-            const project = projects.find((item) => item.id === run.projectId)
-            const goal = goals.find((item) => item.id === run.goalId)
-            const milestone = goal?.milestones.find((item) => item.id === run.milestoneId)
-            return (
-              <div className={`agent-session-row ${runIsActive(run) ? 'has-running-status' : ''}`} key={run.id}>
-                <button className="agent-session-row-open" type="button" onClick={() => onSelectRun(run.id)}>
-                  {runIsActive(run) && <span className="run-status run-running"><LoaderCircle size={15} className="spin" /></span>}
-                  <span className="agent-session-main">
-                    <span className="agent-session-title"><strong>{run.title}</strong></span>
-                    <span className="agent-run-project-meta">
-                      {project && <ProjectIcon project={project} className="is-agent-run-meta" />}
-                      <span>{project?.name ?? '共享'} · {run.provider}</span>
-                    </span>
-                    {milestone && <small>{milestone.title}</small>}
-                  </span>
-                  <span className="agent-session-summary">{run.summary}</span>
-                  <span className="agent-session-time">{runTime(run)}</span>
-                </button>
-                <AgentRunActionsMenu
-                  disabled={sessionActionBusy}
-                  archiveDisabled={runIsActive(run)}
-                  onRename={() => { setListRenameTarget(run); setListRenameTitle(run.title) }}
-                  onArchive={() => void archiveListedSession(run)}
-                />
-              </div>
-            )
-          })}
-        </div>
-        {listRenameTarget && (
-          <div className="agent-session-rename-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target && !sessionActionBusy) setListRenameTarget(null) }}>
-            <form className="agent-session-rename-dialog" onSubmit={(event) => { event.preventDefault(); void renameListedSession() }}>
-              <strong>Rename Session</strong>
-              <input autoFocus value={listRenameTitle} maxLength={200} onChange={(event) => setListRenameTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape' && !sessionActionBusy) setListRenameTarget(null) }} aria-label="Session 新标题" />
-              <div>
-                <button type="button" disabled={sessionActionBusy} onClick={() => setListRenameTarget(null)}>取消</button>
-                <button type="submit" disabled={!listRenameTitle.trim() || sessionActionBusy}>保存</button>
-              </div>
-            </form>
-          </div>
-        )}
       </section>
     )
   }
@@ -1144,7 +1122,7 @@ export function AgentRunsView({
     return (
       <section className="agent-runs-view agent-run-chat-view">
         <header className="agent-run-page-header">
-          <div><strong>创建 Agent Session</strong><small>配置 Session，创建后进入聊天</small></div>
+          <div><strong>创建 Agent Session</strong></div>
         </header>
         <div className="agent-run-create-shell">
           <div className="agent-run-create-form">
@@ -1152,9 +1130,9 @@ export function AgentRunsView({
             <label><span>Agent</span><SelectMenu value={provider} options={agentOptions} onChange={(value) => setProvider(value as AgentRunProvider)} ariaLabel="执行 Agent" /></label>
             <label><span>关联 Milestone（可选）</span><SelectMenu value={milestoneValue} options={[{ value: '', label: '不关联 Milestone' }, ...milestoneOptions]} onChange={setMilestoneValue} ariaLabel="关联 Milestone" /></label>
             <label><span>Session 标题</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：分析 Roombase 入驻阻塞" /></label>
-            <button className="run-create-submit" onClick={() => void createRun()} disabled={!title.trim() || busy}>
-              {busy ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}
-              {busy ? '正在创建…' : '创建 Session'}
+            <button className="run-create-submit" onClick={() => void createRun()} disabled={!title.trim() || creatingBusy}>
+              {creatingBusy ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}
+              {creatingBusy ? '正在创建…' : '创建 Session'}
             </button>
           </div>
         </div>
@@ -1166,7 +1144,7 @@ export function AgentRunsView({
   const detailGoal = detail?.run.goalId ? goals.find((goal) => goal.id === detail.run.goalId) : null
   const detailMilestone = detailGoal?.milestones.find((milestone) => milestone.id === detail?.run.milestoneId)
 
-  if (loadingDetail || !detail) {
+  if (loadingDetail || !detail || detail.run.id !== selectedRunId) {
     return <section className="agent-runs-view agent-run-chat-view"><div className="agent-run-loading"><LoaderCircle size={20} className="spin" /> 正在读取 Session…</div></section>
   }
 
@@ -1268,7 +1246,7 @@ export function AgentRunsView({
               </div>
             </article>
           )})}
-          {busy && (
+          {runBusy && (
             <article className="chat-turn is-assistant is-pending">
               <div className="chat-turn-content">
                 <div className="chat-turn-meta"><strong>{detail.run.provider}</strong><time>正在回复</time></div>
@@ -1280,12 +1258,24 @@ export function AgentRunsView({
         </div>
       </section>
       <footer className="agent-run-composer-dock">
+        {queuedMessages.length > 0 && (
+          <div className="agent-run-message-queue" aria-label="已排队消息">
+            {queuedMessages.map((message) => (
+              <div className="agent-run-queued-message" key={message.requestId}>
+                <span>{message.content}</span>
+                <small>{message.attachments.length > 0 ? `${message.attachments.length} 个附件 · ` : ''}排队中</small>
+              </div>
+            ))}
+          </div>
+        )}
         <ChatComposer
           value={reply}
           onChange={setReply}
           onSubmit={sendReply}
           placeholder={`继续这个 ${detail.run.provider} Session…`}
-          busy={busy}
+          busy={runActive}
+          allowSubmitWhileBusy
+          onStop={stopCurrentReply}
           attachments={replyAttachments}
           attachmentError={replyAttachmentError}
           onAttachmentsSelected={addReplyAttachments}
@@ -1344,7 +1334,6 @@ export function AgentRunsView({
 
 function RunLiveActivity({
   activities,
-  streamingText,
   approval,
   onApproval
 }: {
@@ -1361,21 +1350,11 @@ function RunLiveActivity({
         <button onClick={() => void onApproval('deny')}>拒绝</button>
         <button className="is-primary" onClick={() => void onApproval('approve')}>仅批准这次</button>
       </div>}
-      {groupLiveActivities(activities).map((block) => block.kind === 'thinking'
-        ? <ThinkingMarker key={block.value.id} thinking={block.value} />
-        : <ToolCallGroup key={`tool-group-${block.values[0].id}`} tools={block.values} />)}
-      {streamingText && <ThinkingMarker thinking={{
-        id: 'thinking-visible-stream',
-        segmentId: null,
-        content: streamingText,
-        status: 'running'
-      }} />}
-      {!approval && !streamingText && activities.length === 0 && <ThinkingMarker thinking={{
-        id: 'thinking-idle',
-        segmentId: null,
-        content: '',
-        status: 'running'
-      }} />}
+      {groupLiveActivities(activities)
+        .filter((block) => block.kind === 'tool-group')
+        .map((block) => block.kind === 'tool-group'
+          ? <ToolCallGroup key={`tool-group-${block.values[0].id}`} tools={block.values} />
+          : null)}
     </div>
   )
 }

@@ -3,13 +3,20 @@ import type {
   CodingAgentModelCatalog,
   CodingAgentModelCatalogEntry,
   CodingAgentModelOption,
-  CodingAgentProvider
+  CodingAgentProvider,
+  CodingAgentReasoningEffortOption
 } from '../../shared/contracts'
 import { resolveCliBinary } from './cli-executables'
 
 type JsonRecord = Record<string, unknown>
 
 const discoveryTimeoutMs = 15_000
+
+interface DiscoveredModels {
+  models: CodingAgentModelOption[]
+  defaultReasoningEfforts: CodingAgentReasoningEffortOption[]
+  defaultReasoningEffort: string | null
+}
 
 function textValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -29,6 +36,33 @@ function uniqueModels(models: CodingAgentModelOption[]): CodingAgentModelOption[
   })
 }
 
+function uniqueReasoningEfforts(efforts: CodingAgentReasoningEffortOption[]): CodingAgentReasoningEffortOption[] {
+  const seen = new Set<string>()
+  return efforts.filter((effort) => {
+    if (!effort.id || seen.has(effort.id)) return false
+    seen.add(effort.id)
+    return true
+  })
+}
+
+function reasoningEffortsFromStrings(values: unknown): CodingAgentReasoningEffortOption[] {
+  if (!Array.isArray(values)) return []
+  return uniqueReasoningEfforts(values.flatMap((value) => {
+    const id = textValue(value)
+    return id ? [{ id, label: id, description: null }] : []
+  }))
+}
+
+function parseCodexReasoningEfforts(values: unknown): CodingAgentReasoningEffortOption[] {
+  if (!Array.isArray(values)) return []
+  return uniqueReasoningEfforts(values.flatMap((value) => {
+    if (!value || typeof value !== 'object') return []
+    const record = value as JsonRecord
+    const id = textValue(record.reasoningEffort) || textValue(record.id)
+    return id ? [{ id, label: id, description: textValue(record.description) || null }] : []
+  }))
+}
+
 export function parseCodexModels(result: unknown): CodingAgentModelOption[] {
   if (!result || typeof result !== 'object') return []
   const data = (result as JsonRecord).data
@@ -41,8 +75,10 @@ export function parseCodexModels(result: unknown): CodingAgentModelOption[] {
     return [{
       id,
       label: textValue(record.displayName) || id,
-      description: null,
-      isDefault: record.isDefault === true
+      description: textValue(record.description) || null,
+      isDefault: record.isDefault === true,
+      reasoningEfforts: parseCodexReasoningEfforts(record.supportedReasoningEfforts),
+      defaultReasoningEffort: textValue(record.defaultReasoningEffort) || null
     }]
   }))
 }
@@ -51,11 +87,53 @@ export function parseOpenCodeModels(output: string): CodingAgentModelOption[] {
   return uniqueModels(output.split(/\r?\n/).flatMap((line) => {
     const id = line.trim()
     if (!id || id.startsWith('[') || !id.includes('/')) return []
-    return [{ id, label: id, description: null, isDefault: false }]
+    return [{
+      id,
+      label: id,
+      description: null,
+      isDefault: false,
+      reasoningEfforts: [],
+      defaultReasoningEffort: null
+    }]
   }))
 }
 
-function listCodexModels(): Promise<CodingAgentModelOption[]> {
+export function parseOpenCodeVerboseModels(output: string): CodingAgentModelOption[] {
+  const models: CodingAgentModelOption[] = []
+  let currentId = ''
+  let jsonBuffer = ''
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!jsonBuffer && line && !line.startsWith('{') && !line.includes(' ') && line.includes('/')) {
+      currentId = line
+      continue
+    }
+    if (!jsonBuffer && line === '{') jsonBuffer = `${rawLine}\n`
+    else if (jsonBuffer) jsonBuffer += `${rawLine}\n`
+    if (!jsonBuffer || !currentId) continue
+    try {
+      const record = JSON.parse(jsonBuffer) as JsonRecord
+      const variants = record.variants && typeof record.variants === 'object'
+        ? Object.keys(record.variants as JsonRecord)
+        : []
+      models.push({
+        id: currentId,
+        label: textValue(record.name) || currentId,
+        description: null,
+        isDefault: false,
+        reasoningEfforts: uniqueReasoningEfforts(variants.map((id) => ({ id, label: id, description: null }))),
+        defaultReasoningEffort: null
+      })
+      currentId = ''
+      jsonBuffer = ''
+    } catch {
+      // The pretty-printed JSON object is not complete yet.
+    }
+  }
+  return uniqueModels(models)
+}
+
+function listCodexModels(): Promise<DiscoveredModels> {
   return new Promise((resolve, reject) => {
     const child = spawn(resolveCliBinary('codex'), ['app-server', '--stdio'], {
       env: { ...process.env },
@@ -76,7 +154,12 @@ function listCodexModels(): Promise<CodingAgentModelOption[]> {
       settled = true
       clearTimeout(timer)
       child.kill()
-      resolve(models)
+      const defaultModel = models.find((model) => model.isDefault)
+      resolve({
+        models,
+        defaultReasoningEfforts: defaultModel?.reasoningEfforts ?? [],
+        defaultReasoningEffort: defaultModel?.defaultReasoningEffort ?? null
+      })
     }
     const finishError = (error: Error): void => {
       if (settled) return
@@ -141,7 +224,7 @@ function listCodexModels(): Promise<CodingAgentModelOption[]> {
   })
 }
 
-async function listClaudeModels(): Promise<CodingAgentModelOption[]> {
+async function listClaudeModels(): Promise<DiscoveredModels> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk')
   const stream = query({
     prompt: '',
@@ -160,25 +243,30 @@ async function listClaudeModels(): Promise<CodingAgentModelOption[]> {
         timer = setTimeout(() => reject(new Error('Claude Code 模型读取超时')), discoveryTimeoutMs)
       })
     ])
-    return uniqueModels(models.flatMap((model) => {
+    const defaultModel = models.find((model) => model.value.trim() === 'default')
+    const defaultReasoningEfforts = reasoningEffortsFromStrings(defaultModel?.supportedEffortLevels)
+    const discoveredModels = uniqueModels(models.flatMap((model) => {
       const id = model.value.trim()
       if (!id || id === 'default') return []
       return [{
         id,
         label: model.displayName.trim() || id,
         description: model.description.trim() || null,
-        isDefault: false
+        isDefault: false,
+        reasoningEfforts: model.supportsEffort === false ? [] : reasoningEffortsFromStrings(model.supportedEffortLevels),
+        defaultReasoningEffort: null
       }]
     }))
+    return { models: discoveredModels, defaultReasoningEfforts, defaultReasoningEffort: null }
   } finally {
     if (timer) clearTimeout(timer)
     stream.close()
   }
 }
 
-function listOpenCodeModels(): Promise<CodingAgentModelOption[]> {
+function listOpenCodeModels(): Promise<DiscoveredModels> {
   return new Promise((resolve, reject) => {
-    execFile(resolveCliBinary('opencode'), ['models'], {
+    execFile(resolveCliBinary('opencode'), ['models', '--verbose'], {
       encoding: 'utf8',
       env: { ...process.env },
       timeout: discoveryTimeoutMs,
@@ -188,25 +276,36 @@ function listOpenCodeModels(): Promise<CodingAgentModelOption[]> {
         reject(new Error(stderr.trim() || error.message))
         return
       }
-      resolve(parseOpenCodeModels(stdout))
+      const models = parseOpenCodeVerboseModels(stdout)
+      resolve({
+        models: models.length > 0 ? models : parseOpenCodeModels(stdout),
+        defaultReasoningEfforts: [],
+        defaultReasoningEffort: null
+      })
     })
   })
 }
 
 async function discover(provider: CodingAgentProvider): Promise<CodingAgentModelCatalogEntry> {
   try {
-    const models = provider === 'codex'
+    const discovered = provider === 'codex'
       ? await listCodexModels()
       : provider === 'claude'
         ? await listClaudeModels()
         : await listOpenCodeModels()
     return {
       provider,
-      models,
-      error: models.length > 0 ? null : '当前 Agent 没有返回可选模型'
+      ...discovered,
+      error: discovered.models.length > 0 ? null : '当前 Agent 没有返回可选模型'
     }
   } catch (error) {
-    return { provider, models: [], error: errorMessage(error) }
+    return {
+      provider,
+      models: [],
+      defaultReasoningEfforts: [],
+      defaultReasoningEffort: null,
+      error: errorMessage(error)
+    }
   }
 }
 

@@ -96,4 +96,17 @@ describe('companion sync persistence', () => {
     })
     database.close()
   })
+
+  it('replaces unsent history with one authoritative pairing snapshot', () => {
+    const database = createDatabase()
+    const project = database.listProjects()[0]
+    database.updateProject({ ...project, focus: 'Pending before pairing' })
+    expect(database.countPendingCompanionEvents()).toBe(1)
+
+    const snapshot = database.enqueueCompanionPairingSnapshot()
+    const pending = database.listPendingCompanionEvents()
+    expect(pending).toHaveLength(1)
+    expect(pending[0]).toMatchObject({ eventId: snapshot.eventId, type: 'snapshot.created' })
+    database.close()
+  })
 })
