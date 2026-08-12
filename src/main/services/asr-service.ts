@@ -50,7 +50,52 @@ function decodeWaveDataUrl(dataUrl: string): Buffer {
     throw new Error('语音文件不是有效的 WAV。')
   }
   if (buffer.length > maxCloudAudioBytes) throw new Error('单段语音不能超过 25 MB。')
+  validateWaveContainsSpeech(buffer)
   return buffer
+}
+
+function validateWaveContainsSpeech(buffer: Buffer): void {
+  let format: { audioFormat: number; channels: number; sampleRate: number; bitsPerSample: number } | null = null
+  let data: Buffer | null = null
+  for (let offset = 12; offset + 8 <= buffer.length;) {
+    const id = buffer.toString('ascii', offset, offset + 4)
+    const size = buffer.readUInt32LE(offset + 4)
+    const start = offset + 8
+    const end = start + size
+    if (end > buffer.length) throw new Error('语音 WAV 区块长度无效。')
+    if (id === 'fmt ' && size >= 16) {
+      format = {
+        audioFormat: buffer.readUInt16LE(start),
+        channels: buffer.readUInt16LE(start + 2),
+        sampleRate: buffer.readUInt32LE(start + 4),
+        bitsPerSample: buffer.readUInt16LE(start + 14)
+      }
+    } else if (id === 'data') {
+      data = buffer.subarray(start, end)
+    }
+    offset = end + (size % 2)
+  }
+  if (!format || !data || format.audioFormat !== 1 || format.channels !== 1 || format.sampleRate !== 16_000 || format.bitsPerSample !== 16) {
+    throw new Error('语音 WAV 必须是 16 kHz 单声道 PCM16。')
+  }
+  const sampleCount = Math.floor(data.length / 2)
+  if (sampleCount < 4_000) throw new Error('录音太短，请再说一次。')
+  const windowSize = 320
+  let peak = 0
+  let activeWindows = 0
+  for (let offset = 0; offset < sampleCount; offset += windowSize) {
+    const end = Math.min(sampleCount, offset + windowSize)
+    let squareSum = 0
+    for (let index = offset; index < end; index += 1) {
+      const sample = data.readInt16LE(index * 2) / 32_768
+      peak = Math.max(peak, Math.abs(sample))
+      squareSum += sample * sample
+    }
+    if (Math.sqrt(squareSum / (end - offset)) >= 0.003) activeWindows += 1
+  }
+  if (peak < 0.01 || activeWindows * 20 < 120) {
+    throw new Error('没有录到有效声音，请检查系统麦克风输入后再试。')
+  }
 }
 
 export class AsrService {
@@ -114,6 +159,7 @@ export class AsrService {
           const result = await this.transcribeLocal(audio, input)
           return { ...result, fallbackUsed: false }
         } catch (error) {
+          if (error instanceof Error && error.message.includes('没有识别到清晰语音')) throw error
           if (!settings.fallbackToCloud || !settings.cloudApiKey) throw error
         }
       } else if (!settings.fallbackToCloud || !settings.cloudApiKey) {
@@ -144,12 +190,21 @@ export class AsrService {
         '--language', input.language?.trim() || 'auto'
       ]
       if (input.prompt?.trim()) arguments_.push('--prompt', input.prompt.trim())
-      const stdout = this.options.runHelper
-        ? await this.options.runHelper(arguments_)
-        : (await execFileAsync(this.options.helperPath, arguments_, {
-            timeout: 120_000,
-            maxBuffer: 2 * 1024 * 1024
-          })).stdout
+      let stdout: string
+      try {
+        stdout = this.options.runHelper
+          ? await this.options.runHelper(arguments_)
+          : (await execFileAsync(this.options.helperPath, arguments_, {
+              timeout: 120_000,
+              maxBuffer: 2 * 1024 * 1024
+            })).stdout
+      } catch (error) {
+        const stderr = error && typeof error === 'object' && 'stderr' in error && typeof error.stderr === 'string'
+          ? error.stderr.trim()
+          : ''
+        if (stderr.includes('没有识别到清晰语音')) throw new Error('没有识别到清晰语音，请检查麦克风输入后再试。')
+        throw new Error('本地 Whisper 转写失败，请重试。')
+      }
       const line = stdout.trim().split('\n').at(-1)
       if (!line) throw new Error('本地 Whisper 未返回转写结果。')
       const result = JSON.parse(line) as { text?: unknown; durationMilliseconds?: unknown }

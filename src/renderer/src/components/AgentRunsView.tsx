@@ -1199,12 +1199,6 @@ export function AgentRunsView({
           />
         </div>
       </header>
-      {(detailMilestone || detail.run.workingDirectory) && (
-        <div className="agent-run-context-bar">
-          {detailMilestone && <span>{detailMilestone.title}</span>}
-          {detail.run.workingDirectory && <code>{detail.run.workingDirectory}</code>}
-        </div>
-      )}
       <section className="agent-run-thread" aria-label={`${detail.run.title} 对话`}>
         <div className="agent-run-thread-inner">
           {groupMessageTimeline(detail.messages).map((block) => {

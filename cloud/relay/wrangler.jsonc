@@ -4,6 +4,15 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-07",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "APNS_TEAM_ID": "5PR3342M58",
+    "APNS_KEY_ID": "N768DXSCY3",
+    "APNS_TOPIC": "dev.ainative.projectagent.companion",
+    "APNS_ENVIRONMENT": "development"
+  },
+  "secrets": {
+    "required": ["APNS_PRIVATE_KEY"]
+  },
   "durable_objects": {
     "bindings": [
       {

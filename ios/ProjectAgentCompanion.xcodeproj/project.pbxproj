@@ -208,10 +208,10 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					91F9CCCAC7DEF8651B494757 = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = 5PR3342M58;
 					};
 					DF2EA02750B91C13CC9051DE = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = 5PR3342M58;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -307,6 +307,7 @@
 		3E622265519A48C16EA1DFC6 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = ProjectAgentCompanion/ProjectAgentCompanion.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -385,7 +386,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 5PR3342M58;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -444,7 +445,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 5PR3342M58;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -477,6 +478,7 @@
 		99F271B7523B22286A5FBE73 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = ProjectAgentCompanion/ProjectAgentCompanion.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";

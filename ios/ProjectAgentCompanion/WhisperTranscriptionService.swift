@@ -14,6 +14,7 @@ enum CompanionWhisperError: LocalizedError {
     case modelLoadFailed
     case transcriptionFailed
     case emptyRecording
+    case noSpeech
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +22,7 @@ enum CompanionWhisperError: LocalizedError {
         case .modelLoadFailed: "Whisper 模型加载失败。"
         case .transcriptionFailed: "Whisper 转写失败，请再试一次。"
         case .emptyRecording: "录音太短，请再说一次。"
+        case .noSpeech: "没有录到清晰语音，请检查麦克风输入后再试。"
         }
     }
 }
@@ -41,6 +43,9 @@ actor CompanionWhisperContext {
         parameters.no_context = true
         parameters.single_segment = false
         parameters.n_threads = Int32(max(1, min(6, ProcessInfo.processInfo.processorCount - 2)))
+        parameters.suppress_blank = true
+        parameters.suppress_nst = true
+        parameters.no_speech_thold = 0.6
 
         let result = "zh".withCString { languagePointer in
             prompt.withCString { promptPointer in
@@ -53,11 +58,14 @@ actor CompanionWhisperContext {
         }
         guard result == 0 else { throw CompanionWhisperError.transcriptionFailed }
         let text = (0..<whisper_full_n_segments(context)).reduce(into: "") { output, index in
+            guard whisper_full_get_segment_no_speech_prob(context, index) < 0.6 else { return }
             if let segment = whisper_full_get_segment_text(context, index) {
                 output += String(cString: segment)
             }
         }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw CompanionWhisperError.noSpeech }
+        return trimmed
     }
 
     private func loadContext() throws -> OpaquePointer {
@@ -121,8 +129,9 @@ final class CompanionVoiceInput: ObservableObject, @unchecked Sendable {
         stopEngine()
         state = .transcribing
         let source = sampleLock.withLock { sampleChunks.flatMap { $0 } }
-        let samples = Self.downsample(source, from: inputSampleRate, to: 16_000)
         do {
+            let prepared = try Self.prepareForTranscription(source, sampleRate: inputSampleRate)
+            let samples = Self.downsample(prepared, from: inputSampleRate, to: 16_000)
             let text = try await CompanionWhisperContext.shared.transcribe(samples: samples, prompt: prompt)
             state = .idle
             return text
@@ -156,5 +165,22 @@ final class CompanionVoiceInput: ObservableObject, @unchecked Sendable {
             guard end > start else { return input[min(start, input.count - 1)] }
             return input[start..<end].reduce(0, +) / Float(end - start)
         }
+    }
+
+    static func prepareForTranscription(_ input: [Float], sampleRate: Double) throws -> [Float] {
+        guard !input.isEmpty else { throw CompanionWhisperError.emptyRecording }
+        let mean = input.reduce(0, +) / Float(input.count)
+        let centered = input.map { $0 - mean }
+        let peak = centered.reduce(Float(0)) { max($0, abs($1)) }
+        let windowSize = max(1, Int(sampleRate * 0.02))
+        var activeWindows = 0
+        for offset in stride(from: 0, to: centered.count, by: windowSize) {
+            let end = min(centered.count, offset + windowSize)
+            let squareSum = centered[offset..<end].reduce(Float(0)) { $0 + $1 * $1 }
+            if sqrt(squareSum / Float(end - offset)) >= 0.003 { activeWindows += 1 }
+        }
+        guard peak >= 0.01, activeWindows * 20 >= 120 else { throw CompanionWhisperError.noSpeech }
+        let gain = min(12, 0.8 / peak)
+        return centered.map { max(-1, min(1, $0 * gain)) }
     }
 }

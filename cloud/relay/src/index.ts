@@ -21,7 +21,7 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 const maximumAttachmentBytes = 100 * 1024 * 1024
-const relayBuild = '2026-08-11.2'
+const relayBuild = '2026-08-12.1'
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {

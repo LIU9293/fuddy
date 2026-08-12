@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { BrowserWindow, dialog, ipcMain, shell, systemPreferences } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { DecisionStatus, GoalStatus, PermissionIntent } from '../shared/contracts'
@@ -23,6 +23,7 @@ import { CompanionSyncService } from './services/companion-sync'
 import { createProjectSchema, updateProjectSchema } from '../shared/project-validation'
 import { DecisionRemediationService } from './services/decision-remediation'
 import { collectGitWorkingTreeSummary } from './services/git-working-tree'
+import { requestMacMicrophoneAccess } from './services/microphone-permissions'
 
 const workAssistantImageSchema = z.object({
   id: z.string().trim().min(1).max(200),
@@ -235,6 +236,17 @@ export function registerIpc(
       await openMacOSScreenRecordingSettings()
     }
     return getCapabilities(providerSettings.getPublicSettings())
+  })
+
+  ipcMain.handle('capability:request-microphone-access', () => requestMacMicrophoneAccess({
+    platform: process.platform,
+    getStatus: () => systemPreferences.getMediaAccessStatus('microphone'),
+    askForAccess: () => systemPreferences.askForMediaAccess('microphone')
+  }))
+
+  ipcMain.handle('capability:open-microphone-settings', async () => {
+    if (process.platform !== 'darwin') return
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone')
   })
 
   ipcMain.handle('project:update', (_event, rawInput: unknown) => {

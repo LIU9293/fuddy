@@ -7265,8 +7265,8 @@ textarea:focus {
 .agent-run-page-header {
   display: flex;
   width: 100%;
-  min-height: 76px;
-  padding: 0 28px;
+  min-height: 66px;
+  padding: 0 18px;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
@@ -7293,7 +7293,7 @@ textarea:focus {
 .agent-run-page-header strong {
   overflow: hidden;
   color: #33332f;
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7302,7 +7302,7 @@ textarea:focus {
 .agent-run-page-header small {
   overflow: hidden;
   color: #898982;
-  font-size: 12px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -7366,7 +7366,7 @@ textarea:focus {
   height: 100%;
   flex-direction: column;
   border-left: 1px solid rgba(45, 45, 40, .09);
-  background: rgba(242, 242, 239, .96);
+  background: #fff;
   overflow: hidden;
   box-shadow: -12px 0 32px rgba(35, 35, 30, 0);
   opacity: 0;
@@ -7947,34 +7947,6 @@ textarea:focus {
   cursor: pointer;
 }
 
-.agent-run-context-bar {
-  display: flex;
-  width: min(var(--content-area-width), calc(100% - var(--content-area-gutter)));
-  min-height: 36px;
-  margin: 0 auto;
-  align-items: center;
-  gap: 8px;
-  overflow: hidden;
-  border-bottom: 1px solid var(--border);
-}
-
-.agent-run-context-bar span,
-.agent-run-context-bar code {
-  overflow: hidden;
-  padding: 3px 7px;
-  border-radius: 6px;
-  color: #74746e;
-  background: rgba(50, 50, 45, 0.055);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-run-context-bar code {
-  min-width: 0;
-  font-family: "SFMono-Regular", Consolas, monospace;
-}
-
 .agent-run-thread {
   min-height: 0;
   flex: 1;
@@ -8212,8 +8184,6 @@ textarea:focus {
   .agent-session-rename-dialog input { border-color: rgba(255, 255, 248, .14); color: #ededeb; background: #1f201e; }
   .agent-session-rename-dialog button { color: #c8c8c3; background: rgba(255, 255, 248, .08); }
   .agent-session-rename-dialog button[type="submit"] { color: #20211f; background: #ededeb; }
-  .agent-run-context-bar span,
-  .agent-run-context-bar code { color: #aaa9a3; background: rgba(255, 255, 248, 0.065); }
   .agent-run-info-sidebar { border-left-color: rgba(255, 255, 248, .09); background: rgba(35, 36, 33, .98); }
   .agent-run-info-header,
   .agent-run-info-tabs,

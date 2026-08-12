@@ -1,7 +1,7 @@
 import { ArrowUp, LoaderCircle, Mic, Paperclip, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { WorkAssistantImageAttachment } from '../../../shared/contracts'
-import { blobToDataUrl, downsampleAudio, encodePcm16Wave, mergeAudioChunks } from '../voice-input'
+import { blobToDataUrl, downsampleAudio, encodePcm16Wave, mergeAudioChunks, microphoneAccessError, prepareAudioForTranscription } from '../voice-input'
 
 interface ChatComposerProps {
   value: string
@@ -72,6 +72,14 @@ export function ChatComposer({
   const startVoiceInput = async (): Promise<void> => {
     setVoiceError(null)
     try {
+      const access = await window.projectAgent.requestMicrophoneAccess()
+      const permissionError = microphoneAccessError(access)
+      if (permissionError) {
+        if (access.status === 'denied' || access.status === 'restricted') {
+          await window.projectAgent.openMicrophoneSettings()
+        }
+        throw new Error(permissionError)
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: false
@@ -109,7 +117,8 @@ export function ChatComposer({
     try {
       const merged = mergeAudioChunks(recording.chunks)
       if (merged.length < recording.context.sampleRate * 0.25) throw new Error('录音太短，请再说一次。')
-      const wav = encodePcm16Wave(downsampleAudio(merged, recording.context.sampleRate))
+      const prepared = prepareAudioForTranscription(merged, recording.context.sampleRate)
+      const wav = encodePcm16Wave(downsampleAudio(prepared, recording.context.sampleRate))
       const result = await window.projectAgent.transcribeAudio({
         audioDataUrl: await blobToDataUrl(wav),
         language: 'zh',

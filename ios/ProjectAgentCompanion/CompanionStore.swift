@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import UIKit
+import UserNotifications
 
 @MainActor
 final class CompanionStore: ObservableObject {
@@ -19,6 +20,7 @@ final class CompanionStore: ObservableObject {
     private var syncRequested = false
     private var commandErrors: [String: String] = [:]
     private var notificationObservers: [NSObjectProtocol] = []
+    private var notificationAuthorizationRequested = false
     private let cacheURL: URL
     private let previewMode = ProcessInfo.processInfo.arguments.contains("--design-preview")
     private let runScrollPositionKeyPrefix = "agent-run.scroll-position."
@@ -50,6 +52,14 @@ final class CompanionStore: ObservableObject {
             guard let token = notification.object as? String else { return }
             Task { @MainActor in await self?.registerPushToken(token) }
         })
+        notificationObservers.append(NotificationCenter.default.addObserver(
+            forName: .companionPushRegistrationFailed,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let error = notification.object as? Error else { return }
+            Task { @MainActor in self?.operationError = "推送注册失败：\(error.localizedDescription)" }
+        })
     }
 
     var isPaired: Bool { credentials != nil }
@@ -71,6 +81,7 @@ final class CompanionStore: ObservableObject {
     func start() {
         guard !previewMode else { return }
         guard isPaired else { return }
+        requestNotificationAuthorizationIfNeeded()
         UIApplication.shared.registerForRemoteNotifications()
         client?.connect { [weak self] envelope in
             Task { @MainActor in await self?.handleSocketEnvelope(envelope) }
@@ -431,6 +442,26 @@ final class CompanionStore: ObservableObject {
         guard let client else { return }
         do { try await client.registerPushToken(token) }
         catch { operationError = "推送注册失败：\(error.localizedDescription)" }
+    }
+
+    private func requestNotificationAuthorizationIfNeeded() {
+        guard !notificationAuthorizationRequested else { return }
+        notificationAuthorizationRequested = true
+        Task { @MainActor [weak self] in
+            do {
+                let center = UNUserNotificationCenter.current()
+                let settings = await center.notificationSettings()
+                if settings.authorizationStatus == .notDetermined {
+                    let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+                    if !granted {
+                        self?.operationError = "通知权限未开启；可在系统设置中开启 Agent Run 完成提醒。"
+                    }
+                }
+                UIApplication.shared.registerForRemoteNotifications()
+            } catch {
+                self?.operationError = "通知授权失败：\(error.localizedDescription)"
+            }
+        }
     }
 
     private func configureClient(_ credentials: CompanionCredentials) {

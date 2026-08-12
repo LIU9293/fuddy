@@ -97,6 +97,28 @@ describe('companion sync persistence', () => {
     database.close()
   })
 
+  it('persists a terminal Agent turn notification event', () => {
+    const database = createDatabase()
+    database.enqueueAgentTurnSettled({
+      runId: 'run-1',
+      turnId: 'message-1',
+      title: '整理产品数据',
+      outcome: 'completed',
+      summary: '已完成。',
+      settledAt: '2026-08-12T05:00:00.000Z'
+    })
+
+    expect(database.listPendingCompanionEvents()).toEqual([
+      expect.objectContaining({
+        type: 'agent-turn.settled',
+        entityType: 'agent-run',
+        entityId: 'run-1',
+        payload: expect.objectContaining({ turnId: 'message-1', outcome: 'completed' })
+      })
+    ])
+    database.close()
+  })
+
   it('replaces unsent history with one authoritative pairing snapshot', () => {
     const database = createDatabase()
     const project = database.listProjects()[0]

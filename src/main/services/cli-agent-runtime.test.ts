@@ -7,12 +7,16 @@ import {
   buildCodexAppServerArgs,
   claudeSdkReasoningOptions,
   codingAgentRuntimeRoots,
+  codexCompletedReasoningSummaries,
+  codexReasoningSegmentId,
   codexReasoningSummaryDelta,
   CODEX_APPROVAL_POLICY,
+  CODEX_REASONING_SUMMARY,
   CODEX_THREAD_SANDBOX,
   CODEX_TURN_SANDBOX_POLICY,
   claudeRecord,
-  codexTomlStringMap
+  codexTomlStringMap,
+  opencodeRecord
 } from './cli-agent-runtime'
 import type { McpServerLaunchConfig } from './third-party-mcp-runtime'
 
@@ -57,6 +61,26 @@ describe('coding CLI MCP injection', () => {
       .toBe('正在检查依赖关系。')
     expect(codexReasoningSummaryDelta('item/reasoning/textDelta', { delta: 'raw chain of thought' }))
       .toBe('')
+  })
+
+  it('keeps Codex reasoning summary sections as separate timeline segments', () => {
+    expect(codexReasoningSegmentId({ itemId: 'reasoning-1', summaryIndex: 2 }))
+      .toBe('reasoning-1:summary:2')
+    expect(codexCompletedReasoningSummaries({
+      id: 'reasoning-1',
+      type: 'reasoning',
+      summary: ['先检查依赖。', { type: 'summary_text', text: '再运行测试。' }]
+    })).toEqual([
+      { segmentId: 'reasoning-1:summary:0', text: '先检查依赖。' },
+      { segmentId: 'reasoning-1:summary:1', text: '再运行测试。' }
+    ])
+  })
+
+  it('preserves OpenCode reasoning parts for the shared reasoning UI', () => {
+    expect(opencodeRecord({
+      type: 'reasoning',
+      part: { id: 'reasoning-1', type: 'reasoning', text: '正在核对实现。' }
+    })).toEqual({ reasoning: '正在核对实现。', reasoningSegmentId: 'reasoning-1' })
   })
 
   it('adds both stdio servers to Codex config overrides', () => {
@@ -155,7 +179,9 @@ describe('coding CLI MCP injection', () => {
   })
 
   it('runs OpenCode with automatic permission approval', () => {
-    expect(buildCliArgs(input('opencode'), [])).toContain('--auto')
+    const args = buildCliArgs(input('opencode'), [])
+    expect(args).toContain('--auto')
+    expect(args).toContain('--thinking')
   })
 
   it('passes an explicit default model to every coding CLI', () => {
@@ -182,7 +208,8 @@ describe('coding CLI MCP injection', () => {
   })
 
   it('passes configured effort to the active Codex app-server turn and Claude SDK', () => {
-    expect(buildCodexTurnStartParams('thread', 'test', 'xhigh')).toMatchObject({ effort: 'xhigh' })
+    expect(CODEX_REASONING_SUMMARY).toBe('auto')
+    expect(buildCodexTurnStartParams('thread', 'test', 'xhigh')).toMatchObject({ effort: 'xhigh', summary: 'auto' })
     expect(buildCodexTurnStartParams('thread', 'test')).not.toHaveProperty('effort')
     expect(claudeSdkReasoningOptions('max')).toEqual({ effort: 'max' })
     expect(claudeSdkReasoningOptions()).toEqual({})

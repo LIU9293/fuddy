@@ -73,6 +73,17 @@ export interface CompanionSyncEvent<TPayload = unknown> extends CompanionSyncEve
   sourceDeviceId: string
 }
 
+export type AgentTurnOutcome = 'completed' | 'failed'
+
+export interface AgentTurnSettledPayload {
+  runId: string
+  turnId: string
+  title: string
+  outcome: AgentTurnOutcome
+  summary: string
+  settledAt: string
+}
+
 export type CompanionCommandType =
   | 'assistant.send-message'
   | 'assistant.execute-action'

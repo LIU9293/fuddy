@@ -46,6 +46,7 @@ import type { ConnectorCatalogItem } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import type {
+  AgentTurnSettledPayload,
   CompanionCommand,
   CompanionCommandStatus,
   CompanionEntityType,
@@ -1673,6 +1674,10 @@ export class AppDatabase {
       runs: this.listRuns().map((run) => this.getAgentRunDetail(run.id))
     }
     return this.enqueueCompanionEvent('snapshot.created', 'snapshot', 'current', snapshot)
+  }
+
+  enqueueAgentTurnSettled(payload: AgentTurnSettledPayload): CompanionOutboxEvent {
+    return this.enqueueCompanionEvent('agent-turn.settled', 'agent-run', payload.runId, payload)
   }
 
   enqueueCompanionPairingSnapshot(): CompanionOutboxEvent {

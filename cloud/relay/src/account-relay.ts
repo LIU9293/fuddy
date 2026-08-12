@@ -15,6 +15,7 @@ import type {
   CompanionSyncEventInput
 } from '../../../src/shared/companion-sync'
 import { companionProtocolVersion } from '../../../src/shared/companion-sync'
+import { agentTurnAlertRequest } from './push-notifications'
 
 interface DeviceRow extends Record<string, SqlStorageValue> {
   id: string
@@ -557,13 +558,22 @@ export class AccountRelay extends DurableObject<Env> {
 
   private notifyEvent(event: CompanionSyncEvent, broadcast: boolean): void {
     if (broadcast) this.broadcast({ type: 'sync.event', event })
-    this.ctx.waitUntil(this.sendBackgroundPush(event))
+    const alert = agentTurnAlertRequest(event)
+    this.ctx.waitUntil(alert ? this.sendAlertPush(event, alert) : this.sendBackgroundPush(event))
   }
 
   private notifyEventsAvailable(events: CompanionSyncEvent[]): void {
     const latest = events.reduce((current, event) => event.sequence > current.sequence ? event : current)
     this.broadcast({ type: 'sync.available', lastSequence: latest.sequence })
-    this.ctx.waitUntil(this.sendBackgroundPush(latest))
+    const alerts = events.flatMap((event) => {
+      const alert = agentTurnAlertRequest(event)
+      return alert ? [{ event, alert }] : []
+    })
+    if (alerts.length > 0) {
+      for (const { event, alert } of alerts) this.ctx.waitUntil(this.sendAlertPush(event, alert))
+    } else {
+      this.ctx.waitUntil(this.sendBackgroundPush(latest))
+    }
   }
 
   private broadcast(message: CompanionSocketMessage, tag?: string): void {
@@ -592,11 +602,43 @@ export class AccountRelay extends DurableObject<Env> {
   }
 
   private async sendBackgroundPush(event: CompanionSyncEvent): Promise<void> {
+    await this.sendPush(
+      {
+        pushType: 'background',
+        priority: '5',
+        collapseId: `companion-${event.entityType}`,
+        body: { aps: { 'content-available': 1 }, sequence: event.sequence }
+      },
+      false
+    )
+  }
+
+  private async sendAlertPush(
+    event: CompanionSyncEvent,
+    alert: { collapseId: string; body: Record<string, unknown> }
+  ): Promise<void> {
+    await this.sendPush({
+      pushType: 'alert',
+      priority: '10',
+      collapseId: alert.collapseId,
+      body: alert.body
+    }, true)
+  }
+
+  private async sendPush(
+    request: {
+      pushType: 'alert' | 'background'
+      priority: '5' | '10'
+      collapseId: string
+      body: Record<string, unknown>
+    },
+    includeConnectedDevices: boolean
+  ): Promise<void> {
     if (!this.env.APNS_TEAM_ID || !this.env.APNS_KEY_ID || !this.env.APNS_PRIVATE_KEY || !this.env.APNS_TOPIC) return
     const devices = this.ctx.storage.sql.exec<PushDeviceRow>(`
       SELECT id, push_token FROM devices
       WHERE role = 'ios' AND revoked_at IS NULL AND push_token IS NOT NULL
-    `).toArray().filter((device) => this.ctx.getWebSockets(`device:${device.id}`).length === 0)
+    `).toArray().filter((device) => includeConnectedDevices || this.ctx.getWebSockets(`device:${device.id}`).length === 0)
     if (devices.length === 0) return
     const jwt = await this.apnsAuthorizationToken()
     const host = this.env.APNS_ENVIRONMENT === 'production'
@@ -608,12 +650,12 @@ export class AccountRelay extends DurableObject<Env> {
         headers: {
           authorization: `bearer ${jwt}`,
           'apns-topic': this.env.APNS_TOPIC as string,
-          'apns-push-type': 'background',
-          'apns-priority': '5',
-          'apns-collapse-id': `companion-${event.entityType}`,
+          'apns-push-type': request.pushType,
+          'apns-priority': request.priority,
+          'apns-collapse-id': request.collapseId,
           'content-type': 'application/json'
         },
-        body: JSON.stringify({ aps: { 'content-available': 1 }, sequence: event.sequence })
+        body: JSON.stringify(request.body)
       })
       if (!response.ok) {
         const body = await response.json().catch(() => null) as { reason?: unknown } | null

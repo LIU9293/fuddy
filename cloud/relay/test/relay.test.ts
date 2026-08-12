@@ -46,7 +46,7 @@ describe('companion relay', () => {
     expect(await response.json()).toEqual({
       status: 'ok',
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-11.2'
+      build: '2026-08-12.1'
     })
   })
 

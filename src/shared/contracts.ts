@@ -989,9 +989,18 @@ export interface CreateWorkspaceFolderInput {
   relativePath: string
 }
 
+export type MicrophoneAccessStatus = 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'
+
+export interface MicrophoneAccessResult {
+  granted: boolean
+  status: MicrophoneAccessStatus
+}
+
 export interface DesktopApi {
   getBootstrap(): Promise<AppBootstrap>
   requestComputerUsePermissions(): Promise<Capability[]>
+  requestMicrophoneAccess(): Promise<MicrophoneAccessResult>
+  openMicrophoneSettings(): Promise<void>
   updateProject(input: UpdateProjectInput): Promise<Project>
   createProject(input: CreateProjectInput): Promise<Project>
   createGoal(input: CreateGoalInput): Promise<ProjectGoal>
@@ -1026,6 +1035,7 @@ export interface DesktopApi {
     callback: (status: import('./companion-sync').CompanionMacStatus) => void
   ): () => void
   onCompanionDataChanged(callback: () => void): () => void
+  onOpenAgentRun(callback: (runId: string) => void): () => void
   sendAgentRunMessage(
     input: SendAgentRunMessageInput,
     onUpdate: (update: AgentRunStreamUpdate) => void

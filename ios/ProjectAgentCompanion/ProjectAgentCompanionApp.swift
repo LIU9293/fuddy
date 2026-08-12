@@ -1,11 +1,29 @@
 import SwiftUI
 import UIKit
+@preconcurrency import UserNotifications
 
 extension Notification.Name {
     static let companionPushToken = Notification.Name("companion.push-token")
+    static let companionPushRegistrationFailed = Notification.Name("companion.push-registration-failed")
+    static let companionOpenRun = Notification.Name("companion.open-run")
 }
 
-final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
+func companionNotificationRunID(_ userInfo: [AnyHashable: Any]) -> String? {
+    guard let runID = userInfo["runId"] as? String else { return nil }
+    let normalized = runID.trimmingCharacters(in: .whitespacesAndNewlines)
+    return normalized.isEmpty ? nil : normalized
+}
+
+@MainActor
+final class CompanionAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
@@ -16,9 +34,48 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
 
     func application(
         _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        NotificationCenter.default.post(name: .companionPushRegistrationFailed, object: error)
+    }
+
+    func application(
+        _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any]
     ) async -> UIBackgroundFetchResult {
         await CompanionBackgroundSyncBridge.shared.handleRemoteUpdate()
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .list, .sound]
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        let runID = companionNotificationRunID(response.notification.request.content.userInfo)
+        if let runID { await CompanionNotificationNavigationBridge.shared.openRun(id: runID) }
+        _ = await CompanionBackgroundSyncBridge.shared.handleRemoteUpdate()
+    }
+}
+
+@MainActor
+final class CompanionNotificationNavigationBridge {
+    static let shared = CompanionNotificationNavigationBridge()
+    private(set) var pendingRunID: String?
+
+    func openRun(id: String) {
+        pendingRunID = id
+        NotificationCenter.default.post(name: .companionOpenRun, object: id)
+    }
+
+    func consumePendingRunID() -> String? {
+        defer { pendingRunID = nil }
+        return pendingRunID
     }
 }
 

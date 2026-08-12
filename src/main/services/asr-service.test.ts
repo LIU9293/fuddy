@@ -23,11 +23,25 @@ function settings(value: RuntimeAsrSettings): ProviderSettingsService {
   return { getAsrRuntimeSettings: () => value } as unknown as ProviderSettingsService
 }
 
-function waveDataUrl(): string {
-  const buffer = Buffer.alloc(48)
+function waveDataUrl(amplitude = 0.2): string {
+  const samples = 8_000
+  const buffer = Buffer.alloc(44 + samples * 2)
   buffer.write('RIFF', 0)
-  buffer.writeUInt32LE(40, 4)
+  buffer.writeUInt32LE(36 + samples * 2, 4)
   buffer.write('WAVE', 8)
+  buffer.write('fmt ', 12)
+  buffer.writeUInt32LE(16, 16)
+  buffer.writeUInt16LE(1, 20)
+  buffer.writeUInt16LE(1, 22)
+  buffer.writeUInt32LE(16_000, 24)
+  buffer.writeUInt32LE(32_000, 28)
+  buffer.writeUInt16LE(2, 32)
+  buffer.writeUInt16LE(16, 34)
+  buffer.write('data', 36)
+  buffer.writeUInt32LE(samples * 2, 40)
+  for (let index = 0; index < samples; index += 1) {
+    buffer.writeInt16LE(Math.round(Math.sin(index / 4) * amplitude * 32_767), 44 + index * 2)
+  }
   return `data:audio/wav;base64,${buffer.toString('base64')}`
 }
 
@@ -109,5 +123,35 @@ describe('AsrService', () => {
     })
     await expect(configured.service.transcribe({ audioDataUrl: waveDataUrl() }))
       .rejects.toThrow('本地 Whisper 尚未下载')
+  })
+
+  it('rejects silent audio before local or cloud Whisper can hallucinate text', async () => {
+    const runHelper = vi.fn(async () => '{"text":"优优独播剧场","durationMilliseconds":42}\n')
+    const configured = await fixture({
+      mode: 'local-first', cloudBaseUrl: 'https://api.openai.com/v1', cloudModel: 'gpt-transcribe',
+      fallbackToCloud: false, cloudApiKey: null
+    }, { runHelper })
+    await expect(configured.service.transcribe({ audioDataUrl: waveDataUrl(0) }))
+      .rejects.toThrow('没有录到有效声音')
+    expect(runHelper).not.toHaveBeenCalled()
+  })
+
+  it('does not cloud-fallback when local Whisper classifies valid-energy noise as no speech', async () => {
+    const fetchImpl = vi.fn()
+    const configured = await fixture({
+      mode: 'local-first', cloudBaseUrl: 'https://api.openai.com/v1', cloudModel: 'gpt-transcribe',
+      fallbackToCloud: true, cloudApiKey: 'cloud-key'
+    }, {
+      fetchImpl,
+      runHelper: vi.fn(async () => {
+        throw Object.assign(new Error('helper failed'), { stderr: '没有识别到清晰语音，请检查麦克风输入后再试。' })
+      })
+    })
+    await mkdir(join(configured.root, 'models'), { recursive: true })
+    await writeFile(join(configured.root, 'models', WHISPER_MODEL_NAME), configured.model)
+
+    await expect(configured.service.transcribe({ audioDataUrl: waveDataUrl() }))
+      .rejects.toThrow('没有识别到清晰语音')
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 })

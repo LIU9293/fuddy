@@ -80,6 +80,7 @@ describe('TaskDispatcher project agent defaults', () => {
       }
     })
     const files = new WorkspaceFilesService(database, join(root, 'files'))
+    const onRunSettled = vi.fn()
     const runTurn = vi.fn(async (input: CliAgentTurnInput) => {
       files.write('vows', 'marketing/social/setup.md', '# 已整理')
       return { text: '已整理宣传资料。', sessionId: 'draft-session' }
@@ -88,7 +89,9 @@ describe('TaskDispatcher project agent defaults', () => {
       database,
       {} as PiTaskHarness,
       files,
-      { runTurn } as unknown as CliAgentRuntime
+      { runTurn } as unknown as CliAgentRuntime,
+      undefined,
+      onRunSettled
     )
     const draft = dispatcher.createDraft({
       projectId: 'vows',
@@ -109,6 +112,20 @@ describe('TaskDispatcher project agent defaults', () => {
     expect(completed.artifacts).toEqual(expect.arrayContaining([
       expect.objectContaining({ relativePath: 'marketing/social/setup.md' })
     ]))
+    expect(onRunSettled).toHaveBeenCalledWith(
+      expect.objectContaining({ id: draft.run.id, status: 'idle', summary: '已整理宣传资料。' }),
+      expect.objectContaining({
+        runId: draft.run.id,
+        turnId: completed.messages[0].id,
+        outcome: 'completed',
+        summary: '已整理宣传资料。'
+      })
+    )
+    expect(database.listPendingCompanionEvents().find((event) => event.type === 'agent-turn.settled')).toMatchObject({
+      type: 'agent-turn.settled',
+      entityId: draft.run.id,
+      payload: { turnId: completed.messages[0].id, outcome: 'completed' }
+    })
     database.close()
   })
 
@@ -168,6 +185,7 @@ describe('TaskDispatcher project agent defaults', () => {
     const database = new AppDatabase(join(root, 'app.sqlite'))
     const files = new WorkspaceFilesService(database, join(root, 'files'))
     let aborted = false
+    const onRunSettled = vi.fn()
     const runTurn = vi.fn((input: CliAgentTurnInput) => new Promise<never>((_resolve, reject) => {
       input.abortController.signal.addEventListener('abort', () => {
         aborted = true
@@ -179,7 +197,8 @@ describe('TaskDispatcher project agent defaults', () => {
       {} as PiTaskHarness,
       files,
       { runTurn } as unknown as CliAgentRuntime,
-      20
+      20,
+      onRunSettled
     )
 
     const result = await dispatcher.dispatch({
@@ -193,6 +212,10 @@ describe('TaskDispatcher project agent defaults', () => {
     expect(result.detail.run.status).toBe('failed')
     expect(result.detail.run.summary).toContain('没有返回消息或工具活动')
     expect(result.detail.messages.at(-1)).toMatchObject({ role: 'system', eventType: 'error' })
+    expect(onRunSettled).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', summary: expect.stringContaining('没有返回消息或工具活动') }),
+      expect.objectContaining({ outcome: 'failed', summary: expect.stringContaining('没有返回消息或工具活动') })
+    )
     database.close()
   })
 

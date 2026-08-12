@@ -11,6 +11,7 @@ private enum HelperError: LocalizedError {
     case invalidWave(String)
     case modelLoadFailed
     case transcriptionFailed
+    case noSpeech
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +23,8 @@ private enum HelperError: LocalizedError {
             return "Whisper 模型加载失败。"
         case .transcriptionFailed:
             return "Whisper 转写失败。"
+        case .noSpeech:
+            return "没有识别到清晰语音，请检查麦克风输入后再试。"
         }
     }
 }
@@ -114,6 +117,9 @@ private func transcribe(modelPath: String, inputPath: String, language: String, 
     parameters.n_threads = Int32(max(1, min(8, ProcessInfo.processInfo.processorCount - 2)))
     parameters.no_context = true
     parameters.single_segment = false
+    parameters.suppress_blank = true
+    parameters.suppress_nst = true
+    parameters.no_speech_thold = 0.6
 
     let started = ContinuousClock.now
     let status = language.withCString { languagePointer in
@@ -129,7 +135,11 @@ private func transcribe(modelPath: String, inputPath: String, language: String, 
 
     var text = ""
     for index in 0..<whisper_full_n_segments(context) {
+        if whisper_full_get_segment_no_speech_prob(context, index) >= 0.6 { continue }
         text += String(cString: whisper_full_get_segment_text(context, index))
+    }
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw HelperError.noSpeech
     }
     let elapsed = started.duration(to: .now)
     let components = elapsed.components

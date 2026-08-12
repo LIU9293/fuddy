@@ -29,6 +29,7 @@ import { hydrateProcessEnvironmentFromZsh } from './services/shell-environment'
 import { CompanionSyncService } from './services/companion-sync'
 import { WebResearchService } from './services/web-research'
 import { PiWorkAssistantAgent } from './services/work-assistant-agent'
+import { agentRunNotificationContent } from './services/agent-run-notifications'
 
 Sentry.init({
   dsn: SENTRY_DSN,
@@ -48,6 +49,7 @@ let agentToolsMcp: ThirdPartyMcpRuntime | null = null
 let shutdownPromise: Promise<void> | null = null
 let shutdownComplete = false
 let companionSync: CompanionSyncService | null = null
+let pendingAgentRunNavigationId: string | null = null
 
 app.on('render-process-gone', (_event, webContents, details) => {
   if (details.reason === 'clean-exit' || details.reason === 'killed') return
@@ -183,11 +185,38 @@ function createWindow(): void {
     if (!isLocalRenderer) event.preventDefault()
   })
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (!mainWindow || !pendingAgentRunNavigationId) return
+    mainWindow.webContents.send('navigation:open-agent-run', pendingAgentRunNavigationId)
+    pendingAgentRunNavigationId = null
+  })
+
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
     void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+}
+
+function openAgentRunFromNotification(runId: string): void {
+  pendingAgentRunNavigationId = runId
+  if (!mainWindow) createWindow()
+  else if (!mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.send('navigation:open-agent-run', runId)
+    pendingAgentRunNavigationId = null
+  }
+  showMainWindow()
+}
+
+function showAgentRunNotification(turn: import('../shared/companion-sync').AgentTurnSettledPayload): void {
+  if (!Notification.isSupported()) return
+  const content = agentRunNotificationContent(turn)
+  const notification = new Notification({ ...content, silent: false })
+  notification.on('click', () => openAgentRunFromNotification(turn.runId))
+  notification.on('failed', (_event, error) => {
+    console.error('[agent-run-notification] failed', error)
+  })
+  notification.show()
 }
 
 function showMainWindow(): void {
@@ -252,8 +281,9 @@ if (!hasLock) {
       workspaceFiles,
       new CliAgentRuntime(agentToolsMcp, join(__dirname, 'project-agent-mcp.js'), databasePath, providerSettings),
       undefined,
-      async (run) => {
-        await decisionRemediationService.sync(run.projectId)
+      async (run, turn) => {
+        showAgentRunNotification(turn)
+        if (turn.outcome === 'completed') await decisionRemediationService.sync(run.projectId)
       }
     )
     const dailyBriefingService = new DailyBriefingService(database, connectorRuntime, runtime)

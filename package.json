@@ -60,13 +60,18 @@
   "build": {
     "appId": "dev.ainative.projectagent",
     "productName": "Project Agent",
+    "electronLanguages": [
+      "en",
+      "zh_CN"
+    ],
     "asar": true,
     "asarUnpack": [
       "node_modules/@trycua/cua-driver-darwin-*/**/*"
     ],
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/@anthropic-ai/claude-agent-sdk-*/**/*"
     ],
     "extraResources": [
       {
@@ -95,6 +100,9 @@
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
+      "entitlements": "resources/entitlements.mac.plist",
+      "entitlementsInherit": "resources/entitlements.mac.inherit.plist",
+      "signIgnore": "\\.(?:asar|pak|dat|bin|png|icns|nib)$",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "将你的语音在本机转写为项目消息；未安装本地模型时可按设置使用云端 ASR。"
       },

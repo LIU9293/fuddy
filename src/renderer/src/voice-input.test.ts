@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { downsampleAudio, encodePcm16Wave, mergeAudioChunks } from './voice-input'
+import { analyzeAudioSignal, downsampleAudio, encodePcm16Wave, mergeAudioChunks, microphoneAccessError, prepareAudioForTranscription } from './voice-input'
+
+describe('microphone permission messages', () => {
+  it('continues only when macOS granted microphone access', () => {
+    expect(microphoneAccessError({ granted: true, status: 'granted' })).toBeNull()
+    expect(microphoneAccessError({ granted: false, status: 'denied' }))
+      .toContain('系统设置')
+    expect(microphoneAccessError({ granted: false, status: 'restricted' }))
+      .toContain('系统限制')
+  })
+})
 
 describe('voice input WAV encoding', () => {
   it('merges and downsamples microphone frames to 16 kHz', () => {
@@ -17,5 +27,18 @@ describe('voice input WAV encoding', () => {
     expect(view.getUint32(24, true)).toBe(16_000)
     expect(view.getUint16(34, true)).toBe(16)
     expect(view.getUint32(40, true)).toBe(6)
+  })
+
+  it('rejects silent microphone input instead of sending it to Whisper', () => {
+    const silence = new Float32Array(16_000)
+    expect(analyzeAudioSignal(silence, 16_000)).toEqual({ peak: 0, rms: 0, activeMilliseconds: 0 })
+    expect(() => prepareAudioForTranscription(silence, 16_000)).toThrow('没有录到有效声音')
+  })
+
+  it('accepts and normalizes a quiet speech-like signal', () => {
+    const samples = Float32Array.from({ length: 8_000 }, (_, index) => 0.02 * Math.sin(index / 4))
+    const prepared = prepareAudioForTranscription(samples, 16_000)
+    expect(analyzeAudioSignal(samples, 16_000).activeMilliseconds).toBeGreaterThan(120)
+    expect(Math.max(...prepared)).toBeGreaterThan(0.2)
   })
 })

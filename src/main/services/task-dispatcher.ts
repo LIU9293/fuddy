@@ -21,6 +21,7 @@ import { WorkspaceFilesService } from './workspace-files'
 import { evaluateAggressivePermission } from '../../shared/permissions'
 import { normalizeWorkspaceRoots, primaryWorkspaceRoot } from '../../shared/project-workspaces'
 import { buildAgentStoragePolicy } from './agent-runtime-context'
+import type { AgentTurnOutcome, AgentTurnSettledPayload } from '../../shared/companion-sync'
 
 type ResolvedDispatchTaskInput = Omit<DispatchTaskInput, 'provider'> & {
   provider: AgentRunProvider
@@ -88,9 +89,23 @@ export class TaskDispatcher {
     private readonly workspaceFiles: WorkspaceFilesService,
     private readonly cliRuntime: CliAgentRuntime,
     private readonly inactivityTimeoutMs = AGENT_RUN_INACTIVITY_TIMEOUT_MS,
-    private readonly onRunSettled?: (run: AgentRun) => void | Promise<void>
+    private readonly onRunSettled?: (run: AgentRun, turn: AgentTurnSettledPayload) => void | Promise<void>
   ) {
     this.database.recoverInterruptedAgentRuns(new Date().toISOString())
+  }
+
+  private publishTurnSettled(runId: string, turnId: string, outcome: AgentTurnOutcome): void {
+    const run = this.database.getAgentRunDetail(runId).run
+    const payload: AgentTurnSettledPayload = {
+      runId: run.id,
+      turnId,
+      title: run.title,
+      outcome,
+      summary: run.summary.replace(/\s+/g, ' ').trim().slice(0, 600),
+      settledAt: run.updatedAt
+    }
+    this.database.enqueueAgentTurnSettled(payload)
+    void Promise.resolve(this.onRunSettled?.(run, payload)).catch(() => undefined)
   }
 
   async dispatch(
@@ -464,7 +479,7 @@ export class TaskDispatcher {
         updatedAt
       })
       onUpdate({ type: 'status', status: 'idle' })
-      void Promise.resolve(this.onRunSettled?.(run)).catch(() => undefined)
+      this.publishTurnSettled(run.id, userMessage.id, 'completed')
       this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
       return this.database.getAgentRunDetail(run.id)
     } catch (error) {
@@ -500,6 +515,7 @@ export class TaskDispatcher {
         updatedAt: new Date().toISOString()
       })
       onUpdate({ type: 'status', status: 'failed', detail: message })
+      this.publishTurnSettled(run.id, userMessage.id, 'failed')
       this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
       return this.database.getAgentRunDetail(run.id)
     } finally {

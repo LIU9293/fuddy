@@ -3,6 +3,12 @@ import XCTest
 @testable import ProjectAgentCompanion
 
 final class SyncModelTests: XCTestCase {
+    func testNotificationRunIDAcceptsOnlyNonEmptyRunIdentifiers() {
+        XCTAssertEqual(companionNotificationRunID(["runId": "run-1"]), "run-1")
+        XCTAssertNil(companionNotificationRunID(["runId": "   "]))
+        XCTAssertNil(companionNotificationRunID(["sequence": 42]))
+    }
+
     func testCompanionDateParsesFractionalAndWholeSecondTimestamps() {
         XCTAssertNotNil(parseCompanionDate("2026-08-07T17:55:03.145Z"))
         XCTAssertNotNil(parseCompanionDate("2026-08-07T17:55:03Z"))

@@ -36,12 +36,19 @@ export interface CliAgentTurnResult {
 
 type JsonRecord = Record<string, unknown>
 type ClaudeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+type ParsedCliRecord = {
+  assistant?: string
+  reasoning?: string
+  reasoningSegmentId?: string
+  tool?: { id?: string; name: string; detail: string }
+}
 
 // Codex app-server deliberately uses different casing for the legacy thread
 // sandbox enum and the structured turn sandbox policy discriminant.
 export const CODEX_THREAD_SANDBOX = 'danger-full-access' as const
 export const CODEX_TURN_SANDBOX_POLICY = 'dangerFullAccess' as const
 export const CODEX_APPROVAL_POLICY = 'never' as const
+export const CODEX_REASONING_SUMMARY = 'auto' as const
 
 export function codingAgentRuntimeRoots(input: Pick<CliAgentTurnInput, 'workingDirectory' | 'workspaceRoots' | 'filesDirectory'>): string[] {
   return [...new Set([input.workingDirectory, ...input.workspaceRoots, input.filesDirectory])]
@@ -65,7 +72,29 @@ export function codexReasoningSummaryDelta(method: string, params: JsonRecord): 
 }
 
 export function codexReasoningSegmentId(params: JsonRecord): string | undefined {
-  return textValue(params.itemId) || textValue(params.item_id) || undefined
+  const itemId = textValue(params.itemId) || textValue(params.item_id)
+  if (!itemId) return undefined
+  const summaryIndex = typeof params.summaryIndex === 'number' && Number.isInteger(params.summaryIndex)
+    ? params.summaryIndex
+    : null
+  return summaryIndex === null ? itemId : `${itemId}:summary:${summaryIndex}`
+}
+
+export function codexCompletedReasoningSummaries(item: JsonRecord): Array<{ segmentId: string; text: string }> {
+  if (item.type !== 'reasoning' || !Array.isArray(item.summary)) return []
+  const itemId = textValue(item.id)
+  return item.summary.flatMap((entry, summaryIndex) => {
+    const text = typeof entry === 'string'
+      ? entry
+      : entry && typeof entry === 'object'
+        ? streamTextValue((entry as JsonRecord).text)
+        : ''
+    if (!text.trim()) return []
+    return [{
+      segmentId: itemId ? `${itemId}:summary:${summaryIndex}` : `reasoning:summary:${summaryIndex}`,
+      text
+    }]
+  })
 }
 
 export function claudeSdkReasoningOptions(reasoningEffort?: string | null): { effort?: ClaudeEffort } {
@@ -82,6 +111,7 @@ export function buildCodexTurnStartParams(
     input: [{ type: 'text', text: prompt }],
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandboxPolicy: { type: CODEX_TURN_SANDBOX_POLICY },
+    summary: CODEX_REASONING_SUMMARY,
     ...(reasoningEffort ? { effort: reasoningEffort } : {})
   }
 }
@@ -90,10 +120,7 @@ function recordSessionId(record: JsonRecord): string | null {
   return textValue(record.thread_id) || textValue(record.session_id) || textValue(record.sessionID) || null
 }
 
-function codexRecord(record: JsonRecord): {
-  assistant?: string
-  tool?: { id?: string; name: string; detail: string }
-} {
+function codexRecord(record: JsonRecord): ParsedCliRecord {
   const item = record.item && typeof record.item === 'object' ? record.item as JsonRecord : null
   if (!item) return {}
   const itemType = textValue(item.type)
@@ -109,12 +136,7 @@ function codexRecord(record: JsonRecord): {
   return {}
 }
 
-export function claudeRecord(record: JsonRecord): {
-  assistant?: string
-  reasoning?: string
-  reasoningSegmentId?: string
-  tool?: { id?: string; name: string; detail: string }
-} {
+export function claudeRecord(record: JsonRecord): ParsedCliRecord {
   if (record.type === 'result') return { assistant: textValue(record.result) }
   if (record.type === 'assistant' && record.message && typeof record.message === 'object') {
     const content = (record.message as JsonRecord).content
@@ -145,9 +167,15 @@ export function claudeRecord(record: JsonRecord): {
   return {}
 }
 
-function opencodeRecord(record: JsonRecord): { assistant?: string; tool?: { id?: string; name: string; detail: string } } {
+export function opencodeRecord(record: JsonRecord): ParsedCliRecord {
   const part = record.part && typeof record.part === 'object' ? record.part as JsonRecord : record
   if (part.type === 'text') return { assistant: textValue(part.text) }
+  if (part.type === 'reasoning') {
+    return {
+      reasoning: streamTextValue(part.text),
+      reasoningSegmentId: textValue(part.id) || undefined
+    }
+  }
   if (part.type === 'tool') {
     return { tool: { id: textValue(part.id) || undefined, name: textValue(part.tool) || 'tool', detail: JSON.stringify(part.state ?? part).slice(0, 4_000) } }
   }
@@ -198,7 +226,7 @@ export function buildCliArgs(input: CliAgentTurnInput, mcpServers: McpServerLaun
     ]
   }
   return [
-    'run', '--auto', '--format', 'json', '--dir', input.workingDirectory,
+    'run', '--auto', '--format', 'json', '--thinking', '--dir', input.workingDirectory,
     ...(input.model ? ['--model', input.model] : []),
     ...(input.reasoningEffort ? ['--variant', input.reasoningEffort] : []),
     ...(input.sessionId ? ['--session', input.sessionId] : []),
@@ -388,6 +416,7 @@ export class CliAgentRuntime {
       let nextId = 1
       let sessionId = input.sessionId
       let streamedText = ''
+      const streamedReasoning = new Map<string, string>()
       let settled = false
       const pending = new Map<number, { resolve: (value: JsonRecord) => void; reject: (error: Error) => void }>()
       const write = (record: JsonRecord): void => {
@@ -442,11 +471,15 @@ export class CliAgentRuntime {
         }
         const params = record.params && typeof record.params === 'object' ? record.params as JsonRecord : {}
         const reasoningDelta = codexReasoningSummaryDelta(method, params)
-        if (reasoningDelta) input.onUpdate({
-          type: 'reasoning_delta',
-          segmentId: codexReasoningSegmentId(params),
-          delta: reasoningDelta
-        })
+        if (reasoningDelta) {
+          const segmentId = codexReasoningSegmentId(params)
+          if (segmentId) streamedReasoning.set(segmentId, (streamedReasoning.get(segmentId) ?? '') + reasoningDelta)
+          input.onUpdate({
+            type: 'reasoning_delta',
+            segmentId,
+            delta: reasoningDelta
+          })
+        }
         if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
           streamedText += params.delta
           input.onUpdate({ type: 'message_delta', messageId: `stream-${sessionId ?? 'new'}`, delta: params.delta })
@@ -466,6 +499,19 @@ export class CliAgentRuntime {
         if (method === 'item/completed' && params.item && typeof params.item === 'object') {
           const item = params.item as JsonRecord
           if (item.type === 'agentMessage' && !streamedText && typeof item.text === 'string') streamedText = item.text
+          for (const summary of codexCompletedReasoningSummaries(item)) {
+            const emitted = streamedReasoning.get(summary.segmentId) ?? ''
+            const delta = emitted
+              ? summary.text.startsWith(emitted) ? summary.text.slice(emitted.length) : ''
+              : summary.text
+            if (!delta) continue
+            streamedReasoning.set(summary.segmentId, emitted + delta)
+            input.onUpdate({
+              type: 'reasoning_delta',
+              segmentId: summary.segmentId,
+              delta
+            })
+          }
           if (item.type === 'commandExecution') {
             const detail = [textValue(item.command), textValue(item.aggregatedOutput)].filter(Boolean).join('\n').slice(0, 4_000)
             input.onUpdate({
@@ -579,6 +625,11 @@ export class CliAgentRuntime {
           : input.provider === 'claude'
             ? claudeRecord(record)
             : opencodeRecord(record)
+        if (parsed.reasoning) input.onUpdate({
+          type: 'reasoning_delta',
+          segmentId: parsed.reasoningSegmentId,
+          delta: parsed.reasoning
+        })
         if (parsed.tool) {
           input.onUpdate({
             type: 'tool',

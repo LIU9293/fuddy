@@ -3177,12 +3177,22 @@ export default function App(): React.JSX.Element {
     const stopBriefings = window.projectAgent.onMorningBriefingReady(refreshFromMain)
     const stopAutomations = window.projectAgent.onAutomationsChanged(refreshFromMain)
     const stopCompanionData = window.projectAgent.onCompanionDataChanged(refreshFromMain)
+    const stopOpenAgentRun = window.projectAgent.onOpenAgentRun((runId) => {
+      refreshFromMain()
+      setNavigation('runs')
+      setSidebarSelection('runs')
+      setSelectedProject(null)
+      setComposerProjectId(null)
+      setCreatingAgentRun(false)
+      setSelectedAgentRunId(runId)
+    })
     return () => {
       active = false
       if (retryTimer !== null) window.clearTimeout(retryTimer)
       stopBriefings()
       stopAutomations()
       stopCompanionData()
+      stopOpenAgentRun()
     }
   }, [])
 

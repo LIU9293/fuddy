@@ -149,10 +149,28 @@ struct CompanionRootView: View {
                 }
                 .onAppear {
                     updateContainerBottomSafeAreaInset(geometry.safeAreaInsets.bottom)
+                    openPendingNotificationRun()
                 }
                 .onChange(of: geometry.safeAreaInsets.bottom) { _, inset in
                     updateContainerBottomSafeAreaInset(inset)
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .companionOpenRun)) { notification in
+                    guard let runID = CompanionNotificationNavigationBridge.shared.consumePendingRunID()
+                        ?? notification.object as? String else { return }
+                    openNotificationRun(id: runID)
+                }
+        }
+    }
+
+    private func openPendingNotificationRun() {
+        guard let runID = CompanionNotificationNavigationBridge.shared.consumePendingRunID() else { return }
+        openNotificationRun(id: runID)
+    }
+
+    private func openNotificationRun(id: String) {
+        Task { @MainActor in
+            await store.sync()
+            router.openRun(id: id)
         }
     }
 

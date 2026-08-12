@@ -14,14 +14,14 @@ flowchart LR
   Relay["Cloudflare Worker\nauth + API boundary"]
   DO["Durable Object per pairing\nevent log + command queue + WebSocket"]
   R2["Private R2 bucket\nattachments"]
-  APNS["Apple Push Notification service\nbackground wake-up"]
+  APNS["Apple Push Notification service\nbackground wake-up + Run alerts"]
   Mac["Electron Mac app\nSQLite outbox + Agent runtimes"]
   Workspaces["Project workspace roots\nDBs + files + coding agents"]
 
   Phone <-->|"HTTPS / foreground WebSocket"| Relay
   Relay <--> DO
   Relay <--> R2
-  DO -. "silent notification" .-> APNS
+  DO -. "silent wake-up / visible Run alert" .-> APNS
   APNS -.-> Phone
   Mac <-->|"HTTPS / WebSocket"| Relay
   Mac <--> Workspaces
@@ -64,19 +64,18 @@ The current personal-device MVP retains ordered events, terminal commands, and R
 
 While iOS is active, `URLSessionWebSocketTask` receives immediate event notifications and the app replays the event log. A WebSocket is not a reliable suspended-app channel. The relay therefore sends a collapsed, content-free background notification only to iOS devices without an active socket. iOS then fetches the event log; invalid or unregistered APNs tokens are removed after provider rejection.
 
+Each terminal Agent turn adds one `agent-turn.settled` event after the Run transitions from `running` to `idle` or `failed`. Its stable turn ID is the triggering user-message ID, so Relay retries remain idempotent. The Mac displays a local notification; Relay converts the same event into an APNs alert for every registered iPhone, including a foreground device. The alert contains only the Run title, Run ID, turn ID, and replay sequence. Tapping it replays events and opens the matching Run; full messages and tool output never enter the APNs payload. User-initiated stops intentionally do not produce a completion alert.
+
 Apple explicitly treats background notifications as low priority and does not guarantee delivery; they can be throttled. Therefore the app always refreshes on foreground entry and manual pull-to-refresh as well. See [Pushing background updates to your app](https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app).
 
-APNs requires an Apple Developer team and a `.p8` key. Configure the Worker only after those exist:
+APNs requires an Apple Developer team and a `.p8` key. The non-secret Team ID, Key ID, topic, and APNs environment live in `cloud/relay/wrangler.jsonc`; only the private key is stored as a Cloudflare Worker secret:
 
 ```bash
 cd cloud/relay
-npx wrangler secret put APNS_TEAM_ID
-npx wrangler secret put APNS_KEY_ID
 npx wrangler secret put APNS_PRIVATE_KEY
-npx wrangler secret put APNS_TOPIC
 ```
 
-Set `APNS_ENVIRONMENT` as a non-secret Worker variable (`development` or `production`) and use the corresponding entitlement/profile. Without those values, foreground realtime and replay work; background push is intentionally skipped.
+Set `APNS_ENVIRONMENT` to `development` for locally signed development builds and change it to `production` before deploying a Relay used by TestFlight/App Store builds. The APNs key itself supports both environments. Without the required private-key secret, deployment is rejected; foreground realtime and ordered replay do not depend on APNs.
 
 ## Images and attachments
 
@@ -101,7 +100,7 @@ The local path remains visible only as descriptive metadata. R2 objects are not 
 - `DecisionListView`: inbox and constrained status commands.
 - `ProjectDetailView`: project status, goals, progress, and milestones from the same Mac snapshot/event log.
 - `ArtifactRow`: authenticated download and `QLPreviewController` presentation.
-- `CompanionAppDelegate`: APNs device-token and background update bridge.
+- `CompanionAppDelegate`: APNs authorization, device-token registration, foreground presentation, background update, and notification-to-Run navigation bridge.
 
 The deployment target is iOS 17. The project is generated with XcodeGen from `ios/project.yml` so target settings and file membership remain reviewable.
 

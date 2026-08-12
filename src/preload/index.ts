@@ -34,9 +34,23 @@ import type {
 } from '../shared/contracts'
 import type { CompanionMacStatus } from '../shared/companion-sync'
 
+const openAgentRunCallbacks = new Set<(runId: string) => void>()
+let pendingOpenAgentRunId: string | null = null
+
+ipcRenderer.on('navigation:open-agent-run', (_event, runId: unknown) => {
+  if (typeof runId !== 'string' || !runId.trim()) return
+  if (openAgentRunCallbacks.size === 0) {
+    pendingOpenAgentRunId = runId
+    return
+  }
+  for (const callback of openAgentRunCallbacks) callback(runId)
+})
+
 const api: DesktopApi = {
   getBootstrap: () => ipcRenderer.invoke('app:get-bootstrap'),
   requestComputerUsePermissions: () => ipcRenderer.invoke('capability:request-computer-permissions'),
+  requestMicrophoneAccess: () => ipcRenderer.invoke('capability:request-microphone-access'),
+  openMicrophoneSettings: () => ipcRenderer.invoke('capability:open-microphone-settings'),
   updateProject: (input: UpdateProjectInput) => ipcRenderer.invoke('project:update', input),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
   createGoal: (input: CreateGoalInput) => ipcRenderer.invoke('goal:create', input),
@@ -101,6 +115,17 @@ const api: DesktopApi = {
     const listener = (): void => callback()
     ipcRenderer.on('companion:data-changed', listener)
     return () => ipcRenderer.removeListener('companion:data-changed', listener)
+  },
+  onOpenAgentRun: (callback: (runId: string) => void) => {
+    openAgentRunCallbacks.add(callback)
+    if (pendingOpenAgentRunId) {
+      const runId = pendingOpenAgentRunId
+      pendingOpenAgentRunId = null
+      queueMicrotask(() => {
+        if (openAgentRunCallbacks.has(callback)) callback(runId)
+      })
+    }
+    return () => { openAgentRunCallbacks.delete(callback) }
   },
   sendAgentRunMessage: (
     input: SendAgentRunMessageInput,
