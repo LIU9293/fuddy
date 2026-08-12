@@ -14,4 +14,4 @@ export const agentProviderDefinitions = {
 } as const satisfies Record<AgentRunProvider, AgentProviderDefinition>
 
 export const agentRunProviders = Object.keys(agentProviderDefinitions) as AgentRunProvider[]
-export const codingAgentProviders: CodingAgentProvider[] = ['codex', 'claude', 'opencode']
+export const codingAgentProviders = ['codex', 'claude', 'opencode'] as const satisfies readonly CodingAgentProvider[]

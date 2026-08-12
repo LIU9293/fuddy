@@ -34,6 +34,19 @@ describe('AppDatabase lifecycle', () => {
     reopened.close()
   })
 
+  it('rejects a newer database before seed or schema writes occur', () => {
+    const path = temporaryDatabasePath()
+    const future = new DatabaseSync(path)
+    future.exec('PRAGMA user_version = 99')
+    future.close()
+
+    expect(() => new AppDatabase(path)).toThrow('newer than this app supports')
+    const unchanged = new DatabaseSync(path)
+    expect(unchanged.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([])
+    expect(unchanged.prepare('PRAGMA user_version').get()).toEqual({ user_version: 99 })
+    unchanged.close()
+  })
+
   it('prunes only published outbox events older than the retention window', () => {
     const database = new AppDatabase(temporaryDatabasePath())
     const expired = database.enqueueAgentTurnSettled({

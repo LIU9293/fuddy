@@ -22,7 +22,7 @@ export interface AgentProviderTurnInput {
   projectId: string | null
   projectContext: string
   prompt: string
-  history: AgentRunMessage[]
+  history: () => AgentRunMessage[]
   sessionId: string | null
   workingDirectory: string | null
   workspaceRoots: string[]
@@ -96,7 +96,7 @@ export function createDefaultAgentProviderRegistry(
         projectId: input.projectId,
         projectContext: input.projectContext,
         prompt: input.prompt,
-        history: input.history,
+        history: input.history(),
         sessionId: input.sessionId,
         workingDirectory: input.workingDirectory ?? input.filesDirectory,
         workspaceRoots: input.workspaceRoots,

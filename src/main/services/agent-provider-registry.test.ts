@@ -13,7 +13,7 @@ function turnInput(): AgentProviderTurnInput {
     projectId: 'project-1',
     projectContext: 'project context',
     prompt: 'do work',
-    history: [],
+    history: () => [],
     sessionId: 'session-1',
     workingDirectory: '/tmp/project',
     workspaceRoots: ['/tmp/project'],
@@ -47,8 +47,14 @@ describe('AgentProviderRegistry', () => {
     )
 
     expect(registry.list().map((adapter) => adapter.provider)).toEqual(['pi', 'codex', 'claude', 'opencode'])
-    await expect(registry.runTurn('pi', turnInput())).resolves.toMatchObject({ text: 'pi result' })
-    await expect(registry.runTurn('codex', turnInput())).resolves.toEqual({ text: 'codex result', sessionId: 'native-session' })
+    const piInput = turnInput()
+    piInput.history = vi.fn(() => [])
+    await expect(registry.runTurn('pi', piInput)).resolves.toMatchObject({ text: 'pi result' })
+    expect(piInput.history).toHaveBeenCalledOnce()
+    const cliInput = turnInput()
+    cliInput.history = vi.fn(() => [])
+    await expect(registry.runTurn('codex', cliInput)).resolves.toEqual({ text: 'codex result', sessionId: 'native-session' })
+    expect(cliInput.history).not.toHaveBeenCalled()
     expect(cliRunTurn).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'codex',
       prompt: 'project context\n\n用户任务：\ndo work'

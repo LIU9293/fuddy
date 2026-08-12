@@ -419,7 +419,7 @@ export class TaskDispatcher {
         projectId: run.projectId,
         projectContext: this.buildRunContext(run),
         prompt: runtimePrompt,
-        history: this.database.listAgentRunMessages(runId).filter((message) => message.id !== userMessage.id),
+        history: () => this.database.listAgentRunMessages(runId).filter((message) => message.id !== userMessage.id),
         sessionId: run.sessionId,
         workingDirectory: run.workingDirectory,
         workspaceRoots: projectWorkspacesFor(this.database, run.projectId),

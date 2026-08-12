@@ -46,7 +46,7 @@ import type { ConnectorCatalogItem } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import { companionEventDefinitions, companionProtocolVersion } from '../../shared/companion-sync'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
-import { runDatabaseMigrations } from './database-migrations'
+import { databaseSchemaVersion, runDatabaseMigrations, type DatabaseMigration } from './database-migrations'
 import type {
   AgentTurnSettledPayload,
   CompanionCommand,
@@ -104,7 +104,7 @@ export class AppDatabase {
     mkdirSync(dirname(path), { recursive: true })
     this.database = new DatabaseSync(path)
     this.database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
-    runDatabaseMigrations(this.database, [
+    const migrations: DatabaseMigration[] = [
       { version: 1, name: 'baseline-schema', apply: () => this.ensureCurrentSchema() },
       {
         version: 2,
@@ -115,8 +115,19 @@ export class AppDatabase {
         }
       },
       { version: 3, name: 'normalize-decision-lifecycles', apply: () => this.migrateDecisionLifecycle() }
-    ])
+    ]
+    const currentVersion = databaseSchemaVersion(this.database)
+    const latestVersion = migrations.at(-1)?.version ?? 0
+    if (currentVersion > latestVersion) {
+      this.database.close()
+      throw new Error(`Database schema version ${currentVersion} is newer than this app supports (${latestVersion}).`)
+    }
+    // Legacy version-0 databases need the schema before seed cleanup can run.
+    // Data normalization remains after seed, preserving the historical startup
+    // order while every step is now independently versioned and transactional.
+    if (currentVersion === 0) runDatabaseMigrations(this.database, [migrations[0]])
     this.seed()
+    runDatabaseMigrations(this.database, migrations)
     this.prunePublishedCompanionEvents()
   }
 

@@ -12,7 +12,7 @@ export interface DatabaseMigrationResult {
   applied: Array<Pick<DatabaseMigration, 'version' | 'name'>>
 }
 
-function databaseVersion(database: DatabaseSync): number {
+export function databaseSchemaVersion(database: DatabaseSync): number {
   const row = database.prepare('PRAGMA user_version').get() as { user_version: number }
   return Number(row.user_version)
 }
@@ -37,7 +37,7 @@ export function runDatabaseMigrations(
   migrations: DatabaseMigration[]
 ): DatabaseMigrationResult {
   validateMigrations(migrations)
-  const fromVersion = databaseVersion(database)
+  const fromVersion = databaseSchemaVersion(database)
   const latestVersion = migrations.at(-1)?.version ?? 0
   if (fromVersion > latestVersion) {
     throw new Error(`Database schema version ${fromVersion} is newer than this app supports (${latestVersion}).`)
@@ -58,5 +58,5 @@ export function runDatabaseMigrations(
     }
   }
 
-  return { fromVersion, toVersion: databaseVersion(database), applied }
+  return { fromVersion, toVersion: databaseSchemaVersion(database), applied }
 }
