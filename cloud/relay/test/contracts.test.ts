@@ -82,6 +82,7 @@ describe('companion protocol contracts', () => {
       }
     })
 
+    if (parsed.type !== 'assistant.send-message') throw new Error('Unexpected parsed command type.')
     expect(parsed.payload.attachments?.[0]).toMatchObject({
       messageId: null,
       artifactId: null,
