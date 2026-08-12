@@ -10,6 +10,7 @@ func parseCompanionDate(_ value: String) -> Date? {
 }
 
 struct PairingPayload: Codable {
+    let minimumProtocolVersion: Int?
     let protocolVersion: Int
     let relayUrl: String
     let accountId: String
@@ -17,6 +18,7 @@ struct PairingPayload: Codable {
 }
 
 struct PairingClaimResult: Codable {
+    let minimumProtocolVersion: Int?
     let protocolVersion: Int
     let accountId: String
     let device: CompanionDevice
@@ -41,6 +43,8 @@ struct CompanionCredentials: Codable {
 }
 
 struct SyncEventPage: Codable {
+    let minimumProtocolVersion: Int?
+    let protocolVersion: Int?
     let events: [SyncEvent]
     let lastSequence: Int
     let presence: CompanionPresence?

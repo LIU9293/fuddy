@@ -16,9 +16,10 @@ final class SyncModelTests: XCTestCase {
     }
 
     func testPairingPayloadDecodesMacPayload() throws {
-        let payload = #"{"protocolVersion":1,"relayUrl":"https://relay.example.com","accountId":"account","pairingSecret":"secret"}"#
+        let payload = #"{"minimumProtocolVersion":1,"protocolVersion":2,"relayUrl":"https://relay.example.com","accountId":"account","pairingSecret":"secret"}"#
         let decoded = try JSONDecoder().decode(PairingPayload.self, from: Data(payload.utf8))
-        XCTAssertEqual(decoded.protocolVersion, 1)
+        XCTAssertEqual(decoded.minimumProtocolVersion, 1)
+        XCTAssertEqual(decoded.protocolVersion, 2)
         XCTAssertEqual(decoded.accountId, "account")
     }
 
@@ -33,6 +34,14 @@ final class SyncModelTests: XCTestCase {
         XCTAssertTrue(companionProtocolVersionIsSupported(companionMinimumProtocolVersion))
         XCTAssertFalse(companionProtocolVersionIsSupported(companionMinimumProtocolVersion - 1))
         XCTAssertFalse(companionProtocolVersionIsSupported(companionProtocolVersion + 1))
+        XCTAssertTrue(companionProtocolRangeSupportsLocalVersion(
+            minimumVersion: companionProtocolVersion,
+            currentVersion: companionProtocolVersion + 1
+        ))
+        XCTAssertFalse(companionProtocolRangeSupportsLocalVersion(
+            minimumVersion: companionProtocolVersion + 1,
+            currentVersion: companionProtocolVersion + 2
+        ))
     }
 
     func testGenericEventPayloadDecodesAgentRun() throws {

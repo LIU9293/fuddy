@@ -129,12 +129,14 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       createdAt
     })
     const pairingPayload = JSON.stringify({
+      minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
       relayUrl: url.origin,
       accountId,
       pairingSecret
     })
     return Response.json({
+      minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
       accountId,
       macDeviceId: input.macDeviceId,

@@ -60,6 +60,8 @@ import type {
 
 type SqlRow = Record<string, string | number | null>
 
+const companionEventPruneIntervalMs = 24 * 60 * 60 * 1_000
+
 export interface DecisionInspectionInput {
   projectId: string | null
   dedupeKey: string
@@ -99,6 +101,7 @@ function parseJson<T>(value: string | null, fallback: T): T {
 export class AppDatabase {
   private readonly database: DatabaseSync
   private readonly companionEventListeners = new Set<() => void>()
+  private nextCompanionEventPruneAt = 0
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true })
@@ -128,7 +131,8 @@ export class AppDatabase {
     if (currentVersion === 0) runDatabaseMigrations(this.database, [migrations[0]])
     this.seed()
     runDatabaseMigrations(this.database, migrations)
-    this.prunePublishedCompanionEvents()
+    this.pruneAllPublishedCompanionEvents()
+    this.nextCompanionEventPruneAt = Date.now() + companionEventPruneIntervalMs
   }
 
   close(): void {
@@ -1748,6 +1752,10 @@ export class AppDatabase {
     this.database.prepare(`
       UPDATE companion_sync_outbox SET published_at = ?, last_error = NULL WHERE event_id = ?
     `).run(publishedAt, eventId)
+    if (Date.now() >= this.nextCompanionEventPruneAt) {
+      this.pruneAllPublishedCompanionEvents()
+      this.nextCompanionEventPruneAt = Date.now() + companionEventPruneIntervalMs
+    }
   }
 
   prunePublishedCompanionEvents(retentionDays = 30, batchSize = 1_000): number {
@@ -1766,6 +1774,15 @@ export class AppDatabase {
       )
     `).run(cutoff, batchSize)
     return Number(result.changes)
+  }
+
+  private pruneAllPublishedCompanionEvents(retentionDays = 30, batchSize = 1_000): number {
+    let total = 0
+    while (true) {
+      const deleted = this.prunePublishedCompanionEvents(retentionDays, batchSize)
+      total += deleted
+      if (deleted < batchSize) return total
+    }
   }
 
   markCompanionEventFailed(eventId: string, error: string): void {

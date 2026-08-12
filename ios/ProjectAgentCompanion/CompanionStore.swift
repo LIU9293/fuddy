@@ -182,8 +182,14 @@ final class CompanionStore: ObservableObject {
                 let page = try await client.events(after: state.lastSequence)
                 guard !Task.isCancelled else { return }
                 if let presence = page.presence { macOnline = presence.macOnline }
+                if let remoteCurrentVersion = page.protocolVersion {
+                    guard companionProtocolRangeSupportsLocalVersion(
+                        minimumVersion: page.minimumProtocolVersion ?? remoteCurrentVersion,
+                        currentVersion: remoteCurrentVersion
+                    ) else { throw RelayError.protocolMismatch }
+                }
                 for event in page.events where event.sequence > state.lastSequence {
-                    guard companionProtocolVersionIsSupported(event.protocolVersion) else {
+                    if page.protocolVersion == nil && !companionProtocolVersionIsSupported(event.protocolVersion) {
                         throw RelayError.protocolMismatch
                     }
                     if let eventError = try apply(event) { replayedOperationError = eventError }

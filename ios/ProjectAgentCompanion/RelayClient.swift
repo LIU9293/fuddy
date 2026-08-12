@@ -32,7 +32,10 @@ final class RelayClient {
     init(credentials: CompanionCredentials) { self.credentials = credentials }
 
     static func claim(pairing: PairingPayload, deviceName: String) async throws -> CompanionCredentials {
-        guard companionProtocolVersionIsSupported(pairing.protocolVersion) else { throw RelayError.protocolMismatch }
+        guard companionProtocolRangeSupportsLocalVersion(
+            minimumVersion: pairing.minimumProtocolVersion ?? pairing.protocolVersion,
+            currentVersion: pairing.protocolVersion
+        ) else { throw RelayError.protocolMismatch }
         let deviceID = UUID().uuidString
         guard var components = URLComponents(string: pairing.relayUrl),
               components.scheme == "https",
@@ -53,7 +56,10 @@ final class RelayClient {
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
         let result = try JSONDecoder().decode(PairingClaimResult.self, from: data)
-        guard companionProtocolVersionIsSupported(result.protocolVersion) else { throw RelayError.protocolMismatch }
+        guard companionProtocolRangeSupportsLocalVersion(
+            minimumVersion: result.minimumProtocolVersion ?? result.protocolVersion,
+            currentVersion: result.protocolVersion
+        ) else { throw RelayError.protocolMismatch }
         return CompanionCredentials(
             relayURL: pairing.relayUrl,
             accountID: result.accountId,

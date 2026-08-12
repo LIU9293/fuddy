@@ -45,6 +45,7 @@ export interface CompanionPairingStartInput {
 }
 
 export interface CompanionPairingStartResult {
+  minimumProtocolVersion: number
   protocolVersion: number
   accountId: string
   macDeviceId: string
@@ -63,6 +64,7 @@ export interface CompanionPairingClaimInput {
 }
 
 export interface CompanionPairingClaimResult {
+  minimumProtocolVersion: number
   protocolVersion: number
   accountId: string
   device: CompanionDevice
@@ -128,6 +130,8 @@ export interface CompanionCommandUpdate {
 }
 
 export interface CompanionEventPage {
+  minimumProtocolVersion: number
+  protocolVersion: number
   events: CompanionSyncEvent[]
   lastSequence: number
   presence?: CompanionPresence

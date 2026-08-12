@@ -53,6 +53,9 @@ describe('companion relay', () => {
 
   it('pairs devices and rejects a second claim', async () => {
     const { pairing, phone } = await pairedDevices()
+    expect(pairing.minimumProtocolVersion).toBe(1)
+    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({ minimumProtocolVersion: 1 })
+    expect(phone.minimumProtocolVersion).toBe(1)
     expect(phone.accountId).toBe(pairing.accountId)
     expect(phone.device.role).toBe('ios')
     expect(phone.deviceToken.length).toBeGreaterThan(20)
@@ -102,6 +105,7 @@ describe('companion relay', () => {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
     const page = await pageResponse.json<CompanionEventPage>()
+    expect(page).toMatchObject({ minimumProtocolVersion: 1, protocolVersion: companionProtocolVersion })
     expect(page.events).toHaveLength(1)
     expect(page.events[0]).toMatchObject(input)
     expect(page.presence).toMatchObject({ macOnline: false, iosDevicesOnline: 0 })

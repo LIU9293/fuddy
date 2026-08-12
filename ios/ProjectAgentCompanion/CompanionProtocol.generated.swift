@@ -8,6 +8,10 @@ func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
     version >= companionMinimumProtocolVersion && version <= companionProtocolVersion
 }
 
+func companionProtocolRangeSupportsLocalVersion(minimumVersion: Int, currentVersion: Int) -> Bool {
+    companionProtocolVersion >= minimumVersion && companionProtocolVersion <= currentVersion
+}
+
 enum CompanionEventType: Hashable, Codable {
     case snapshotCreated
     case projectCreated
