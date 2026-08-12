@@ -51,6 +51,10 @@ import Foundation
 let companionMinimumProtocolVersion = ${companionProtocol.minimumVersion}
 let companionProtocolVersion = ${companionProtocol.currentVersion}
 
+func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
+    version >= companionMinimumProtocolVersion && version <= companionProtocolVersion
+}
+
 ${swiftStringEnum('CompanionEventType', Object.keys(companionEventDefinitions))}
 
 ${swiftStringEnum('CompanionCommandType', companionCommandTypes)}

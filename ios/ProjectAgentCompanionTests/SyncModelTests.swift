@@ -28,6 +28,13 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(event.type, .unknown("future.created"))
     }
 
+    func testCompanionProtocolSupportUsesGeneratedCompatibilityRange() {
+        XCTAssertTrue(companionProtocolVersionIsSupported(companionProtocolVersion))
+        XCTAssertTrue(companionProtocolVersionIsSupported(companionMinimumProtocolVersion))
+        XCTAssertFalse(companionProtocolVersionIsSupported(companionMinimumProtocolVersion - 1))
+        XCTAssertFalse(companionProtocolVersionIsSupported(companionProtocolVersion + 1))
+    }
+
     func testGenericEventPayloadDecodesAgentRun() throws {
         let json = #"{"eventId":"e1","sequence":1,"protocolVersion":1,"type":"agent-run.updated","entityType":"agent-run","entityId":"r1","revision":1,"payload":{"id":"r1","projectId":null,"decisionId":"d1","provider":"codex","title":"Test","status":"draft","workingDirectory":null,"summary":"Done","draftPrompt":"先检查素材，不要发送。","createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z"},"sourceDeviceId":"mac","occurredAt":"2026-08-07T00:00:00.000Z"}"#
         let event = try JSONDecoder().decode(SyncEvent.self, from: Data(json.utf8))

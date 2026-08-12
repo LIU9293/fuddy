@@ -46,4 +46,20 @@ describe('companion protocol contracts', () => {
       payload: { decisionId: 'decision-1', status: 'resolved' }
     }).success).toBe(false)
   })
+
+  it('persists the normalized payload returned by its type-specific schema', () => {
+    const parsed = commandSchema.parse({
+      commandId: 'command-1',
+      protocolVersion: 1,
+      createdAt: occurredAt,
+      type: 'agent.rename-session',
+      payload: {
+        runId: '  run-1  ',
+        title: '  Rename me  ',
+        ignored: 'do not persist'
+      }
+    })
+
+    expect(parsed.payload).toEqual({ runId: 'run-1', title: 'Rename me' })
+  })
 })

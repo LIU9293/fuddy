@@ -4,6 +4,10 @@ import Foundation
 let companionMinimumProtocolVersion = 1
 let companionProtocolVersion = 1
 
+func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
+    version >= companionMinimumProtocolVersion && version <= companionProtocolVersion
+}
+
 enum CompanionEventType: Hashable, Codable {
     case snapshotCreated
     case projectCreated

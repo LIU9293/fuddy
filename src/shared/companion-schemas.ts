@@ -99,7 +99,7 @@ export const syncEventSchema = z.object({
   type: z.enum(companionEventTypes),
   entityType: z.enum(companionEntityTypes),
   payload: z.unknown()
-}).superRefine((event, context) => {
+}).transform((event, context) => {
   const expectedEntityType = companionEventDefinitions[event.type]
   if (event.entityType !== expectedEntityType) {
     context.addIssue({
@@ -113,8 +113,13 @@ export const syncEventSchema = z.object({
     for (const issue of parsedPayload.error.issues) {
       context.addIssue({ ...issue, path: ['payload', ...issue.path] })
     }
+    return z.NEVER
   }
-}).transform((event) => event as unknown as CompanionSyncEventInput)
+  // Persist the parsed value, not just the validation result. Several payload
+  // schemas trim identifiers and bounded user input; returning the original
+  // object would let whitespace-padded values bypass those bounds.
+  return { ...event, payload: parsedPayload.data } as CompanionSyncEventInput
+})
 
 export const syncEventBatchSchema = z.object({ events: z.array(syncEventSchema).min(1).max(100) })
 
@@ -137,14 +142,16 @@ export const commandSchema = z.object({
   ...commandBase,
   type: z.enum(companionCommandTypes),
   payload: z.unknown()
-}).superRefine((command, context) => {
+}).transform((command, context) => {
   const parsedPayload = commandPayloadSchemas[command.type].safeParse(command.payload)
   if (!parsedPayload.success) {
     for (const issue of parsedPayload.error.issues) {
       context.addIssue({ ...issue, path: ['payload', ...issue.path] })
     }
+    return z.NEVER
   }
-}).transform((command) => command as unknown as CompanionCommandInput)
+  return { ...command, payload: parsedPayload.data } as CompanionCommandInput
+})
 
 export const companionCommandSchema = z.object({
   ...commandBase,
@@ -155,14 +162,16 @@ export const companionCommandSchema = z.object({
   result: z.unknown().nullable(),
   error: z.string().max(8_000).nullable(),
   updatedAt: isoDate
-}).superRefine((command, context) => {
+}).transform((command, context) => {
   const parsedPayload = commandPayloadSchemas[command.type].safeParse(command.payload)
   if (!parsedPayload.success) {
     for (const issue of parsedPayload.error.issues) {
       context.addIssue({ ...issue, path: ['payload', ...issue.path] })
     }
+    return z.NEVER
   }
-}).transform((command) => command as unknown as CompanionCommand)
+  return { ...command, payload: parsedPayload.data } as CompanionCommand
+})
 
 export const commandUpdateSchema = z.object({
   status: z.enum(['delivered', 'executing', 'completed', 'failed']),
