@@ -46,6 +46,7 @@ import type { ConnectorCatalogItem } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
+import { runDatabaseMigrations } from './database-migrations'
 import type {
   AgentTurnSettledPayload,
   CompanionCommand,
@@ -101,11 +102,20 @@ export class AppDatabase {
     mkdirSync(dirname(path), { recursive: true })
     this.database = new DatabaseSync(path)
     this.database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
-    this.migrate()
+    runDatabaseMigrations(this.database, [
+      { version: 1, name: 'baseline-schema', apply: () => this.ensureCurrentSchema() },
+      {
+        version: 2,
+        name: 'normalize-project-workspaces',
+        apply: () => {
+          this.migrateProjectWorkspaceProfiles()
+          this.migrateAgentRunWorkspaces()
+        }
+      },
+      { version: 3, name: 'normalize-decision-lifecycles', apply: () => this.migrateDecisionLifecycle() }
+    ])
     this.seed()
-    this.migrateProjectWorkspaceProfiles()
-    this.migrateAgentRunWorkspaces()
-    this.migrateDecisionLifecycle()
+    this.prunePublishedCompanionEvents()
   }
 
   close(): void {
@@ -1727,6 +1737,24 @@ export class AppDatabase {
     `).run(publishedAt, eventId)
   }
 
+  prunePublishedCompanionEvents(retentionDays = 30, batchSize = 1_000): number {
+    if (!Number.isFinite(retentionDays) || retentionDays < 1) throw new Error('Retention days must be at least 1.')
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 10_000) {
+      throw new Error('Companion event cleanup batch size must be between 1 and 10000.')
+    }
+    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString()
+    const result = this.database.prepare(`
+      DELETE FROM companion_sync_outbox
+      WHERE event_id IN (
+        SELECT event_id FROM companion_sync_outbox
+        WHERE published_at IS NOT NULL AND published_at < ?
+        ORDER BY published_at ASC
+        LIMIT ?
+      )
+    `).run(cutoff, batchSize)
+    return Number(result.changes)
+  }
+
   markCompanionEventFailed(eventId: string, error: string): void {
     this.database.prepare(`
       UPDATE companion_sync_outbox
@@ -1879,7 +1907,7 @@ export class AppDatabase {
     if (result.changes === 0) throw new Error(`Audit entry not found: ${id}`)
   }
 
-  private migrate(): void {
+  private ensureCurrentSchema(): void {
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
