@@ -45,6 +45,7 @@ import type {
 import type { ConnectorCatalogItem } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import { companionProtocolVersion } from '../../shared/companion-sync'
+import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import type {
   AgentTurnSettledPayload,
   CompanionCommand,
@@ -1662,9 +1663,10 @@ export class AppDatabase {
     })
   }
 
-  enqueueCompanionSnapshot(): CompanionOutboxEvent {
+  enqueueCompanionSnapshot(modelLabels: AgentModelLabels = emptyAgentModelLabels): CompanionOutboxEvent {
     const snapshot: CompanionSnapshotPayload = {
       generatedAt: new Date().toISOString(),
+      modelLabels,
       projects: this.listProjects(),
       goals: this.listGoals(),
       decisions: this.listDecisions(),
@@ -1680,10 +1682,14 @@ export class AppDatabase {
     return this.enqueueCompanionEvent('agent-turn.settled', 'agent-run', payload.runId, payload)
   }
 
-  enqueueCompanionPairingSnapshot(): CompanionOutboxEvent {
+  enqueueCompanionModelLabels(modelLabels: AgentModelLabels): CompanionOutboxEvent {
+    return this.enqueueCompanionEvent('model-labels.updated', 'settings', 'models', modelLabels)
+  }
+
+  enqueueCompanionPairingSnapshot(modelLabels: AgentModelLabels = emptyAgentModelLabels): CompanionOutboxEvent {
     return this.companionTransaction(() => {
       this.database.prepare('DELETE FROM companion_sync_outbox WHERE published_at IS NULL').run()
-      return this.enqueueCompanionSnapshot()
+      return this.enqueueCompanionSnapshot(modelLabels)
     })
   }
 

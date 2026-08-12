@@ -1,3 +1,5 @@
+import type { AgentModelLabels } from './model-display'
+
 export const companionProtocolVersion = 1
 export const defaultCompanionRelayUrl = 'https://project-agent-companion-relay.moghub.workers.dev'
 
@@ -56,6 +58,7 @@ export type CompanionEntityType =
   | 'artifact'
   | 'morning-briefing'
   | 'work-assistant-message'
+  | 'settings'
 
 export interface CompanionSyncEventInput<TPayload = unknown> {
   eventId: string
@@ -198,6 +201,7 @@ export interface CompanionOutboxEvent extends CompanionSyncEventInput {
 
 export interface CompanionSnapshotPayload {
   generatedAt: string
+  modelLabels: AgentModelLabels
   projects: unknown[]
   goals: unknown[]
   decisions: unknown[]

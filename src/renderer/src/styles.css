@@ -202,7 +202,7 @@ textarea:focus {
 
 .settings-sidebar-title strong {
   flex: 1;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 620;
 }
 
@@ -275,7 +275,7 @@ textarea:focus {
   border-radius: 9px;
   color: #52524c;
   background: transparent;
-  font-size: 11.5px;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
@@ -409,7 +409,7 @@ textarea:focus {
 }
 
 .project-nav button {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .project-icon {
@@ -443,13 +443,13 @@ textarea:focus {
 }
 
 .project-icon.is-wordmark {
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: -0.055em;
 }
 
 .project-icon.is-wordmark.is-sidebar,
 .project-icon.is-wordmark.is-agent-run-meta {
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .project-icon.is-wordmark.is-agent-run-info {
@@ -586,7 +586,7 @@ textarea:focus {
 }
 
 .sidebar-run-list strong {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 620;
 }
 
@@ -1210,7 +1210,7 @@ textarea:focus {
 }
 
 .chat-turn-meta strong {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 650;
 }
 
@@ -1508,7 +1508,7 @@ textarea:focus {
 .chat-markdown h1 { font-size: 17px; }
 .chat-markdown h2 { font-size: 15px; }
 .chat-markdown h3,
-.chat-markdown h4 { font-size: 13.5px; }
+.chat-markdown h4 { font-size: 13px; }
 
 .chat-markdown ul,
 .chat-markdown ol {
@@ -1611,7 +1611,7 @@ textarea:focus {
   border-radius: 9px;
   color: #74746d;
   background: rgba(42, 42, 38, 0.025);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .agent-plan span {
@@ -1692,7 +1692,7 @@ textarea:focus {
   width: 100%;
   margin: 10px 0 0;
   color: #ffc3bd;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -1808,7 +1808,7 @@ textarea:focus {
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.79);
   background: rgba(12, 17, 35, 0.17);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.75;
 }
 
@@ -1831,7 +1831,7 @@ textarea:focus {
 .briefing-card-transcript h4 {
   margin: 17px 0 6px;
   color: rgba(255, 255, 255, 0.91);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .briefing-card-transcript p + p {
@@ -1889,6 +1889,33 @@ textarea:focus {
   margin: 0 auto;
 }
 
+.chat-scroll-to-latest {
+  position: absolute;
+  z-index: 4;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(45, 45, 40, .1);
+  border-radius: 50%;
+  color: #55554f;
+  background: rgba(255, 255, 253, .92);
+  box-shadow: 0 6px 20px rgba(35, 35, 30, .13);
+  backdrop-filter: blur(14px);
+  cursor: pointer;
+  transform: translateX(-50%);
+  transition: color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.chat-scroll-to-latest:hover {
+  color: #292925;
+  background: #fff;
+  transform: translateX(-50%) translateY(-1px);
+}
+
 .morning-empty {
   display: flex;
   min-height: 420px;
@@ -1911,7 +1938,7 @@ textarea:focus {
 }
 
 .morning-empty strong { color: #454540; font-size: 14px; }
-.morning-empty p { margin: 0 0 8px; font-size: 11.5px; }
+.morning-empty p { margin: 0 0 8px; font-size: 12px; }
 
 
 .filter-tabs {
@@ -1931,7 +1958,7 @@ textarea:focus {
   border-radius: 7px;
   background: transparent;
   color: #777771;
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -2250,7 +2277,7 @@ textarea:focus {
 
 .goal-progress-heading strong {
   color: #373733;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 620;
 }
 
@@ -2324,7 +2351,7 @@ textarea:focus {
 
 .goal-milestone strong {
   color: #4b4b46;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 520;
   line-height: 1.45;
 }
@@ -2439,7 +2466,7 @@ textarea:focus {
 .goal-checkin-panel > p {
   margin: 0 0 7px;
   color: #62625c;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -2509,7 +2536,7 @@ textarea:focus {
   max-width: 450px;
   margin: 0;
   color: #7a7972;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -2646,7 +2673,7 @@ textarea:focus {
 .detail-section p {
   margin: 0;
   color: #55554f;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -2714,11 +2741,11 @@ textarea:focus {
 }
 
 .decision-completion-heading div { gap: 2px; }
-.decision-completion-heading span { font-size: 11.5px; font-weight: 700; }
+.decision-completion-heading span { font-size: 12px; font-weight: 700; }
 .decision-completion-heading small { color: #7c927f; font-size: 11px; white-space: nowrap; }
 .decision-completion-copy { gap: 7px; }
 .decision-completion-copy > strong { color: #2b2b27; font-size: 14px; font-weight: 650; }
-.decision-completion-copy > p { max-width: 700px; margin: 0; color: #59635a; font-size: 11.5px; line-height: 1.55; }
+.decision-completion-copy > p { max-width: 700px; margin: 0; color: #59635a; font-size: 12px; line-height: 1.55; }
 
 .decision-completion-evidence {
   display: flex;
@@ -2898,7 +2925,7 @@ textarea:focus {
 .project-summary {
   margin: 0 0 14px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .project-mission {
@@ -2910,7 +2937,7 @@ textarea:focus {
   border-radius: 10px;
   background: rgba(45, 45, 40, 0.045);
   color: #5e5e58;
-  font-size: 10.8px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -3367,7 +3394,7 @@ textarea:focus {
 
 .run-main strong {
   overflow: hidden;
-  font-size: 12.5px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3456,7 +3483,7 @@ textarea:focus {
   border-radius: 8px;
   background: #30302c;
   color: white;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -3515,7 +3542,7 @@ textarea:focus {
   outline: none;
   color: #81817a;
   background: transparent;
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -3594,7 +3621,7 @@ textarea:focus {
   outline: 0;
   color: #666660;
   background: transparent;
-  font-size: 11.5px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
@@ -3654,7 +3681,7 @@ textarea:focus {
   overflow: hidden;
   max-width: 100%;
   color: #44443f;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 610;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3686,7 +3713,7 @@ textarea:focus {
 }
 
 .workspace-preview-header strong {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .workspace-preview-header span {
@@ -3753,7 +3780,7 @@ textarea:focus {
   padding: 26px 32px 56px;
   overflow-y: auto;
   color: #3b3b36;
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.72;
 }
 
@@ -3865,7 +3892,7 @@ textarea:focus {
 }
 
 .agent-runs-toolbar strong {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .agent-runs-toolbar span {
@@ -3943,7 +3970,7 @@ textarea:focus {
 .agent-session-title strong {
   overflow: hidden;
   color: #30302c;
-  font-size: 12.5px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4501,7 +4528,7 @@ textarea:focus {
   border: 0;
   color: #85857e;
   background: transparent;
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -4716,7 +4743,7 @@ textarea:focus {
 
 .settings-summary-grid strong {
   color: #3d3d38;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .settings-summary-grid p,
@@ -4879,7 +4906,7 @@ textarea:focus {
 
 .settings-subsection-heading h3 {
   color: #3d3d38;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 640;
 }
 
@@ -4924,7 +4951,7 @@ textarea:focus {
 
 .runtime-capability-heading strong {
   color: #4a4a45;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .runtime-capability-heading small {
@@ -5399,7 +5426,7 @@ textarea:focus {
 }
 
 .settings-project-scope strong {
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .settings-project-scope small {
@@ -5476,7 +5503,7 @@ textarea:focus {
 }
 
 .connector-title-row strong {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .connector-status {
@@ -5606,7 +5633,7 @@ textarea:focus {
 }
 
 .catalog-grid strong {
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .catalog-grid p {
@@ -5664,7 +5691,7 @@ textarea:focus {
 }
 
 .postgres-setup-heading strong {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .postgres-setup-heading p {
@@ -5870,6 +5897,20 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 5px;
+}
+
+.composer-model-label {
+  overflow: hidden;
+  max-width: 150px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: #777770;
+  background: rgba(42, 42, 38, 0.045);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer-voice-button.is-recording {
@@ -6745,7 +6786,7 @@ textarea:focus {
   gap: 2px;
 }
 
-.automations-toolbar strong { font-size: 12.5px; }
+.automations-toolbar strong { font-size: 12px; }
 .automations-toolbar span { color: #909089; font-size: 11px; }
 
 .automation-list {
@@ -6815,7 +6856,7 @@ textarea:focus {
 }
 
 .automation-copy > span { display: flex; min-width: 0; align-items: center; gap: 7px; }
-.automation-copy strong { overflow: hidden; color: #30302c; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.automation-copy strong { overflow: hidden; color: #30302c; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .automation-copy i { padding: 2px 5px; border-radius: 5px; color: #85857e; background: rgba(50, 50, 45, 0.055); font-size: 11px; font-style: normal; }
 .automation-copy small { color: #85857e; font-size: 11px; }
 .automation-copy code { color: #989890; font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; }
@@ -6919,7 +6960,7 @@ textarea:focus {
   outline: none;
   color: #373732;
   background: rgba(255, 255, 253, 0.82);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 400;
   line-height: 1.5;
 }
@@ -6980,7 +7021,7 @@ textarea:focus {
 
 .automation-error { display: flex; align-items: flex-start; gap: 7px; padding: 10px 12px; border: 1px solid rgba(189, 80, 74, .15); border-radius: 9px; color: #a74444; background: rgba(189, 80, 74, .055); font-size: 10px; line-height: 1.5; }
 .automation-history-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
-.automation-history-heading strong { font-size: 11.5px; }
+.automation-history-heading strong { font-size: 12px; }
 .automation-history-heading span { color: #92928b; font-size: 10px; }
 .automation-history { display: flex; flex-direction: column; }
 .automation-history > p { margin: 16px 0; color: #969690; font-size: 11px; text-align: center; }
@@ -7109,7 +7150,7 @@ textarea:focus {
   border-radius: 9px;
   color: white;
   background: #30302c;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 620;
   cursor: pointer;
 }
@@ -7186,7 +7227,7 @@ textarea:focus {
 
 .agent-runs-sidebar-copy strong {
   color: #3f3f3a;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 620;
 }
 
@@ -7218,7 +7259,7 @@ textarea:focus {
   width: 15px;
   height: 15px;
   border-radius: 4px;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .agent-runs-sidebar-list > p {
@@ -7725,7 +7766,7 @@ textarea:focus {
   background: rgba(45, 45, 40, .04);
 }
 
-.agent-run-meta-grid small { color: #96968f; font-size: 9px; }
+.agent-run-meta-grid small { color: #96968f; font-size: 10px; }
 .agent-run-meta-grid strong { overflow: hidden; color: #5d5d57; font-size: 10px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
 
 .agent-run-files-section { padding-top: 12px; border-bottom: 0; }
@@ -7799,7 +7840,7 @@ textarea:focus {
 
 .agent-run-markdown-preview .chat-markdown {
   color: #454540;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.65;
 }
 
@@ -7818,7 +7859,7 @@ textarea:focus {
   border-radius: 9px;
   color: #55554f;
   background: rgba(255, 255, 253, .55);
-  font: 9.5px/1.55 "SFMono-Regular", Consolas, monospace;
+  font: 10px/1.55 "SFMono-Regular", Consolas, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -8044,7 +8085,7 @@ textarea:focus {
   min-width: 0;
   flex: 1;
   overflow: hidden;
-  font-size: 11.5px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -8081,7 +8122,7 @@ textarea:focus {
 /* Conversation typography is intentionally one step larger than the dense app chrome. */
 .briefing-conversation .chat-turn-meta strong,
 .agent-run-thread .chat-turn-meta strong {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .briefing-conversation .chat-turn-meta time,
@@ -8108,13 +8149,13 @@ textarea:focus {
 .agent-tool-call-group-summary small,
 .agent-tool-call-detail pre,
 .agent-tool-call-group-detail > pre {
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .agent-thinking-marker .chat-markdown,
 .agent-tool-call-summary strong,
 .agent-tool-call-group-summary strong {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .composer-textarea {
@@ -8124,7 +8165,7 @@ textarea:focus {
 .composer-image-error,
 .composer .select-menu-trigger,
 .composer .select-menu-option {
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .chat-attachment-list {
@@ -8145,12 +8186,13 @@ textarea:focus {
   border-radius: 7px;
   color: #e9ebf3;
   background: rgba(255, 255, 255, .11);
-  font-size: 11.5px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 @media (prefers-color-scheme: dark) {
+  .composer-model-label { color: #aaa9a3; background: rgba(255, 255, 248, .07); }
   .agent-run-page-header {
     border-bottom-color: rgba(255, 255, 248, .08);
     background: #171816;
@@ -8233,6 +8275,13 @@ textarea:focus {
   .agent-run-file-preview-state > button { color: #c7c7c2; background: rgba(255, 255, 248, .075); }
   .agent-run-thread .chat-turn-content > .chat-markdown { color: #d9d9d5; }
   .agent-run-composer-dock { background: transparent; }
+  .chat-scroll-to-latest {
+    border-color: rgba(255, 255, 248, .12);
+    color: #d0d0cb;
+    background: rgba(44, 45, 42, .92);
+    box-shadow: 0 6px 22px rgba(0, 0, 0, .3);
+  }
+  .chat-scroll-to-latest:hover { color: #fff; background: #353633; }
   .agent-run-queued-message {
     border-color: rgba(255,255,255,.08);
     background: rgba(255,255,255,.045);

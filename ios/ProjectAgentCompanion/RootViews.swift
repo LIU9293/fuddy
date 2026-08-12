@@ -614,6 +614,7 @@ struct WorkAssistantView: View {
                     text: $prompt,
                     attachments: $attachments,
                     placeholder: "询问工作助理",
+                    modelLabel: store.state.modelLabels.workAssistant,
                     sending: sending,
                     imageOnly: true,
                     onSend: { Task { await send() } }
@@ -1366,6 +1367,7 @@ struct RunDetailView: View {
                             text: $prompt,
                             attachments: $attachments,
                             placeholder: "给 \(detail.run.provider) 发送消息",
+                            modelLabel: store.state.modelLabels.label(for: detail.run.provider),
                             sending: sending,
                             active: ["running", "queued"].contains(detail.run.status),
                             onSend: { Task { await send() } },

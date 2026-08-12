@@ -407,6 +407,25 @@ struct RunDetail: Codable, Identifiable {
     var id: String { run.id }
 }
 
+struct AgentModelLabels: Codable, Equatable {
+    var workAssistant: String
+    var providers: [String: String]
+
+    static let fallback = AgentModelLabels(
+        workAssistant: "Model Default",
+        providers: [
+            "pi": "Pi Default",
+            "codex": "Codex Default",
+            "claude": "Claude Default",
+            "opencode": "OpenCode Default"
+        ]
+    )
+
+    func label(for provider: String) -> String {
+        providers[provider] ?? "\(provider.capitalized) Default"
+    }
+}
+
 func upsertAgentMessage(_ message: AgentMessage, in runs: inout [RunDetail]) {
     guard let runIndex = runs.firstIndex(where: { $0.run.id == message.runId }) else { return }
     if let messageIndex = runs[runIndex].messages.firstIndex(where: { $0.id == message.id }) {
@@ -439,6 +458,7 @@ func acknowledgePendingAgentMessage(_ messageID: String, in runs: inout [RunDeta
 
 struct SnapshotPayload: Codable {
     let generatedAt: String
+    let modelLabels: AgentModelLabels?
     let projects: [Project]
     let goals: [ProjectGoal]
     let decisions: [Decision]
@@ -454,6 +474,7 @@ struct ArtifactEventPayload: Codable {
 }
 
 struct CachedState: Codable {
+    var modelLabels = AgentModelLabels.fallback
     var projects: [Project] = []
     var goals: [ProjectGoal] = []
     var decisions: [Decision] = []
@@ -467,6 +488,7 @@ struct CachedState: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        modelLabels = try container.decodeIfPresent(AgentModelLabels.self, forKey: .modelLabels) ?? .fallback
         projects = try container.decodeIfPresent([Project].self, forKey: .projects) ?? []
         goals = try container.decodeIfPresent([ProjectGoal].self, forKey: .goals) ?? []
         decisions = try container.decodeIfPresent([Decision].self, forKey: .decisions) ?? []

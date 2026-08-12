@@ -7,6 +7,7 @@ import {
   formatAgentProcessDuration,
   groupLiveActivities,
   groupMessageTimeline,
+  shouldBlockAgentRunDetailRefresh,
   type LiveActivity
 } from './AgentRunsView'
 
@@ -26,6 +27,12 @@ function message(input: Partial<AgentRunMessage> & Pick<AgentRunMessage, 'id' | 
 }
 
 describe('Agent Run live activity timeline', () => {
+  it('keeps the current conversation mounted during background detail refreshes', () => {
+    expect(shouldBlockAgentRunDetailRefresh('run-1', 'run-1')).toBe(false)
+    expect(shouldBlockAgentRunDetailRefresh(null, 'run-1')).toBe(true)
+    expect(shouldBlockAgentRunDetailRefresh('run-1', 'run-2')).toBe(true)
+  })
+
   it('keeps live messages scoped to the Agent Run that emitted them', () => {
     const withFirstRun = applyAgentLiveUpdateForRun({}, 'run-1', {
       type: 'reasoning_delta',

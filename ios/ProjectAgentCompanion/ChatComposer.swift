@@ -202,6 +202,7 @@ struct CompanionChatComposer: View {
     @Binding var text: String
     @Binding var attachments: [PendingAttachment]
     let placeholder: String
+    let modelLabel: String
     let sending: Bool
     var imageOnly = false
     var disabled = false
@@ -277,6 +278,17 @@ struct CompanionChatComposer: View {
                     .lineLimit(1...5)
                     .textFieldStyle(.plain)
                     .padding(.vertical, 9)
+
+                Text(modelLabel)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .frame(maxWidth: 110)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                    .accessibilityLabel("当前模型 \(modelLabel)")
 
                 Button {
                     Task {

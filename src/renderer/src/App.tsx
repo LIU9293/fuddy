@@ -1,5 +1,6 @@
 import {
   ArchiveX,
+  ArrowDown,
   ArrowLeft,
   Bot,
   Check,
@@ -49,6 +50,7 @@ import { AutomationsView } from './components/AutomationsView'
 import { normalizeChatMarkdown } from './markdown'
 import { maxChatImages, prepareChatImages } from './chat-attachments'
 import { workAssistantRunIds } from './work-assistant-links'
+import { chatIsAtLatest } from './chat-scroll'
 import fuddyWordmark from './assets/fuddy-wordmark.png'
 import type {
   AgentPlanEntry,
@@ -87,6 +89,7 @@ import type {
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import type { CompanionMacStatus, CompanionPairingSession } from '../../shared/companion-sync'
 import { defaultCompanionRelayUrl } from '../../shared/companion-sync'
+import { buildAgentModelLabels } from '../../shared/model-display'
 
 type Navigation = 'briefing' | 'inbox' | 'projects' | 'files' | 'runs' | 'automations' | 'settings'
 type ProjectSection = 'inbox' | 'status' | 'goals' | 'settings'
@@ -1244,6 +1247,7 @@ function WorkAssistantRunLink({ run, onOpen }: { run: AgentRun; onOpen: () => vo
 function WorkAssistantView({
   briefings,
   messages,
+  modelLabel,
   ttsMode,
   generating,
   runs,
@@ -1254,6 +1258,7 @@ function WorkAssistantView({
 }: {
   briefings: MorningBriefing[]
   messages: BriefingMessage[]
+  modelLabel: string
   ttsMode: TtsProviderMode
   generating: boolean
   runs: AgentRun[]
@@ -1279,7 +1284,10 @@ function WorkAssistantView({
     assistantMessageId: string | null
     plan: AgentPlanEntry[]
   } | null>(null)
+  const threadRef = useRef<HTMLElement | null>(null)
   const threadEndRef = useRef<HTMLDivElement | null>(null)
+  const isAtLatestMessageRef = useRef(true)
+  const [isAtLatestMessage, setIsAtLatestMessage] = useState(true)
   useAutoDismissMessage(imageError, () => setImageError(null))
   const completedBriefings = briefings.filter((briefing) => briefing.status === 'completed')
   const latestBriefing = completedBriefings[0]
@@ -1299,8 +1307,23 @@ function WorkAssistantView({
   ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
 
   useEffect(() => {
+    if (!isAtLatestMessageRef.current) return
     threadEndRef.current?.scrollIntoView({ block: 'end' })
   }, [timeline.length, asking, pendingTurn?.assistantContent])
+
+  function updateLatestMessagePosition(): void {
+    const thread = threadRef.current
+    if (!thread) return
+    const atLatest = chatIsAtLatest(thread)
+    isAtLatestMessageRef.current = atLatest
+    setIsAtLatestMessage(atLatest)
+  }
+
+  function scrollToLatestMessage(): void {
+    isAtLatestMessageRef.current = true
+    setIsAtLatestMessage(true)
+    threadEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+  }
 
   async function submitQuestion(
     value = question,
@@ -1382,7 +1405,12 @@ function WorkAssistantView({
 
   return (
     <div className="briefing-conversation">
-      <section className="briefing-thread" aria-label="与工作助理的对话">
+      <section
+        className="briefing-thread"
+        aria-label="与工作助理的对话"
+        ref={threadRef}
+        onScroll={updateLatestMessagePosition}
+      >
         <div className="briefing-thread-inner">
           {timeline.length === 0 ? (
             <div className="morning-empty">
@@ -1472,6 +1500,15 @@ function WorkAssistantView({
       </section>
 
       <footer className="briefing-composer-dock">
+        {!isAtLatestMessage && (
+          <button
+            type="button"
+            className="chat-scroll-to-latest"
+            onClick={scrollToLatestMessage}
+            aria-label="回到最新消息"
+            title="回到最新消息"
+          ><ArrowDown size={17} strokeWidth={2.2} /></button>
+        )}
         <ChatComposer
           value={question}
           onChange={setQuestion}
@@ -1486,6 +1523,7 @@ function WorkAssistantView({
             setImageError(null)
           }}
           submitAriaLabel="发送问题"
+          modelLabel={modelLabel}
         />
       </footer>
     </div>
@@ -3760,6 +3798,7 @@ export default function App(): React.JSX.Element {
             <WorkAssistantView
               briefings={bootstrap.morningBriefings}
               messages={bootstrap.briefingMessages}
+              modelLabel={buildAgentModelLabels(bootstrap.providerSettings).workAssistant}
               ttsMode={bootstrap.providerSettings.tts.primary.mode}
               generating={submitting}
               runs={bootstrap.runs}
@@ -3893,6 +3932,7 @@ export default function App(): React.JSX.Element {
               runs={bootstrap.runs}
               projects={bootstrap.projects}
               goals={bootstrap.goals}
+              modelLabels={buildAgentModelLabels(bootstrap.providerSettings)}
               selectedRunId={selectedAgentRunId}
               creating={creatingAgentRun}
               prefill={agentRunPrefill}

@@ -31,6 +31,14 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(run.draftPrompt, "先检查素材，不要发送。")
     }
 
+    func testModelLabelsDecodeForBothChatComposers() throws {
+        let json = #"{"workAssistant":"5.6 Medium","providers":{"pi":"5.6","codex":"5.6 Sol High"}}"#
+        let labels = try JSONDecoder().decode(AgentModelLabels.self, from: Data(json.utf8))
+        XCTAssertEqual(labels.workAssistant, "5.6 Medium")
+        XCTAssertEqual(labels.label(for: "codex"), "5.6 Sol High")
+        XCTAssertEqual(labels.label(for: "claude"), "Claude Default")
+    }
+
     func testCompletedDecisionDecodesResolutionEvidence() throws {
         let json = #"{"id":"d1","projectId":"roombase","title":"处理长期等待事项","summary":"仍有待处理记录","impact":"影响上线","urgency":"high","status":"resolved","source":"每日巡检","createdAt":"2026-08-07T00:00:00.000Z","evidenceRefs":[{"label":"GitHub PR #351","uri":"https://github.com/example/repo/pull/351"}],"resolvedAt":"2026-08-09T10:00:00.000Z","resolutionSummary":"关联 PR #351 已合并。"}"#
         let decision = try JSONDecoder().decode(Decision.self, from: Data(json.utf8))

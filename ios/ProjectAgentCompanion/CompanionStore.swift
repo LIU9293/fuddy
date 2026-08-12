@@ -495,6 +495,7 @@ final class CompanionStore: ObservableObject {
         switch event.type {
             case "snapshot.created":
                 let snapshot = try event.payload.decode(SnapshotPayload.self)
+                state.modelLabels = snapshot.modelLabels ?? .fallback
                 state.projects = snapshot.projects
                 state.goals = snapshot.goals
                 state.decisions = snapshot.decisions
@@ -520,6 +521,8 @@ final class CompanionStore: ObservableObject {
                 let run = try event.payload.decode(AgentRun.self)
                 if let index = state.runs.firstIndex(where: { $0.run.id == run.id }) { state.runs[index].run = run }
                 else { state.runs.append(RunDetail(run: run, messages: [], artifacts: [])) }
+            case "model-labels.updated":
+                state.modelLabels = try event.payload.decode(AgentModelLabels.self)
             case "agent-run.archived":
                 state.runs.removeAll { $0.run.id == event.entityId }
             case "agent-message.created":

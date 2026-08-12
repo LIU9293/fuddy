@@ -22,7 +22,15 @@ function createDatabase(): AppDatabase {
 describe('companion sync persistence', () => {
   it('persists a full snapshot and incremental mutations in the outbox', () => {
     const database = createDatabase()
-    const snapshot = database.enqueueCompanionSnapshot()
+    const snapshot = database.enqueueCompanionSnapshot({
+      workAssistant: '5.6 Medium',
+      providers: {
+        pi: '5.6',
+        codex: '5.6 Sol High',
+        claude: 'Claude Default',
+        opencode: 'OpenCode Default'
+      }
+    })
     const project = database.listProjects()[0]
     database.updateProject({ ...project, focus: 'Companion validation' })
     const now = new Date().toISOString()
@@ -65,7 +73,11 @@ describe('companion sync persistence', () => {
       'work-assistant-message.created'
     ])
     expect(snapshot.entityType).toBe('snapshot')
-    expect(events[0].payload).toMatchObject({ projects: expect.any(Array), runs: expect.any(Array) })
+    expect(events[0].payload).toMatchObject({
+      modelLabels: { workAssistant: '5.6 Medium', providers: { codex: '5.6 Sol High' } },
+      projects: expect.any(Array),
+      runs: expect.any(Array)
+    })
 
     database.markCompanionEventPublished(snapshot.eventId, new Date().toISOString())
     expect(database.countPendingCompanionEvents()).toBe(3)

@@ -1,5 +1,6 @@
 import {
   Archive,
+  ArrowDown,
   ArrowLeft,
   Bot,
   ChevronDown,
@@ -46,6 +47,8 @@ import { ChatComposer } from './ChatComposer'
 import { ConversationMessageActions } from './ConversationMessageActions'
 import { ProjectIcon } from './ProjectIcon'
 import { SelectMenu } from './SelectMenu'
+import { chatIsAtLatest } from '../chat-scroll'
+import type { AgentModelLabels } from '../../../shared/model-display'
 
 const agentOptions = [
   { value: 'pi', label: 'Pi Agent' },
@@ -183,6 +186,13 @@ export function findArtifactForHref(artifacts: AgentRunArtifact[], href: string,
     ?? artifacts.find((artifact) => normalized.endsWith(`/${artifact.relativePath}`))
     ?? artifacts.find((artifact) => !normalized.includes('/') && artifact.label === normalized)
     ?? null
+}
+
+export function shouldBlockAgentRunDetailRefresh(
+  displayedRunId: string | null,
+  selectedRunId: string | null
+): boolean {
+  return Boolean(selectedRunId && displayedRunId !== selectedRunId)
 }
 
 function AgentRunInfoSidebar({
@@ -706,6 +716,7 @@ export function AgentRunsView({
   runs,
   projects,
   goals,
+  modelLabels,
   selectedRunId,
   creating,
   prefill,
@@ -718,6 +729,7 @@ export function AgentRunsView({
   runs: AgentRun[]
   projects: Project[]
   goals: ProjectGoal[]
+  modelLabels: AgentModelLabels
   selectedRunId: string | null
   creating: boolean
   prefill: { runId: string; prompt: string; requestId: string } | null
@@ -749,7 +761,10 @@ export function AgentRunsView({
   const [projectId, setProjectId] = useState<string | null>(projects[0]?.id ?? null)
   const [milestoneValue, setMilestoneValue] = useState('')
   const [title, setTitle] = useState('')
+  const threadRef = useRef<HTMLElement | null>(null)
   const threadEndRef = useRef<HTMLDivElement | null>(null)
+  const isAtLatestMessageRef = useRef(true)
+  const [isAtLatestMessage, setIsAtLatestMessage] = useState(true)
   const previousCreatingRef = useRef(creating)
   const selectedRunIdRef = useRef(selectedRunId)
   const activeRequestIdByRunRef = useRef(new Map<string, string>())
@@ -811,31 +826,35 @@ export function AgentRunsView({
   useEffect(() => {
     if (!selectedRunId) {
       setDetail(null)
+      setLoadingDetail(false)
       setGitSummary(null)
       infoSidebarRunIdRef.current = null
       return
     }
     const selectedRunChanged = infoSidebarRunIdRef.current !== selectedRunId
+    const blockingRefresh = shouldBlockAgentRunDetailRefresh(detail?.run.id ?? null, selectedRunId)
     infoSidebarRunIdRef.current = selectedRunId
     let cancelled = false
-    setLoadingDetail(true)
-    setGitSummary(null)
+    setLoadingDetail(blockingRefresh)
     if (selectedRunChanged) {
+      setGitSummary(null)
       setInfoSidebarOpen(false)
       setInfoSidebarTab('info')
       setSelectedArtifactId(null)
+      setRenamingTitle(null)
     }
-    setRenamingTitle(null)
     void window.projectAgent.getAgentRun(selectedRunId).then((nextDetail) => {
       if (!cancelled) {
         setDetail(nextDetail)
         persistedDraftPromptRef.current = { runId: nextDetail.run.id, prompt: nextDetail.run.draftPrompt ?? '' }
-        setReply(nextDetail.messages.length === 0 ? nextDetail.run.draftPrompt ?? '' : '')
+        if (blockingRefresh) {
+          setReply(nextDetail.messages.length === 0 ? nextDetail.run.draftPrompt ?? '' : '')
+        }
       }
     }).catch((error) => {
       if (!cancelled) onNotice(error instanceof Error ? error.message : 'Agent Run 读取失败。')
     }).finally(() => {
-      if (!cancelled) setLoadingDetail(false)
+      if (!cancelled && blockingRefresh) setLoadingDetail(false)
     })
     return () => { cancelled = true }
   }, [selectedRunId, selectedRunUpdatedAt])
@@ -891,8 +910,28 @@ export function AgentRunsView({
   }, [detail?.run.id, detail?.run.status, detail?.messages.length, reply])
 
   useEffect(() => {
+    if (!isAtLatestMessageRef.current) return
     threadEndRef.current?.scrollIntoView({ block: 'end' })
-  }, [detail?.messages.length, runBusy, liveActivities, streamingText])
+  }, [selectedRunId, detail?.messages.length, runBusy, liveActivities, streamingText])
+
+  useEffect(() => {
+    isAtLatestMessageRef.current = true
+    setIsAtLatestMessage(true)
+  }, [selectedRunId])
+
+  function updateLatestMessagePosition(): void {
+    const thread = threadRef.current
+    if (!thread) return
+    const atLatest = chatIsAtLatest(thread)
+    isAtLatestMessageRef.current = atLatest
+    setIsAtLatestMessage(atLatest)
+  }
+
+  function scrollToLatestMessage(): void {
+    isAtLatestMessageRef.current = true
+    setIsAtLatestMessage(true)
+    threadEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+  }
 
   function appendOptimisticMessage(
     runId: string,
@@ -1199,7 +1238,12 @@ export function AgentRunsView({
           />
         </div>
       </header>
-      <section className="agent-run-thread" aria-label={`${detail.run.title} 对话`}>
+      <section
+        className="agent-run-thread"
+        aria-label={`${detail.run.title} 对话`}
+        ref={threadRef}
+        onScroll={updateLatestMessagePosition}
+      >
         <div className="agent-run-thread-inner">
           {groupMessageTimeline(detail.messages).map((block) => {
             if (block.kind === 'tool-group') {
@@ -1252,6 +1296,15 @@ export function AgentRunsView({
         </div>
       </section>
       <footer className="agent-run-composer-dock">
+        {!isAtLatestMessage && (
+          <button
+            type="button"
+            className="chat-scroll-to-latest"
+            onClick={scrollToLatestMessage}
+            aria-label="回到最新消息"
+            title="回到最新消息"
+          ><ArrowDown size={17} strokeWidth={2.2} /></button>
+        )}
         {queuedMessages.length > 0 && (
           <div className="agent-run-message-queue" aria-label="已排队消息">
             {queuedMessages.map((message) => (
@@ -1278,6 +1331,7 @@ export function AgentRunsView({
             setReplyAttachmentError(null)
           }}
           submitAriaLabel="发送消息"
+          modelLabel={modelLabels.providers[detail.run.provider]}
         />
       </footer>
       </div>

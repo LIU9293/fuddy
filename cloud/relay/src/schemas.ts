@@ -32,7 +32,8 @@ export const syncEventSchema = z.object({
     'agent-message',
     'artifact',
     'morning-briefing',
-    'work-assistant-message'
+    'work-assistant-message',
+    'settings'
   ]),
   entityId: identifier,
   revision: z.number().int().min(0),

@@ -24,6 +24,7 @@ import type {
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
+import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { updateProjectSchema } from '../../shared/project-validation'
 import { AppDatabase } from './database'
 import { CredentialVault } from './credential-vault'
@@ -168,7 +169,8 @@ export class CompanionSyncService {
     private readonly askWorkAssistant: (question: string, attachments: WorkAssistantImageAttachment[]) => Promise<unknown>,
     private readonly incomingAttachmentsRoot = resolve(process.cwd(), '.companion-uploads'),
     private readonly defaultCodingAgent: () => CodingAgentProvider = () => 'codex',
-    private readonly workspaceFiles?: WorkspaceFilesService
+    private readonly workspaceFiles?: WorkspaceFilesService,
+    private readonly modelLabels: () => AgentModelLabels = () => emptyAgentModelLabels
   ) {
     this.configuration = database.getSetting<CompanionMacConfiguration | null>(configurationKey, null)
     this.state = this.configuration ? 'disconnected' : 'not-configured'
@@ -197,6 +199,11 @@ export class CompanionSyncService {
     return () => this.dataChangedListeners.delete(listener)
   }
 
+  publishModelLabels(): void {
+    if (!this.configuration) return
+    this.database.enqueueCompanionModelLabels(this.modelLabels())
+  }
+
   setWorkAssistantActionExecutor(
     executor: (input: { messageId: string; proposalId: string; optionId: string }) => unknown
   ): void {
@@ -206,6 +213,7 @@ export class CompanionSyncService {
   async start(): Promise<void> {
     this.stopped = false
     if (!this.configuration) return
+    this.publishModelLabels()
     this.ensureTimer()
     await this.syncNow()
     this.connectSocket()
@@ -237,7 +245,7 @@ export class CompanionSyncService {
     }
     this.credentials.set(this.tokenReference(pairing.accountId), pairing.macToken)
     this.database.setSetting(configurationKey, this.configuration)
-    this.database.enqueueCompanionPairingSnapshot()
+    this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
     this.state = 'connecting'
     this.lastError = null
     this.emitStatus()

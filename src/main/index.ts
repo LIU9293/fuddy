@@ -30,6 +30,7 @@ import { CompanionSyncService } from './services/companion-sync'
 import { WebResearchService } from './services/web-research'
 import { PiWorkAssistantAgent } from './services/work-assistant-agent'
 import { agentRunNotificationContent } from './services/agent-run-notifications'
+import { buildAgentModelLabels } from '../shared/model-display'
 
 Sentry.init({
   dsn: SENTRY_DSN,
@@ -325,7 +326,8 @@ if (!hasLock) {
       (question, attachments) => morningBriefingService.ask(null, question, null, attachments),
       join(userDataPath, 'companion-uploads'),
       () => providerSettings.getPublicSettings().codingAgents.defaultAgent,
-      workspaceFiles
+      workspaceFiles,
+      () => buildAgentModelLabels(providerSettings.getPublicSettings())
     )
     companionSync.setWorkAssistantActionExecutor((input) => morningBriefingService.executeAction(input))
     companionSync.onStatusChanged((status) => {

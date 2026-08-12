@@ -19,6 +19,7 @@ interface ChatComposerProps {
   onRemoveAttachment: (id: string) => void
   submitAriaLabel?: string
   voicePrompt?: string
+  modelLabel?: string
 }
 
 interface ActiveRecording {
@@ -45,7 +46,8 @@ export function ChatComposer({
   onAttachmentsSelected,
   onRemoveAttachment,
   submitAriaLabel = '提交',
-  voicePrompt = 'Project Agent，项目，目标，决策收件箱，工作助理，Agent Run'
+  voicePrompt = 'Project Agent，项目，目标，决策收件箱，工作助理，Agent Run',
+  modelLabel
 }: ChatComposerProps): React.JSX.Element {
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const recordingRef = useRef<ActiveRecording | null>(null)
@@ -202,6 +204,7 @@ export function ChatComposer({
           {leftControls}
         </div>
         <div className="composer-right-controls">
+          {modelLabel && <span className="composer-model-label" title={modelLabel}>{modelLabel}</span>}
           <button
             type="button"
             className={`round-icon-button composer-voice-button ${voiceState === 'recording' ? 'is-recording' : ''}`}

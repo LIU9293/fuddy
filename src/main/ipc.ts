@@ -550,7 +550,9 @@ export function registerIpc(
       backup: agentEndpointSchema,
       backupEnabled: z.boolean()
     }).parse(rawInput)
-    return providerSettings.configureAgent(input)
+    const settings = providerSettings.configureAgent(input)
+    companionSync.publishModelLabels()
+    return settings
   })
 
   ipcMain.handle('provider:configure-coding-agents', (_event, rawInput: unknown) => {
@@ -564,7 +566,9 @@ export function registerIpc(
       claude: model,
       opencode: model
     }).parse(rawInput)
-    return providerSettings.configureCodingAgents(input)
+    const settings = providerSettings.configureCodingAgents(input)
+    companionSync.publishModelLabels()
+    return settings
   })
 
   ipcMain.handle('provider:list-coding-agent-models', () => discoverCodingAgentModels())
