@@ -182,7 +182,16 @@ final class CompanionStore: ObservableObject {
                 let page = try await client.events(after: state.lastSequence)
                 guard !Task.isCancelled else { return }
                 if let presence = page.presence { macOnline = presence.macOnline }
+                if let remoteCurrentVersion = page.protocolVersion {
+                    guard companionProtocolRangeSupportsLocalVersion(
+                        minimumVersion: page.minimumProtocolVersion ?? remoteCurrentVersion,
+                        currentVersion: remoteCurrentVersion
+                    ) else { throw RelayError.protocolMismatch }
+                }
                 for event in page.events where event.sequence > state.lastSequence {
+                    if page.protocolVersion == nil && !companionProtocolVersionIsSupported(event.protocolVersion) {
+                        throw RelayError.protocolMismatch
+                    }
                     if let eventError = try apply(event) { replayedOperationError = eventError }
                     state.lastSequence = event.sequence
                 }
@@ -223,7 +232,7 @@ final class CompanionStore: ObservableObject {
             let uploaded = try await upload(attachments, using: client)
             _ = try await client.sendCommand(
                 commandID: commandID,
-                type: "agent.send-message",
+                type: .agentSendMessage,
                 payload: AgentSendMessagePayload(
                     runId: runID,
                     prompt: prompt,
@@ -245,7 +254,7 @@ final class CompanionStore: ObservableObject {
     func stopMessage(runID: String) async throws {
         guard let client else { throw RelayError.invalidResponse }
         _ = try await client.sendCommand(
-            type: "agent.stop-message",
+            type: .agentStopMessage,
             payload: AgentArchivePayload(runId: runID)
         )
     }
@@ -254,7 +263,7 @@ final class CompanionStore: ObservableObject {
         guard let client else { throw RelayError.invalidResponse }
         let uploaded = try await upload(attachments, using: client)
         _ = try await client.sendCommand(
-            type: "assistant.send-message",
+            type: .assistantSendMessage,
             payload: AssistantSendMessagePayload(prompt: prompt, attachments: uploaded)
         )
     }
@@ -262,7 +271,7 @@ final class CompanionStore: ObservableObject {
     func executeWorkAssistantAction(messageID: String, proposalID: String, optionID: String) async throws -> String? {
         guard let client else { throw RelayError.invalidResponse }
         _ = try await client.sendCommand(
-            type: "assistant.execute-action",
+            type: .assistantExecuteAction,
             payload: AssistantExecuteActionPayload(messageId: messageID, proposalId: proposalID, optionId: optionID)
         )
         for _ in 0..<12 {
@@ -308,7 +317,7 @@ final class CompanionStore: ObservableObject {
         persistCache()
         do {
             _ = try await client.sendCommand(
-                type: "decision.handle",
+                type: .decisionHandle,
                 payload: DecisionHandlePayload(decisionId: decision.id, runId: runID)
             )
             return runID
@@ -325,7 +334,7 @@ final class CompanionStore: ObservableObject {
     func rename(runID: String, title: String) async throws {
         guard let client else { throw RelayError.invalidResponse }
         _ = try await client.sendCommand(
-            type: "agent.rename-session",
+            type: .agentRenameSession,
             payload: AgentRenamePayload(runId: runID, title: title)
         )
     }
@@ -340,7 +349,7 @@ final class CompanionStore: ObservableObject {
         persistCache()
         do {
             _ = try await client.sendCommand(
-                type: "agent.update-draft-prompt",
+                type: .agentUpdateDraftPrompt,
                 payload: AgentDraftPromptPayload(runId: runID, draftPrompt: draftPrompt)
             )
         } catch {
@@ -354,7 +363,7 @@ final class CompanionStore: ObservableObject {
 
     func archive(runID: String) async throws {
         guard let client else { throw RelayError.invalidResponse }
-        _ = try await client.sendCommand(type: "agent.archive-session", payload: AgentArchivePayload(runId: runID))
+        _ = try await client.sendCommand(type: .agentArchiveSession, payload: AgentArchivePayload(runId: runID))
     }
 
     func updateDecision(id: String, status: String) async throws {
@@ -366,7 +375,7 @@ final class CompanionStore: ObservableObject {
         persistCache()
         do {
             _ = try await client.sendCommand(
-                type: "decision.update-status",
+                type: .decisionUpdateStatus,
                 payload: DecisionStatusPayload(decisionId: id, status: status)
             )
         } catch {
@@ -391,7 +400,7 @@ final class CompanionStore: ObservableObject {
         upsert(project, in: &state.projects)
         persistCache()
         do {
-            _ = try await client.sendCommand(type: "project.update", payload: ProjectUpdatePayload(project: project))
+            _ = try await client.sendCommand(type: .projectUpdate, payload: ProjectUpdatePayload(project: project))
         } catch {
             if let previous { upsert(previous, in: &state.projects) }
             persistCache()
@@ -417,7 +426,7 @@ final class CompanionStore: ObservableObject {
         defer { commandErrors[commandID] = nil }
         _ = try await client.sendCommand(
             commandID: commandID,
-            type: "artifact.request-upload",
+            type: .artifactRequestUpload,
             payload: ArtifactUploadRequestPayload(artifactId: artifact.id)
         )
 
@@ -493,7 +502,7 @@ final class CompanionStore: ObservableObject {
     private func apply(_ event: SyncEvent) throws -> String? {
         var eventError: String?
         switch event.type {
-            case "snapshot.created":
+            case .snapshotCreated:
                 let snapshot = try event.payload.decode(SnapshotPayload.self)
                 state.modelLabels = snapshot.modelLabels ?? .fallback
                 state.projects = snapshot.projects
@@ -507,45 +516,45 @@ final class CompanionStore: ObservableObject {
                         attachment.artifactId.map { ($0, attachment) }
                     }
                 )
-            case "project.created", "project.updated":
+            case .projectCreated, .projectUpdated:
                 upsert(try event.payload.decode(Project.self), in: &state.projects)
-            case "goal.created", "goal.updated":
+            case .goalCreated, .goalUpdated:
                 upsert(try event.payload.decode(ProjectGoal.self), in: &state.goals)
-            case "decision.created", "decision.updated":
+            case .decisionCreated, .decisionUpdated:
                 upsert(try event.payload.decode(Decision.self), in: &state.decisions)
-            case "morning-briefing.updated":
+            case .morningBriefingUpdated:
                 upsert(try event.payload.decode(MorningBriefing.self), in: &state.morningBriefings)
-            case "work-assistant-message.created", "work-assistant-message.updated":
+            case .workAssistantMessageCreated, .workAssistantMessageUpdated:
                 upsert(try event.payload.decode(WorkAssistantMessage.self), in: &state.workAssistantMessages)
-            case "agent-run.created", "agent-run.updated":
+            case .agentRunCreated, .agentRunUpdated:
                 let run = try event.payload.decode(AgentRun.self)
                 if let index = state.runs.firstIndex(where: { $0.run.id == run.id }) { state.runs[index].run = run }
                 else { state.runs.append(RunDetail(run: run, messages: [], artifacts: [])) }
-            case "model-labels.updated":
+            case .modelLabelsUpdated:
                 state.modelLabels = try event.payload.decode(AgentModelLabels.self)
-            case "agent-run.archived":
+            case .agentRunArchived:
                 state.runs.removeAll { $0.run.id == event.entityId }
-            case "agent-message.created":
+            case .agentMessageCreated:
                 let message = try event.payload.decode(AgentMessage.self)
                 upsertAgentMessage(message, in: &state.runs)
-            case "artifact.updated":
+            case .artifactUpdated:
                 if let enriched = try? event.payload.decode(ArtifactEventPayload.self) {
                     upsertArtifact(enriched.artifact)
                     if let attachment = enriched.attachment { state.attachments[enriched.artifact.id] = attachment }
                 } else {
                     upsertArtifact(try event.payload.decode(AgentArtifact.self))
                 }
-            case "command.updated":
+            case .commandUpdated:
                 let command = try event.payload.decode(CommandResult.self)
                 eventError = applyCommandResult(command)
-        default:
+        case .agentTurnSettled, .unknown:
             break
         }
         return eventError
     }
 
     private func applyCommandResult(_ command: CommandResult) -> String? {
-        if command.type == "artifact.request-upload" {
+        if command.type == .artifactRequestUpload {
             if command.status == "failed" {
                 commandErrors[command.commandId] = command.error ?? "Mac 上传附件失败。"
             } else if command.status == "completed",

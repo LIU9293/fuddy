@@ -20,6 +20,7 @@
 		8FAB7375F2E78B06CBCE0B09 /* WhisperTranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60D0BAE3551C392C4DD3FA33 /* WhisperTranscriptionService.swift */; };
 		9271BDB1930FBF2D5BCC26B1 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */; };
 		C97FD49906356A41FE26F337 /* whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4512748A17A4C137A065311B /* whisper.xcframework */; };
+		C9E838840AF4AEFC5FA6D5E2 /* CompanionProtocol.generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E9817F585A949923395BBF3 /* CompanionProtocol.generated.swift */; };
 		CCC0EB5AD601015817B21875 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D48D6C471A7AB56D1344033 /* PairingView.swift */; };
 		CEEC8634B87722C29C13BC86 /* ggml-large-v3-turbo-q5_0.bin in Resources */ = {isa = PBXBuildFile; fileRef = 5DC48F9ABB552BBDC3D01B39 /* ggml-large-v3-turbo-q5_0.bin */; };
 		F1FD298AB5A25BB1E46E7F90 /* ChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52B7088EB0EFC0E27BEF8BB5 /* ChatComposer.swift */; };
@@ -53,6 +54,7 @@
 /* Begin PBXFileReference section */
 		4512748A17A4C137A065311B /* whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = whisper.xcframework; path = "../.third-party-tools/whisper/v1.9.2/build-apple/whisper.xcframework"; sourceTree = "<group>"; };
 		4862CB9096D1A9D2CC3D3B99 /* WhisperInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperInputTests.swift; sourceTree = "<group>"; };
+		4E9817F585A949923395BBF3 /* CompanionProtocol.generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionProtocol.generated.swift; sourceTree = "<group>"; };
 		52B7088EB0EFC0E27BEF8BB5 /* ChatComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatComposer.swift; sourceTree = "<group>"; };
 		5CD502DF6E11A245E3716F80 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		5DC48F9ABB552BBDC3D01B39 /* ggml-large-v3-turbo-q5_0.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "ggml-large-v3-turbo-q5_0.bin"; sourceTree = "<group>"; };
@@ -142,6 +144,7 @@
 				8B47F1531E907F8945808DAC /* ArtifactViews.swift */,
 				5CD502DF6E11A245E3716F80 /* Assets.xcassets */,
 				52B7088EB0EFC0E27BEF8BB5 /* ChatComposer.swift */,
+				4E9817F585A949923395BBF3 /* CompanionProtocol.generated.swift */,
 				B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */,
 				B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */,
 				7F3F5393D89089BA711CCD8A /* Models.swift */,
@@ -255,6 +258,7 @@
 			files = (
 				27ACA6DC0A4F400D3B3F2523 /* ArtifactViews.swift in Sources */,
 				F1FD298AB5A25BB1E46E7F90 /* ChatComposer.swift in Sources */,
+				C9E838840AF4AEFC5FA6D5E2 /* CompanionProtocol.generated.swift in Sources */,
 				0C2BA32FB13C17EB234F1B8B /* CompanionStore.swift in Sources */,
 				9271BDB1930FBF2D5BCC26B1 /* KeychainStore.swift in Sources */,
 				5C1FC98F3F8090A21D2B0F52 /* Models.swift in Sources */,

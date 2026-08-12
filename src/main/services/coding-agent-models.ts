@@ -7,6 +7,7 @@ import type {
   CodingAgentReasoningEffortOption
 } from '../../shared/contracts'
 import { resolveCliBinary } from './cli-executables'
+import { codingAgentProviders } from '../../shared/agent-providers'
 
 type JsonRecord = Record<string, unknown>
 
@@ -288,11 +289,12 @@ function listOpenCodeModels(): Promise<DiscoveredModels> {
 
 async function discover(provider: CodingAgentProvider): Promise<CodingAgentModelCatalogEntry> {
   try {
-    const discovered = provider === 'codex'
-      ? await listCodexModels()
-      : provider === 'claude'
-        ? await listClaudeModels()
-        : await listOpenCodeModels()
+    const discoverer: Record<CodingAgentProvider, () => Promise<DiscoveredModels>> = {
+      codex: listCodexModels,
+      claude: listClaudeModels,
+      opencode: listOpenCodeModels
+    }
+    const discovered = await discoverer[provider]()
     return {
       provider,
       ...discovered,
@@ -310,10 +312,9 @@ async function discover(provider: CodingAgentProvider): Promise<CodingAgentModel
 }
 
 export async function discoverCodingAgentModels(): Promise<CodingAgentModelCatalog> {
-  const [codex, claude, opencode] = await Promise.all([
-    discover('codex'),
-    discover('claude'),
-    discover('opencode')
-  ])
-  return { codex, claude, opencode }
+  const entries = await Promise.all(codingAgentProviders.map(async (provider) => [
+    provider,
+    await discover(provider)
+  ] as const))
+  return Object.fromEntries(entries) as unknown as CodingAgentModelCatalog
 }

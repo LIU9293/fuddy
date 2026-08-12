@@ -90,6 +90,8 @@ import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import type { CompanionMacStatus, CompanionPairingSession } from '../../shared/companion-sync'
 import { defaultCompanionRelayUrl } from '../../shared/companion-sync'
 import { buildAgentModelLabels } from '../../shared/model-display'
+import { agentProviderDefinitions, codingAgentProviders } from '../../shared/agent-providers'
+import { useAppBootstrap } from './features/app-shell/useAppBootstrap'
 
 type Navigation = 'briefing' | 'inbox' | 'projects' | 'files' | 'runs' | 'automations' | 'settings'
 type ProjectSection = 'inbox' | 'status' | 'goals' | 'settings'
@@ -109,11 +111,10 @@ const defaultSidebarWidth = 258
 const minimumSidebarWidth = 220
 const maximumSidebarWidth = 420
 const sidebarWidthStorageKey = 'project-agent.sidebar-width'
-const codingAgentOptions: Array<{ id: CodingAgentProvider; label: string }> = [
-  { id: 'codex', label: 'Codex' },
-  { id: 'claude', label: 'Claude Code' },
-  { id: 'opencode', label: 'OpenCode' }
-]
+const codingAgentOptions: Array<{ id: CodingAgentProvider; label: string }> = codingAgentProviders.map((id) => ({
+  id,
+  label: agentProviderDefinitions[id].label
+}))
 
 function clampSidebarWidth(value: number): number {
   return Math.round(Math.min(maximumSidebarWidth, Math.max(minimumSidebarWidth, value)))
@@ -3129,7 +3130,6 @@ function ProjectsView({ projects, onOpen }: { projects: Project[]; onOpen: (proj
 }
 
 export default function App(): React.JSX.Element {
-  const [bootstrap, setBootstrap] = useState<AppBootstrap | null>(null)
   const [navigation, setNavigation] = useState<Navigation>('briefing')
   const [sidebarSelection, setSidebarSelection] = useState<SidebarSelection>('briefing')
   const [selectedProject, setSelectedProject] = useState<string | null>(null)
@@ -3156,6 +3156,17 @@ export default function App(): React.JSX.Element {
   const [sidebarRunActionBusy, setSidebarRunActionBusy] = useState(false)
   const [agentRunPrefill, setAgentRunPrefill] = useState<{ runId: string; prompt: string; requestId: string } | null>(null)
   const [handlingDecisionId, setHandlingDecisionId] = useState<string | null>(null)
+  const { bootstrap, setBootstrap, refresh } = useAppBootstrap({
+    onError: setNotice,
+    onOpenAgentRun: (runId) => {
+      setNavigation('runs')
+      setSidebarSelection('runs')
+      setSelectedProject(null)
+      setComposerProjectId(null)
+      setCreatingAgentRun(false)
+      setSelectedAgentRunId(runId)
+    }
+  })
   useAutoDismissMessage(notice, () => setNotice(null))
   useAutoDismissMessage(composerAttachmentError, () => setComposerAttachmentError(null))
 
@@ -3190,50 +3201,6 @@ export default function App(): React.JSX.Element {
     setResizingSidebar(false)
   }
 
-  useEffect(() => {
-    let active = true
-    let retryTimer: number | null = null
-    let consecutiveFailures = 0
-    const refreshFromMain = (): void => {
-      void window.projectAgent.getBootstrap()
-        .then((nextBootstrap) => {
-          if (!active) return
-          consecutiveFailures = 0
-          setBootstrap(nextBootstrap)
-        })
-        .catch((error: unknown) => {
-          if (!active) return
-          consecutiveFailures += 1
-          if (consecutiveFailures <= 5) {
-            retryTimer = window.setTimeout(refreshFromMain, 400)
-            return
-          }
-          setNotice(error instanceof Error ? error.message : '无法读取应用数据，请重新启动。')
-        })
-    }
-    refreshFromMain()
-    const stopBriefings = window.projectAgent.onMorningBriefingReady(refreshFromMain)
-    const stopAutomations = window.projectAgent.onAutomationsChanged(refreshFromMain)
-    const stopCompanionData = window.projectAgent.onCompanionDataChanged(refreshFromMain)
-    const stopOpenAgentRun = window.projectAgent.onOpenAgentRun((runId) => {
-      refreshFromMain()
-      setNavigation('runs')
-      setSidebarSelection('runs')
-      setSelectedProject(null)
-      setComposerProjectId(null)
-      setCreatingAgentRun(false)
-      setSelectedAgentRunId(runId)
-    })
-    return () => {
-      active = false
-      if (retryTimer !== null) window.clearTimeout(retryTimer)
-      stopBriefings()
-      stopAutomations()
-      stopCompanionData()
-      stopOpenAgentRun()
-    }
-  }, [])
-
   const projectViewId = selectedProject
 
   const filteredDecisions = useMemo(() => {
@@ -3248,10 +3215,6 @@ export default function App(): React.JSX.Element {
     if (!bootstrap) return []
     return bootstrap.goals.filter((goal) => !projectViewId || goal.projectId === projectViewId)
   }, [bootstrap, projectViewId])
-
-  async function refresh(): Promise<void> {
-    setBootstrap(await window.projectAgent.getBootstrap())
-  }
 
   async function updateStatus(id: string, status: DecisionStatus): Promise<void> {
     const updated = await window.projectAgent.updateDecisionStatus(id, status)

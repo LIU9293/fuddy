@@ -22,6 +22,10 @@ import { evaluateAggressivePermission } from '../../shared/permissions'
 import { normalizeWorkspaceRoots, primaryWorkspaceRoot } from '../../shared/project-workspaces'
 import { buildAgentStoragePolicy } from './agent-runtime-context'
 import type { AgentTurnOutcome, AgentTurnSettledPayload } from '../../shared/companion-sync'
+import {
+  AgentProviderRegistry,
+  createDefaultAgentProviderRegistry
+} from './agent-provider-registry'
 
 type ResolvedDispatchTaskInput = Omit<DispatchTaskInput, 'provider'> & {
   provider: AgentRunProvider
@@ -71,6 +75,7 @@ function isWithinWorkspace(target: string, root: string): boolean {
 }
 
 export class TaskDispatcher {
+  private readonly providerRegistry: AgentProviderRegistry
   private readonly turnQueueTails = new Map<string, Promise<AgentRunDetail>>()
   private readonly activeTurns = new Map<string, {
     abortController: AbortController
@@ -85,12 +90,14 @@ export class TaskDispatcher {
 
   constructor(
     private readonly database: AppDatabase,
-    private readonly piHarness: PiTaskHarness,
+    piHarness: PiTaskHarness,
     private readonly workspaceFiles: WorkspaceFilesService,
-    private readonly cliRuntime: CliAgentRuntime,
+    cliRuntime: CliAgentRuntime,
     private readonly inactivityTimeoutMs = AGENT_RUN_INACTIVITY_TIMEOUT_MS,
-    private readonly onRunSettled?: (run: AgentRun, turn: AgentTurnSettledPayload) => void | Promise<void>
+    private readonly onRunSettled?: (run: AgentRun, turn: AgentTurnSettledPayload) => void | Promise<void>,
+    providerRegistry?: AgentProviderRegistry
   ) {
+    this.providerRegistry = providerRegistry ?? createDefaultAgentProviderRegistry(piHarness, cliRuntime)
     this.database.recoverInterruptedAgentRuns(new Date().toISOString())
   }
 
@@ -407,55 +414,28 @@ export class TaskDispatcher {
     }
 
     try {
-      let response: string
-      if (run.provider === 'pi') {
-        const history = this.database.listAgentRunMessages(runId).filter((message) => message.id !== userMessage.id)
-        response = await runWithAbort(this.piHarness.runTurn({
-          runId,
-          projectId: run.projectId,
-          projectContext: this.buildRunContext(run),
-          prompt: runtimePrompt,
-          history,
-          sessionId: run.sessionId,
-          workingDirectory: run.workingDirectory ?? this.workspaceFiles.getRoot(run.projectId),
-          workspaceRoots: projectWorkspacesFor(this.database, run.projectId),
-          filesDirectory: this.workspaceFiles.getRoot(run.projectId),
-          abortController,
-          onUpdate: trackedUpdate,
-          onTool: recordTool,
-          onApproval: (request) => this.waitForApproval(run.id, request, trackedUpdate),
-          onSessionId: (sessionId) => {
-            touchActivity()
-            run = this.database.updateAgentRun({ ...run, sessionId, updatedAt: new Date().toISOString() })
-          }
-        }), abortController.signal)
-      } else {
-        if (!run.workingDirectory) throw new Error('这个 Agent Run 缺少 working directory。')
-        const result = await runWithAbort(this.cliRuntime.runTurn({
-          projectId: run.projectId,
-          provider: run.provider,
-          prompt: `${this.buildRunContext(run)}\n\n用户任务：\n${runtimePrompt}`,
-          sessionId: run.sessionId,
-          workingDirectory: run.workingDirectory,
-          workspaceRoots: projectWorkspacesFor(this.database, run.projectId),
-          filesDirectory: this.workspaceFiles.getRoot(run.projectId),
-          abortController,
-          onUpdate: trackedUpdate,
-          onSessionId: (sessionId) => {
-            touchActivity()
-            run = this.database.updateAgentRun({
-              ...run,
-              sessionId,
-              updatedAt: new Date().toISOString()
-            })
-          },
-          onTool: recordTool,
-          onApproval: (request) => this.waitForApproval(run.id, request, trackedUpdate)
-        }), abortController.signal)
-        response = result.text
-        if (result.sessionId && result.sessionId !== run.sessionId) {
-          run = this.database.updateAgentRun({ ...run, sessionId: result.sessionId, updatedAt: new Date().toISOString() })
+      const result = await runWithAbort(this.providerRegistry.runTurn(run.provider, {
+        runId,
+        projectId: run.projectId,
+        projectContext: this.buildRunContext(run),
+        prompt: runtimePrompt,
+        history: () => this.database.listAgentRunMessages(runId).filter((message) => message.id !== userMessage.id),
+        sessionId: run.sessionId,
+        workingDirectory: run.workingDirectory,
+        workspaceRoots: projectWorkspacesFor(this.database, run.projectId),
+        filesDirectory: this.workspaceFiles.getRoot(run.projectId),
+        abortController,
+        onUpdate: trackedUpdate,
+        onTool: recordTool,
+        onApproval: (request) => this.waitForApproval(run.id, request, trackedUpdate),
+        onSessionId: (sessionId) => {
+          touchActivity()
+          run = this.database.updateAgentRun({ ...run, sessionId, updatedAt: new Date().toISOString() })
         }
+      }), abortController.signal)
+      const response = result.text
+      if (result.sessionId && result.sessionId !== run.sessionId) {
+        run = this.database.updateAgentRun({ ...run, sessionId: result.sessionId, updatedAt: new Date().toISOString() })
       }
 
       flushReasoning()

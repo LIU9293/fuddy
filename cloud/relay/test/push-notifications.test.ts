@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { CompanionSyncEvent } from '../../../src/shared/companion-sync'
 import { agentTurnAlertRequest, agentTurnSettledPayload } from '../src/push-notifications'
 
-function settledEvent(overrides: Partial<CompanionSyncEvent> = {}): CompanionSyncEvent {
+function settledEvent(overrides: Record<string, unknown> = {}): CompanionSyncEvent {
   return {
     eventId: 'event-1',
     sequence: 42,
@@ -22,7 +22,7 @@ function settledEvent(overrides: Partial<CompanionSyncEvent> = {}): CompanionSyn
     sourceDeviceId: 'mac-1',
     occurredAt: '2026-08-12T05:00:00.000Z',
     ...overrides
-  }
+  } as CompanionSyncEvent
 }
 
 describe('agent turn push notifications', () => {

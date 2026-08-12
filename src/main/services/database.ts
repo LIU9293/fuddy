@@ -44,18 +44,23 @@ import type {
 } from '../../shared/contracts'
 import type { ConnectorCatalogItem } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
-import { companionProtocolVersion } from '../../shared/companion-sync'
+import { companionEventDefinitions, companionProtocolVersion } from '../../shared/companion-sync'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
+import { databaseSchemaVersion, runDatabaseMigrations, type DatabaseMigration } from './database-migrations'
 import type {
   AgentTurnSettledPayload,
   CompanionCommand,
   CompanionCommandStatus,
   CompanionEntityType,
+  CompanionEventPayloadMap,
+  CompanionEventType,
   CompanionOutboxEvent,
   CompanionSnapshotPayload
 } from '../../shared/companion-sync'
 
 type SqlRow = Record<string, string | number | null>
+
+const companionEventPruneIntervalMs = 24 * 60 * 60 * 1_000
 
 export interface DecisionInspectionInput {
   projectId: string | null
@@ -96,16 +101,38 @@ function parseJson<T>(value: string | null, fallback: T): T {
 export class AppDatabase {
   private readonly database: DatabaseSync
   private readonly companionEventListeners = new Set<() => void>()
+  private nextCompanionEventPruneAt = 0
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true })
     this.database = new DatabaseSync(path)
     this.database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
-    this.migrate()
+    const migrations: DatabaseMigration[] = [
+      { version: 1, name: 'baseline-schema', apply: () => this.ensureCurrentSchema() },
+      {
+        version: 2,
+        name: 'normalize-project-workspaces',
+        apply: () => {
+          this.migrateProjectWorkspaceProfiles()
+          this.migrateAgentRunWorkspaces()
+        }
+      },
+      { version: 3, name: 'normalize-decision-lifecycles', apply: () => this.migrateDecisionLifecycle() }
+    ]
+    const currentVersion = databaseSchemaVersion(this.database)
+    const latestVersion = migrations.at(-1)?.version ?? 0
+    if (currentVersion > latestVersion) {
+      this.database.close()
+      throw new Error(`Database schema version ${currentVersion} is newer than this app supports (${latestVersion}).`)
+    }
+    // Legacy version-0 databases need the schema before seed cleanup can run.
+    // Data normalization remains after seed, preserving the historical startup
+    // order while every step is now independently versioned and transactional.
+    if (currentVersion === 0) runDatabaseMigrations(this.database, [migrations[0]])
     this.seed()
-    this.migrateProjectWorkspaceProfiles()
-    this.migrateAgentRunWorkspaces()
-    this.migrateDecisionLifecycle()
+    runDatabaseMigrations(this.database, migrations)
+    this.pruneAllPublishedCompanionEvents()
+    this.nextCompanionEventPruneAt = Date.now() + companionEventPruneIntervalMs
   }
 
   close(): void {
@@ -1703,7 +1730,7 @@ export class AppDatabase {
     return rows.map((row) => ({
       eventId: String(row.event_id),
       protocolVersion: Number(row.protocol_version),
-      type: String(row.type),
+      type: String(row.type) as CompanionEventType,
       entityType: row.entity_type as CompanionEntityType,
       entityId: String(row.entity_id),
       revision: Number(row.revision),
@@ -1711,7 +1738,7 @@ export class AppDatabase {
       occurredAt: String(row.occurred_at),
       attempts: Number(row.attempts),
       lastError: row.last_error ? String(row.last_error) : null
-    }))
+    } as unknown as CompanionOutboxEvent))
   }
 
   countPendingCompanionEvents(): number {
@@ -1725,6 +1752,37 @@ export class AppDatabase {
     this.database.prepare(`
       UPDATE companion_sync_outbox SET published_at = ?, last_error = NULL WHERE event_id = ?
     `).run(publishedAt, eventId)
+    if (Date.now() >= this.nextCompanionEventPruneAt) {
+      this.pruneAllPublishedCompanionEvents()
+      this.nextCompanionEventPruneAt = Date.now() + companionEventPruneIntervalMs
+    }
+  }
+
+  prunePublishedCompanionEvents(retentionDays = 30, batchSize = 1_000): number {
+    if (!Number.isFinite(retentionDays) || retentionDays < 1) throw new Error('Retention days must be at least 1.')
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 10_000) {
+      throw new Error('Companion event cleanup batch size must be between 1 and 10000.')
+    }
+    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString()
+    const result = this.database.prepare(`
+      DELETE FROM companion_sync_outbox
+      WHERE event_id IN (
+        SELECT event_id FROM companion_sync_outbox
+        WHERE published_at IS NOT NULL AND published_at < ?
+        ORDER BY published_at ASC
+        LIMIT ?
+      )
+    `).run(cutoff, batchSize)
+    return Number(result.changes)
+  }
+
+  private pruneAllPublishedCompanionEvents(retentionDays = 30, batchSize = 1_000): number {
+    let total = 0
+    while (true) {
+      const deleted = this.prunePublishedCompanionEvents(retentionDays, batchSize)
+      total += deleted
+      if (deleted < batchSize) return total
+    }
   }
 
   markCompanionEventFailed(eventId: string, error: string): void {
@@ -1751,7 +1809,7 @@ export class AppDatabase {
       error: row.error ? String(row.error) : null,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
-    }
+    } as unknown as CompanionCommand
   }
 
   upsertCompanionCommand(command: CompanionCommand): CompanionCommand {
@@ -1808,14 +1866,14 @@ export class AppDatabase {
     }
   }
 
-  private enqueueCompanionEvent(
-    type: string,
-    entityType: CompanionEntityType,
+  private enqueueCompanionEvent<TType extends CompanionEventType>(
+    type: TType,
+    entityType: (typeof companionEventDefinitions)[TType],
     entityId: string,
-    payload: unknown
-  ): CompanionOutboxEvent {
+    payload: CompanionEventPayloadMap[TType]
+  ): CompanionOutboxEvent<TType> {
     const occurredAt = new Date().toISOString()
-    const event: CompanionOutboxEvent = {
+    const event = {
       eventId: randomUUID(),
       protocolVersion: companionProtocolVersion,
       type,
@@ -1826,7 +1884,7 @@ export class AppDatabase {
       occurredAt,
       attempts: 0,
       lastError: null
-    }
+    } as unknown as CompanionOutboxEvent<TType>
     this.database.prepare(`
       INSERT INTO companion_sync_outbox (
         event_id, protocol_version, type, entity_type, entity_id, revision,
@@ -1879,7 +1937,7 @@ export class AppDatabase {
     if (result.changes === 0) throw new Error(`Audit entry not found: ${id}`)
   }
 
-  private migrate(): void {
+  private ensureCurrentSchema(): void {
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,

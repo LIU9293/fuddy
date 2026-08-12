@@ -14,7 +14,7 @@ import type {
   CompanionSyncEvent,
   CompanionSyncEventInput
 } from '../../../src/shared/companion-sync'
-import { companionProtocolVersion } from '../../../src/shared/companion-sync'
+import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
 import { agentTurnAlertRequest } from './push-notifications'
 
 interface DeviceRow extends Record<string, SqlStorageValue> {
@@ -136,14 +136,14 @@ function mapEvent(row: EventRow): CompanionSyncEvent {
     eventId: row.event_id,
     sequence: row.sequence,
     protocolVersion: row.protocol_version,
-    type: row.type,
+    type: row.type as CompanionSyncEvent['type'],
     entityType: row.entity_type,
     entityId: row.entity_id,
     revision: row.revision,
     payload: JSON.parse(row.payload_json) as unknown,
     sourceDeviceId: row.source_device_id,
     occurredAt: row.occurred_at
-  }
+  } as unknown as CompanionSyncEvent
 }
 
 function mapCommand(row: CommandRow): CompanionCommand {
@@ -158,7 +158,7 @@ function mapCommand(row: CommandRow): CompanionCommand {
     error: row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at
-  }
+  } as unknown as CompanionCommand
 }
 
 export class AccountRelay extends DurableObject<Env> {
@@ -282,6 +282,7 @@ export class AccountRelay extends DurableObject<Env> {
     const row = this.ctx.storage.sql.exec<DeviceRow>('SELECT * FROM devices WHERE id = ?', input.deviceId).one()
     return {
       result: {
+        minimumProtocolVersion: companionMinimumProtocolVersion,
         protocolVersion: companionProtocolVersion,
         accountId: input.accountId,
         device: mapDevice(row),
@@ -348,7 +349,12 @@ export class AccountRelay extends DurableObject<Env> {
       after,
       limit
     ).toArray().map(mapEvent)
-    return { events, lastSequence: events.at(-1)?.sequence ?? after }
+    return {
+      minimumProtocolVersion: companionMinimumProtocolVersion,
+      protocolVersion: companionProtocolVersion,
+      events,
+      lastSequence: events.at(-1)?.sequence ?? after
+    }
   }
 
   async syncPage(
@@ -365,6 +371,8 @@ export class AccountRelay extends DurableObject<Env> {
       limit
     ).toArray().map(mapEvent)
     return {
+      minimumProtocolVersion: companionMinimumProtocolVersion,
+      protocolVersion: companionProtocolVersion,
       events,
       lastSequence: events.at(-1)?.sequence ?? after,
       presence: this.getPresence()

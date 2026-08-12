@@ -26,6 +26,7 @@ import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment 
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { updateProjectSchema } from '../../shared/project-validation'
+import { companionCommandSchema } from '../../shared/companion-schemas'
 import { AppDatabase } from './database'
 import { CredentialVault } from './credential-vault'
 import { TaskDispatcher } from './task-dispatcher'
@@ -337,7 +338,7 @@ export class CompanionSyncService {
           revision: event.revision,
           payload: await this.prepareEventPayload(event),
           occurredAt: event.occurredAt
-        })
+        } as unknown as CompanionSyncEventInput)
       }
       for (const batch of partitionCompanionEventBatches(prepared)) {
         try {
@@ -553,9 +554,10 @@ export class CompanionSyncService {
     const response = await fetchWithTimeout(this.authenticatedUrl('/v1/commands/pending', context.configuration), {
       headers: { Authorization: `Bearer ${context.token}` }
     })
-    const body = await responseJson<{ commands: CompanionCommand[] }>(response)
-    for (const remoteCommand of body.commands) this.scheduleCommand(remoteCommand)
-    if (body.commands.length >= 100) this.scheduleEventSync()
+    const body = await responseJson<{ commands: unknown[] }>(response)
+    const commands = body.commands.map((command) => companionCommandSchema.parse(command))
+    for (const remoteCommand of commands) this.scheduleCommand(remoteCommand)
+    if (commands.length >= 100) this.scheduleEventSync()
   }
 
   private scheduleCommand(remoteCommand: CompanionCommand): void {

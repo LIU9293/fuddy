@@ -16,10 +16,32 @@ final class SyncModelTests: XCTestCase {
     }
 
     func testPairingPayloadDecodesMacPayload() throws {
-        let payload = #"{"protocolVersion":1,"relayUrl":"https://relay.example.com","accountId":"account","pairingSecret":"secret"}"#
+        let payload = #"{"minimumProtocolVersion":1,"protocolVersion":2,"relayUrl":"https://relay.example.com","accountId":"account","pairingSecret":"secret"}"#
         let decoded = try JSONDecoder().decode(PairingPayload.self, from: Data(payload.utf8))
-        XCTAssertEqual(decoded.protocolVersion, 1)
+        XCTAssertEqual(decoded.minimumProtocolVersion, 1)
+        XCTAssertEqual(decoded.protocolVersion, 2)
         XCTAssertEqual(decoded.accountId, "account")
+    }
+
+    func testUnknownFutureEventTypeRemainsDecodable() throws {
+        let payload = #"{"eventId":"event-1","sequence":1,"protocolVersion":1,"type":"future.created","entityType":"future","entityId":"future-1","revision":1,"payload":{},"sourceDeviceId":"mac-1","occurredAt":"2026-08-12T05:00:00.000Z"}"#
+        let event = try JSONDecoder().decode(SyncEvent.self, from: Data(payload.utf8))
+        XCTAssertEqual(event.type, .unknown("future.created"))
+    }
+
+    func testCompanionProtocolSupportUsesGeneratedCompatibilityRange() {
+        XCTAssertTrue(companionProtocolVersionIsSupported(companionProtocolVersion))
+        XCTAssertTrue(companionProtocolVersionIsSupported(companionMinimumProtocolVersion))
+        XCTAssertFalse(companionProtocolVersionIsSupported(companionMinimumProtocolVersion - 1))
+        XCTAssertFalse(companionProtocolVersionIsSupported(companionProtocolVersion + 1))
+        XCTAssertTrue(companionProtocolRangeSupportsLocalVersion(
+            minimumVersion: companionProtocolVersion,
+            currentVersion: companionProtocolVersion + 1
+        ))
+        XCTAssertFalse(companionProtocolRangeSupportsLocalVersion(
+            minimumVersion: companionProtocolVersion + 1,
+            currentVersion: companionProtocolVersion + 2
+        ))
     }
 
     func testGenericEventPayloadDecodesAgentRun() throws {
@@ -287,7 +309,7 @@ final class SyncModelTests: XCTestCase {
         let envelope = try JSONDecoder().decode(SocketEnvelope.self, from: Data(json.utf8))
         let result = try XCTUnwrap(envelope.command?.result).decode(ArtifactUploadResult.self)
 
-        XCTAssertEqual(envelope.command?.type, "artifact.request-upload")
+        XCTAssertEqual(envelope.command?.type, .artifactRequestUpload)
         XCTAssertEqual(result.artifactId, "artifact-1")
         XCTAssertEqual(result.attachment.filename, "launch.md")
     }
