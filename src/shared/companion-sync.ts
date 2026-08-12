@@ -1,7 +1,29 @@
 import type { AgentModelLabels } from './model-display'
+import type {
+  AgentRun,
+  AgentRunArtifact,
+  AgentRunMessage,
+  BriefingMessage,
+  DecisionStatus,
+  DecisionItem,
+  MorningBriefing,
+  Project,
+  ProjectGoal
+} from './contracts'
+import {
+  companionCommandTypes,
+  companionEventDefinitions,
+  companionProtocol,
+  type CompanionCommandType,
+  type CompanionEntityType,
+  type CompanionEventType
+} from './companion-protocol'
 
-export const companionProtocolVersion = 1
+export const companionProtocolVersion = companionProtocol.currentVersion
+export const companionMinimumProtocolVersion = companionProtocol.minimumVersion
 export const defaultCompanionRelayUrl = 'https://project-agent-companion-relay.moghub.workers.dev'
+export { companionCommandTypes, companionEventDefinitions }
+export type { CompanionCommandType, CompanionEntityType, CompanionEventType }
 
 export type CompanionDeviceRole = 'mac' | 'ios'
 export type CompanionDevicePlatform = 'macos' | 'ios'
@@ -47,31 +69,23 @@ export interface CompanionPairingClaimResult {
   deviceToken: string
 }
 
-export type CompanionEntityType =
-  | 'command'
-  | 'snapshot'
-  | 'project'
-  | 'goal'
-  | 'decision'
-  | 'agent-run'
-  | 'agent-message'
-  | 'artifact'
-  | 'morning-briefing'
-  | 'work-assistant-message'
-  | 'settings'
-
-export interface CompanionSyncEventInput<TPayload = unknown> {
+interface CompanionSyncEventBase {
   eventId: string
   protocolVersion: number
-  type: string
-  entityType: CompanionEntityType
   entityId: string
   revision: number
-  payload: TPayload
   occurredAt: string
 }
 
-export interface CompanionSyncEvent<TPayload = unknown> extends CompanionSyncEventInput<TPayload> {
+export type CompanionSyncEventInput<TType extends CompanionEventType = CompanionEventType> = {
+  [K in TType]: CompanionSyncEventBase & {
+    type: K
+    entityType: (typeof companionEventDefinitions)[K]
+    payload: CompanionEventPayloadMap[K]
+  }
+}[TType]
+
+export type CompanionSyncEvent<TType extends CompanionEventType = CompanionEventType> = CompanionSyncEventInput<TType> & {
   sequence: number
   sourceDeviceId: string
 }
@@ -87,30 +101,19 @@ export interface AgentTurnSettledPayload {
   settledAt: string
 }
 
-export type CompanionCommandType =
-  | 'assistant.send-message'
-  | 'assistant.execute-action'
-  | 'agent.send-message'
-  | 'agent.stop-message'
-  | 'agent.rename-session'
-  | 'agent.update-draft-prompt'
-  | 'agent.archive-session'
-  | 'artifact.request-upload'
-  | 'decision.update-status'
-  | 'decision.handle'
-  | 'project.update'
-
 export type CompanionCommandStatus = 'queued' | 'delivered' | 'executing' | 'completed' | 'failed'
 
-export interface CompanionCommandInput<TPayload = unknown> {
+interface CompanionCommandBase {
   commandId: string
   protocolVersion: number
-  type: CompanionCommandType
-  payload: TPayload
   createdAt: string
 }
 
-export interface CompanionCommand<TPayload = unknown> extends CompanionCommandInput<TPayload> {
+export type CompanionCommandInput<TType extends CompanionCommandType = CompanionCommandType> = {
+  [K in TType]: CompanionCommandBase & { type: K; payload: CompanionCommandPayloadMap[K] }
+}[TType]
+
+export type CompanionCommand<TType extends CompanionCommandType = CompanionCommandType> = CompanionCommandInput<TType> & {
   sourceDeviceId: string
   status: CompanionCommandStatus
   result: unknown | null
@@ -194,7 +197,7 @@ export interface CompanionPairingSession {
   status: CompanionMacStatus
 }
 
-export interface CompanionOutboxEvent extends CompanionSyncEventInput {
+export type CompanionOutboxEvent<TType extends CompanionEventType = CompanionEventType> = CompanionSyncEventInput<TType> & {
   attempts: number
   lastError: string | null
 }
@@ -202,15 +205,68 @@ export interface CompanionOutboxEvent extends CompanionSyncEventInput {
 export interface CompanionSnapshotPayload {
   generatedAt: string
   modelLabels: AgentModelLabels
-  projects: unknown[]
-  goals: unknown[]
-  decisions: unknown[]
-  morningBriefings: unknown[]
-  workAssistantMessages: unknown[]
+  projects: Project[]
+  goals: ProjectGoal[]
+  decisions: DecisionItem[]
+  morningBriefings: MorningBriefing[]
+  workAssistantMessages: BriefingMessage[]
   attachments: CompanionAttachmentDescriptor[]
   runs: Array<{
-    run: unknown
-    messages: unknown[]
-    artifacts: unknown[]
+    run: AgentRun
+    messages: AgentRunMessage[]
+    artifacts: AgentRunArtifact[]
   }>
+}
+
+export interface CompanionArtifactEventPayload {
+  artifact: AgentRunArtifact
+  attachment: CompanionAttachmentDescriptor | null
+}
+
+export interface CompanionCommandRecord {
+  commandId: string
+  protocolVersion: number
+  type: CompanionCommandType
+  payload: unknown
+  sourceDeviceId: string
+  status: CompanionCommandStatus
+  result: unknown | null
+  error: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CompanionEventPayloadMap {
+  'snapshot.created': CompanionSnapshotPayload
+  'project.created': Project
+  'project.updated': Project
+  'goal.created': ProjectGoal
+  'goal.updated': ProjectGoal
+  'decision.created': DecisionItem
+  'decision.updated': DecisionItem
+  'agent-run.created': AgentRun
+  'agent-run.updated': AgentRun
+  'agent-run.archived': { id: string; archivedAt: string }
+  'agent-message.created': AgentRunMessage
+  'artifact.updated': AgentRunArtifact | CompanionArtifactEventPayload
+  'morning-briefing.updated': MorningBriefing
+  'work-assistant-message.created': BriefingMessage
+  'work-assistant-message.updated': BriefingMessage
+  'agent-turn.settled': AgentTurnSettledPayload
+  'model-labels.updated': AgentModelLabels
+  'command.updated': CompanionCommandRecord
+}
+
+export interface CompanionCommandPayloadMap {
+  'assistant.send-message': { prompt: string; attachments?: CompanionAttachmentDescriptor[] }
+  'assistant.execute-action': { messageId: string; proposalId: string; optionId: string }
+  'agent.send-message': { runId: string; prompt: string; attachments?: CompanionAttachmentDescriptor[]; clientMessageId?: string }
+  'agent.stop-message': { runId: string }
+  'agent.rename-session': { runId: string; title: string }
+  'agent.update-draft-prompt': { runId: string; draftPrompt: string }
+  'agent.archive-session': { runId: string }
+  'artifact.request-upload': { artifactId: string }
+  'decision.update-status': { decisionId: string; status: DecisionStatus }
+  'decision.handle': { decisionId: string; runId: string }
+  'project.update': { project: Project }
 }

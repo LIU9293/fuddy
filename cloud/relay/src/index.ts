@@ -5,7 +5,7 @@ import type {
   CompanionPairingStartResult,
   CompanionPairingClaimResult
 } from '../../../src/shared/companion-sync'
-import { companionProtocolVersion } from '../../../src/shared/companion-sync'
+import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
 import { AccountRelay } from './account-relay'
 import {
   commandSchema,
@@ -104,7 +104,12 @@ async function authenticatedContext(
 async function handleRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url)
   if (request.method === 'GET' && url.pathname === '/health') {
-    return Response.json({ status: 'ok', protocolVersion: companionProtocolVersion, build: relayBuild })
+    return Response.json({
+      status: 'ok',
+      minimumProtocolVersion: companionMinimumProtocolVersion,
+      protocolVersion: companionProtocolVersion,
+      build: relayBuild
+    })
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/pairings') {

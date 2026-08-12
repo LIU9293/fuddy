@@ -1,6 +1,5 @@
 import Foundation
 
-let companionProtocolVersion = 1
 let defaultCompanionRelayURL = "https://project-agent-companion-relay.moghub.workers.dev"
 
 func parseCompanionDate(_ value: String) -> Date? {
@@ -57,7 +56,7 @@ struct SyncEvent: Codable, Identifiable {
     let eventId: String
     let sequence: Int
     let protocolVersion: Int
-    let type: String
+    let type: CompanionEventType
     let entityType: String
     let entityId: String
     let revision: Int64
@@ -83,14 +82,14 @@ func companionReplayCursor(cachedSequence: Int, remoteSequence: Int) -> Int {
 struct CommandInput<Payload: Codable>: Codable {
     let commandId: String
     let protocolVersion: Int
-    let type: String
+    let type: CompanionCommandType
     let payload: Payload
     let createdAt: String
 }
 
 struct CommandResult: Codable {
     let commandId: String
-    let type: String?
+    let type: CompanionCommandType?
     let status: String
     let result: JSONValue?
     let error: String?

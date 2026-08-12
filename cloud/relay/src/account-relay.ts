@@ -136,14 +136,14 @@ function mapEvent(row: EventRow): CompanionSyncEvent {
     eventId: row.event_id,
     sequence: row.sequence,
     protocolVersion: row.protocol_version,
-    type: row.type,
+    type: row.type as CompanionSyncEvent['type'],
     entityType: row.entity_type,
     entityId: row.entity_id,
     revision: row.revision,
     payload: JSON.parse(row.payload_json) as unknown,
     sourceDeviceId: row.source_device_id,
     occurredAt: row.occurred_at
-  }
+  } as unknown as CompanionSyncEvent
 }
 
 function mapCommand(row: CommandRow): CompanionCommand {
@@ -158,7 +158,7 @@ function mapCommand(row: CommandRow): CompanionCommand {
     error: row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at
-  }
+  } as unknown as CompanionCommand
 }
 
 export class AccountRelay extends DurableObject<Env> {

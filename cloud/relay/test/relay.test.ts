@@ -45,6 +45,7 @@ describe('companion relay', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
       status: 'ok',
+      minimumProtocolVersion: 1,
       protocolVersion: companionProtocolVersion,
       build: '2026-08-12.1'
     })
@@ -78,7 +79,7 @@ describe('companion relay', () => {
       entityType: 'agent-run' as const,
       entityId: 'run-1',
       revision: 1,
-      payload: { title: 'Remote Session', status: 'running' },
+      payload: { id: 'run-1', title: 'Remote Session', status: 'running', provider: 'codex' },
       occurredAt: new Date().toISOString()
     }
     const createdResponse = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
@@ -126,7 +127,13 @@ describe('companion relay', () => {
       entityType: 'agent-message' as const,
       entityId: `message-${index}`,
       revision: index + 1,
-      payload: { content: `message ${index}` },
+      payload: {
+        id: `message-${index}`,
+        runId: 'run-1',
+        role: 'assistant',
+        content: `message ${index}`,
+        createdAt: occurredAt
+      },
       occurredAt
     }))
     const batchUrl = authenticatedUrl('/v1/events/batch', pairing.accountId, pairing.macDeviceId)

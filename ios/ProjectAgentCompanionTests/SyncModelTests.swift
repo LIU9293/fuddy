@@ -287,7 +287,7 @@ final class SyncModelTests: XCTestCase {
         let envelope = try JSONDecoder().decode(SocketEnvelope.self, from: Data(json.utf8))
         let result = try XCTUnwrap(envelope.command?.result).decode(ArtifactUploadResult.self)
 
-        XCTAssertEqual(envelope.command?.type, "artifact.request-upload")
+        XCTAssertEqual(envelope.command?.type, .artifactRequestUpload)
         XCTAssertEqual(result.artifactId, "artifact-1")
         XCTAssertEqual(result.attachment.filename, "launch.md")
     }

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import type { CompanionCommand, CompanionMacConfiguration } from '../../shared/companion-sync'
+import type { CompanionCommand, CompanionMacConfiguration, CompanionSyncEventInput } from '../../shared/companion-sync'
 import type { AgentRunMessage } from '../../shared/contracts'
 import {
   companionAgentMessageForRelay,
@@ -50,7 +50,7 @@ describe('Companion sync transport policy', () => {
   })
 
   it('partitions relay events by count and serialized byte size', () => {
-    const event = (index: number, payload = 'small') => ({
+    const event = (index: number, payload = 'small'): CompanionSyncEventInput => ({
       eventId: `event-${index}`,
       protocolVersion: 1 as const,
       type: 'agent-message.created',
@@ -59,7 +59,7 @@ describe('Companion sync transport policy', () => {
       revision: index,
       payload,
       occurredAt: new Date().toISOString()
-    })
+    } as unknown as CompanionSyncEventInput)
     const byCount = partitionCompanionEventBatches(
       Array.from({ length: companionEventBatchMaximumCount + 1 }, (_, index) => event(index))
     )

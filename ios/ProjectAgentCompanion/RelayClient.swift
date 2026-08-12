@@ -32,7 +32,8 @@ final class RelayClient {
     init(credentials: CompanionCredentials) { self.credentials = credentials }
 
     static func claim(pairing: PairingPayload, deviceName: String) async throws -> CompanionCredentials {
-        guard pairing.protocolVersion == companionProtocolVersion else { throw RelayError.protocolMismatch }
+        guard pairing.protocolVersion >= companionMinimumProtocolVersion,
+              pairing.protocolVersion <= companionProtocolVersion else { throw RelayError.protocolMismatch }
         let deviceID = UUID().uuidString
         guard var components = URLComponents(string: pairing.relayUrl),
               components.scheme == "https",
@@ -71,7 +72,7 @@ final class RelayClient {
 
     func sendCommand<Payload: Codable>(
         commandID: String = UUID().uuidString,
-        type: String,
+        type: CompanionCommandType,
         payload: Payload
     ) async throws -> CommandResult {
         let command = CommandInput(

@@ -44,7 +44,7 @@ import type {
 } from '../../shared/contracts'
 import type { ConnectorCatalogItem } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
-import { companionProtocolVersion } from '../../shared/companion-sync'
+import { companionEventDefinitions, companionProtocolVersion } from '../../shared/companion-sync'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { runDatabaseMigrations } from './database-migrations'
 import type {
@@ -52,6 +52,8 @@ import type {
   CompanionCommand,
   CompanionCommandStatus,
   CompanionEntityType,
+  CompanionEventPayloadMap,
+  CompanionEventType,
   CompanionOutboxEvent,
   CompanionSnapshotPayload
 } from '../../shared/companion-sync'
@@ -1713,7 +1715,7 @@ export class AppDatabase {
     return rows.map((row) => ({
       eventId: String(row.event_id),
       protocolVersion: Number(row.protocol_version),
-      type: String(row.type),
+      type: String(row.type) as CompanionEventType,
       entityType: row.entity_type as CompanionEntityType,
       entityId: String(row.entity_id),
       revision: Number(row.revision),
@@ -1721,7 +1723,7 @@ export class AppDatabase {
       occurredAt: String(row.occurred_at),
       attempts: Number(row.attempts),
       lastError: row.last_error ? String(row.last_error) : null
-    }))
+    } as unknown as CompanionOutboxEvent))
   }
 
   countPendingCompanionEvents(): number {
@@ -1779,7 +1781,7 @@ export class AppDatabase {
       error: row.error ? String(row.error) : null,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
-    }
+    } as unknown as CompanionCommand
   }
 
   upsertCompanionCommand(command: CompanionCommand): CompanionCommand {
@@ -1836,14 +1838,14 @@ export class AppDatabase {
     }
   }
 
-  private enqueueCompanionEvent(
-    type: string,
-    entityType: CompanionEntityType,
+  private enqueueCompanionEvent<TType extends CompanionEventType>(
+    type: TType,
+    entityType: (typeof companionEventDefinitions)[TType],
     entityId: string,
-    payload: unknown
-  ): CompanionOutboxEvent {
+    payload: CompanionEventPayloadMap[TType]
+  ): CompanionOutboxEvent<TType> {
     const occurredAt = new Date().toISOString()
-    const event: CompanionOutboxEvent = {
+    const event = {
       eventId: randomUUID(),
       protocolVersion: companionProtocolVersion,
       type,
@@ -1854,7 +1856,7 @@ export class AppDatabase {
       occurredAt,
       attempts: 0,
       lastError: null
-    }
+    } as unknown as CompanionOutboxEvent<TType>
     this.database.prepare(`
       INSERT INTO companion_sync_outbox (
         event_id, protocol_version, type, entity_type, entity_id, revision,
