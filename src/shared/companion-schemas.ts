@@ -12,15 +12,15 @@ const isoDate = z.string().datetime({ offset: true })
 const protocolVersion = z.number().int().refine(companionProtocolVersionIsSupported, 'Unsupported companion protocol version')
 const attachment = z.object({
   id: identifier,
-  messageId: identifier.nullable(),
-  artifactId: identifier.nullable(),
+  messageId: identifier.nullish().transform((value) => value ?? null),
+  artifactId: identifier.nullish().transform((value) => value ?? null),
   filename: z.string().trim().min(1).max(500),
   mimeType: z.string().trim().min(1).max(200),
   size: z.number().int().positive().max(100 * 1024 * 1024),
   sha256: z.string().regex(/^[a-f0-9]{64}$/i),
-  width: z.number().int().positive().nullable(),
-  height: z.number().int().positive().nullable(),
-  thumbnailAttachmentId: identifier.nullable(),
+  width: z.number().int().positive().nullish().transform((value) => value ?? null),
+  height: z.number().int().positive().nullish().transform((value) => value ?? null),
+  thumbnailAttachmentId: identifier.nullish().transform((value) => value ?? null),
   createdAt: isoDate
 })
 const project = z.object({ id: identifier, name: z.string().trim().min(1), status: z.string(), profile: z.record(z.string(), z.unknown()) }).passthrough()

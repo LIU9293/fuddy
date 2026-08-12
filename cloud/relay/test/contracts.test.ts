@@ -62,4 +62,32 @@ describe('companion protocol contracts', () => {
 
     expect(parsed.payload).toEqual({ runId: 'run-1', title: 'Rename me' })
   })
+
+  it('accepts Swift attachments that omit nil optional fields', () => {
+    const parsed = commandSchema.parse({
+      commandId: 'command-attachment',
+      protocolVersion: 1,
+      createdAt: occurredAt,
+      type: 'assistant.send-message',
+      payload: {
+        prompt: '检查附件',
+        attachments: [{
+          id: 'attachment-1',
+          filename: 'photo.jpg',
+          mimeType: 'image/jpeg',
+          size: 128,
+          sha256: 'a'.repeat(64),
+          createdAt: occurredAt
+        }]
+      }
+    })
+
+    expect(parsed.payload.attachments?.[0]).toMatchObject({
+      messageId: null,
+      artifactId: null,
+      width: null,
+      height: null,
+      thumbnailAttachmentId: null
+    })
+  })
 })
