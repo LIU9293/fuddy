@@ -2,7 +2,7 @@
 
 > 面向自由职业者与个人开发者的多项目 AI 助理。当前仓库已进入 Electron 桌面端 MVP 开发阶段。
 
-## 当前实现状态（2026-08-09）
+## 当前实现状态（2026-08-12）
 
 当前版本已经跑通从项目上下文、决策事项到真实 Agent Session 的桌面端主链路：
 
@@ -18,6 +18,9 @@
 - Agent 对话已支持流式回复、思考摘要、折叠工具调用链、当前工具运行态、Session 重命名 / 归档，以及 10 分钟无活动运行超时；
 - Mac 主区域统一使用纯色页面背景和全宽顶部 Header；项目列表是独立页面，Agent Run Session 直接常驻主侧边栏且只在运行时显示加载图标；主侧边栏支持拖拽调整宽度；临时成功和错误提示会在 5 秒后自动消失；
 - 主进程、Renderer 未处理异常及 Electron 子进程异常已接入 Sentry 崩溃报告。
+- SQLite 使用递增版本和逐步事务执行迁移；迁移失败不会推进版本。已发布的 Companion outbox 事件默认保留 30 天并分批清理，避免本地同步历史无限增长。
+- Companion 的事件、实体和 Payload，以及远程命令与 Payload 使用同一套强类型协议；Relay 在写入前执行逐事件 Zod 校验，Swift 事件/命令枚举由共享 manifest 生成，并保留对未知未来事件的安全忽略能力。
+- Agent Run 通过 Provider Registry 调度。Pi、Codex、Claude Code 与 OpenCode 分别注册 Adapter 和能力声明；Task Dispatcher 不再包含 Provider-specific 执行分支，Renderer 的 Bootstrap 订阅与主进程事件重试也已从 App Shell 抽离。
 - 所有聊天输入框已支持语音输入。Mac 首次录音会明确请求系统麦克风权限；已拒绝时打开“隐私与安全性 → 麦克风”供用户恢复授权。Mac 默认使用可选下载的 Whisper `large-v3-turbo Q5` 本地模型，未安装或本地失败时可回退到 OpenAI-compatible `/audio/transcriptions`；iPhone Release 构建通过准备脚本把同一模型预置进 App，并始终在设备上转写。录音只填入输入框，不会自动发送。
 - 已加入原生 SwiftUI iOS Companion 工程。Mac 可显示一次性配对二维码，iPhone 使用 VisionKit 原生扫码连接；本地 SQLite outbox 会把项目、目标、决策、每日总结、工作助理、Agent Run、消息和产物增量同步到 Cloudflare Relay。outbox 仍逐条落盘，但网络层按最多 100 条 / 512 KiB 批量提交；工具完整输出只留在 Mac，Relay 与 iPhone 只接收工具名、完成状态和最多 600 字的摘要。手机以顶部“助理 / Runs”切换和侧边栏组织导航，两类聊天共用支持照片 / 文件上传的输入组件；每日总结直接进入助理时间线，Agent 工具调用按 Thinking 阶段折叠分组。项目详情提供与 Mac 对齐的概览 / 设置，可编辑基本信息、产品上下文、一个或多个 Workspace、主 Workspace、默认 Agent、入口与数据源，并通过受约束的 `project.update` 命令交由 Mac 落库。Session 聊天不再内嵌产物列表，右上角“信息与文件”Modal 集中展示基本信息和文件；缺少云端副本时，iPhone 会通过受约束的命令请求在线 Mac 实时上传，再进行大小与 SHA-256 校验并用 Quick Look 打开。手机也支持离线缓存、收件箱处理和 Session 重命名 / 归档，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
 - Companion Relay 默认地址为 [`project-agent-companion-relay.moghub.workers.dev`](https://project-agent-companion-relay.moghub.workers.dev)，使用 Durable Objects、Hibernation WebSocket 和私有 R2；配对密钥一次有效、设备 Token 只保存哈希，Mac 解除绑定会撤销设备并清理 Relay 数据。每批事件在 DO 内一次授权并通过 SQLite 同步事务幂等写入，随后只发送一个 `sync.available(lastSequence)` 唤醒提示；Mac 与 iPhone 收到提示后仍以 ordered replay 为准。WebSocket 正常时兜底间隔为 5 分钟，断线时恢复为 60 秒，并每 20 秒执行应用层心跳；漏掉一次 `pong` 会主动废弃半开连接，断线重连按 5 / 15 / 60 秒退避。iPhone 进入后台会主动关闭 WebSocket 和兜底定时器，普通更新由 APNs 静默通知唤醒 HTTPS replay；每轮 Agent Run 完成或失败则发送带 Run ID 的可见提醒，点击后同步并打开对应 Run。Mac 同时显示本地系统通知，用户主动停止不触发完成提醒。命令状态同样写入 ordered event log，离线期间发生的执行失败不会丢失；Worker 只持久化显式错误日志，Trace 采样为 1%。手机会区分 Relay 断线与 Mac 离线并直接消费 presence 帧，Mac 设置页也分开显示 HTTP 同步和实时连接；Mac 离线时仍可安全排队操作。开发环境 APNs 已绑定 Apple Team `5PR3342M58` 并部署；TestFlight / App Store 发布前需把 Relay 切换到 production APNs 环境。
@@ -553,6 +556,8 @@ npm run dev
 npm run typecheck
 npm test
 npm run build
+npm run relay:typecheck
+npm run relay:test
 npm run ios:generate
 npm run ios:typecheck
 RUN_AGENT_TOOLS_SMOKE=1 npx vitest run src/main/services/third-party-mcp-runtime.integration.test.ts

@@ -1,0 +1,138 @@
+import type {
+  AgentApprovalDecision,
+  AgentApprovalRequest,
+  AgentRunMessage,
+  AgentRunProvider,
+  AgentRunStreamUpdate
+} from '../../shared/contracts'
+import type { CliAgentRuntime } from './cli-agent-runtime'
+import type { PiTaskHarness } from './pi-task-harness'
+import { codingAgentProviders } from '../../shared/agent-providers'
+
+export interface AgentProviderCapabilities {
+  nativeSessions: boolean
+  modelSelection: boolean
+  reasoningSummaries: boolean
+  toolCalls: boolean
+  approvals: boolean
+}
+
+export interface AgentProviderTurnInput {
+  runId: string
+  projectId: string | null
+  projectContext: string
+  prompt: string
+  history: AgentRunMessage[]
+  sessionId: string | null
+  workingDirectory: string | null
+  workspaceRoots: string[]
+  filesDirectory: string
+  abortController: AbortController
+  onUpdate: (update: AgentRunStreamUpdate) => void
+  onTool: (toolName: string, detail: string, metadata?: Record<string, unknown>) => void
+  onSessionId: (sessionId: string) => void
+  onApproval: (request: Omit<AgentApprovalRequest, 'runId' | 'createdAt'>) => Promise<AgentApprovalDecision>
+}
+
+export interface AgentProviderTurnResult {
+  text: string
+  sessionId: string | null
+}
+
+export interface AgentProviderAdapter {
+  provider: AgentRunProvider
+  capabilities: AgentProviderCapabilities
+  runTurn(input: AgentProviderTurnInput): Promise<AgentProviderTurnResult>
+}
+
+export class AgentProviderRegistry {
+  private readonly adapters = new Map<AgentRunProvider, AgentProviderAdapter>()
+
+  constructor(adapters: AgentProviderAdapter[] = []) {
+    for (const adapter of adapters) this.register(adapter)
+  }
+
+  register(adapter: AgentProviderAdapter): void {
+    if (this.adapters.has(adapter.provider)) {
+      throw new Error(`Agent provider already registered: ${adapter.provider}`)
+    }
+    this.adapters.set(adapter.provider, adapter)
+  }
+
+  get(provider: AgentRunProvider): AgentProviderAdapter {
+    const adapter = this.adapters.get(provider)
+    if (!adapter) throw new Error(`Agent provider is not registered: ${provider}`)
+    return adapter
+  }
+
+  list(): AgentProviderAdapter[] {
+    return [...this.adapters.values()]
+  }
+
+  runTurn(provider: AgentRunProvider, input: AgentProviderTurnInput): Promise<AgentProviderTurnResult> {
+    return this.get(provider).runTurn(input)
+  }
+}
+
+const sharedCapabilities: AgentProviderCapabilities = {
+  nativeSessions: true,
+  modelSelection: true,
+  reasoningSummaries: true,
+  toolCalls: true,
+  approvals: true
+}
+
+export function createDefaultAgentProviderRegistry(
+  piHarness: PiTaskHarness,
+  cliRuntime: CliAgentRuntime
+): AgentProviderRegistry {
+  const registry = new AgentProviderRegistry()
+  registry.register({
+    provider: 'pi',
+    capabilities: { ...sharedCapabilities, modelSelection: false },
+    async runTurn(input) {
+      const text = await piHarness.runTurn({
+        runId: input.runId,
+        projectId: input.projectId,
+        projectContext: input.projectContext,
+        prompt: input.prompt,
+        history: input.history,
+        sessionId: input.sessionId,
+        workingDirectory: input.workingDirectory ?? input.filesDirectory,
+        workspaceRoots: input.workspaceRoots,
+        filesDirectory: input.filesDirectory,
+        abortController: input.abortController,
+        onUpdate: input.onUpdate,
+        onTool: input.onTool,
+        onApproval: input.onApproval,
+        onSessionId: input.onSessionId
+      })
+      return { text, sessionId: null }
+    }
+  })
+
+  for (const provider of codingAgentProviders) {
+    registry.register({
+      provider,
+      capabilities: { ...sharedCapabilities },
+      async runTurn(input) {
+        if (!input.workingDirectory) throw new Error('这个 Agent Run 缺少 working directory。')
+        return await cliRuntime.runTurn({
+          projectId: input.projectId,
+          provider,
+          prompt: `${input.projectContext}\n\n用户任务：\n${input.prompt}`,
+          sessionId: input.sessionId,
+          workingDirectory: input.workingDirectory,
+          workspaceRoots: input.workspaceRoots,
+          filesDirectory: input.filesDirectory,
+          abortController: input.abortController,
+          onUpdate: input.onUpdate,
+          onSessionId: input.onSessionId,
+          onTool: input.onTool,
+          onApproval: input.onApproval
+        })
+      }
+    })
+  }
+  return registry
+}

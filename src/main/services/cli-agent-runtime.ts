@@ -34,6 +34,11 @@ export interface CliAgentTurnResult {
   sessionId: string | null
 }
 
+export interface CliAgentProviderRuntimeAdapter {
+  provider: CliAgentTurnInput['provider']
+  runTurn(input: CliAgentTurnInput, mcpServers: McpServerLaunchConfig[]): Promise<CliAgentTurnResult>
+}
+
 type JsonRecord = Record<string, unknown>
 type ClaudeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 type ParsedCliRecord = {
@@ -276,12 +281,27 @@ export function buildCliEnv(
 }
 
 export class CliAgentRuntime {
+  private readonly adapters = new Map<CliAgentTurnInput['provider'], CliAgentProviderRuntimeAdapter>()
+
   constructor(
     private readonly mcpProvider: McpLaunchConfigProvider,
     private readonly projectAgentMcpScript?: string,
     private readonly databasePath?: string,
-    private readonly providerSettings?: ProviderSettingsService
-  ) {}
+    private readonly providerSettings?: ProviderSettingsService,
+    adapters?: CliAgentProviderRuntimeAdapter[]
+  ) {
+    const defaults: CliAgentProviderRuntimeAdapter[] = [
+      { provider: 'codex', runTurn: (input, servers) => this.runCodexAppServer(input, servers) },
+      { provider: 'claude', runTurn: (input, servers) => this.runClaudeSdk(input, servers) },
+      { provider: 'opencode', runTurn: (input, servers) => this.runJsonCli(input, servers) }
+    ]
+    for (const adapter of adapters ?? defaults) this.registerAdapter(adapter)
+  }
+
+  registerAdapter(adapter: CliAgentProviderRuntimeAdapter): void {
+    if (this.adapters.has(adapter.provider)) throw new Error(`CLI agent provider already registered: ${adapter.provider}`)
+    this.adapters.set(adapter.provider, adapter)
+  }
 
   async runTurn(input: CliAgentTurnInput): Promise<CliAgentTurnResult> {
     const configuredModel = input.model?.trim() || this.providerSettings?.getCodingAgentDefaultModel(input.provider)
@@ -306,9 +326,9 @@ export class CliAgentRuntime {
         }
       })
     }
-    if (resolvedInput.provider === 'codex') return await this.runCodexAppServer(resolvedInput, mcpServers)
-    if (resolvedInput.provider === 'claude') return await this.runClaudeSdk(resolvedInput, mcpServers)
-    return await this.runJsonCli(resolvedInput, mcpServers)
+    const adapter = this.adapters.get(resolvedInput.provider)
+    if (!adapter) throw new Error(`CLI agent provider is not registered: ${resolvedInput.provider}`)
+    return await adapter.runTurn(resolvedInput, mcpServers)
   }
 
   private async runClaudeSdk(
@@ -583,7 +603,6 @@ export class CliAgentRuntime {
     let latestSessionId = input.sessionId
     let buffer = ''
     let finalText = ''
-    let streamedText = ''
 
     input.onUpdate({ type: 'status', status: 'running', detail: `正在启动 ${input.provider} CLI` })
 
@@ -620,11 +639,7 @@ export class CliAgentRuntime {
           latestSessionId = foundSessionId
           input.onSessionId(foundSessionId)
         }
-        const parsed = input.provider === 'codex'
-          ? codexRecord(record)
-          : input.provider === 'claude'
-            ? claudeRecord(record)
-            : opencodeRecord(record)
+        const parsed = opencodeRecord(record)
         if (parsed.reasoning) input.onUpdate({
           type: 'reasoning_delta',
           segmentId: parsed.reasoningSegmentId,
@@ -641,15 +656,8 @@ export class CliAgentRuntime {
           input.onTool(parsed.tool.name, parsed.tool.detail, record)
         }
         if (parsed.assistant) {
-          if (input.provider === 'claude' && record.type === 'stream_event') {
-            streamedText += parsed.assistant
-            input.onUpdate({ type: 'message_delta', messageId: `stream-${latestSessionId ?? 'new'}`, delta: parsed.assistant })
-          } else {
-            finalText = parsed.assistant
-            if (!streamedText) {
-              input.onUpdate({ type: 'message_delta', messageId: `stream-${latestSessionId ?? 'new'}`, delta: parsed.assistant })
-            }
-          }
+          finalText = parsed.assistant
+          input.onUpdate({ type: 'message_delta', messageId: `stream-${latestSessionId ?? 'new'}`, delta: parsed.assistant })
         }
       }
 
@@ -678,7 +686,7 @@ export class CliAgentRuntime {
           finishError(new Error(errorText || `${basename(binary)} CLI 退出，code ${code ?? 'unknown'}`))
           return
         }
-        const text = (finalText || streamedText).trim()
+        const text = finalText.trim()
         if (!text) {
           finishError(new Error(`${input.provider} CLI 没有返回 Agent 消息。`))
           return

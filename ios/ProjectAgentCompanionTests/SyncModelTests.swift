@@ -22,6 +22,12 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(decoded.accountId, "account")
     }
 
+    func testUnknownFutureEventTypeRemainsDecodable() throws {
+        let payload = #"{"eventId":"event-1","sequence":1,"protocolVersion":1,"type":"future.created","entityType":"future","entityId":"future-1","revision":1,"payload":{},"sourceDeviceId":"mac-1","occurredAt":"2026-08-12T05:00:00.000Z"}"#
+        let event = try JSONDecoder().decode(SyncEvent.self, from: Data(payload.utf8))
+        XCTAssertEqual(event.type, .unknown("future.created"))
+    }
+
     func testGenericEventPayloadDecodesAgentRun() throws {
         let json = #"{"eventId":"e1","sequence":1,"protocolVersion":1,"type":"agent-run.updated","entityType":"agent-run","entityId":"r1","revision":1,"payload":{"id":"r1","projectId":null,"decisionId":"d1","provider":"codex","title":"Test","status":"draft","workingDirectory":null,"summary":"Done","draftPrompt":"先检查素材，不要发送。","createdAt":"2026-08-07T00:00:00.000Z","updatedAt":"2026-08-07T00:00:00.000Z"},"sourceDeviceId":"mac","occurredAt":"2026-08-07T00:00:00.000Z"}"#
         let event = try JSONDecoder().decode(SyncEvent.self, from: Data(json.utf8))
