@@ -165,6 +165,11 @@ export class AppDatabase {
         version: 3,
         name: 'normalize-decision-lifecycles',
         apply: () => this.decisions.migrateLifecycle()
+      },
+      {
+        version: 4,
+        name: 'add-agent-run-execution-settings',
+        apply: () => ensureCurrentDatabaseSchema(this.database)
       }
     ]
     const currentVersion = databaseSchemaVersion(this.database)
@@ -310,6 +315,15 @@ export class AppDatabase {
 
   updateAgentRunDraftPrompt(id: string, draftPrompt: string): AgentRun {
     return this.runs.updateDraftPrompt(id, draftPrompt)
+  }
+
+  updateAgentRunExecutionSettings(
+    id: string,
+    provider: AgentRun['provider'],
+    model: string | null,
+    reasoningEffort: string | null
+  ): AgentRun {
+    return this.runs.updateExecutionSettings(id, provider, model, reasoningEffort)
   }
 
   archiveAgentRun(id: string): void {

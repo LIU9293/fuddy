@@ -45,7 +45,7 @@ type ParsedCliRecord = {
   assistant?: string
   reasoning?: string
   reasoningSegmentId?: string
-  tool?: { id?: string; name: string; detail: string }
+  tool?: { id?: string; name: string; detail: string; status: 'running' | 'completed' | 'failed' }
 }
 
 // Codex app-server deliberately uses different casing for the legacy thread
@@ -133,12 +133,67 @@ function codexRecord(record: JsonRecord): ParsedCliRecord {
   if (itemType === 'command_execution') {
     const command = textValue(item.command)
     const output = textValue(item.aggregated_output)
-    return { tool: { id: textValue(item.id) || undefined, name: 'command', detail: [command, output].filter(Boolean).join('\n').slice(0, 4_000) } }
+    return {
+      tool: {
+        id: textValue(item.id) || undefined,
+        name: 'command',
+        detail: [command, output].filter(Boolean).join('\n').slice(0, 4_000),
+        status: item.status === 'in_progress' ? 'running' : item.status === 'failed' ? 'failed' : 'completed'
+      }
+    }
   }
   if (itemType && itemType !== 'reasoning') {
-    return { tool: { id: textValue(item.id) || undefined, name: itemType, detail: textValue(item.text) || textValue(item.status) || itemType } }
+    return {
+      tool: {
+        id: textValue(item.id) || undefined,
+        name: itemType,
+        detail: textValue(item.text) || textValue(item.status) || itemType,
+        status: item.status === 'in_progress' ? 'running' : item.status === 'failed' ? 'failed' : 'completed'
+      }
+    }
   }
   return {}
+}
+
+export function codexAppServerToolRecord(item: JsonRecord): ParsedCliRecord['tool'] {
+  const type = textValue(item.type)
+  const id = textValue(item.id) || undefined
+  const status = item.status === 'inProgress' || item.status === 'in_progress'
+    ? 'running'
+    : item.status === 'failed'
+      ? 'failed'
+      : 'completed'
+  if (type === 'commandExecution') {
+    return {
+      id,
+      name: 'command',
+      detail: [textValue(item.command), textValue(item.aggregatedOutput)].filter(Boolean).join('\n').slice(0, 4_000) || '运行命令',
+      status
+    }
+  }
+  if (type === 'fileChange') {
+    return {
+      id,
+      name: 'edit',
+      detail: JSON.stringify(item.changes ?? item).slice(0, 4_000),
+      status
+    }
+  }
+  if (type === 'mcpToolCall') {
+    return {
+      id,
+      name: textValue(item.tool) || textValue(item.name) || 'mcp_tool',
+      detail: JSON.stringify(item.arguments ?? item.result ?? item).slice(0, 4_000),
+      status
+    }
+  }
+  if (type === 'webSearch') {
+    return { id, name: 'web_search', detail: textValue(item.query) || JSON.stringify(item).slice(0, 4_000), status }
+  }
+  if (type === 'imageView') {
+    return { id, name: 'read', detail: textValue(item.path) || JSON.stringify(item).slice(0, 4_000), status }
+  }
+  return undefined
 }
 
 export function claudeRecord(record: JsonRecord): ParsedCliRecord {
@@ -182,7 +237,21 @@ export function opencodeRecord(record: JsonRecord): ParsedCliRecord {
     }
   }
   if (part.type === 'tool') {
-    return { tool: { id: textValue(part.id) || undefined, name: textValue(part.tool) || 'tool', detail: JSON.stringify(part.state ?? part).slice(0, 4_000) } }
+    const state = part.state && typeof part.state === 'object' ? part.state as JsonRecord : {}
+    const nativeStatus = textValue(state.status)
+    const status = nativeStatus === 'pending' || nativeStatus === 'running'
+      ? 'running'
+      : nativeStatus === 'error' || nativeStatus === 'failed'
+        ? 'failed'
+        : 'completed'
+    return {
+      tool: {
+        id: textValue(part.callID) || textValue(part.callId) || textValue(part.id) || undefined,
+        name: textValue(part.tool) || 'tool',
+        detail: JSON.stringify(part.state ?? part).slice(0, 4_000),
+        status
+      }
+    }
   }
   return {}
 }
@@ -221,7 +290,7 @@ export function buildCliArgs(input: CliAgentTurnInput, mcpServers: McpServerLaun
           ...(server.env ? { env: server.env } : {})
         }]))
       }),
-      '--append-system-prompt', `这是 Project Agent 中的持续 Agent Run。\n\n${buildAgentStoragePolicy(input)}`,
+      '--append-system-prompt', `这是 Fuddy 中的持续 Agent Run。\n\n${buildAgentStoragePolicy(input)}`,
       ...session,
       ...additionalDirectories.flatMap((directory) => ['--add-dir', directory]),
       '--tools', 'default',
@@ -342,6 +411,7 @@ export class CliAgentRuntime {
     let sessionId = input.sessionId
     let streamedText = ''
     let finalText = ''
+    const pendingTools = new Map<string, { name: string; detail: string; metadata: JsonRecord }>()
     input.onUpdate({ type: 'status', status: 'running', detail: '正在通过 Claude Agent SDK 启动 Claude Code' })
     const stream = query({
       prompt: input.prompt,
@@ -396,7 +466,39 @@ export class CliAgentRuntime {
               status: 'running',
               detail
             })
-            input.onTool(name, detail, tool)
+            const toolCallId = textValue(tool.id)
+            if (toolCallId) pendingTools.set(toolCallId, { name, detail, metadata: tool })
+          }
+        }
+      }
+      if (record.type === 'user' && record.message && typeof record.message === 'object') {
+        const content = (record.message as JsonRecord).content
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (!block || typeof block !== 'object') continue
+            const result = block as JsonRecord
+            if (result.type !== 'tool_result') continue
+            const toolCallId = textValue(result.tool_use_id)
+            const pendingTool = pendingTools.get(toolCallId)
+            if (!pendingTool) continue
+            const status = result.is_error === true ? 'failed' : 'completed'
+            const output = typeof result.content === 'string'
+              ? result.content
+              : JSON.stringify(result.content ?? '')
+            const detail = [pendingTool.detail, output].filter(Boolean).join('\n\n').slice(0, 4_000)
+            input.onUpdate({
+              type: 'tool',
+              toolCallId,
+              toolName: pendingTool.name,
+              status,
+              detail
+            })
+            input.onTool(pendingTool.name, detail, {
+              ...pendingTool.metadata,
+              status,
+              output: output.slice(0, 4_000)
+            })
+            pendingTools.delete(toolCallId)
           }
         }
       }
@@ -505,16 +607,14 @@ export class CliAgentRuntime {
           input.onUpdate({ type: 'message_delta', messageId: `stream-${sessionId ?? 'new'}`, delta: params.delta })
         }
         if (method === 'item/started' && params.item && typeof params.item === 'object') {
-          const item = params.item as JsonRecord
-          if (item.type === 'commandExecution') {
-            input.onUpdate({
-              type: 'tool',
-              toolCallId: textValue(item.id) || undefined,
-              toolName: 'command',
-              status: 'running',
-              detail: textValue(item.command) || '正在执行命令'
-            })
-          }
+          const tool = codexAppServerToolRecord(params.item as JsonRecord)
+          if (tool) input.onUpdate({
+            type: 'tool',
+            toolCallId: tool.id,
+            toolName: tool.name,
+            status: 'running',
+            detail: tool.detail
+          })
         }
         if (method === 'item/completed' && params.item && typeof params.item === 'object') {
           const item = params.item as JsonRecord
@@ -532,16 +632,16 @@ export class CliAgentRuntime {
               delta
             })
           }
-          if (item.type === 'commandExecution') {
-            const detail = [textValue(item.command), textValue(item.aggregatedOutput)].filter(Boolean).join('\n').slice(0, 4_000)
+          const tool = codexAppServerToolRecord(item)
+          if (tool) {
             input.onUpdate({
               type: 'tool',
-              toolCallId: textValue(item.id) || undefined,
-              toolName: 'command',
-              status: item.status === 'failed' ? 'failed' : 'completed',
-              detail
+              toolCallId: tool.id,
+              toolName: tool.name,
+              status: tool.status,
+              detail: tool.detail
             })
-            input.onTool('command', detail, item)
+            input.onTool(tool.name, tool.detail, { ...item, status: tool.status })
           }
         }
         if (method === 'turn/completed') {
@@ -570,7 +670,7 @@ export class CliAgentRuntime {
       })
       void (async () => {
         await request('initialize', {
-          clientInfo: { name: 'project-agent', title: 'Project Agent', version: '0.1.0' },
+          clientInfo: { name: 'project-agent', title: 'Fuddy', version: '0.1.0' },
           capabilities: { experimentalApi: true }
         })
         write({ method: 'initialized', params: {} })
@@ -585,7 +685,7 @@ export class CliAgentRuntime {
               cwd: input.workingDirectory, approvalPolicy: CODEX_APPROVAL_POLICY, sandbox: CODEX_THREAD_SANDBOX,
               ...(input.model ? { model: input.model } : {}),
               runtimeWorkspaceRoots,
-              developerInstructions: `这是 Project Agent 中的持续 Agent Run。\n\n${buildAgentStoragePolicy(input)}`
+              developerInstructions: `这是 Fuddy 中的持续 Agent Run。\n\n${buildAgentStoragePolicy(input)}`
             })
         const thread = threadResult.thread && typeof threadResult.thread === 'object' ? threadResult.thread as JsonRecord : {}
         const found = textValue(thread.id) || input.sessionId
@@ -603,6 +703,7 @@ export class CliAgentRuntime {
     let latestSessionId = input.sessionId
     let buffer = ''
     let finalText = ''
+    const persistedToolIds = new Set<string>()
 
     input.onUpdate({ type: 'status', status: 'running', detail: `正在启动 ${input.provider} CLI` })
 
@@ -650,10 +751,16 @@ export class CliAgentRuntime {
             type: 'tool',
             toolCallId: parsed.tool.id,
             toolName: parsed.tool.name,
-            status: 'completed',
+            status: parsed.tool.status,
             detail: parsed.tool.detail
           })
-          input.onTool(parsed.tool.name, parsed.tool.detail, record)
+          if (parsed.tool.status !== 'running') {
+            const persistenceKey = parsed.tool.id ?? `${parsed.tool.name}:${parsed.tool.detail}`
+            if (!persistedToolIds.has(persistenceKey)) {
+              persistedToolIds.add(persistenceKey)
+              input.onTool(parsed.tool.name, parsed.tool.detail, { ...record, status: parsed.tool.status })
+            }
+          }
         }
         if (parsed.assistant) {
           finalText = parsed.assistant

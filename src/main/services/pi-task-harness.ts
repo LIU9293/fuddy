@@ -106,12 +106,12 @@ export async function createPiModelRuntimeForEndpoint(endpoint: RuntimeAgentEndp
   const apiKey = endpoint.mode === 'cc-switch-codex-oauth' ? 'PROXY_MANAGED' : endpoint.apiKey ?? ''
   const provider = createProvider({
     id: providerId,
-    name: 'Project Agent Provider',
+    name: 'Fuddy Provider',
     baseUrl,
     headers,
     auth: {
       apiKey: {
-        name: 'Project Agent Provider',
+        name: 'Fuddy Provider',
         resolve: async () => ({ auth: apiKey ? { apiKey } : {} })
       }
     },
@@ -130,6 +130,21 @@ function textFromToolResult(result: unknown, fallback: string): string {
   if (!result || typeof result !== 'object') return fallback
   const content = (result as { content?: Array<{ type?: string; text?: string }> }).content
   return content?.filter((item) => item.type === 'text').map((item) => item.text ?? '').join('\n').trim() || fallback
+}
+
+export function piToolResultMetadata(
+  result: unknown,
+  arguments_: Record<string, unknown>,
+  isError: boolean
+): Record<string, unknown> {
+  const details = result && typeof result === 'object'
+    ? (result as { details?: Record<string, unknown> }).details
+    : undefined
+  return {
+    ...(details ?? {}),
+    arguments: arguments_,
+    status: isError ? 'failed' : 'completed'
+  }
 }
 
 export class PiTaskHarness {
@@ -205,10 +220,15 @@ export class PiTaskHarness {
           }
           if (event.type === 'tool_execution_end') {
             const detail = textFromToolResult(event.result, event.toolName)
-            const resultDetails = event.result && typeof event.result === 'object'
-              ? (event.result as { details?: Record<string, unknown> }).details
-              : undefined
-            input.onTool(event.toolName, detail, { ...(resultDetails ?? {}), arguments: toolArguments.get(event.toolCallId) ?? {} })
+            input.onTool(
+              event.toolName,
+              detail,
+              piToolResultMetadata(
+                event.result,
+                toolArguments.get(event.toolCallId) ?? {},
+                event.isError
+              )
+            )
             toolArguments.delete(event.toolCallId)
             input.onUpdate({ type: 'tool', toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? 'failed' : 'completed', detail })
           }
@@ -238,7 +258,7 @@ export class PiTaskHarness {
   }
 
   private systemPrompt(input: PiTaskTurnInput, mcpAvailability: string): string {
-    return `你是 Project Agent 中负责项目任务的执行 Agent，运行在一个可持续对话的 Agent Run Session 中。
+    return `你是 Fuddy 中负责项目任务的执行 Agent，运行在一个可持续对话的 Agent Run Session 中。
 
 ${buildAgentStoragePolicy(input)}
 
@@ -256,7 +276,7 @@ ${input.projectContext}
     const updateProject = defineTool({
       name: 'update_project_info',
       label: 'Update project info',
-      description: '更新当前 Project Agent 项目的基本信息、产品上下文、Workspace Roots、默认 Agent、数据源或当前状态。只传需要修改的字段。',
+      description: '更新当前 Fuddy 项目的基本信息、产品上下文、Workspace Roots、默认 Agent、数据源或当前状态。只传需要修改的字段。',
       promptSnippet: 'Update the current project configuration and workspace roots',
       executionMode: 'sequential',
       parameters: Type.Object({

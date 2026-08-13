@@ -23,15 +23,15 @@ describe('third-party MCP launch config', () => {
 
   it('resolves packaged binaries outside the asar archive', () => {
     const options = resolveThirdPartyMcpOptions({
-      appPath: '/Applications/Project Agent.app/Contents/Resources/app.asar',
-      resourcesPath: '/Applications/Project Agent.app/Contents/Resources',
-      userDataPath: '/Users/test/Library/Application Support/Project Agent',
+      appPath: '/Applications/Fuddy.app/Contents/Resources/app.asar',
+      resourcesPath: '/Applications/Fuddy.app/Contents/Resources',
+      userDataPath: '/Users/test/Library/Application Support/Fuddy',
       packaged: true,
       hostBundleId: 'dev.test.project-agent',
       platform: 'darwin',
       arch: 'x64'
     })
-    expect(options.browserUse.command).toBe('/Applications/Project Agent.app/Contents/Resources/third-party/uv/uv')
-    expect(options.cuaDriverBinary).toBe('/Applications/Project Agent.app/Contents/Resources/third-party/cua-driver/cua-driver')
+    expect(options.browserUse.command).toBe('/Applications/Fuddy.app/Contents/Resources/third-party/uv/uv')
+    expect(options.cuaDriverBinary).toBe('/Applications/Fuddy.app/Contents/Resources/third-party/cua-driver/cua-driver')
   })
 })

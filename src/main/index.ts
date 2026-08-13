@@ -144,7 +144,7 @@ function createWindow(): void {
     minWidth: 980,
     minHeight: 680,
     show: false,
-    title: 'Project Agent',
+    title: 'Fuddy',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 18, y: 18 },
     backgroundColor: '#f7f7f4',
@@ -444,7 +444,7 @@ if (!hasLock) {
       void companionSync.start()
       if (process.env.PROJECT_AGENT_SENTRY_TEST === '1') {
         setTimeout(() => {
-          Sentry.captureException(new Error('Project Agent main-process Sentry integration test'))
+          Sentry.captureException(new Error('Fuddy main-process Sentry integration test'))
           void Sentry.flush(5_000).then((sent) => console.info(`[sentry-test] flushed=${sent}`))
         }, 1_000)
       }

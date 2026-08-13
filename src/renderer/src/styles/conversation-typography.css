@@ -71,7 +71,15 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  .composer-model-label { color: #aaa9a3; background: rgba(255, 255, 248, .07); }
+  .composer-model-label,
+  .composer-model-picker-trigger { color: #aaa9a3; background: transparent; }
+  .composer-model-picker-trigger:hover,
+  .composer-model-picker-trigger[aria-expanded='true'] { color: #ededeb; }
+  .composer-model-picker-popover {
+    border-color: rgba(255, 255, 248, .1);
+    background: rgba(31, 32, 29, .98);
+    box-shadow: 0 16px 42px rgba(0, 0, 0, .35);
+  }
   .agent-run-page-header {
     border-bottom-color: rgba(255, 255, 248, .08);
     background: #171816;
@@ -196,4 +204,5 @@
   .agent-tool-call-group-detail > pre { color: #969690; }
   .agent-process-disclosure > button { color: #8f8f89; }
   .agent-process-disclosure > button:hover { color: #d2d2cd; }
+  .agent-process-disclosure > button small { color: #74746f; }
 }

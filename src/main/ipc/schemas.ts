@@ -77,6 +77,13 @@ export const renameAgentRunSchema = z.object({
   title: z.string().trim().min(1).max(200)
 })
 
+export const updateAgentRunExecutionSettingsSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  provider: z.enum(['pi', 'codex', 'claude', 'opencode']),
+  model: z.string().trim().max(300).nullable(),
+  reasoningEffort: z.string().trim().max(100).nullable()
+})
+
 export const respondAgentApprovalSchema = z.object({
   requestId: z.string().trim().min(1).max(300),
   decision: z.enum(['approve', 'deny'])

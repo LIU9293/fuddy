@@ -137,13 +137,20 @@ export function ensureCurrentDatabaseSchema(database: DatabaseSync): void {
         project_id TEXT REFERENCES projects(id),
         goal_id TEXT REFERENCES project_goals(id),
         agent TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'pi',
+        kind TEXT NOT NULL DEFAULT 'general',
         title TEXT NOT NULL,
         status TEXT NOT NULL,
+        model TEXT,
+        reasoning_effort TEXT,
+        session_id TEXT,
+        working_directory TEXT,
         started_at TEXT,
         completed_at TEXT,
         summary TEXT NOT NULL,
         draft_prompt TEXT,
         created_at TEXT NOT NULL,
+        updated_at TEXT,
         archived_at TEXT
       );
 
@@ -520,6 +527,12 @@ export function ensureCurrentDatabaseSchema(database: DatabaseSync): void {
   }
   if (!agentRunColumns.some((column) => column.name === 'draft_prompt')) {
     database.exec('ALTER TABLE agent_runs ADD COLUMN draft_prompt TEXT')
+  }
+  if (!agentRunColumns.some((column) => column.name === 'model')) {
+    database.exec('ALTER TABLE agent_runs ADD COLUMN model TEXT')
+  }
+  if (!agentRunColumns.some((column) => column.name === 'reasoning_effort')) {
+    database.exec('ALTER TABLE agent_runs ADD COLUMN reasoning_effort TEXT')
   }
   database.exec(`
       UPDATE agent_runs

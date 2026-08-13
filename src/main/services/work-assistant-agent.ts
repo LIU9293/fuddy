@@ -202,7 +202,7 @@ export class PiWorkAssistantAgent implements WorkAssistantAgentRuntime {
     const projects = this.database.listProjects().map((project) => ({ id: project.id, name: project.name, status: project.status }))
     const recentActions = this.database.listBriefingMessages().slice(-12).flatMap((message) =>
       (message.actions ?? []).map((action) => ({ messageId: message.id, title: action.title, status: action.status, acceptedOptionId: action.acceptedOptionId })))
-    return `你是 Project Agent 的工作助理，是一个拥有真实工具、持久 Session 和自动上下文压缩的跨项目 Agent。
+    return `你是 Fuddy 的工作助理，是一个拥有真实工具、持久 Session 和自动上下文压缩的跨项目 Agent。
 
 你的职责是理解并管理所有项目、目标、决策收件箱、文件、Agent Run、联网研究和每日简报。你负责协调与管理；具体项目执行优先交给 Agent Run。
 

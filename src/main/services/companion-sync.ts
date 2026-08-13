@@ -26,6 +26,7 @@ import { companionProtocolVersion } from '../../shared/companion-sync'
 import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
+import { agentToolPresentation } from '../../shared/agent-activity'
 import { updateProjectSchema } from '../../shared/project-validation'
 import { companionCommandSchema, companionEncryptedCommandSchema, syncEventSchema } from '../../shared/companion-schemas'
 import { AppDatabase } from './database'
@@ -74,16 +75,24 @@ export function companionSocketMessageRequestsSync(message: CompanionSocketMessa
   return message.type === 'sync.ready' || message.type === 'command.created'
 }
 
+export function closeCompanionSocket(socket: WebSocket | null): void {
+  if (!socket) return
+  socket.removeAllListeners()
+  // ws emits an asynchronous error when a CONNECTING handshake is aborted. Keep a no-op
+  // listener attached so replacing a pairing cannot surface it as a main-process exception.
+  socket.once('error', () => undefined)
+  socket.terminate()
+}
+
 export function companionFallbackSyncIntervalForState(
   state: CompanionRealtimeConnectionState
 ): number {
   return state === 'connected' ? companionConnectedFallbackSyncIntervalMs : companionFallbackSyncIntervalMs
 }
 
-export function companionAgentMessageForRelay(
-  message: AgentRunMessage
-): AgentRunMessage & { toolStatus?: 'completed' | 'failed' } {
+export function companionAgentMessageForRelay(message: AgentRunMessage): AgentRunMessage {
   if (message.role !== 'tool') return message
+  const presentation = agentToolPresentation(message.toolName ?? 'tool', message.content, message.metadata)
   const normalized = message.content.replace(/\s+/g, ' ').trim() || message.toolName || '工具调用'
   const content = normalized.length > companionToolSummaryMaximumCharacters
     ? `${normalized.slice(0, companionToolSummaryMaximumCharacters).trimEnd()}…`
@@ -96,7 +105,9 @@ export function companionAgentMessageForRelay(
     ...message,
     content,
     metadata: null,
-    toolStatus: failed ? 'failed' : 'completed'
+    toolStatus: failed ? 'failed' : 'completed',
+    toolKind: presentation.kind,
+    toolSummary: presentation.summary
   }
 }
 
@@ -282,8 +293,8 @@ export class CompanionSyncService {
     this.lastError = null
     this.emitStatus()
     this.ensureTimer()
-    await this.syncNow()
     this.connectSocket()
+    void this.syncNow()
     return {
       pairingPayload: JSON.stringify({
         ...(JSON.parse(pairing.pairingPayload) as Record<string, unknown>),
@@ -1064,8 +1075,7 @@ export class CompanionSyncService {
     this.realtimeState = 'disconnected'
     const socket = this.socket
     this.socket = null
-    socket?.removeAllListeners()
-    socket?.terminate()
+    closeCompanionSocket(socket)
   }
 
   private emitStatus(): void {

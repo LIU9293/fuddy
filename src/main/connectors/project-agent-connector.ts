@@ -14,13 +14,13 @@ interface ProjectAgentConfig {
 export function normalizeProjectAgentConfig(config: Record<string, string | number | boolean>): ProjectAgentConfig {
   const rawUrl = typeof config.baseUrl === 'string' ? config.baseUrl.trim() : ''
   let url: URL
-  try { url = new URL(rawUrl) } catch { throw new Error('Project Agent Base URL 无效。') }
+  try { url = new URL(rawUrl) } catch { throw new Error('Fuddy Base URL 无效。') }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-    throw new Error('Project Agent Base URL 只允许无内嵌凭证的 HTTP/HTTPS 地址。')
+    throw new Error('Fuddy Base URL 只允许无内嵌凭证的 HTTP/HTTPS 地址。')
   }
   const statusPath = typeof config.statusPath === 'string' && config.statusPath.trim() ? config.statusPath.trim() : '/status'
-  if (!statusPath.startsWith('/') || statusPath.startsWith('//')) throw new Error('Project Agent status path 必须以单个 / 开头。')
-  const agentName = typeof config.agentName === 'string' && config.agentName.trim() ? config.agentName.trim() : 'Project Agent'
+  if (!statusPath.startsWith('/') || statusPath.startsWith('//')) throw new Error('Fuddy status path 必须以单个 / 开头。')
+  const agentName = typeof config.agentName === 'string' && config.agentName.trim() ? config.agentName.trim() : 'Fuddy'
   return { baseUrl: url.toString().replace(/\/$/, ''), statusPath, agentName }
 }
 
@@ -58,7 +58,7 @@ export class ProjectAgentConnector implements ConnectorAdapter {
       confidence: 0.9,
       suggestedActions: ['打开 Agent Run 分析状态', '检查项目 Agent 服务日志'],
       evidenceRefs: evidence(config),
-      source: 'Project Agent Connector'
+      source: 'Fuddy Connector'
     } : null
     return {
       summary: `${config.agentName}：${status}${blockers.length ? ` · ${blockers.length} blockers` : ''}`,
@@ -79,7 +79,7 @@ export class ProjectAgentConnector implements ConnectorAdapter {
       signal: AbortSignal.timeout(20_000)
     })
     const body = await response.json() as JsonRecord
-    if (!response.ok) throw new Error(String(body.error ?? body.message ?? `Project Agent 请求失败（${response.status}）。`))
+    if (!response.ok) throw new Error(String(body.error ?? body.message ?? `Fuddy 请求失败（${response.status}）。`))
     return body
   }
 }

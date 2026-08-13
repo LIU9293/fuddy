@@ -707,7 +707,7 @@ export class AccountRelay extends DurableObject<Env> {
       collapseId: `agent-turn-${event.entityId}`.slice(0, 64),
       body: {
         aps: {
-          alert: { title: 'Agent Run 已结束', body: '打开 Project Agent 查看结果' },
+          alert: { title: 'Agent Run 已结束', body: '打开 Fuddy 查看结果' },
           sound: 'default',
           'content-available': 1
         },

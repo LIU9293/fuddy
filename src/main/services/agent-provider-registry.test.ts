@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { AgentRunMessage } from '../../shared/contracts'
 import type { CliAgentRuntime } from './cli-agent-runtime'
 import type { PiTaskHarness } from './pi-task-harness'
 import {
   AgentProviderRegistry,
+  codingAgentContinuationContext,
   createDefaultAgentProviderRegistry,
   type AgentProviderTurnInput
 } from './agent-provider-registry'
@@ -27,6 +29,14 @@ function turnInput(): AgentProviderTurnInput {
 }
 
 describe('AgentProviderRegistry', () => {
+  it('builds continuation context from persisted user and assistant messages only', () => {
+    expect(codingAgentContinuationContext([
+      { id: 'user-1', runId: 'run-1', role: 'user', content: '先检查数据库', eventType: null, toolName: null, metadata: null, createdAt: '2026-01-01' },
+      { id: 'tool-1', runId: 'run-1', role: 'tool', content: 'secret tool output', eventType: 'tool', toolName: 'read', metadata: null, createdAt: '2026-01-01' },
+      { id: 'assistant-1', runId: 'run-1', role: 'assistant', content: '数据库检查完成', eventType: null, toolName: null, metadata: null, createdAt: '2026-01-01' }
+    ])).toBe('用户：先检查数据库\n\nAgent：数据库检查完成')
+  })
+
   it('rejects duplicate and missing provider registrations', () => {
     const adapter = {
       provider: 'pi' as const,
@@ -52,12 +62,40 @@ describe('AgentProviderRegistry', () => {
     await expect(registry.runTurn('pi', piInput)).resolves.toMatchObject({ text: 'pi result' })
     expect(piInput.history).toHaveBeenCalledOnce()
     const cliInput = turnInput()
+    cliInput.model = 'gpt-test'
+    cliInput.reasoningEffort = 'high'
     cliInput.history = vi.fn(() => [])
     await expect(registry.runTurn('codex', cliInput)).resolves.toEqual({ text: 'codex result', sessionId: 'native-session' })
     expect(cliInput.history).not.toHaveBeenCalled()
     expect(cliRunTurn).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'codex',
+      model: 'gpt-test',
+      reasoningEffort: 'high',
       prompt: 'project context\n\n用户任务：\ndo work'
+    }))
+  })
+
+  it('seeds a replacement coding session with persisted conversation history', async () => {
+    const cliRunTurn = vi.fn(async () => ({ text: 'continued', sessionId: 'replacement-session' }))
+    const registry = createDefaultAgentProviderRegistry(
+      { runTurn: vi.fn() } as unknown as PiTaskHarness,
+      { runTurn: cliRunTurn } as unknown as CliAgentRuntime
+    )
+    const input = turnInput()
+    input.sessionId = null
+    const history: AgentRunMessage[] = [
+      { id: 'user-1', runId: 'run-1', role: 'user', content: '之前的需求', eventType: null, toolName: null, metadata: null, createdAt: '2026-01-01' },
+      { id: 'assistant-1', runId: 'run-1', role: 'assistant', content: '之前的结果', eventType: null, toolName: null, metadata: null, createdAt: '2026-01-01' }
+    ]
+    input.history = vi.fn(() => history)
+
+    await registry.runTurn('claude', input)
+
+    expect(input.history).toHaveBeenCalledOnce()
+    expect(cliRunTurn).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'claude',
+      sessionId: null,
+      prompt: expect.stringContaining('用户：之前的需求\n\nAgent：之前的结果')
     }))
   })
 })

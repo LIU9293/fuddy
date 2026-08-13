@@ -27,6 +27,7 @@ import {
   sendAgentRunMessageSchema,
   ttsEndpointSchema,
   updateDecisionSchema,
+  updateAgentRunExecutionSettingsSchema,
   workspacePathSchema,
   workspaceProjectIdSchema,
   workAssistantImageSchema
@@ -95,6 +96,16 @@ export function registerRunIpc(context: IpcContext): void {
 
   ipcMain.handle('agent-run:archive', (_event, rawId: unknown) => {
     database.archiveAgentRun(z.string().trim().min(1).max(200).parse(rawId))
+  })
+
+  ipcMain.handle('agent-run:update-execution-settings', (_event, rawInput: unknown) => {
+    const input = updateAgentRunExecutionSettingsSchema.parse(rawInput)
+    return database.updateAgentRunExecutionSettings(
+      input.id,
+      input.provider,
+      input.model,
+      input.reasoningEffort
+    )
   })
 
   ipcMain.handle('companion:get-status', () => companionSync.getStatus())

@@ -26,13 +26,33 @@ describe('AppDatabase lifecycle', () => {
     new AppDatabase(path).close()
 
     const database = new DatabaseSync(path)
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
     database.close()
 
     new AppDatabase(path).close()
     const reopened = new DatabaseSync(path)
-    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
+    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
     reopened.close()
+  })
+
+  it('adds per-session model settings when upgrading a version 3 database', () => {
+    const path = temporaryDatabasePath()
+    new AppDatabase(path).close()
+
+    const legacy = new DatabaseSync(path)
+    legacy.exec(`
+      ALTER TABLE agent_runs DROP COLUMN model;
+      ALTER TABLE agent_runs DROP COLUMN reasoning_effort;
+      PRAGMA user_version = 3;
+    `)
+    legacy.close()
+
+    new AppDatabase(path).close()
+    const upgraded = new DatabaseSync(path)
+    const columns = upgraded.prepare('PRAGMA table_info(agent_runs)').all() as Array<{ name: string }>
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['model', 'reasoning_effort']))
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
+    upgraded.close()
   })
 
   it('starts a clean install without private or sample projects', () => {

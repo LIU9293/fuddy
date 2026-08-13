@@ -31,7 +31,7 @@ describe('collectProjectRepoContext', () => {
     ].join('\n'))
     execFileSync('git', ['init', '-b', 'main'], { cwd: repoPath })
     execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoPath })
-    execFileSync('git', ['config', 'user.name', 'Project Agent Test'], { cwd: repoPath })
+    execFileSync('git', ['config', 'user.name', 'Fuddy Test'], { cwd: repoPath })
     execFileSync('git', ['add', '.'], { cwd: repoPath })
     execFileSync('git', ['commit', '-m', 'Add project plan'], { cwd: repoPath })
     writeFileSync(join(repoPath, 'marketing', 'plan.md'), '# Updated plan')

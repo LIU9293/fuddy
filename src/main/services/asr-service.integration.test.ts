@@ -44,7 +44,7 @@ describe.skipIf(!enabled)('local Whisper end-to-end smoke', () => {
     const result = await service.transcribe({
       audioDataUrl,
       language: 'zh',
-      prompt: 'Project Agent，项目，目标，决策收件箱，工作助理，Agent Run'
+      prompt: 'Fuddy，项目，目标，决策收件箱，工作助理，Agent Run'
     })
     expect(result.provider).toBe('local-whisper')
     expect(result.fallbackUsed).toBe(false)

@@ -10,6 +10,7 @@ import {
   FileOutput,
   FileText,
   FolderGit2,
+  Globe2,
   GitBranch,
   ImageIcon,
   Ellipsis,
@@ -20,7 +21,9 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   ShieldCheck,
+  SquareTerminal,
   X,
   Wrench
 } from 'lucide-react'
@@ -36,6 +39,8 @@ import type {
   AgentRunMessage,
   AgentRunProvider,
   AgentRunStreamUpdate,
+  CodingAgentModelCatalog,
+  CodingAgentSettings,
   GitWorkingTreeSummary,
   Project,
   ProjectGoal,
@@ -44,11 +49,18 @@ import type {
 import { normalizeChatMarkdown } from '../markdown'
 import { maxChatImages, prepareChatImages } from '../chat-attachments'
 import { ChatComposer } from './ChatComposer'
+import { AgentModelPicker } from './AgentModelPicker'
 import { ConversationMessageActions } from './ConversationMessageActions'
 import { ProjectIcon } from './ProjectIcon'
 import { SelectMenu } from './SelectMenu'
 import { chatIsAtLatest } from '../chat-scroll'
 import type { AgentModelLabels } from '../../../shared/model-display'
+import { formatAgentModelLabel } from '../../../shared/model-display'
+import {
+  agentToolGroupSummary,
+  agentToolPresentation,
+  type AgentToolKind
+} from '../../../shared/agent-activity'
 
 const agentOptions = [
   { value: 'pi', label: 'Pi Agent' },
@@ -357,6 +369,9 @@ type ToolActivity = {
   name: string
   detail: string
   status: 'running' | 'completed' | 'failed'
+  kind: AgentToolKind
+  label: string
+  summary: string
 }
 
 type ThinkingActivity = {
@@ -374,13 +389,24 @@ export type LiveActivityBlock =
   | { kind: 'thinking'; value: ThinkingActivity }
   | { kind: 'tool-group'; values: ToolActivity[] }
 
+export type LiveActivityStage = {
+  id: string
+  thinking: ThinkingActivity | null
+  tools: ToolActivity[]
+}
+
 type MessageTimelineBlock =
   | { kind: 'message'; value: AgentRunMessage }
   | { kind: 'tool-group'; values: AgentRunMessage[] }
   | { kind: 'process'; values: AgentRunMessage[]; completedAt: string }
 
-function toolSummary(detail: string): string {
-  return detail.replace(/\s+/g, ' ').trim() || '正在调用工具'
+function ToolKindIcon({ kind }: { kind: AgentToolKind }): React.JSX.Element {
+  if (kind === 'read') return <FileText size={12} />
+  if (kind === 'search') return <Search size={12} />
+  if (kind === 'edit') return <Pencil size={12} />
+  if (kind === 'command') return <SquareTerminal size={12} />
+  if (kind === 'browser') return <Globe2 size={12} />
+  return <Wrench size={12} />
 }
 
 function ToolCallItem({ tool }: { tool: ToolActivity }): React.JSX.Element {
@@ -394,12 +420,12 @@ function ToolCallItem({ tool }: { tool: ToolActivity }): React.JSX.Element {
         type="button"
         aria-expanded={expanded}
         onClick={() => setExpanded((current) => !current)}
-        title={toolSummary(tool.detail)}
+        title={`${tool.label}：${tool.summary}`}
       >
-        <span className="agent-tool-call-icon"><Wrench size={12} /></span>
-        <strong>{tool.name}</strong>
-        <span className="agent-tool-call-preview">{toolSummary(tool.detail)}</span>
-        <small>{active ? '正在运行' : tool.status === 'failed' ? '失败' : '已调用'}</small>
+        <span className="agent-tool-call-icon"><ToolKindIcon kind={tool.kind} /></span>
+        <strong>{tool.label}</strong>
+        <span className="agent-tool-call-preview">{tool.summary}</span>
+        <small>{active ? '正在运行' : tool.status === 'failed' ? '失败' : '已完成'}</small>
       </button>
       {expanded && (
         <div className="agent-tool-call-detail"><pre>{tool.detail}</pre></div>
@@ -413,6 +439,7 @@ function ToolCallGroup({ tools }: { tools: ToolActivity[] }): React.JSX.Element 
   const latest = tools.findLast((tool) => tool.status === 'running') ?? tools.at(-1)!
   const active = tools.some((tool) => tool.status === 'running')
   const failed = !active && tools.some((tool) => tool.status === 'failed')
+  const summary = agentToolGroupSummary(tools)
 
   return (
     <div className={`agent-tool-call-group ${active ? 'is-running' : ''} ${failed ? 'is-failed' : ''} ${expanded ? 'is-expanded' : ''}`}>
@@ -421,12 +448,11 @@ function ToolCallGroup({ tools }: { tools: ToolActivity[] }): React.JSX.Element 
         type="button"
         aria-expanded={expanded}
         onClick={() => setExpanded((current) => !current)}
-        title={toolSummary(latest.detail)}
+        title={summary}
       >
-        <span className="agent-tool-call-icon"><Wrench size={12} /></span>
-        <strong>{latest.name}</strong>
-        <span className="agent-tool-call-preview">{toolSummary(latest.detail)}</span>
-        <small>{active ? '正在运行' : failed ? '包含失败' : tools.length === 1 ? '已调用' : `${tools.length} 次调用`}</small>
+        <span className="agent-tool-call-icon"><ToolKindIcon kind={latest.kind} /></span>
+        <strong>{summary}</strong>
+        <small>{active ? '正在进行' : failed ? '包含失败' : `${tools.length} 次操作`}</small>
       </button>
       {expanded && (
         <div className="agent-tool-call-group-detail">
@@ -444,7 +470,6 @@ function ThinkingMarker({ thinking }: { thinking: ThinkingActivity }): React.JSX
   return (
     <div className={`agent-thinking-marker ${active ? 'is-running' : ''}`} role={active ? 'status' : undefined}>
       <div className="agent-thinking-marker-content">
-        <strong>{active ? 'Thinking…' : 'Thinking'}</strong>
         {thinking.content && <Markdown content={thinking.content} />}
       </div>
     </div>
@@ -501,7 +526,8 @@ export function applyAgentLiveUpdate(activities: LiveActivity[], update: AgentRu
         id: explicitId ?? `tool-${update.toolName}-${next.length}`,
         name: update.toolName,
         detail: update.detail,
-        status: update.status
+        status: update.status,
+        ...agentToolPresentation(update.toolName, update.detail)
       }
     }]
   }
@@ -590,6 +616,56 @@ export function groupLiveActivities(activities: LiveActivity[]): LiveActivityBlo
   }, [])
 }
 
+export function groupLiveActivityStages(activities: LiveActivity[]): LiveActivityStage[] {
+  return activities.reduce<LiveActivityStage[]>((stages, activity) => {
+    if (activity.kind === 'thinking') {
+      stages.push({ id: activity.value.id, thinking: activity.value, tools: [] })
+      return stages
+    }
+    const latest = stages.at(-1)
+    if (latest) latest.tools.push(activity.value)
+    else stages.push({ id: `stage-${activity.value.id}`, thinking: null, tools: [activity.value] })
+    return stages
+  }, [])
+}
+
+function toolActivityFromMessage(message: AgentRunMessage): ToolActivity {
+  return {
+    id: message.id,
+    name: message.toolName ?? 'Tool',
+    detail: message.content,
+    status: message.toolStatus
+      ?? (message.metadata?.status === 'failed' ? 'failed' : 'completed'),
+    ...agentToolPresentation(message.toolName ?? 'Tool', message.content, message.metadata)
+  }
+}
+
+function activityStagesFromMessages(messages: AgentRunMessage[]): LiveActivityStage[] {
+  return groupLiveActivityStages(messages.flatMap((message): LiveActivity[] => message.role === 'tool'
+    ? [{ kind: 'tool', value: toolActivityFromMessage(message) }]
+    : [{ kind: 'thinking', value: {
+        id: message.id,
+        segmentId: typeof message.metadata?.segmentId === 'string' ? message.metadata.segmentId : null,
+        content: message.content,
+        status: 'completed'
+      } }]))
+}
+
+function ActivityStages({ stages, live = false }: { stages: LiveActivityStage[]; live?: boolean }): React.JSX.Element {
+  return (
+    <div className={`agent-activity-stages ${live ? 'is-live' : ''}`}>
+      {stages.map((stage, index) => (
+        <section className={`agent-activity-stage ${index === stages.length - 1 && live ? 'is-current' : ''}`} key={stage.id}>
+          <div className="agent-activity-stage-content">
+            {stage.thinking && <ThinkingMarker thinking={stage.thinking} />}
+            {stage.tools.length > 0 && <ToolCallGroup tools={stage.tools} />}
+          </div>
+        </section>
+      ))}
+    </div>
+  )
+}
+
 function appendOpenProcess(blocks: MessageTimelineBlock[], messages: AgentRunMessage[]): void {
   messages.forEach((message) => {
     if (message.role === 'tool') {
@@ -638,35 +714,19 @@ export function formatAgentProcessDuration(startedAt: string, completedAt: strin
 function AgentProcessDisclosure({ messages, completedAt }: { messages: AgentRunMessage[]; completedAt: string }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
   const duration = formatAgentProcessDuration(messages[0].createdAt, completedAt)
-  const blocks: MessageTimelineBlock[] = []
-  appendOpenProcess(blocks, messages)
+  const stages = activityStagesFromMessages(messages)
+  const operationCount = stages.reduce((count, stage) => count + stage.tools.length, 0)
 
   return (
     <div className={`agent-process-disclosure ${expanded ? 'is-expanded' : ''}`}>
       <button type="button" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}>
         {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <span>{duration}</span>
+        {operationCount > 0 && <small>· {operationCount} 次操作</small>}
       </button>
       {expanded && (
         <div className="agent-process-detail">
-          {blocks.map((block) => block.kind === 'tool-group'
-            ? <ToolCallGroup
-                key={`process-tool-group-${block.values[0].id}`}
-                tools={block.values.map((message) => ({
-                  id: message.id,
-                  name: message.toolName ?? 'Tool',
-                  detail: message.content,
-                  status: 'completed'
-                }))}
-              />
-            : block.kind === 'message'
-              ? <ThinkingMarker key={block.value.id} thinking={{
-                  id: block.value.id,
-                  segmentId: typeof block.value.metadata?.segmentId === 'string' ? block.value.metadata.segmentId : null,
-                  content: block.value.content,
-                  status: 'completed'
-                }} />
-              : null)}
+          <ActivityStages stages={stages} />
         </div>
       )}
     </div>
@@ -717,6 +777,7 @@ export function AgentRunsView({
   projects,
   goals,
   modelLabels,
+  codingAgentSettings,
   selectedRunId,
   creating,
   prefill,
@@ -730,6 +791,7 @@ export function AgentRunsView({
   projects: Project[]
   goals: ProjectGoal[]
   modelLabels: AgentModelLabels
+  codingAgentSettings: CodingAgentSettings
   selectedRunId: string | null
   creating: boolean
   prefill: { runId: string; prompt: string; requestId: string } | null
@@ -742,6 +804,7 @@ export function AgentRunsView({
   const [detail, setDetail] = useState<AgentRunDetail | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [creatingBusy, setCreatingBusy] = useState(false)
+  const [codingAgentModels, setCodingAgentModels] = useState<CodingAgentModelCatalog | null>(null)
   const [liveStateByRunId, setLiveStateByRunId] = useState<Record<string, AgentRunLiveState>>({})
   const [queuedMessagesByRunId, setQueuedMessagesByRunId] = useState<Record<string, QueuedRunMessage[]>>({})
   const [reply, setReply] = useState('')
@@ -773,6 +836,14 @@ export function AgentRunsView({
   const infoSidebarRunIdRef = useRef<string | null>(null)
   const selectedRunUpdatedAt = runs.find((run) => run.id === selectedRunId)?.updatedAt
   selectedRunIdRef.current = selectedRunId
+
+  useEffect(() => {
+    let active = true
+    void window.projectAgent.listCodingAgentModels()
+      .then((models) => { if (active) setCodingAgentModels(models) })
+      .catch(() => { if (active) setCodingAgentModels(null) })
+    return () => { active = false }
+  }, [])
 
   const visibleLiveState = detail ? liveStateByRunId[detail.run.id] : undefined
   const runBusy = visibleLiveState?.busy ?? false
@@ -1128,6 +1199,26 @@ export function AgentRunsView({
     }
   }
 
+  async function updateExecutionSettings(
+    nextProvider: AgentRunProvider,
+    model: string | null,
+    reasoningEffort: string | null
+  ): Promise<void> {
+    if (!detail || runActive) return
+    try {
+      const run = await window.projectAgent.updateAgentRunExecutionSettings({
+        id: detail.run.id,
+        provider: nextProvider,
+        model,
+        reasoningEffort
+      })
+      setDetail((current) => current ? { ...current, run } : current)
+      await onRefresh()
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : '运行配置更新失败。')
+    }
+  }
+
   async function archiveSession(): Promise<void> {
     if (!detail || sessionActionBusy || runIsActive(detail.run)) return
     setSessionActionBusy(true)
@@ -1249,12 +1340,7 @@ export function AgentRunsView({
             if (block.kind === 'tool-group') {
               return <ToolCallGroup
                 key={`tool-group-${block.values[0].id}`}
-                tools={block.values.map((message) => ({
-                  id: message.id,
-                  name: message.toolName ?? 'Tool',
-                  detail: message.content,
-                  status: 'completed'
-                }))}
+                tools={block.values.map(toolActivityFromMessage)}
               />
             }
             if (block.kind === 'process') {
@@ -1331,7 +1417,33 @@ export function AgentRunsView({
             setReplyAttachmentError(null)
           }}
           submitAriaLabel="发送消息"
-          modelLabel={modelLabels.providers[detail.run.provider]}
+          modelControl={(
+            <AgentModelPicker
+              provider={detail.run.provider}
+              model={detail.run.model ?? ''}
+              reasoningEffort={detail.run.reasoningEffort ?? ''}
+              inheritedModel={detail.run.provider === 'pi'
+                ? ''
+                : codingAgentSettings[detail.run.provider].defaultModel}
+              inheritedReasoningEffort={detail.run.provider === 'pi'
+                ? ''
+                : codingAgentSettings[detail.run.provider].defaultReasoningEffort}
+              label={detail.run.provider === 'pi'
+                ? modelLabels.providers.pi
+                : formatAgentModelLabel(
+                    detail.run.model ?? codingAgentSettings[detail.run.provider].defaultModel,
+                    detail.run.reasoningEffort ?? codingAgentSettings[detail.run.provider].defaultReasoningEffort,
+                    modelLabels.providers[detail.run.provider]
+                  )}
+              catalog={codingAgentModels}
+              allowPi
+              disabled={runActive}
+              status={codingAgentModels ? '切换后会在下一条消息生效。' : '正在读取可用模型…'}
+              onChange={(nextProvider, model, reasoningEffort) => {
+                void updateExecutionSettings(nextProvider, model || null, reasoningEffort || null)
+              }}
+            />
+          )}
         />
       </footer>
       </div>
@@ -1398,11 +1510,7 @@ function RunLiveActivity({
         <button onClick={() => void onApproval('deny')}>拒绝</button>
         <button className="is-primary" onClick={() => void onApproval('approve')}>仅批准这次</button>
       </div>}
-      {groupLiveActivities(activities)
-        .filter((block) => block.kind === 'tool-group')
-        .map((block) => block.kind === 'tool-group'
-          ? <ToolCallGroup key={`tool-group-${block.values[0].id}`} tools={block.values} />
-          : null)}
+      <ActivityStages stages={groupLiveActivityStages(activities)} live />
     </div>
   )
 }

@@ -140,7 +140,7 @@ describe('TTS provider fallback', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         voice_id: 'owned-voice',
-        name: 'Project Agent 中文女声'
+        name: 'Fuddy 中文女声'
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(new Uint8Array(256), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
@@ -182,7 +182,7 @@ describe('TTS provider fallback', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         voices: [{
           voice_id: 'web-owned-voice',
-          name: 'Project Agent 中文女声',
+          name: 'Fuddy 中文女声',
           category: 'generated'
         }]
       }), { status: 200, headers: { 'Content-Type': 'application/json' } }))

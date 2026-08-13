@@ -6,6 +6,7 @@ import {
   findArtifactForHref,
   formatAgentProcessDuration,
   groupLiveActivities,
+  groupLiveActivityStages,
   groupMessageTimeline,
   shouldBlockAgentRunDetailRefresh,
   type LiveActivity
@@ -107,6 +108,41 @@ describe('Agent Run live activity timeline', () => {
     expect(blocks).toHaveLength(4)
     expect(blocks[1]).toMatchObject({ kind: 'tool-group', values: [{ id: 'tool-1' }, { id: 'tool-2' }] })
     expect(blocks[3]).toMatchObject({ kind: 'tool-group', values: [{ id: 'tool-3' }] })
+  })
+
+  it.each([
+    {
+      provider: 'Codex',
+      updates: [
+        { type: 'reasoning_delta', segmentId: 'codex-summary-1', delta: '先定位数据库迁移。' },
+        { type: 'tool', toolCallId: 'codex-command-1', toolName: 'command', status: 'completed', detail: 'rg schemaVersion src/main' },
+        { type: 'reasoning_delta', segmentId: 'codex-summary-2', delta: '找到缺失的 v4 迁移，补测试。' },
+        { type: 'tool', toolCallId: 'codex-file-1', toolName: 'edit', status: 'completed', detail: '{"path":"database-schema.ts"}' }
+      ]
+    },
+    {
+      provider: 'Claude Code',
+      updates: [
+        { type: 'reasoning_delta', segmentId: 'claude-thinking-0', delta: '先梳理组件边界。' },
+        { type: 'tool', toolCallId: 'claude-read-1', toolName: 'Read', status: 'completed', detail: '{"file_path":"/repo/RootViews.swift"}' },
+        { type: 'tool', toolCallId: 'claude-edit-1', toolName: 'Edit', status: 'completed', detail: '{"file_path":"/repo/RootViews.swift"}' },
+        { type: 'reasoning_delta', segmentId: 'claude-thinking-1', delta: '再验证移动端分组。' }
+      ]
+    },
+    {
+      provider: 'OpenCode',
+      updates: [
+        { type: 'reasoning_delta', segmentId: 'opencode-reasoning-1', delta: '先核对依赖与审计结果。' },
+        { type: 'tool', toolCallId: 'opencode-read-1', toolName: 'read', status: 'completed', detail: '{"status":"completed","input":{"filePath":"/repo/package.json"}}' },
+        { type: 'tool', toolCallId: 'opencode-bash-1', toolName: 'bash', status: 'failed', detail: '{"status":"error","input":{"command":"npm audit"}}' }
+      ]
+    }
+  ] as const)('normalizes $provider replay into the same stage structure', ({ updates }) => {
+    const stages = groupLiveActivityStages(apply([...updates]))
+    expect(stages.length).toBeGreaterThan(0)
+    expect(stages[0].thinking?.content).toBeTruthy()
+    expect(stages.flatMap((stage) => stage.tools).every((tool) => tool.label && tool.summary)).toBe(true)
+    expect(stages.flatMap((stage) => stage.tools).every((tool) => !tool.summary.includes('status'))).toBe(true)
   })
 
   it('does not merge separate same-name tool calls without provider IDs', () => {

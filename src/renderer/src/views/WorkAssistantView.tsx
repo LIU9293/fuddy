@@ -63,9 +63,6 @@ import type {
   AppBootstrap,
   AsrModelStatus,
   Capability,
-  CodingAgentModelCatalog,
-  CodingAgentProvider,
-  CodingAgentSettings,
   ConnectorInstance,
   ConnectorKind,
   ConnectorRun,
@@ -91,8 +88,6 @@ import type {
 import { normalizeWorkspaceRoots } from '../../../shared/project-workspaces'
 import type { CompanionMacStatus, CompanionPairingSession } from '../../../shared/companion-sync'
 import { defaultCompanionRelayUrl } from '../../../shared/companion-sync'
-import { buildAgentModelLabels } from '../../../shared/model-display'
-import { agentProviderDefinitions, codingAgentProviders } from '../../../shared/agent-providers'
 import {
   codingAgentOptions,
   connectorStatusLabels,
@@ -449,7 +444,6 @@ export function WorkAssistantRunLink({ run, onOpen }: { run: AgentRun; onOpen: (
 export function WorkAssistantView({
   briefings,
   messages,
-  modelLabel,
   ttsMode,
   generating,
   runs,
@@ -460,7 +454,6 @@ export function WorkAssistantView({
 }: {
   briefings: MorningBriefing[]
   messages: BriefingMessage[]
-  modelLabel: string
   ttsMode: TtsProviderMode
   generating: boolean
   runs: AgentRun[]
@@ -753,7 +746,6 @@ export function WorkAssistantView({
             setImageError(null)
           }}
           submitAriaLabel="发送问题"
-          modelLabel={modelLabel}
         />
       </footer>
     </div>

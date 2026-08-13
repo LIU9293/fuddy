@@ -804,7 +804,6 @@ export default function App(): React.JSX.Element {
             <WorkAssistantView
               briefings={bootstrap.morningBriefings}
               messages={bootstrap.briefingMessages}
-              modelLabel={buildAgentModelLabels(bootstrap.providerSettings).workAssistant}
               ttsMode={bootstrap.providerSettings.tts.primary.mode}
               generating={submitting}
               runs={bootstrap.runs}
@@ -984,6 +983,7 @@ export default function App(): React.JSX.Element {
               projects={bootstrap.projects}
               goals={bootstrap.goals}
               modelLabels={buildAgentModelLabels(bootstrap.providerSettings)}
+              codingAgentSettings={bootstrap.providerSettings.codingAgents}
               selectedRunId={selectedAgentRunId}
               creating={creatingAgentRun}
               prefill={agentRunPrefill}

@@ -1,8 +1,10 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import type { CompanionCommand, CompanionEncryptedCommand, CompanionMacConfiguration, CompanionSyncEventInput } from '../../shared/companion-sync'
+import WebSocket from 'ws'
+import type { CompanionCommand, CompanionEncryptedCommand, CompanionMacConfiguration, CompanionMacStatus, CompanionSyncEventInput } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import {
   companionAccountKeyId,
@@ -29,6 +31,7 @@ import {
   companionSocketHeartbeatShouldReconnect,
   companionSocketMessageRequestsSync,
   companionToolSummaryMaximumCharacters,
+  closeCompanionSocket,
   partitionCompanionEventBatches,
   CompanionSyncService
 } from './companion-sync'
@@ -73,6 +76,70 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 describe('Companion sync transport policy', () => {
+  it('closes a connecting realtime socket without an unhandled error', async () => {
+    const server = createServer()
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Expected a TCP test address.')
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}`)
+    expect(socket.readyState).toBe(WebSocket.CONNECTING)
+
+    closeCompanionSocket(socket)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(socket.readyState).toBe(WebSocket.CLOSED)
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+  })
+
+  it('returns a pairing QR without waiting for the initial snapshot sync', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-pairing-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const secrets = new Map<string, string>()
+    const credentials = {
+      set: (reference: string, value: string) => { secrets.set(reference, value) },
+      get: (reference: string) => secrets.get(reference) ?? null,
+      delete: (reference: string) => { secrets.delete(reference) }
+    } as unknown as CredentialVault
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      minimumProtocolVersion: companionProtocolVersion,
+      protocolVersion: companionProtocolVersion,
+      accountId: 'new-account',
+      macDeviceId: 'new-mac',
+      macToken: 'new-token',
+      pairingSecret: 'new-secret',
+      pairingPayload: JSON.stringify({
+        minimumProtocolVersion: companionProtocolVersion,
+        protocolVersion: companionProtocolVersion,
+        relayUrl: 'https://relay.example.com',
+        accountId: 'new-account',
+        pairingSecret: 'new-secret'
+      }),
+      expiresAt: new Date(Date.now() + 60_000).toISOString()
+    }, 201)))
+    const service = new CompanionSyncService(
+      database,
+      credentials,
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    const pendingSync = new Promise<CompanionMacStatus>(() => undefined)
+    const syncNow = vi.spyOn(service, 'syncNow').mockReturnValue(pendingSync)
+    ;(service as unknown as { connectSocket: () => void }).connectSocket = vi.fn()
+
+    const pairing = await service.beginPairing('https://relay.example.com')
+
+    expect(syncNow).toHaveBeenCalledOnce()
+    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({
+      accountId: 'new-account',
+      pairingSecret: 'new-secret',
+      encryptionKey: expect.any(String),
+      encryptionKeyId: expect.any(String)
+    })
+    service.stop()
+    database.close()
+  })
+
   it('keeps the existing pairing when a replacement Relay is incompatible', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-repair-'))
     directories.push(directory)
@@ -183,6 +250,8 @@ describe('Companion sync transport policy', () => {
     expect(relayMessage.content).not.toContain('\n')
     expect(relayMessage.metadata).toBeNull()
     expect(relayMessage.toolStatus).toBe('failed')
+    expect(relayMessage.toolKind).toBe('command')
+    expect(relayMessage.toolSummary).toBe('private command')
     expect(message.content.length).toBeGreaterThan(relayMessage.content.length)
   })
 

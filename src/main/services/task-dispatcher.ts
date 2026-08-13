@@ -22,6 +22,7 @@ import { evaluateAggressivePermission } from '../../shared/permissions'
 import { normalizeWorkspaceRoots, primaryWorkspaceRoot } from '../../shared/project-workspaces'
 import { buildAgentStoragePolicy } from './agent-runtime-context'
 import type { AgentTurnOutcome, AgentTurnSettledPayload } from '../../shared/companion-sync'
+import { agentToolPresentation } from '../../shared/agent-activity'
 import {
   AgentProviderRegistry,
   createDefaultAgentProviderRegistry
@@ -146,6 +147,8 @@ export class TaskDispatcher {
       goalId: input.goalId ?? null,
       milestoneId: input.milestoneId ?? null,
       provider: resolvedInput.provider,
+      model: null,
+      reasoningEffort: null,
       title: input.title?.trim() || input.prompt.trim().split('\n')[0].slice(0, 80),
       status: 'queued',
       sessionId: null,
@@ -188,6 +191,8 @@ export class TaskDispatcher {
       goalId: input.goalId ?? null,
       milestoneId: input.milestoneId ?? null,
       provider,
+      model: null,
+      reasoningEffort: null,
       title: input.title.trim(),
       status: 'draft',
       sessionId: null,
@@ -388,6 +393,10 @@ export class TaskDispatcher {
       touchActivity()
       flushReasoning()
       flushVisibleTextAsReasoning()
+      const presentation = agentToolPresentation(toolName, detail, metadata ?? null)
+      const failed = metadata?.status === 'failed'
+        || metadata?.isError === true
+        || metadata?.is_error === true
       const toolMessage: AgentRunMessage = {
         id: randomUUID(),
         runId,
@@ -395,7 +404,12 @@ export class TaskDispatcher {
         content: detail || toolName,
         eventType: 'tool',
         toolName,
-        metadata: metadata ?? null,
+        metadata: {
+          ...(metadata ?? {}),
+          status: failed ? 'failed' : 'completed',
+          toolKind: presentation.kind,
+          toolSummary: presentation.summary
+        },
         createdAt: new Date().toISOString()
       }
       this.database.createAgentRunMessage(toolMessage)
@@ -421,6 +435,8 @@ export class TaskDispatcher {
         prompt: runtimePrompt,
         history: () => this.database.listAgentRunMessages(runId).filter((message) => message.id !== userMessage.id),
         sessionId: run.sessionId,
+        model: run.model,
+        reasoningEffort: run.reasoningEffort,
         workingDirectory: run.workingDirectory,
         workspaceRoots: projectWorkspacesFor(this.database, run.projectId),
         filesDirectory: this.workspaceFiles.getRoot(run.projectId),

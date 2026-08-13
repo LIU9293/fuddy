@@ -698,10 +698,10 @@ final class CompanionStore: ObservableObject {
                 run: AgentRun(id: "run-preview", projectId: "sample-project", provider: "claude", title: "分析长期等待平台处理的申请", status: "running", workingDirectory: "/Users/demo/Code/sample-project", summary: "", createdAt: now, updatedAt: now),
                 messages: [
                     AgentMessage(id: "reasoning-1", runId: "run-preview", role: "assistant", content: "我先确认项目的工作区说明和入驻数据所在位置。", eventType: "reasoning", toolName: nil, createdAt: now),
-                    AgentMessage(id: "tool-1", runId: "run-preview", role: "tool", content: "{\"file_path\":\"/Users/demo/Code/sample-project/AGENTS.md\"}", eventType: "tool", toolName: "Read", createdAt: now),
-                    AgentMessage(id: "tool-2", runId: "run-preview", role: "tool", content: "{\"command\":\"rg onboarding packages/api\"}", eventType: "tool", toolName: "Bash", createdAt: now),
+                    AgentMessage(id: "tool-1", runId: "run-preview", role: "tool", content: "{\"file_path\":\"/Users/demo/Code/sample-project/AGENTS.md\"}", eventType: "tool", toolName: "Read", toolStatus: "completed", toolKind: "read", toolSummary: "AGENTS.md", createdAt: now),
+                    AgentMessage(id: "tool-2", runId: "run-preview", role: "tool", content: "{\"command\":\"rg onboarding packages/api\"}", eventType: "tool", toolName: "Bash", toolStatus: "completed", toolKind: "command", toolSummary: "rg onboarding packages/api", createdAt: now),
                     AgentMessage(id: "reasoning-2", runId: "run-preview", role: "assistant", content: "已经找到生产库连接方式，接下来核对这 4 条入驻记录。", eventType: "reasoning", toolName: nil, createdAt: now),
-                    AgentMessage(id: "tool-3", runId: "run-preview", role: "tool", content: "{\"command\":\"pnpm db:query onboarding\"}", eventType: "tool", toolName: "Bash", createdAt: now)
+                    AgentMessage(id: "tool-3", runId: "run-preview", role: "tool", content: "{\"command\":\"pnpm db:query onboarding\"}", eventType: "tool", toolName: "Bash", toolStatus: "completed", toolKind: "command", toolSummary: "pnpm db:query onboarding", createdAt: now)
                 ],
                 artifacts: []
             ),
@@ -709,7 +709,7 @@ final class CompanionStore: ObservableObject {
                 run: AgentRun(id: "run-preview-completed", projectId: "sample-project", provider: "codex", title: "汇总平台申请状态", status: "idle", workingDirectory: "/Users/demo/Code/sample-project", summary: "已核对 3 条申请记录", createdAt: now, updatedAt: now),
                 messages: [
                     AgentMessage(id: "completed-reasoning", runId: "run-preview-completed", role: "assistant", content: "我先核对入驻记录和最近一次平台回执。", eventType: "reasoning", toolName: nil, createdAt: "2026-08-08T03:40:01.000Z"),
-                    AgentMessage(id: "completed-tool", runId: "run-preview-completed", role: "tool", content: "{\"command\":\"pnpm db:query onboarding\"}", eventType: "tool", toolName: "Bash", createdAt: "2026-08-08T03:40:12.000Z"),
+                    AgentMessage(id: "completed-tool", runId: "run-preview-completed", role: "tool", content: "{\"command\":\"pnpm db:query onboarding\"}", eventType: "tool", toolName: "Bash", toolStatus: "completed", toolKind: "command", toolSummary: "pnpm db:query onboarding", createdAt: "2026-08-08T03:40:12.000Z"),
                     AgentMessage(id: "completed-result", runId: "run-preview-completed", role: "assistant", content: """
                     已完成核对：
 

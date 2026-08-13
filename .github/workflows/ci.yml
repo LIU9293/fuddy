@@ -73,6 +73,6 @@ jobs:
       - run: npm run package:smoke
       - name: Verify packaged application
         run: |
-          APP_PATH=$(find dist -maxdepth 3 -name 'Project Agent.app' -print -quit)
+          APP_PATH=$(find dist -maxdepth 3 -name 'Fuddy.app' -print -quit)
           test -n "$APP_PATH"
           test -f "$APP_PATH/Contents/Resources/app.asar"
