@@ -20,9 +20,13 @@ private struct CompanionLiquidGlassModifier<EffectShape: Shape>: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            let glass: Glass = interactive ? .regular.interactive() : .regular
-            content.glassEffect(glass, in: shape)
+            if interactive {
+                content.glassEffect(.regular.interactive(), in: shape)
+            } else {
+                content.glassEffect(.regular, in: shape)
+            }
         } else {
             content
                 .background(.ultraThinMaterial, in: shape)
@@ -30,6 +34,13 @@ private struct CompanionLiquidGlassModifier<EffectShape: Shape>: ViewModifier {
                     shape.stroke(.white.opacity(0.3), lineWidth: 0.8)
                 }
         }
+        #else
+        content
+            .background(.ultraThinMaterial, in: shape)
+            .overlay {
+                shape.stroke(.white.opacity(0.3), lineWidth: 0.8)
+            }
+        #endif
     }
 }
 

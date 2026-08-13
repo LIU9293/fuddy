@@ -16,10 +16,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            cloud/relay/package-lock.json
-      - run: npm ci
+          cache-dependency-path: cloud/relay/package-lock.json
       - run: npm --prefix cloud/relay ci
       - run: npm run relay:typecheck
       - run: npm run relay:test
@@ -37,6 +34,7 @@ jobs:
           npm run deploy
 
   mac:
+    needs: relay
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
