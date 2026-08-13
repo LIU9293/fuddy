@@ -101,6 +101,8 @@ const api: DesktopApi = {
   renameAgentRun: (id: string, title: string) => ipcRenderer.invoke('agent-run:rename', { id, title }),
   updateAgentRunDraftPrompt: (id: string, draftPrompt: string) =>
     ipcRenderer.invoke('agent-run:update-draft-prompt', { id, draftPrompt }),
+  updateAgentRunExecutionSettings: (input) =>
+    ipcRenderer.invoke('agent-run:update-execution-settings', input),
   archiveAgentRun: (id: string) => ipcRenderer.invoke('agent-run:archive', id),
   getCompanionStatus: () => ipcRenderer.invoke('companion:get-status'),
   beginCompanionPairing: (relayUrl: string) => ipcRenderer.invoke('companion:begin-pairing', relayUrl),

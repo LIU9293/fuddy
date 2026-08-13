@@ -57,7 +57,7 @@ export const connectorCatalog: ConnectorCatalogItem[] = [
   },
   {
     kind: 'project-agent',
-    label: 'Project Agent',
+    label: 'Fuddy',
     description: '连接项目专属 Agent 或远程自动化能力。',
     availability: 'built-in',
     authType: 'project-api',

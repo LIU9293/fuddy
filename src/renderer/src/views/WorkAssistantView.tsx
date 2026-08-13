@@ -42,6 +42,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { QRCodeSVG } from 'qrcode.react'
 import { ChatComposer } from '../components/ChatComposer'
+import { AgentModelPicker } from '../components/AgentModelPicker'
 import { AgentRunsView } from '../components/AgentRunsView'
 import { ConversationMessageActions } from '../components/ConversationMessageActions'
 import { isProjectImageIcon, ProjectIcon } from '../components/ProjectIcon'
@@ -91,7 +92,7 @@ import type {
 import { normalizeWorkspaceRoots } from '../../../shared/project-workspaces'
 import type { CompanionMacStatus, CompanionPairingSession } from '../../../shared/companion-sync'
 import { defaultCompanionRelayUrl } from '../../../shared/companion-sync'
-import { buildAgentModelLabels } from '../../../shared/model-display'
+import { buildAgentModelLabels, formatAgentModelLabel } from '../../../shared/model-display'
 import { agentProviderDefinitions, codingAgentProviders } from '../../../shared/agent-providers'
 import {
   codingAgentOptions,
@@ -446,27 +447,104 @@ export function WorkAssistantRunLink({ run, onOpen }: { run: AgentRun; onOpen: (
   )
 }
 
+function DefaultAgentPicker({
+  settings,
+  fallbackLabel,
+  disabled,
+  onSaved,
+  onError
+}: {
+  settings: CodingAgentSettings
+  fallbackLabel: string
+  disabled: boolean
+  onSaved: () => Promise<void>
+  onError: (message: string) => void
+}): React.JSX.Element {
+  const [draft, setDraft] = useState(settings)
+  const [catalog, setCatalog] = useState<CodingAgentModelCatalog | null>(null)
+  const [saving, setSaving] = useState(false)
+  const provider = draft.defaultAgent
+  const providerSettings = draft[provider]
+  const label = formatAgentModelLabel(
+    providerSettings.defaultModel,
+    providerSettings.defaultReasoningEffort,
+    fallbackLabel
+  )
+
+  useEffect(() => setDraft(settings), [settings])
+
+  useEffect(() => {
+    let active = true
+    void window.projectAgent.listCodingAgentModels()
+      .then((models) => { if (active) setCatalog(models) })
+      .catch(() => { if (active) setCatalog(null) })
+    return () => { active = false }
+  }, [])
+
+  const save = async (next: CodingAgentSettings): Promise<void> => {
+    setDraft(next)
+    setSaving(true)
+    try {
+      await window.projectAgent.configureCodingAgents(next)
+      await onSaved()
+    } catch (error) {
+      setDraft(settings)
+      onError(error instanceof Error ? error.message : 'Agent 配置保存失败。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <AgentModelPicker
+      provider={provider}
+      model={providerSettings.defaultModel}
+      reasoningEffort={providerSettings.defaultReasoningEffort}
+      label={label}
+      catalog={catalog}
+      disabled={disabled || saving}
+      status={catalog ? '新建 Agent Run 默认使用此配置。' : '正在读取可用模型…'}
+      onChange={(nextProvider, model, reasoningEffort) => {
+        if (nextProvider !== provider && nextProvider !== 'pi') {
+          void save({ ...draft, defaultAgent: nextProvider as CodingAgentProvider })
+          return
+        }
+        void save({
+          ...draft,
+          [provider]: { defaultModel: model, defaultReasoningEffort: reasoningEffort }
+        })
+      }}
+    />
+  )
+}
+
 export function WorkAssistantView({
   briefings,
   messages,
   modelLabel,
+  codingAgentSettings,
   ttsMode,
   generating,
   runs,
   onOpenRun,
   onExecuteAction,
   onGenerate,
-  onAsk
+  onAsk,
+  onCodingAgentSettingsChanged,
+  onCodingAgentSettingsError
 }: {
   briefings: MorningBriefing[]
   messages: BriefingMessage[]
   modelLabel: string
+  codingAgentSettings: CodingAgentSettings
   ttsMode: TtsProviderMode
   generating: boolean
   runs: AgentRun[]
   onOpenRun: (runId: string) => void
   onExecuteAction: (messageId: string, proposalId: string, optionId: string) => Promise<void>
   onGenerate: () => Promise<void>
+  onCodingAgentSettingsChanged: () => Promise<void>
+  onCodingAgentSettingsError: (message: string) => void
   onAsk: (
     briefingId: string | null,
     question: string,
@@ -753,7 +831,15 @@ export function WorkAssistantView({
             setImageError(null)
           }}
           submitAriaLabel="发送问题"
-          modelLabel={modelLabel}
+          modelControl={(
+            <DefaultAgentPicker
+              settings={codingAgentSettings}
+              fallbackLabel={modelLabel}
+              disabled={asking}
+              onSaved={onCodingAgentSettingsChanged}
+              onError={onCodingAgentSettingsError}
+            />
+          )}
         />
       </footer>
     </div>

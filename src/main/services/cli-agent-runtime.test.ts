@@ -7,6 +7,7 @@ import {
   buildCodexAppServerArgs,
   claudeSdkReasoningOptions,
   codingAgentRuntimeRoots,
+  codexAppServerToolRecord,
   codexCompletedReasoningSummaries,
   codexReasoningSegmentId,
   codexReasoningSummaryDelta,
@@ -81,6 +82,31 @@ describe('coding CLI MCP injection', () => {
       type: 'reasoning',
       part: { id: 'reasoning-1', type: 'reasoning', text: '正在核对实现。' }
     })).toEqual({ reasoning: '正在核对实现。', reasoningSegmentId: 'reasoning-1' })
+  })
+
+  it('maps OpenCode tool lifecycle records using callID instead of the part ID', () => {
+    expect(opencodeRecord({
+      type: 'tool_use',
+      part: {
+        id: 'part-1',
+        callID: 'call-1',
+        type: 'tool',
+        tool: 'read',
+        state: { status: 'completed', input: { filePath: '/repo/package.json' }, output: 'contents' }
+      }
+    })).toMatchObject({
+      tool: { id: 'call-1', name: 'read', status: 'completed' }
+    })
+  })
+
+  it('normalizes every supported Codex app-server tool item lifecycle', () => {
+    expect(codexAppServerToolRecord({
+      id: 'command-1', type: 'commandExecution', command: 'npm test', status: 'inProgress'
+    })).toEqual({ id: 'command-1', name: 'command', detail: 'npm test', status: 'running' })
+    expect(codexAppServerToolRecord({
+      id: 'file-1', type: 'fileChange', changes: [{ path: 'src/main.ts' }], status: 'completed'
+    })).toMatchObject({ id: 'file-1', name: 'edit', status: 'completed' })
+    expect(codexAppServerToolRecord({ type: 'agentMessage', text: 'done' })).toBeUndefined()
   })
 
   it('adds both stdio servers to Codex config overrides', () => {

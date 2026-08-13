@@ -137,7 +137,7 @@ final class SyncModelTests: XCTestCase {
         XCTAssertNil(projectIconImageData("data:image/svg+xml;base64,PHN2Zz4="))
     }
 
-    func testToolCallsAreGroupedOnlyBetweenThinkingMessages() {
+    func testToolCallsAreGroupedIntoTheSameStagesAsMac() {
         let messages = [
             AgentMessage(id: "thinking-1", runId: "run", role: "assistant", content: "先检查", eventType: "reasoning", toolName: nil, createdAt: "1"),
             AgentMessage(id: "tool-1", runId: "run", role: "tool", content: "one", eventType: "tool", toolName: "Read", createdAt: "2"),
@@ -146,12 +146,12 @@ final class SyncModelTests: XCTestCase {
             AgentMessage(id: "tool-3", runId: "run", role: "tool", content: "three", eventType: "tool", toolName: "Read", createdAt: "5")
         ]
 
-        let blocks = groupRunMessages(messages)
-        XCTAssertEqual(blocks.count, 4)
-        if case .toolGroup(let firstGroup) = blocks[1] { XCTAssertEqual(firstGroup.map(\.id), ["tool-1", "tool-2"]) }
-        else { XCTFail("Expected first tool group") }
-        if case .toolGroup(let secondGroup) = blocks[3] { XCTAssertEqual(secondGroup.map(\.id), ["tool-3"]) }
-        else { XCTFail("Expected second tool group") }
+        let stages = groupRunActivityStages(messages)
+        XCTAssertEqual(stages.count, 2)
+        XCTAssertEqual(stages[0].reasoning?.id, "thinking-1")
+        XCTAssertEqual(stages[0].tools.map(\.id), ["tool-1", "tool-2"])
+        XCTAssertEqual(stages[1].reasoning?.id, "thinking-2")
+        XCTAssertEqual(stages[1].tools.map(\.id), ["tool-3"])
     }
 
     func testCompletedRunProcessCollapsesBeforeResultMessage() {
@@ -182,11 +182,36 @@ final class SyncModelTests: XCTestCase {
             AgentMessage(id: "tool", runId: "run", role: "tool", content: "读取", eventType: "tool", toolName: "Read", createdAt: "2")
         ]
 
-        XCTAssertEqual(groupRunMessages(messages).count, 2)
-        if case .message(let message) = groupRunMessages(messages)[0] {
-            XCTAssertEqual(message.id, "thinking")
+        XCTAssertEqual(groupRunMessages(messages).count, 1)
+        if case .activity(let activityMessages) = groupRunMessages(messages)[0] {
+            XCTAssertEqual(activityMessages.map(\.id), ["thinking", "tool"])
         } else {
-            XCTFail("Expected visible thinking")
+            XCTFail("Expected visible activity")
+        }
+    }
+
+    func testCodexClaudeAndOpenCodeFixturesShareOneStageContract() {
+        let providerFixtures: [[AgentMessage]] = [
+            [
+                AgentMessage(id: "codex-reasoning", runId: "codex", role: "assistant", content: "先检查迁移。", eventType: "reasoning", toolName: nil, createdAt: "1"),
+                AgentMessage(id: "codex-command", runId: "codex", role: "tool", content: "npm test", eventType: "tool", toolName: "command", toolStatus: "completed", toolKind: "command", toolSummary: "npm test", createdAt: "2")
+            ],
+            [
+                AgentMessage(id: "claude-reasoning", runId: "claude", role: "assistant", content: "先梳理组件。", eventType: "reasoning", toolName: nil, createdAt: "1"),
+                AgentMessage(id: "claude-read", runId: "claude", role: "tool", content: "raw", eventType: "tool", toolName: "Read", toolStatus: "completed", toolKind: "read", toolSummary: "RootViews.swift", createdAt: "2")
+            ],
+            [
+                AgentMessage(id: "opencode-reasoning", runId: "opencode", role: "assistant", content: "先核对依赖。", eventType: "reasoning", toolName: nil, createdAt: "1"),
+                AgentMessage(id: "opencode-read", runId: "opencode", role: "tool", content: "raw", eventType: "tool", toolName: "read", toolStatus: "completed", toolKind: "read", toolSummary: "package.json", createdAt: "2")
+            ]
+        ]
+
+        for messages in providerFixtures {
+            let stages = groupRunActivityStages(messages)
+            XCTAssertEqual(stages.count, 1)
+            XCTAssertNotNil(stages[0].reasoning)
+            XCTAssertEqual(stages[0].tools.count, 1)
+            XCTAssertFalse(stages[0].tools[0].toolSummary?.isEmpty ?? true)
         }
     }
 
@@ -314,10 +339,12 @@ final class SyncModelTests: XCTestCase {
     }
 
     func testRelayToolSummaryDecodesStatus() throws {
-        let json = #"{"id":"tool-1","runId":"run-1","role":"tool","content":"short summary","eventType":"tool","toolName":"Bash","toolStatus":"failed","createdAt":"2026-08-11T00:00:00Z"}"#
+        let json = #"{"id":"tool-1","runId":"run-1","role":"tool","content":"raw output","eventType":"tool","toolName":"Bash","toolStatus":"failed","toolKind":"command","toolSummary":"npm test","createdAt":"2026-08-11T00:00:00Z"}"#
         let message = try JSONDecoder().decode(AgentMessage.self, from: Data(json.utf8))
         XCTAssertEqual(message.toolStatus, "failed")
-        XCTAssertEqual(message.content, "short summary")
+        XCTAssertEqual(message.toolKind, "command")
+        XCTAssertEqual(message.toolSummary, "npm test")
+        XCTAssertEqual(message.content, "raw output")
     }
 
     func testCompanionTransportRunsOnlyWhileSceneIsActive() {

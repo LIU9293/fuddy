@@ -107,6 +107,44 @@ export class RunRepository {
     })
   }
 
+  updateExecutionSettings(
+    id: string,
+    provider: AgentRun['provider'],
+    model: string | null,
+    reasoningEffort: string | null
+  ): AgentRun {
+    return this.transaction(() => {
+      const run = this.get(id)
+      if (run.status === 'running' || run.status === 'queued') {
+        throw new Error('Agent 正在运行，请等待本轮结束后再切换配置。')
+      }
+      const normalizedModel = model?.trim() || null
+      const normalizedReasoningEffort = reasoningEffort?.trim() || null
+      const configurationChanged = run.provider !== provider || (run.model ?? null) !== normalizedModel ||
+        (run.reasoningEffort ?? null) !== normalizedReasoningEffort
+      if (!configurationChanged) return run
+      const updatedAt = new Date().toISOString()
+      this.database
+        .prepare(`
+          UPDATE agent_runs
+          SET agent = ?, kind = ?, provider = ?, model = ?, reasoning_effort = ?, session_id = NULL, updated_at = ?
+          WHERE id = ? AND archived_at IS NULL
+        `)
+        .run(
+          provider,
+          provider === 'pi' ? 'general' : 'coding',
+          provider,
+          provider === 'pi' ? null : normalizedModel,
+          provider === 'pi' ? null : normalizedReasoningEffort,
+          updatedAt,
+          id
+        )
+      const updated = this.get(id)
+      this.publish({ type: 'agent-run.updated', entityType: 'agent-run', entityId: id, payload: updated })
+      return updated
+    })
+  }
+
   archive(id: string): void {
     this.transaction(() => {
       const run = this.get(id)
@@ -162,8 +200,8 @@ export class RunRepository {
           `
         INSERT INTO agent_runs (
           id, project_id, decision_id, goal_id, milestone_id, agent, kind, provider, title, status,
-          session_id, working_directory, started_at, completed_at, summary, draft_prompt, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          model, reasoning_effort, session_id, working_directory, started_at, completed_at, summary, draft_prompt, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
         )
         .run(
@@ -177,6 +215,8 @@ export class RunRepository {
           run.provider,
           run.title,
           run.status,
+          run.model ?? null,
+          run.reasoningEffort ?? null,
           run.sessionId,
           run.workingDirectory,
           run.startedAt,
@@ -204,7 +244,7 @@ export class RunRepository {
           `
         UPDATE agent_runs
         SET project_id = ?, decision_id = ?, goal_id = ?, milestone_id = ?, agent = ?, kind = ?, provider = ?,
-            title = ?, status = ?, session_id = ?, working_directory = ?, started_at = ?,
+            title = ?, status = ?, model = ?, reasoning_effort = ?, session_id = ?, working_directory = ?, started_at = ?,
             completed_at = ?, summary = ?, draft_prompt = ?, updated_at = ?
         WHERE id = ?
       `
@@ -219,6 +259,8 @@ export class RunRepository {
           run.provider,
           run.title,
           run.status,
+          run.model ?? null,
+          run.reasoningEffort ?? null,
           run.sessionId,
           run.workingDirectory,
           run.startedAt,
@@ -362,6 +404,8 @@ export class RunRepository {
       goalId: row.goal_id ? String(row.goal_id) : null,
       milestoneId: row.milestone_id ? String(row.milestone_id) : null,
       provider: provider as AgentRun['provider'],
+      model: row.model ? String(row.model) : null,
+      reasoningEffort: row.reasoning_effort ? String(row.reasoning_effort) : null,
       title: String(row.title),
       status: row.status as AgentRun['status'],
       sessionId: row.session_id ? String(row.session_id) : null,

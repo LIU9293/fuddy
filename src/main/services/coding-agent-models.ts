@@ -215,7 +215,7 @@ function listCodexModels(): Promise<DiscoveredModels> {
 
     void (async () => {
       await request('initialize', {
-        clientInfo: { name: 'project-agent', title: 'Project Agent', version: '0.1.0' },
+        clientInfo: { name: 'project-agent', title: 'Fuddy', version: '0.1.0' },
         capabilities: {}
       })
       write({ method: 'initialized', params: {} })

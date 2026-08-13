@@ -614,7 +614,6 @@ struct WorkAssistantView: View {
                     text: $prompt,
                     attachments: $attachments,
                     placeholder: "询问工作助理",
-                    modelLabel: store.state.modelLabels.workAssistant,
                     sending: sending,
                     imageOnly: true,
                     onSend: { Task { await send() } }
@@ -1115,13 +1114,13 @@ struct RunsListView: View {
 
 enum RunTimelineBlock: Identifiable {
     case message(AgentMessage)
-    case toolGroup([AgentMessage])
+    case activity([AgentMessage])
     case process([AgentMessage], completedAt: String)
 
     var id: String {
         switch self {
         case .message(let message): return message.id
-        case .toolGroup(let messages): return "tools-\(messages.first?.id ?? UUID().uuidString)"
+        case .activity(let messages): return "activity-\(messages.first?.id ?? UUID().uuidString)"
         case .process(let messages, _):
             return "process-\(messages.first?.id ?? "unknown")-\(messages.last?.id ?? "unknown")"
         }
@@ -1154,22 +1153,30 @@ func groupRunMessages(_ messages: [AgentMessage]) -> [RunTimelineBlock] {
 }
 
 private func appendOpenRunProcess(_ messages: [AgentMessage], to result: inout [RunTimelineBlock]) {
-    var tools: [AgentMessage] = []
-    func flushTools() {
-        guard !tools.isEmpty else { return }
-        result.append(.toolGroup(tools))
-        tools.removeAll(keepingCapacity: true)
-    }
+    guard !messages.isEmpty else { return }
+    result.append(.activity(messages))
+}
 
+struct RunActivityStage: Identifiable {
+    let id: String
+    let reasoning: AgentMessage?
+    var tools: [AgentMessage]
+}
+
+func groupRunActivityStages(_ messages: [AgentMessage]) -> [RunActivityStage] {
+    var stages: [RunActivityStage] = []
     for message in messages {
-        if message.role == "tool" {
-            tools.append(message)
-        } else {
-            flushTools()
-            result.append(.message(message))
+        if message.eventType == "reasoning" {
+            stages.append(RunActivityStage(id: message.id, reasoning: message, tools: []))
+        } else if message.role == "tool" {
+            if stages.isEmpty {
+                stages.append(RunActivityStage(id: "stage-\(message.id)", reasoning: nil, tools: [message]))
+            } else {
+                stages[stages.count - 1].tools.append(message)
+            }
         }
     }
-    flushTools()
+    return stages
 }
 
 func formatRunProcessDuration(startedAt: String, completedAt: String) -> String {
@@ -1241,14 +1248,14 @@ struct RunDetailView: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: companionChatItemSpacing) {
-                                let blocks = groupRunMessages(visibleMessages(in: detail))
+                                let blocks = groupRunMessages(detail.messages)
                                 ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                                     let active = index == blocks.count - 1 && ["running", "queued"].contains(detail.run.status)
                                     Group {
                                         switch block {
                                         case .message(let message): MessageView(message: message, active: active)
-                                        case .toolGroup(let messages):
-                                            ToolCallGroupView(messages: messages, active: active)
+                                        case .activity(let messages):
+                                            RunActivityStagesView(messages: messages, active: active)
                                         case .process(let messages, let completedAt):
                                             RunProcessDisclosureView(messages: messages, completedAt: completedAt)
                                         }
@@ -1367,7 +1374,6 @@ struct RunDetailView: View {
                             text: $prompt,
                             attachments: $attachments,
                             placeholder: "给 \(detail.run.provider) 发送消息",
-                            modelLabel: store.state.modelLabels.label(for: detail.run.provider),
                             sending: sending,
                             active: ["running", "queued"].contains(detail.run.status),
                             onSend: { Task { await send() } },
@@ -1419,17 +1425,6 @@ struct RunDetailView: View {
 
     private var latestAnchorID: String { "agent-run-latest-\(runID)" }
     private var scrollCoordinateSpace: String { "agent-run-scroll-\(runID)" }
-
-    private func visibleMessages(in detail: RunDetail) -> [AgentMessage] {
-        guard ["running", "queued"].contains(detail.run.status),
-              let lastUserIndex = detail.messages.lastIndex(where: { $0.role == "user" }),
-              !detail.messages[(lastUserIndex + 1)...].contains(where: {
-                  $0.role == "assistant" && $0.eventType != "reasoning"
-              }) else { return detail.messages }
-        return detail.messages.enumerated().compactMap { index, message in
-            index > lastUserIndex && message.eventType == "reasoning" ? nil : message
-        }
-    }
 
     private func refreshMessagesAtBottom() {
         guard !refreshingAtBottom else { return }
@@ -1488,11 +1483,8 @@ private struct RunProcessDisclosureView: View {
     let completedAt: String
     @State private var expanded = false
 
-    private var processBlocks: [RunTimelineBlock] {
-        var blocks: [RunTimelineBlock] = []
-        appendOpenRunProcess(messages, to: &blocks)
-        return blocks
-    }
+    private var stages: [RunActivityStage] { groupRunActivityStages(messages) }
+    private var operationCount: Int { stages.reduce(0) { $0 + $1.tools.count } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1509,6 +1501,11 @@ private struct RunProcessDisclosureView: View {
                         completedAt: completedAt
                     ))
                         .font(.subheadline.weight(.medium))
+                    if operationCount > 0 {
+                        Text("· \(operationCount) 次操作")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
@@ -1522,24 +1519,85 @@ private struct RunProcessDisclosureView: View {
             .accessibilityHint(expanded ? "轻点收起" : "轻点展开")
 
             if expanded {
-                VStack(alignment: .leading, spacing: 18) {
-                    ForEach(processBlocks) { block in
-                        switch block {
-                        case .message(let message):
-                            ThinkingText(content: message.content, active: false)
-                        case .toolGroup(let toolMessages):
-                            ToolCallGroupView(messages: toolMessages, active: false)
-                        case .process:
-                            EmptyView()
-                        }
-                    }
-                }
-                .padding(.leading, 4)
+                RunActivityStagesView(messages: messages, active: false)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
+
+private struct RunActivityStagesView: View {
+    let messages: [AgentMessage]
+    let active: Bool
+
+    private var stages: [RunActivityStage] { groupRunActivityStages(messages) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(stages.enumerated()), id: \.element.id) { index, stage in
+                let current = active && index == stages.count - 1
+                VStack(alignment: .leading, spacing: 9) {
+                    if let reasoning = stage.reasoning {
+                        ThinkingText(content: reasoning.content, active: current && stage.tools.isEmpty)
+                    }
+                    if !stage.tools.isEmpty {
+                        ToolCallGroupView(messages: stage.tools, active: current)
+                    }
+                }
+                .padding(.bottom, index < stages.count - 1 ? 18 : 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private func toolKind(for message: AgentMessage) -> String {
+    if let kind = message.toolKind, !kind.isEmpty { return kind }
+    let name = (message.toolName ?? "").lowercased().filter(\.isLetter)
+    if ["read", "readfile", "cat", "notebookread", "listfiles"].contains(name) { return "read" }
+    if ["grep", "glob", "search", "find", "rg", "codesearch", "websearch"].contains(name) { return "search" }
+    if ["edit", "write", "writefile", "applypatch", "patch", "notebookedit", "multiedit"].contains(name) { return "edit" }
+    if ["bash", "shell", "command", "exec", "execute", "terminal", "runcommand"].contains(name) { return "command" }
+    if name.contains("browser") || name.contains("webfetch") || name.contains("computer") { return "browser" }
+    return "other"
+}
+
+private func toolLabel(for message: AgentMessage) -> String {
+    switch toolKind(for: message) {
+    case "read": "读取文件"
+    case "search": "搜索代码"
+    case "edit": "编辑文件"
+    case "command": "运行命令"
+    case "browser": "操作浏览器"
+    default: message.toolName ?? "调用工具"
+    }
+}
+
+private func toolDisplaySummary(for message: AgentMessage) -> String {
+    if let summary = message.toolSummary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+        return summary
+    }
+    let value = message.content.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.count > 100 ? "\(value.prefix(99))…" : (value.isEmpty ? "查看详情" : value)
+}
+
+private func toolGroupSummary(_ messages: [AgentMessage]) -> String {
+    guard messages.count > 1 else {
+        guard let message = messages.first else { return "尚无操作" }
+        return "\(toolLabel(for: message)) · \(toolDisplaySummary(for: message))"
+    }
+    var orderedKinds: [String] = []
+    var counts: [String: Int] = [:]
+    for message in messages {
+        let kind = toolKind(for: message)
+        if counts[kind] == nil { orderedKinds.append(kind) }
+        counts[kind, default: 0] += 1
+    }
+    let labels = ["read": "读取", "search": "搜索", "edit": "编辑", "command": "运行", "browser": "浏览器", "other": "其他"]
+    return orderedKinds.map { "\(labels[$0] ?? "其他") \(counts[$0] ?? 0) 次" }.joined(separator: " · ")
 }
 
 private struct ToolCallGroupView: View {
@@ -1554,9 +1612,10 @@ private struct ToolCallGroupView: View {
                 withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
-                    Text(messages.count == 1 ? (messages[0].toolName ?? "工具调用") : "\(messages.count) 个工具调用")
+                    Text(toolGroupSummary(messages))
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     Spacer()
                     if active { ProgressView().controlSize(.small) }
                 }
@@ -1587,7 +1646,7 @@ private struct ToolCallGroupView: View {
             ForEach(messages) { message in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 8) {
-                        Text(message.toolName ?? "工具调用")
+                        Text(toolLabel(for: message))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                         if let status = message.toolStatus {
@@ -1596,6 +1655,9 @@ private struct ToolCallGroupView: View {
                                 .foregroundStyle(status == "failed" ? Color.red : Color.secondary)
                         }
                     }
+                    Text(toolDisplaySummary(for: message))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Text(message.content)
                         .font(.subheadline.monospaced())
                         .foregroundStyle(.tertiary)

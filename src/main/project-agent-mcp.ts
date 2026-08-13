@@ -9,7 +9,7 @@ import { normalizeWorkspaceRoots } from '../shared/project-workspaces'
 
 const databasePath = process.env.PROJECT_AGENT_DB_PATH?.trim() ?? ''
 const projectId = process.env.PROJECT_AGENT_PROJECT_ID?.trim() ?? ''
-if (!databasePath || !projectId) throw new Error('Project Agent MCP 缺少数据库路径或项目 ID。')
+if (!databasePath || !projectId) throw new Error('Fuddy MCP 缺少数据库路径或项目 ID。')
 
 const database = new DatabaseSync(databasePath)
 database.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
@@ -111,7 +111,7 @@ function saveProject(project: Project): void {
       config.repoPath = project.profile.repoPath
       database.prepare('UPDATE connector_instances SET config_json = ? WHERE id = ?').run(JSON.stringify(config), String(connector.id))
     }
-    const intent = { tool: 'update_project_info', action: 'update', target: project.id, description: 'Agent 通过 Project Agent MCP 更新项目配置。' }
+    const intent = { tool: 'update_project_info', action: 'update', target: project.id, description: 'Agent 通过 Fuddy MCP 更新项目配置。' }
     const evaluation = evaluateAggressivePermission(intent)
     database.prepare(`INSERT INTO audit_entries (id, intent_json, evaluation_json, outcome, created_at) VALUES (?, ?, ?, ?, ?)`)
       .run(randomUUID(), JSON.stringify(intent), JSON.stringify(evaluation), 'executed', new Date().toISOString())
@@ -124,7 +124,7 @@ function saveProject(project: Project): void {
 
 const server = new McpServer({ name: 'project-agent', version: '0.1.0' })
 server.registerTool('update_project_info', {
-  description: '更新当前 Project Agent 项目的基本信息、产品上下文、Workspace Roots、默认 Agent、数据源或当前状态。只传需要修改的字段；Workspace 变更会在下一个 Run 生效。',
+  description: '更新当前 Fuddy 项目的基本信息、产品上下文、Workspace Roots、默认 Agent、数据源或当前状态。只传需要修改的字段；Workspace 变更会在下一个 Run 生效。',
   inputSchema: patchSchema
 }, async (patch) => {
   try {

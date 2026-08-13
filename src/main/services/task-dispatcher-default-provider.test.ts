@@ -286,4 +286,43 @@ describe('TaskDispatcher project agent defaults', () => {
     })
     database.close()
   })
+
+  it('persists session execution settings and resets the native session when they change', () => {
+    const root = mkdtempSync(join(tmpdir(), 'project-agent-execution-settings-'))
+    temporaryDirectories.push(root)
+    const database = createTestDatabase(join(root, 'app.sqlite'))
+    const timestamp = new Date().toISOString()
+    database.createAgentRun({
+      id: 'configurable-session',
+      projectId: null,
+      provider: 'codex',
+      model: 'gpt-old',
+      reasoningEffort: 'low',
+      title: 'Configurable session',
+      status: 'idle',
+      sessionId: 'native-session',
+      workingDirectory: root,
+      startedAt: timestamp,
+      completedAt: null,
+      summary: 'Ready',
+      draftPrompt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    })
+
+    const updated = database.updateAgentRunExecutionSettings(
+      'configurable-session',
+      'claude',
+      'claude-sonnet-test',
+      'high'
+    )
+
+    expect(updated).toMatchObject({
+      provider: 'claude',
+      model: 'claude-sonnet-test',
+      reasoningEffort: 'high',
+      sessionId: null
+    })
+    database.close()
+  })
 })

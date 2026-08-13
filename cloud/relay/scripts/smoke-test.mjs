@@ -75,7 +75,7 @@ const commands = await json(await fetch(authenticatedUrl('/v1/commands/pending',
 if (!commands.commands.some((command) => command.commandId === commandId)) throw new Error('Command delivery failed')
 
 const attachmentId = randomUUID()
-const attachment = new TextEncoder().encode('Project Agent companion attachment smoke test')
+const attachment = new TextEncoder().encode('Fuddy companion attachment smoke test')
 const attachmentSha256 = createHash('sha256').update(attachment).digest('hex')
 await json(await fetch(authenticatedUrl(`/v1/attachments/${attachmentId}`, pairing.accountId, macDeviceId), {
   method: 'PUT',

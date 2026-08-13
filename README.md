@@ -1,8 +1,8 @@
-# AI Native Project Agent
+# Fuddy
 
 > 面向自由职业者与个人开发者的多项目 AI 助理。当前仓库已进入 Electron 桌面端 MVP 开发阶段。
 
-## 当前实现状态（2026-08-12）
+## 当前实现状态（2026-08-13）
 
 当前版本已经跑通从项目上下文、决策事项到真实 Agent Session 的桌面端主链路：
 
@@ -12,17 +12,17 @@
 - 新建 Agent Session 只创建草稿，不自动发送消息。“去处理”和 Milestone“开始任务”都会直接创建或打开关联 Session、进入聊天，并把持久化的建议任务放进输入框，用户确认或修改后再发送；
 - 工作助理运行在 Pi 的持久 Agent Session 中，使用原生 Tool Call 和自动上下文压缩：可以管理项目、目标、收件箱、Agent Run 和自动化，读取每日简报、联网公开来源，并受约束地读取项目文件空间及已配置 Workspace 中的文件/代码；只读能力可直接执行，改变 App 状态的能力通过 `ask_user` 展示持久确认 Action，创建 Run 只预填不发送；
 - Codex 使用 app-server，Claude Code 使用 Agent SDK，OpenCode 使用本机 CLI；三者均保存原生 Session ID，可在后续消息中恢复同一上下文；
-- Coding Agents 设置会检测本机安装状态、版本、可选模型及各模型支持的 Reasoning Effort，可设置全局默认 Coding Agent，并为每个 Agent 选择默认模型与 Effort；运行时仅在用户选择后显式传入对应参数；
+- Coding Agents 设置会检测本机安装状态、版本、可选模型及各模型支持的 Reasoning Effort；Mac 聊天输入框的无底色模型入口也可向上展开，直接选择默认或 Session 级 Agent、模型与 Reasoning Level。运行时仅在用户选择后显式传入对应参数；
 - macOS GUI 启动时读取交互式 zsh 环境，因此本机 Agent 能获得与终端一致、未经应用过滤的环境变量和认证配置；应用不会修改 `.zshrc`；
 - Agent Run 当前按产品约定使用 Full Access / 自动批准模式。Codex、Claude Code 和 OpenCode 分别使用各自支持的完全访问参数；
-- Agent 对话已支持流式回复、思考摘要、折叠工具调用链、当前工具运行态、Session 重命名 / 归档，以及 10 分钟无活动运行超时；
+- Agent 对话已支持流式回复、思考摘要、折叠工具调用链、当前工具运行态、Session 重命名 / 归档，以及 10 分钟无活动运行超时。Codex、Claude Code 和 OpenCode 的原始事件先归一为“思考阶段 + 连续操作组”，工具统一保留运行 / 完成 / 失败状态和可读摘要；Mac 与 iPhone 消费同一套展示语义，原始参数和输出只在二级展开中显示；
 - Mac 主区域统一使用纯色页面背景和全宽顶部 Header；项目列表是独立页面，Agent Run Session 直接常驻主侧边栏且只在运行时显示加载图标；主侧边栏支持拖拽调整宽度；临时成功和错误提示会在 5 秒后自动消失；
 - 主进程、Renderer 未处理异常及 Electron 子进程异常已接入 Sentry 崩溃报告。
 - SQLite 使用递增版本和逐步事务执行迁移；迁移失败不会推进版本。领域读写已按 Projects、Goals、Runs、Connectors、Briefings、Automations、Companion 与 Decisions 拆成独立 Repository，`AppDatabase` 只负责连接、迁移与组合。已发布的 Companion outbox 事件默认保留 30 天并分批清理，避免本地同步历史无限增长。
 - Companion 的事件、实体和 Payload，以及远程命令与 Payload 使用同一套强类型协议；Relay 在写入前执行逐事件 Zod 校验，Swift 事件/命令枚举由共享 manifest 生成，并保留对未知未来事件的安全忽略能力。
 - Agent Run 通过 Provider Registry 调度。Pi、Codex、Claude Code 与 OpenCode 分别注册 Adapter 和能力声明；Task Dispatcher 不再包含 Provider-specific 执行分支，Renderer 的 Bootstrap 订阅与主进程事件重试也已从 App Shell 抽离。
 - 所有聊天输入框已支持语音输入。Mac 首次录音会明确请求系统麦克风权限；已拒绝时打开“隐私与安全性 → 麦克风”供用户恢复授权。Mac 默认使用可选下载的 Whisper `large-v3-turbo Q5` 本地模型，未安装或本地失败时可回退到 OpenAI-compatible `/audio/transcriptions`；iPhone Release 构建通过准备脚本把同一模型预置进 App，并始终在设备上转写。录音只填入输入框，不会自动发送。
-- 已加入原生 SwiftUI iOS Companion 工程。Mac 可显示一次性配对二维码，iPhone 使用 VisionKit 原生扫码连接；本地 SQLite outbox 会把项目、目标、决策、每日总结、工作助理、Agent Run、消息和产物增量同步到 Cloudflare Relay。outbox 仍逐条落盘，但网络层按最多 100 条 / 512 KiB 批量提交；工具完整输出只留在 Mac，Relay 与 iPhone 只接收工具名、完成状态和最多 600 字的摘要。手机以顶部“助理 / Runs”切换和侧边栏组织导航，两类聊天共用支持照片 / 文件上传的输入组件；每日总结直接进入助理时间线，Agent 工具调用按 Thinking 阶段折叠分组。项目详情提供与 Mac 对齐的概览 / 设置，可编辑基本信息、产品上下文、一个或多个 Workspace、主 Workspace、默认 Agent、入口与数据源，并通过受约束的 `project.update` 命令交由 Mac 落库。Session 聊天不再内嵌产物列表，右上角“信息与文件”Modal 集中展示基本信息和文件；缺少云端副本时，iPhone 会通过受约束的命令请求在线 Mac 实时上传，再进行大小与 SHA-256 校验并用 Quick Look 打开。手机也支持离线缓存、收件箱处理和 Session 重命名 / 归档，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
+- 已加入原生 SwiftUI iOS Companion 工程。Mac 可显示一次性配对二维码，iPhone 使用 VisionKit 原生扫码连接；本地 SQLite outbox 会把项目、目标、决策、每日总结、工作助理、Agent Run、消息和产物增量同步到 Cloudflare Relay。outbox 仍逐条落盘，但网络层按最多 100 条 / 512 KiB 批量提交；工具完整输出只留在 Mac，Relay 与 iPhone 只接收工具类别、完成 / 失败状态、可读摘要和最多 600 字的细节。手机以顶部“助理 / Runs”切换和侧边栏组织导航，两类聊天共用支持照片 / 文件上传的输入组件，但隐藏 Mac 专属的 Agent / 模型 / Reasoning 选择入口；每日总结直接进入助理时间线，Agent 的思考摘要与工具操作在运行中实时显示，完成后按同一阶段结构整体折叠。项目详情提供与 Mac 对齐的概览 / 设置，可编辑基本信息、产品上下文、一个或多个 Workspace、主 Workspace、默认 Agent、入口与数据源，并通过受约束的 `project.update` 命令交由 Mac 落库。Session 聊天不再内嵌产物列表，右上角“信息与文件”Modal 集中展示基本信息和文件；缺少云端副本时，iPhone 会通过受约束的命令请求在线 Mac 实时上传，再进行大小与 SHA-256 校验并用 Quick Look 打开。手机也支持离线缓存、收件箱处理和 Session 重命名 / 归档，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
 - Companion Relay 默认地址为 [`project-agent-companion-relay.moghub.workers.dev`](https://project-agent-companion-relay.moghub.workers.dev)，使用 Durable Objects、Hibernation WebSocket 和私有 R2。事件、命令结果与附件使用配对时本地交换的账户密钥进行 AES-256-GCM 端到端加密；Relay 只保存密文、路由元数据和状态，不持有解密密钥。配对密钥一次有效、设备 Token 只保存哈希，Mac 解除绑定会撤销设备并清理 Relay 数据。每批事件在 DO 内一次授权并通过 SQLite 同步事务幂等写入，随后只发送一个 `sync.available(lastSequence)` 唤醒提示；Mac 与 iPhone 收到提示后仍以 ordered replay 为准。Relay 对配对、事件与命令实施独立限流和存储配额，并根据设备 ACK 压缩已被快照覆盖的历史。APNs 只携带通用唤醒/完成提醒，不包含业务正文；Release 配置默认使用 production APNs，开发命令显式覆盖为 development。
 
 目前仍属于本机 / 个人设备 MVP。仓库已提供 macOS Developer ID 签名、公证、自动更新、Relay 部署与 iOS Simulator XCTest 的 CI / Release 门禁；真正公开分发前仍需在 GitHub 环境中配置 Apple、Cloudflare 和 APNs 凭证，并完成真实签名包、TestFlight 与生产 Relay 的端到端验收。
@@ -463,9 +463,9 @@ Backend
 ### Browser Use 与 Computer Use
 
 - Browser Use 使用 `browser-use==0.13.7` 的固定 Schema stdio MCP（`browser-use --mcp`），默认 headless 独立 Profile；
-- Project Agent 携带固定版本的 Astral `uv`，由 uv 管理 Python 3.12 与 Browser Use 环境，不依赖系统 Python；
+- Fuddy 携带固定版本的 Astral `uv`，由 uv 管理 Python 3.12 与 Browser Use 环境，不依赖系统 Python；
 - Computer Use 使用 CUA Driver `0.19.0` 的 embedded daemon 与 stdio MCP proxy，不维护自有 Swift Helper；
-- CUA daemon 由 Electron 主进程直接启动，继承 Project Agent 的 Screen Recording 与 Accessibility 权限，并把同一私有 socket 暴露给 Pi、Codex、Claude 和 OpenCode；
+- CUA daemon 由 Electron 主进程直接启动，继承 Fuddy 的 Screen Recording 与 Accessibility 权限，并把同一私有 socket 暴露给 Pi、Codex、Claude 和 OpenCode；
 - 浏览器优先走 Browser Use；只有明确需要用户现有本机登录态或原生 App 时才走 CUA Driver；
 - 两项能力都只存在于 Agent Run，不提供独立内置页面，并遵循当前本机 Run 的 Full Access 策略。
 
@@ -527,7 +527,7 @@ Agent 仍必须服从用户明确的任务范围，不能因为拥有完整访�
 - Roombase Production Analytics Profile：引用项目现有 env、固定聚合 SQL、只读事务，不复制凭证或用户级数据；
 - Vows `vows-growth-v1`：固定聚合付费订单、婚礼创建、邀请就绪/发布、RSVP 与祝福；只返回汇总值，并监控已支付未交付；
 - AI Marketing `ai-marketing-production-v1`：固定聚合生成任务、候选、评审采纳、图片/视频交付与 Worker 心跳；不读取 Prompt、素材内容或用户身份；
-- Vows Project Agent 直接派发 Codex 到现有 `wedding-promotion` Skill 与 `marketing/` 工作区；AI Marketing Adapter 直接复用现有 Super Agent Thread + SSE Chat API；
+- Vows 的 Fuddy Agent 直接派发 Codex 到现有 `wedding-promotion` Skill 与 `marketing/` 工作区；AI Marketing Adapter 直接复用现有 Super Agent Thread + SSE Chat API；
 - 聚合结果持久化、确定性无模型回退，以及按日期稳定去重的行动信号；
 - 基于操作系统安全存储的 Credential Vault；SQLite 和日志只保存凭证引用；
 - 模型与 TTS 的 Primary / Backup 配置、自动 fallback、ElevenLabs TTS 和按配置失效的音频缓存；

@@ -12,7 +12,7 @@ function createRepo(): string {
   temporaryRepos.push(repoPath)
   execFileSync('git', ['init', '-b', 'main'], { cwd: repoPath })
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoPath })
-  execFileSync('git', ['config', 'user.name', 'Project Agent Test'], { cwd: repoPath })
+  execFileSync('git', ['config', 'user.name', 'Fuddy Test'], { cwd: repoPath })
   writeFileSync(join(repoPath, 'README.md'), '# Test Repo\n')
   writeFileSync(join(repoPath, 'AGENTS.md'), '# Test instructions\n')
   execFileSync('git', ['add', 'README.md', 'AGENTS.md'], { cwd: repoPath })

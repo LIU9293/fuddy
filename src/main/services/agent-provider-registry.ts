@@ -24,6 +24,8 @@ export interface AgentProviderTurnInput {
   prompt: string
   history: () => AgentRunMessage[]
   sessionId: string | null
+  model?: string | null
+  reasoningEffort?: string | null
   workingDirectory: string | null
   workspaceRoots: string[]
   filesDirectory: string
@@ -122,6 +124,8 @@ export function createDefaultAgentProviderRegistry(
           provider,
           prompt: `${input.projectContext}\n\n用户任务：\n${input.prompt}`,
           sessionId: input.sessionId,
+          model: input.model,
+          reasoningEffort: input.reasoningEffort,
           workingDirectory: input.workingDirectory,
           workspaceRoots: input.workspaceRoots,
           filesDirectory: input.filesDirectory,

@@ -63,7 +63,7 @@
   },
   "build": {
     "appId": "dev.ainative.projectagent",
-    "productName": "Project Agent",
+    "productName": "Fuddy",
     "electronLanguages": [
       "en",
       "zh_CN"

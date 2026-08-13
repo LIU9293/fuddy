@@ -3,7 +3,7 @@ import type { MicrophoneAccessResult } from '../../shared/contracts'
 export function microphoneAccessError(access: MicrophoneAccessResult): string | null {
   if (access.granted) return null
   if (access.status === 'denied') {
-    return '麦克风权限未开启。请在系统设置中允许 Project Agent 使用麦克风，然后重启 App。'
+    return '麦克风权限未开启。请在系统设置中允许 Fuddy 使用麦克风，然后重启 App。'
   }
   if (access.status === 'restricted') {
     return '麦克风访问受到系统限制。请检查“隐私与安全性 → 麦克风”或设备管理设置。'

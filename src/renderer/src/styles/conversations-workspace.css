@@ -2448,6 +2448,29 @@
   color: #777771;
 }
 
+.agent-activity-stages {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-activity-stage {
+  display: block;
+}
+
+.agent-activity-stage:not(:last-child) {
+  padding-bottom: 18px;
+}
+
+.agent-activity-stage-content { min-width: 0; }
+
+.agent-activity-stage .agent-thinking-marker,
+.agent-activity-stage .agent-tool-call-group {
+  width: 100%;
+}
+
+.agent-activity-stage .agent-thinking-marker { margin-bottom: 9px; }
+.agent-activity-stage .agent-tool-call-group { margin-bottom: 0; }
+
 .agent-run-live .agent-thinking-marker {
   width: 100%;
   margin: 0;
@@ -2526,6 +2549,16 @@
   background: transparent;
   text-align: left;
   cursor: pointer;
+}
+
+.agent-tool-call-group-summary {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+}
+
+.agent-tool-call-group-summary strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-tool-call-summary:hover,
@@ -2647,6 +2680,11 @@
   cursor: pointer;
 }
 
+.agent-process-disclosure > button small {
+  color: #aaa9a3;
+  font-size: 11px;
+}
+
 .agent-process-disclosure > button:hover {
   color: #55554f;
 }
@@ -2655,6 +2693,12 @@
   max-height: 560px;
   margin-top: 10px;
   overflow-y: auto;
+}
+
+.agent-run-live .agent-activity-stages:empty::after {
+  color: #8d8d86;
+  font-size: 12px;
+  content: '正在思考…';
 }
 
 @keyframes agent-tool-shine {
@@ -4017,15 +4061,87 @@
 .composer-model-label {
   overflow: hidden;
   max-width: 150px;
-  padding: 3px 6px;
-  border-radius: 6px;
+  padding: 3px 4px;
   color: #777770;
-  background: rgba(42, 42, 38, 0.045);
+  background: transparent;
   font-size: 10px;
   font-weight: 600;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.composer-model-picker {
+  position: relative;
+}
+
+.composer-model-picker-trigger {
+  display: inline-flex;
+  max-width: 170px;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 4px;
+  overflow: hidden;
+  border: 0;
+  color: #777770;
+  background: transparent;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.composer-model-picker-trigger span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-model-picker-trigger:hover,
+.composer-model-picker-trigger[aria-expanded='true'] {
+  color: #2c2c28;
+}
+
+.composer-model-picker-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  z-index: 80;
+  display: grid;
+  width: 290px;
+  gap: 11px;
+  padding: 13px;
+  border: 1px solid rgba(42, 42, 38, 0.1);
+  border-radius: 13px;
+  background: rgba(252, 252, 249, 0.98);
+  box-shadow: 0 16px 42px rgba(28, 28, 24, 0.16);
+  backdrop-filter: blur(16px);
+}
+
+.composer-model-picker-popover label {
+  display: grid;
+  gap: 5px;
+  color: #777770;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.composer-model-picker-popover .select-menu-trigger {
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.composer-model-picker-popover .select-menu-popover {
+  max-height: min(320px, calc(100vh - 24px));
+  overflow-y: auto;
+}
+
+.composer-model-picker-status {
+  margin: 0;
+  color: #8b8b84;
+  font-size: 10px;
+  line-height: 1.4;
 }
 
 .composer-voice-button.is-recording {

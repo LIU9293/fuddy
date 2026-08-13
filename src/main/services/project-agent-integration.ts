@@ -64,7 +64,7 @@ export class ProjectAgentIntegrationService {
     onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined
   ): Promise<DispatchProjectAgentResult> {
     const profile = getProjectAnalyticsProfile(input.projectId)
-    if (!profile) throw new Error(`项目 ${input.projectId} 没有 Project Agent Profile。`)
+    if (!profile) throw new Error(`项目 ${input.projectId} 没有 Fuddy Profile。`)
     if (profile.agentIntegration.kind === 'repo-skill') {
       const integration = profile.agentIntegration
       const project = this.database.listProjects().find((candidate) => candidate.id === profile.projectId)
@@ -134,7 +134,7 @@ export class ProjectAgentIntegrationService {
     )
     const baseUrl = typeof connector?.config.baseUrl === 'string' ? connector.config.baseUrl.replace(/\/$/, '') : ''
     if (!connector || !baseUrl) {
-      throw new Error('请先为该项目配置 Project Agent Base URL 与登录凭证。')
+      throw new Error('请先为该项目配置 Fuddy Base URL 与登录凭证。')
     }
     return { baseUrl, credentialRef: connector.credentialRef }
   }

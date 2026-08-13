@@ -89,7 +89,7 @@ async function prepareCuaDriver(workDirectory) {
 }
 
 if (process.platform !== 'darwin') {
-  throw new Error('当前 Project Agent 发行流程只准备 macOS Agent 工具。')
+  throw new Error('当前 Fuddy 发行流程只准备 macOS Agent 工具。')
 }
 
 const markerPath = join(toolsRoot, 'versions.json')

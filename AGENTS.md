@@ -1,8 +1,8 @@
-# Project Agent Repository Guide
+# Fuddy Repository Guide
 
 ## Product intent
 
-Project Agent is a macOS Electron app for operating several real projects through one work assistant, a decision inbox, project goals, automation, files, and persistent Agent Run sessions. Preserve the product's conversation-first, evidence-backed design. Do not turn it into a generic kanban board or a dashboard of unsupported metrics.
+Fuddy is a macOS Electron app for operating several real projects through one work assistant, a decision inbox, project goals, automation, files, and persistent Agent Run sessions. Preserve the product's conversation-first, evidence-backed design. Do not turn it into a generic kanban board or a dashboard of unsupported metrics.
 
 The current product language is primarily Chinese. Keep UI copy concise, direct, and consistent with the existing terminology in `README.md`.
 
@@ -59,7 +59,7 @@ RUN_COMPANION_RELAY_SMOKE=1 npx vitest run src/main/services/companion-sync.inte
 - Persist the external runtime's native Session ID and resume it for subsequent messages.
 - Run external Agents in the project's primary Workspace Root. Supply all additional Workspace Roots and the project file directory as accessible directories.
 - A project-bound Run must never silently fall back to the app repository or another arbitrary directory. Require a configured Workspace Root.
-- Project Agents should inspect the target project's `AGENTS.md`, README, scripts, data model, and Skills before making project-specific claims. Database or production claims require real evidence.
+- Fuddy Agents should inspect the target project's `AGENTS.md`, README, scripts, data model, and Skills before making project-specific claims. Database or production claims require real evidence.
 - The built-in Pi harness may update project configuration through the constrained project update tool; external Agents receive the project MCP server for the same purpose.
 
 ### Local Coding Agents

@@ -438,6 +438,8 @@ struct AgentMessage: Codable, Identifiable, Hashable {
     let eventType: String?
     let toolName: String?
     var toolStatus: String? = nil
+    var toolKind: String? = nil
+    var toolSummary: String? = nil
     let createdAt: String
 }
 
@@ -516,6 +518,9 @@ func acknowledgePendingAgentMessage(_ messageID: String, in runs: inout [RunDeta
         content: pending.content,
         eventType: nil,
         toolName: pending.toolName,
+        toolStatus: pending.toolStatus,
+        toolKind: pending.toolKind,
+        toolSummary: pending.toolSummary,
         createdAt: pending.createdAt
     )
     return true

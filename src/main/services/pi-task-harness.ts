@@ -106,12 +106,12 @@ export async function createPiModelRuntimeForEndpoint(endpoint: RuntimeAgentEndp
   const apiKey = endpoint.mode === 'cc-switch-codex-oauth' ? 'PROXY_MANAGED' : endpoint.apiKey ?? ''
   const provider = createProvider({
     id: providerId,
-    name: 'Project Agent Provider',
+    name: 'Fuddy Provider',
     baseUrl,
     headers,
     auth: {
       apiKey: {
-        name: 'Project Agent Provider',
+        name: 'Fuddy Provider',
         resolve: async () => ({ auth: apiKey ? { apiKey } : {} })
       }
     },
@@ -238,7 +238,7 @@ export class PiTaskHarness {
   }
 
   private systemPrompt(input: PiTaskTurnInput, mcpAvailability: string): string {
-    return `你是 Project Agent 中负责项目任务的执行 Agent，运行在一个可持续对话的 Agent Run Session 中。
+    return `你是 Fuddy 中负责项目任务的执行 Agent，运行在一个可持续对话的 Agent Run Session 中。
 
 ${buildAgentStoragePolicy(input)}
 
@@ -256,7 +256,7 @@ ${input.projectContext}
     const updateProject = defineTool({
       name: 'update_project_info',
       label: 'Update project info',
-      description: '更新当前 Project Agent 项目的基本信息、产品上下文、Workspace Roots、默认 Agent、数据源或当前状态。只传需要修改的字段。',
+      description: '更新当前 Fuddy 项目的基本信息、产品上下文、Workspace Roots、默认 Agent、数据源或当前状态。只传需要修改的字段。',
       promptSnippet: 'Update the current project configuration and workspace roots',
       executionMode: 'sequential',
       parameters: Type.Object({

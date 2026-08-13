@@ -80,7 +80,7 @@ export class TtsService {
   }
 
   async testProvider(): Promise<BriefingAudioResult> {
-    return this.createSpeechWithFallback('你好，这是一段 Project Agent 云端语音测试。')
+    return this.createSpeechWithFallback('你好，这是一段 Fuddy 云端语音测试。')
   }
 
   async designElevenLabsVoice(): Promise<ElevenLabsVoiceDesignResult> {
@@ -90,7 +90,7 @@ export class TtsService {
     )
     if (!endpoint?.apiKey) throw new Error('请先保存 ElevenLabs API Key。')
 
-    const voiceName = 'Project Agent 中文女声'
+    const voiceName = 'Fuddy 中文女声'
     const voiceDescription = 'A warm, calm and intelligent Mandarin Chinese female voice in her early thirties. Clear standard pronunciation, measured pacing, trustworthy and concise, suitable for a private executive assistant delivering a morning business briefing.'
     const previewText = '早上好，这是今天的项目简报。我会先告诉你最需要关注的变化，再说明关键数据、潜在风险和建议行动。接下来，我们从最重要的一项开始，并把今天可以完成的行动安排清楚。'
     const existingVoice = await this.findElevenLabsVoice(endpoint, voiceName)

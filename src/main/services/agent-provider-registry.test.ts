@@ -52,11 +52,15 @@ describe('AgentProviderRegistry', () => {
     await expect(registry.runTurn('pi', piInput)).resolves.toMatchObject({ text: 'pi result' })
     expect(piInput.history).toHaveBeenCalledOnce()
     const cliInput = turnInput()
+    cliInput.model = 'gpt-test'
+    cliInput.reasoningEffort = 'high'
     cliInput.history = vi.fn(() => [])
     await expect(registry.runTurn('codex', cliInput)).resolves.toEqual({ text: 'codex result', sessionId: 'native-session' })
     expect(cliInput.history).not.toHaveBeenCalled()
     expect(cliRunTurn).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'codex',
+      model: 'gpt-test',
+      reasoningEffort: 'high',
       prompt: 'project context\n\n用户任务：\ndo work'
     }))
   })

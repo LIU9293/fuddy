@@ -16,7 +16,7 @@ struct PairingView: View {
                     .font(.system(size: 42, weight: .medium))
                     .foregroundStyle(.tint)
                 VStack(spacing: 8) {
-                    Text("连接到 Project Agent").font(.title2.bold())
+                    Text("连接到 Fuddy").font(.title2.bold())
                     Text("在 Mac 的“设置 → 通用 → iPhone Companion”创建配对二维码，然后使用相机扫描。所有 Agent 操作仍在 Mac 上执行。")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)

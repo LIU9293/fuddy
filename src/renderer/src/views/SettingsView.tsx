@@ -420,7 +420,7 @@ export function SettingsView({
       onNotice(
         computer?.status === 'ready'
           ? 'Computer Use 所需的屏幕录制与辅助功能权限已就绪。'
-          : '已打开 macOS 权限设置。完成授权后请重启 Project Agent，使 CUA Driver 继承新的权限。'
+          : '已打开 macOS 权限设置。完成授权后请重启 Fuddy，使 CUA Driver 继承新的权限。'
       )
     } catch (error) {
       onNotice(error instanceof Error ? error.message : '无法请求 Computer Use 权限。')
@@ -527,7 +527,7 @@ export function SettingsView({
       )
       await onRefresh()
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Project Agent 启动失败。')
+      onNotice(error instanceof Error ? error.message : 'Fuddy 启动失败。')
     } finally {
       setProjectAgentBusy(null)
     }
@@ -1558,7 +1558,7 @@ export function SettingsView({
                 <article className="microphone-test-row">
                   <div>
                     <strong>测试麦克风</strong>
-                    <p>确认 Project Agent 可以接收当前系统输入。</p>
+                    <p>确认 Fuddy 可以接收当前系统输入。</p>
                   </div>
                   <button
                     className="provider-save-button"

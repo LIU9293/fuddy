@@ -133,6 +133,10 @@ export interface AgentRun {
   goalId?: string | null
   milestoneId?: string | null
   provider: AgentRunProvider
+  /** Session-level override. Null/omitted uses the selected Agent's own configured default. */
+  model?: string | null
+  /** Session-level override. Null/omitted uses the selected Agent's own configured default. */
+  reasoningEffort?: string | null
   title: string
   status: AgentRunStatus
   sessionId: string | null
@@ -153,6 +157,10 @@ export interface AgentRunMessage {
   content: string
   eventType: string | null
   toolName: string | null
+  /** Provider-neutral presentation fields used by remote clients. */
+  toolStatus?: 'completed' | 'failed'
+  toolKind?: import('./agent-activity').AgentToolKind
+  toolSummary?: string
   metadata: Record<string, unknown> | null
   createdAt: string
 }
@@ -978,6 +986,13 @@ export interface CreateAgentRunDraftInput {
   workingDirectory?: string | null
 }
 
+export interface UpdateAgentRunExecutionSettingsInput {
+  id: string
+  provider: AgentRunProvider
+  model: string | null
+  reasoningEffort: string | null
+}
+
 export interface WriteWorkspaceFileInput {
   projectId: string | null
   relativePath: string
@@ -1026,6 +1041,7 @@ export interface DesktopApi {
   getAgentRunArtifactPreview(runId: string, artifactId: string): Promise<AgentRunArtifactPreview>
   renameAgentRun(id: string, title: string): Promise<AgentRun>
   updateAgentRunDraftPrompt(id: string, draftPrompt: string): Promise<AgentRun>
+  updateAgentRunExecutionSettings(input: UpdateAgentRunExecutionSettingsInput): Promise<AgentRun>
   archiveAgentRun(id: string): Promise<void>
   getCompanionStatus(): Promise<import('./companion-sync').CompanionMacStatus>
   beginCompanionPairing(relayUrl: string): Promise<import('./companion-sync').CompanionPairingSession>

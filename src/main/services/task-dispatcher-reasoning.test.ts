@@ -53,6 +53,9 @@ describe('TaskDispatcher reasoning timeline', () => {
         ['assistant', null, null]
       ])
       expect(result.detail.messages[1]).toMatchObject({ content: '先读取说明，确认约束。', metadata: { segmentId: 'thinking-1' } })
+      expect(result.detail.messages[2]).toMatchObject({
+        metadata: { status: 'completed', toolKind: 'read', toolSummary: 'AGENTS.md content' }
+      })
       expect(result.detail.messages[3]).toMatchObject({ content: '再检查实现。', metadata: { segmentId: 'thinking-2' } })
     } finally {
       database.close()

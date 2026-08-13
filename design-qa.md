@@ -4,17 +4,17 @@
 - Implementation screenshot: `/Users/kai/Code/ai-native-project-agent/.design-qa/project-agent-settings-implementation.jpg`
 - Full-view comparison: `/Users/kai/Code/ai-native-project-agent/.design-qa/settings-side-by-side.jpg`
 - Focused content comparison: `/Users/kai/Code/ai-native-project-agent/.design-qa/settings-content-focused-comparison.jpg`
-- Viewport: Codex reference 1920 × 1088 px; Project Agent Electron window 1159 × 768 px.
+- Viewport: Codex reference 1920 × 1088 px; Fuddy Electron window 1159 × 768 px.
 - Density normalization: the reference was downsampled to 1445 × 768 px for the full-view comparison. The implementation remained 1159 × 768 px. The focused comparison uses equal 750 px crop heights while preserving each source's aspect ratio.
-- State: Codex Configuration page compared with Project Agent 权限与安全 page; both show the settings sidebar, page heading, section heading, and a grouped settings list.
+- State: Codex Configuration page compared with Fuddy 权限与安全 page; both show the settings sidebar, page heading, section heading, and a grouped settings list.
 
 ## Full-view comparison evidence
 
-The revised implementation follows the reference composition: persistent settings sidebar, back action, settings index label, search field, grouped navigation, wide single-column content, page title and description, section heading, and one rounded list container with dividers. The Project Agent version intentionally contains fewer navigation entries and product-specific Chinese copy.
+The revised implementation follows the reference composition: persistent settings sidebar, back action, settings index label, search field, grouped navigation, wide single-column content, page title and description, section heading, and one rounded list container with dividers. The Fuddy version intentionally contains fewer navigation entries and product-specific Chinese copy.
 
 ## Focused comparison evidence
 
-The focused main-content comparison confirms the same hierarchy and rhythm: title/description, generous section gap, compact section heading, and a single bordered group with row dividers. Project Agent keeps its existing Lucide status icons because they communicate credential, audit, and safety state; the reference's configuration rows are more control-heavy and therefore do not need those icons.
+The focused main-content comparison confirms the same hierarchy and rhythm: title/description, generous section gap, compact section heading, and a single bordered group with row dividers. Fuddy keeps its existing Lucide status icons because they communicate credential, audit, and safety state; the reference's configuration rows are more control-heavy and therefore do not need those icons.
 
 ## Findings
 
@@ -23,7 +23,7 @@ The focused main-content comparison confirms the same hierarchy and rhythm: titl
 - Spacing and layout rhythm: sidebar/content proportions, heading offsets, section spacing, 16 px group radius, row padding, and separators now follow the reference structure.
 - Colors and visual tokens: neutral off-white background, translucent sidebar, subtle gray borders, muted secondary text, and restrained green status treatment match the source direction.
 - Image quality and asset fidelity: neither screen contains raster content. Existing Lucide icons remain sharp and consistent with the application's established icon system.
-- Copy and content: all Project Agent settings content and existing functionality remain intact; only grouping labels were simplified to remove repetition.
+- Copy and content: all Fuddy settings content and existing functionality remain intact; only grouping labels were simplified to remove repetition.
 
 ## Comparison history
 
@@ -312,7 +312,7 @@ The Mac combined comparison is pixel-equivalent after normalization: the indepen
 
 - The installed iPhone Home Screen shows the approved red file/check App Icon and the display name `Fuddy`.
 - The iPhone drawer uses only the supplied Fuddy wordmark; the standalone F icon is absent. The wordmark is rendered as a template image so it follows light/dark foreground color.
-- The Mac primary sidebar uses only the supplied Fuddy wordmark, maintains the existing compact header density, and keeps the collapse control aligned. The previous gradient Sparkles mark and `Project Agent` lockup are absent.
+- The Mac primary sidebar uses only the supplied Fuddy wordmark, maintains the existing compact header density, and keeps the collapse control aligned. The previous gradient Sparkles mark and legacy text lockup are absent.
 - The Mac renderer loading state also uses the Fuddy wordmark, preventing a flash of the former mark after the splash window closes.
 
 ## Findings
@@ -502,7 +502,7 @@ passed
 - Source visual truth: `/var/folders/rf/msvcvk0550b3mjgs7kzgr3cc0000gn/T/TemporaryItems/NSIRD_screencaptureui_tFee4t/截屏2026-08-07 18.52.31.png`
 - Source dimensions: 2290 × 1430 px.
 - Implementation screenshot: unavailable after the Mac locked during the Session-detail capture.
-- Viewport: Project Agent Electron dev window, approximately 1179 × 768 CSS px at device scale 1.
+- Viewport: Fuddy Electron dev window, approximately 1179 × 768 CSS px at device scale 1.
 - Density normalization: blocked because the Session-detail implementation capture could not be retrieved.
 - State: Agent Runs overview was captured and inspected; the target Session was selected, but the subsequent detail-state capture was blocked by the locked Mac.
 
