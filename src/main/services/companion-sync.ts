@@ -56,6 +56,10 @@ const companionAttachmentRequestTimeoutMs = 120_000
 const companionEventSyncDebounceMs = 500
 const reconnectDelaysMs = [5_000, 15_000, 60_000] as const
 
+export function companionAttachmentStorageId(artifactId: string, sha256: string): string {
+  return createHash('sha256').update(`${artifactId}\0${sha256.toLowerCase()}`).digest('hex')
+}
+
 interface AuthenticatedCompanionContext {
   configuration: CompanionMacConfiguration
   token: string
@@ -460,17 +464,18 @@ export class CompanionSyncService {
       return null
     }
     const sha256 = await this.hashFile(filePath)
+    const attachmentId = companionAttachmentStorageId(artifact.id, sha256)
     const mimeType = artifact.mimeType ?? this.mimeTypeForPath(filePath)
     const context = this.authenticatedContext()
     const plaintext = await readFile(filePath)
     const sealed = await sealCompanionAttachment(
       context.encryptionKey,
       plaintext,
-      companionAttachmentAssociatedData(context.configuration.accountId, artifact.id)
+      companionAttachmentAssociatedData(context.configuration.accountId, attachmentId)
     )
     const encryptedSha256 = createHash('sha256').update(sealed).digest('hex')
     const response = await fetchWithTimeout(
-      this.authenticatedUrl(`/v1/attachments/${encodeURIComponent(artifact.id)}`, context.configuration),
+      this.authenticatedUrl(`/v1/attachments/${attachmentId}`, context.configuration),
       {
         method: 'PUT',
         headers: {
@@ -486,7 +491,7 @@ export class CompanionSyncService {
     )
     await responseJson(response)
     return {
-      id: artifact.id,
+      id: attachmentId,
       messageId: null,
       artifactId: artifact.id,
       filename: artifact.label,
