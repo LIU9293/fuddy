@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 import UIKit
-import UserNotifications
+@preconcurrency import UserNotifications
 
 @MainActor
 final class CompanionStore: ObservableObject {

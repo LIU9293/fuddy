@@ -16,7 +16,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: cloud/relay/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            cloud/relay/package-lock.json
+      - run: npm ci --ignore-scripts
       - run: npm --prefix cloud/relay ci
       - run: npm run relay:typecheck
       - run: npm run relay:test
