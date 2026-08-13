@@ -287,7 +287,7 @@ describe('TaskDispatcher project agent defaults', () => {
     database.close()
   })
 
-  it('persists session execution settings and resets the native session when they change', () => {
+  it('persists execution settings and seeds a replacement native session with Run history', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-execution-settings-'))
     temporaryDirectories.push(root)
     const database = createTestDatabase(join(root, 'app.sqlite'))
@@ -309,6 +309,26 @@ describe('TaskDispatcher project agent defaults', () => {
       createdAt: timestamp,
       updatedAt: timestamp
     })
+    database.createAgentRunMessage({
+      id: 'previous-user-message',
+      runId: 'configurable-session',
+      role: 'user',
+      content: '先检查旧配置',
+      eventType: null,
+      toolName: null,
+      metadata: null,
+      createdAt: timestamp
+    })
+    database.createAgentRunMessage({
+      id: 'previous-assistant-message',
+      runId: 'configurable-session',
+      role: 'assistant',
+      content: '旧配置已检查',
+      eventType: null,
+      toolName: null,
+      metadata: null,
+      createdAt: timestamp
+    })
 
     const updated = database.updateAgentRunExecutionSettings(
       'configurable-session',
@@ -323,6 +343,24 @@ describe('TaskDispatcher project agent defaults', () => {
       reasoningEffort: 'high',
       sessionId: null
     })
+    const runTurn = vi.fn(async () => ({ text: '已继续处理。', sessionId: 'replacement-native-session' }))
+    const dispatcher = new TaskDispatcher(
+      database,
+      {} as PiTaskHarness,
+      new WorkspaceFilesService(database, join(root, 'files')),
+      { runTurn } as unknown as CliAgentRuntime
+    )
+
+    await dispatcher.sendMessage('configurable-session', '继续刚才的任务')
+
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'claude',
+      model: 'claude-sonnet-test',
+      reasoningEffort: 'high',
+      sessionId: null,
+      prompt: expect.stringContaining('用户：先检查旧配置\n\nAgent：旧配置已检查')
+    }))
+    expect(database.getAgentRun('configurable-session').sessionId).toBe('replacement-native-session')
     database.close()
   })
 })

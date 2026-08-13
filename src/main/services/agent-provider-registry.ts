@@ -47,6 +47,35 @@ export interface AgentProviderAdapter {
   runTurn(input: AgentProviderTurnInput): Promise<AgentProviderTurnResult>
 }
 
+const codingAgentHistoryMessageLimit = 12
+const codingAgentHistoryCharacterLimit = 32_000
+const codingAgentHistoryMessageCharacterLimit = 8_000
+
+export function codingAgentContinuationContext(messages: AgentRunMessage[]): string {
+  const formatted = messages
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .filter((message) => message.content.trim().length > 0)
+    .slice(-codingAgentHistoryMessageLimit)
+    .map((message) => {
+      const content = message.content.trim()
+      const clipped = content.length > codingAgentHistoryMessageCharacterLimit
+        ? `${content.slice(0, codingAgentHistoryMessageCharacterLimit - 1)}…`
+        : content
+      return `${message.role === 'user' ? '用户' : 'Agent'}：${clipped}`
+    })
+
+  const retained: string[] = []
+  let retainedCharacters = 0
+  for (let index = formatted.length - 1; index >= 0; index -= 1) {
+    const message = formatted[index]
+    const nextLength = retainedCharacters + message.length + (retained.length > 0 ? 2 : 0)
+    if (nextLength > codingAgentHistoryCharacterLimit) break
+    retained.unshift(message)
+    retainedCharacters = nextLength
+  }
+  return retained.join('\n\n')
+}
+
 export class AgentProviderRegistry {
   private readonly adapters = new Map<AgentRunProvider, AgentProviderAdapter>()
 
@@ -119,10 +148,17 @@ export function createDefaultAgentProviderRegistry(
       capabilities: { ...sharedCapabilities },
       async runTurn(input) {
         if (!input.workingDirectory) throw new Error('这个 Agent Run 缺少 working directory。')
+        const continuationContext = input.sessionId ? '' : codingAgentContinuationContext(input.history())
         return await cliRuntime.runTurn({
           projectId: input.projectId,
           provider,
-          prompt: `${input.projectContext}\n\n用户任务：\n${input.prompt}`,
+          prompt: [
+            input.projectContext,
+            continuationContext
+              ? `以下是这个 Fuddy Agent Run 在重建原生 Session 前的历史对话。请继续当前对话，不要重复已完成的回答：\n\n${continuationContext}`
+              : '',
+            `用户任务：\n${input.prompt}`
+          ].filter(Boolean).join('\n\n'),
           sessionId: input.sessionId,
           model: input.model,
           reasoningEffort: input.reasoningEffort,

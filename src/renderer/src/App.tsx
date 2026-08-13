@@ -804,10 +804,6 @@ export default function App(): React.JSX.Element {
             <WorkAssistantView
               briefings={bootstrap.morningBriefings}
               messages={bootstrap.briefingMessages}
-              modelLabel={buildAgentModelLabels(bootstrap.providerSettings).providers[
-                bootstrap.providerSettings.codingAgents.defaultAgent
-              ]}
-              codingAgentSettings={bootstrap.providerSettings.codingAgents}
               ttsMode={bootstrap.providerSettings.tts.primary.mode}
               generating={submitting}
               runs={bootstrap.runs}
@@ -821,8 +817,6 @@ export default function App(): React.JSX.Element {
               }}
               onExecuteAction={executeWorkAssistantAction}
               onGenerate={generateMorningBriefing}
-              onCodingAgentSettingsChanged={refresh}
-              onCodingAgentSettingsError={setNotice}
               onAsk={askMorningBriefing}
             />
           )}
