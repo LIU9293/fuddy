@@ -1,12 +1,13 @@
 import { hostname } from 'node:os'
 import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
-import { Readable } from 'node:stream'
 import WebSocket from 'ws'
 import type {
   CompanionCommand,
+  CompanionEncryptedCommand,
+  CompanionEncryptedSyncEventInput,
   CompanionCommandType,
   CompanionCommandUpdate,
   CompanionEventBatchResult,
@@ -26,11 +27,22 @@ import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment 
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { updateProjectSchema } from '../../shared/project-validation'
-import { companionCommandSchema } from '../../shared/companion-schemas'
+import { companionCommandSchema, companionEncryptedCommandSchema, syncEventSchema } from '../../shared/companion-schemas'
 import { AppDatabase } from './database'
 import { CredentialVault } from './credential-vault'
 import { TaskDispatcher } from './task-dispatcher'
 import type { WorkspaceFilesService } from './workspace-files'
+import {
+  companionAccountKeyId,
+  companionAttachmentAssociatedData,
+  companionCommandAssociatedData,
+  companionEventAssociatedData,
+  generateCompanionAccountKey,
+  openCompanionAttachment,
+  openCompanionJson,
+  sealCompanionAttachment,
+  sealCompanionJson
+} from '../../shared/companion-crypto'
 
 const configurationKey = 'companion.mac-configuration'
 export const companionFallbackSyncIntervalMs = 60_000
@@ -43,6 +55,12 @@ export const companionToolSummaryMaximumCharacters = 600
 const companionAttachmentRequestTimeoutMs = 120_000
 const companionEventSyncDebounceMs = 500
 const reconnectDelaysMs = [5_000, 15_000, 60_000] as const
+
+interface AuthenticatedCompanionContext {
+  configuration: CompanionMacConfiguration
+  token: string
+  encryptionKey: string
+}
 
 export function companionReconnectDelayMs(attempt: number): number {
   return reconnectDelaysMs[Math.min(Math.max(0, attempt), reconnectDelaysMs.length - 1)]
@@ -78,7 +96,7 @@ export function companionAgentMessageForRelay(
   }
 }
 
-export function partitionCompanionEventBatches<T extends CompanionSyncEventInput>(events: T[]): T[][] {
+export function partitionCompanionEventBatches<T extends CompanionSyncEventInput | CompanionEncryptedSyncEventInput>(events: T[]): T[][] {
   const batches: T[][] = []
   let current: T[] = []
   for (const event of events) {
@@ -111,12 +129,10 @@ export function companionCommandRecovery(
 }
 
 export function companionCommandUpdateForRelay(
-  commandType: CompanionCommandType,
+  _commandType: CompanionCommandType,
   update: CompanionCommandUpdate
 ): CompanionCommandUpdate {
-  if (commandType === 'artifact.request-upload' || update.result === undefined) return update
-  const { result: _localResult, ...relayUpdate } = update
-  return relayUpdate
+  return { status: update.status }
 }
 
 function fetchWithTimeout(
@@ -221,6 +237,7 @@ export class CompanionSyncService {
   }
 
   async beginPairing(relayUrl: string, deviceName?: string): Promise<CompanionPairingSession> {
+    const previousConfiguration = this.configuration
     if (this.configuration) await this.revokeRemoteAccount()
     this.closeTransports()
     const origin = normalizedRelayUrl(relayUrl)
@@ -237,14 +254,21 @@ export class CompanionSyncService {
     if (pairing.protocolVersion !== companionProtocolVersion) {
       throw new Error('Companion Relay 协议版本不兼容。')
     }
-    if (this.configuration) this.credentials.delete(this.tokenReference(this.configuration.accountId))
+    if (previousConfiguration) {
+      this.credentials.delete(this.tokenReference(previousConfiguration.accountId))
+      this.credentials.delete(this.encryptionKeyReference(previousConfiguration.accountId))
+    }
+    const encryptionKey = generateCompanionAccountKey()
+    const encryptionKeyId = await companionAccountKeyId(encryptionKey)
     this.configuration = {
       relayUrl: origin,
       accountId: pairing.accountId,
       macDeviceId: pairing.macDeviceId,
-      pairedAt: new Date().toISOString()
+      pairedAt: new Date().toISOString(),
+      encryptionKeyId
     }
     this.credentials.set(this.tokenReference(pairing.accountId), pairing.macToken)
+    this.credentials.set(this.encryptionKeyReference(pairing.accountId), encryptionKey)
     this.database.setSetting(configurationKey, this.configuration)
     this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
     this.state = 'connecting'
@@ -254,7 +278,11 @@ export class CompanionSyncService {
     await this.syncNow()
     this.connectSocket()
     return {
-      pairingPayload: pairing.pairingPayload,
+      pairingPayload: JSON.stringify({
+        ...(JSON.parse(pairing.pairingPayload) as Record<string, unknown>),
+        encryptionKey,
+        encryptionKeyId
+      }),
       expiresAt: pairing.expiresAt,
       status: this.getStatus()
     }
@@ -263,6 +291,7 @@ export class CompanionSyncService {
   async disconnect(): Promise<void> {
     if (this.configuration) await this.revokeRemoteAccount()
     if (this.configuration) this.credentials.delete(this.tokenReference(this.configuration.accountId))
+    if (this.configuration) this.credentials.delete(this.encryptionKeyReference(this.configuration.accountId))
     this.database.setSetting<CompanionMacConfiguration | null>(configurationKey, null)
     this.configuration = null
     this.state = 'not-configured'
@@ -327,9 +356,9 @@ export class CompanionSyncService {
     while (true) {
       const pending = this.database.listPendingCompanionEvents(companionEventBatchMaximumCount)
       if (pending.length === 0) return
-      const prepared: CompanionSyncEventInput[] = []
+      const prepared: CompanionEncryptedSyncEventInput[] = []
       for (const event of pending) {
-        prepared.push({
+        const plaintext = syncEventSchema.parse({
           eventId: event.eventId,
           protocolVersion: event.protocolVersion,
           type: event.type,
@@ -338,7 +367,15 @@ export class CompanionSyncService {
           revision: event.revision,
           payload: await this.prepareEventPayload(event),
           occurredAt: event.occurredAt
-        } as unknown as CompanionSyncEventInput)
+        })
+        prepared.push({
+          ...plaintext,
+          payload: await sealCompanionJson(
+            context.encryptionKey,
+            plaintext.payload,
+            companionEventAssociatedData(plaintext)
+          )
+        } as CompanionEncryptedSyncEventInput)
       }
       for (const batch of partitionCompanionEventBatches(prepared)) {
         try {
@@ -353,8 +390,8 @@ export class CompanionSyncService {
   }
 
   private async publishEventBatch(
-    events: CompanionSyncEventInput[],
-    context: { configuration: CompanionMacConfiguration; token: string }
+    events: CompanionEncryptedSyncEventInput[],
+    context: AuthenticatedCompanionContext
   ): Promise<void> {
     const headers = {
       Authorization: `Bearer ${context.token}`,
@@ -425,20 +462,26 @@ export class CompanionSyncService {
     const sha256 = await this.hashFile(filePath)
     const mimeType = artifact.mimeType ?? this.mimeTypeForPath(filePath)
     const context = this.authenticatedContext()
-    const body = Readable.toWeb(createReadStream(filePath)) as ReadableStream
+    const plaintext = await readFile(filePath)
+    const sealed = await sealCompanionAttachment(
+      context.encryptionKey,
+      plaintext,
+      companionAttachmentAssociatedData(context.configuration.accountId, artifact.id)
+    )
+    const encryptedSha256 = createHash('sha256').update(sealed).digest('hex')
     const response = await fetchWithTimeout(
       this.authenticatedUrl(`/v1/attachments/${encodeURIComponent(artifact.id)}`, context.configuration),
       {
         method: 'PUT',
         headers: {
           Authorization: `Bearer ${context.token}`,
-          'Content-Type': mimeType,
-          'Content-Length': String(file.size),
-          'X-Content-SHA256': sha256
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(sealed.byteLength),
+          'X-Content-SHA256': encryptedSha256,
+          'X-Companion-Encryption': 'A256GCM'
         },
-        body,
-        duplex: 'half'
-      } as RequestInit & { duplex: 'half' },
+        body: sealed as unknown as BodyInit
+      },
       companionAttachmentRequestTimeoutMs
     )
     await responseJson(response)
@@ -510,17 +553,24 @@ export class CompanionSyncService {
     sha256: string
   ): Promise<void> {
     const context = this.authenticatedContext()
+    const sealed = await sealCompanionAttachment(
+      context.encryptionKey,
+      bytes,
+      companionAttachmentAssociatedData(context.configuration.accountId, attachmentId)
+    )
+    const encryptedSha256 = createHash('sha256').update(sealed).digest('hex')
     const response = await fetchWithTimeout(
       this.authenticatedUrl(`/v1/attachments/${encodeURIComponent(attachmentId)}`, context.configuration),
       {
         method: 'PUT',
         headers: {
           Authorization: `Bearer ${context.token}`,
-          'Content-Type': mimeType,
-          'Content-Length': String(bytes.byteLength),
-          'X-Content-SHA256': sha256
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(sealed.byteLength),
+          'X-Content-SHA256': encryptedSha256,
+          'X-Companion-Encryption': 'A256GCM'
         },
-        body: bytes as unknown as BodyInit
+        body: sealed as unknown as BodyInit
       },
       companionAttachmentRequestTimeoutMs
     )
@@ -555,7 +605,15 @@ export class CompanionSyncService {
       headers: { Authorization: `Bearer ${context.token}` }
     })
     const body = await responseJson<{ commands: unknown[] }>(response)
-    const commands = body.commands.map((command) => companionCommandSchema.parse(command))
+    const commands = await Promise.all(body.commands.map(async (value) => {
+      const encrypted = companionEncryptedCommandSchema.parse(value)
+      const payload = await openCompanionJson(
+        context.encryptionKey,
+        encrypted.payload,
+        companionCommandAssociatedData(encrypted)
+      )
+      return companionCommandSchema.parse({ ...encrypted, payload })
+    }))
     for (const remoteCommand of commands) this.scheduleCommand(remoteCommand)
     if (commands.length >= 100) this.scheduleEventSync()
   }
@@ -587,25 +645,29 @@ export class CompanionSyncService {
     }
     if (recovery === 'fail-interrupted') {
       const error = 'Mac 在执行远程操作期间中断；为避免重复执行，请确认结果后重新操作。'
-      this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, error)
+      const updated = this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, error)
+      this.database.enqueueCompanionCommandUpdate(updated)
       this.emitDataChanged()
       await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'failed', error })
       return
     }
     this.database.upsertCompanionCommand(remoteCommand)
-    this.database.updateCompanionCommand(remoteCommand.commandId, 'executing')
+    const executing = this.database.updateCompanionCommand(remoteCommand.commandId, 'executing')
+    this.database.enqueueCompanionCommandUpdate(executing)
     await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'executing' })
     let result: unknown
     try {
       result = await this.performCommand(remoteCommand)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
-      this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, message)
+      const updated = this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, message)
+      this.database.enqueueCompanionCommandUpdate(updated)
       this.emitDataChanged()
       await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'failed', error: message })
       return
     }
-    this.database.updateCompanionCommand(remoteCommand.commandId, 'completed', result)
+    const updated = this.database.updateCompanionCommand(remoteCommand.commandId, 'completed', result)
+    this.database.enqueueCompanionCommandUpdate(updated)
     this.emitDataChanged()
     await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'completed', result })
     this.scheduleEventSync()
@@ -739,7 +801,12 @@ export class CompanionSyncService {
         companionAttachmentRequestTimeoutMs
       )
       if (!response.ok) throw new Error(`附件下载失败（${response.status}）。`)
-      const bytes = Buffer.from(await response.arrayBuffer())
+      const sealed = new Uint8Array(await response.arrayBuffer())
+      const bytes = Buffer.from(await openCompanionAttachment(
+        context.encryptionKey,
+        sealed,
+        companionAttachmentAssociatedData(context.configuration.accountId, descriptor.id)
+      ))
       if (bytes.byteLength !== descriptor.size) throw new Error('附件大小校验失败。')
       const sha256 = createHash('sha256').update(bytes).digest('hex')
       if (sha256.toLowerCase() !== descriptor.sha256.toLowerCase()) throw new Error('附件哈希校验失败。')
@@ -855,7 +922,16 @@ export class CompanionSyncService {
     this.awaitingSocketPong = false
   }
 
-  private authenticatedContext(): { configuration: CompanionMacConfiguration; token: string } {
+  private authenticatedContext(): AuthenticatedCompanionContext {
+    const { configuration, token } = this.authenticatedTokenContext()
+    const encryptionKey = this.credentials.get(this.encryptionKeyReference(configuration.accountId))
+    if (!encryptionKey || !configuration.encryptionKeyId) {
+      throw new Error('Companion 端到端加密密钥不存在，请重新配对。')
+    }
+    return { configuration, token, encryptionKey }
+  }
+
+  private authenticatedTokenContext(): Omit<AuthenticatedCompanionContext, 'encryptionKey'> {
     if (!this.configuration) throw new Error('尚未配置 iPhone Companion。')
     const token = this.credentials.get(this.tokenReference(this.configuration.accountId))
     if (!token) throw new Error('Mac Companion 凭证不存在，请重新配对。')
@@ -870,7 +946,7 @@ export class CompanionSyncService {
   }
 
   private async revokeRemoteAccount(): Promise<void> {
-    const context = this.authenticatedContext()
+    const context = this.authenticatedTokenContext()
     const response = await fetchWithTimeout(this.authenticatedUrl('/v1/account', context.configuration), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${context.token}` }
@@ -881,6 +957,10 @@ export class CompanionSyncService {
 
   private tokenReference(accountId: string): string {
     return `companion.mac-token:${accountId}`
+  }
+
+  private encryptionKeyReference(accountId: string): string {
+    return `companion.account-key:${accountId}`
   }
 
   private requiredString(payload: Record<string, unknown>, key: string): string {

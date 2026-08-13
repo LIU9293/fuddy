@@ -58,7 +58,7 @@ describe('cross-project morning briefing', () => {
   it('compresses project evidence into one Chinese narration under three minutes', () => {
     const result = buildMorningBriefingContent({
       reportDate: '2026-08-05',
-      roombaseBriefing,
+      projectBriefings: [roombaseBriefing],
       decisions,
       projects
     })
@@ -76,7 +76,7 @@ describe('cross-project morning briefing', () => {
   it('does not invent a business change when project data is unavailable', () => {
     const result = buildMorningBriefingContent({
       reportDate: '2026-08-05',
-      roombaseBriefing: null,
+      projectBriefings: [],
       decisions: [],
       projects
     })

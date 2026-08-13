@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { DecisionItem } from '../../shared/contracts'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 
 const directories: string[] = []
 
@@ -34,7 +35,7 @@ describe('open decision signal dedupe', () => {
   it('updates and resolves one persistent item instead of creating daily duplicates', () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-decision-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
 
     const first = database.applyDecisionInspection({
       projectId: 'roombase',
@@ -90,7 +91,7 @@ describe('open decision signal dedupe', () => {
   it('reopens the same completed lifecycle when newer inspection evidence contradicts completion', () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-decision-reopen-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     database.applyDecisionInspection({
       projectId: 'roombase',
       dedupeKey: 'roombase:onboarding:waiting-platform',
@@ -134,7 +135,7 @@ describe('open decision signal dedupe', () => {
   it('returns a waiting verification ticket to in progress when production still fails', () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-decision-verification-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     database.applyDecisionInspection({
       projectId: 'roombase',
       dedupeKey: 'roombase:onboarding:waiting-platform',

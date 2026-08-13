@@ -8,7 +8,7 @@
     "APNS_TEAM_ID": "5PR3342M58",
     "APNS_KEY_ID": "N768DXSCY3",
     "APNS_TOPIC": "dev.ainative.projectagent.companion",
-    "APNS_ENVIRONMENT": "development"
+    "APNS_ENVIRONMENT": "production"
   },
   "secrets": {
     "required": ["APNS_PRIVATE_KEY"]
@@ -31,6 +31,18 @@
     {
       "binding": "ATTACHMENTS",
       "bucket_name": "project-agent-companion-attachments"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "PAIRING_RATE_LIMIT",
+      "namespace_id": "1001",
+      "simple": { "limit": 10, "period": 60 }
+    },
+    {
+      "name": "PAIRING_CLAIM_RATE_LIMIT",
+      "namespace_id": "1002",
+      "simple": { "limit": 20, "period": 60 }
     }
   ],
   "observability": {

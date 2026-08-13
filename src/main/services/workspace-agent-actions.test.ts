@@ -5,6 +5,7 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentSessionUpdate } from '../../shared/contracts'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import { GoalTrackingService } from './goal-tracking'
 import type { AgentRuntime } from './pi-runtime'
 import { WorkspaceAgentActions, type WorkspaceAgentTurnState } from './workspace-agent-actions'
@@ -40,7 +41,7 @@ describe('WorkspaceAgentActions native tools', () => {
   function setup() {
     const directory = mkdtempSync(join(tmpdir(), 'workspace-agent-tools-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     const runtime = new OfflineRuntime()
     const files = new WorkspaceFilesService(database, join(directory, 'files'))
     const dispatcher = new TaskDispatcher(database, {} as PiTaskHarness, files, {} as CliAgentRuntime)

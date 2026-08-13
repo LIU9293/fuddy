@@ -1,21 +1,20 @@
 import { DurableObject } from 'cloudflare:workers'
 import type {
-  CompanionCommand,
-  CompanionCommandInput,
+  CompanionEncryptedCommand,
+  CompanionEncryptedCommandInput,
+  CompanionEncryptedEventPage,
+  CompanionEncryptedSocketMessage,
+  CompanionEncryptedSyncEvent,
+  CompanionEncryptedSyncEventInput,
   CompanionCommandUpdate,
   CompanionDevice,
   CompanionDeviceRole,
   CompanionEventBatchResult,
-  CompanionEventPage,
   CompanionPairingClaimInput,
   CompanionPairingClaimResult,
   CompanionPresence,
-  CompanionSocketMessage,
-  CompanionSyncEvent,
-  CompanionSyncEventInput
 } from '../../../src/shared/companion-sync'
 import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
-import { agentTurnAlertRequest } from './push-notifications'
 
 interface DeviceRow extends Record<string, SqlStorageValue> {
   id: string
@@ -27,6 +26,7 @@ interface DeviceRow extends Record<string, SqlStorageValue> {
   created_at: string
   last_seen_at: string | null
   revoked_at: string | null
+  last_ack_sequence: number
 }
 
 interface EventRow extends Record<string, SqlStorageValue> {
@@ -34,7 +34,7 @@ interface EventRow extends Record<string, SqlStorageValue> {
   event_id: string
   protocol_version: number
   type: string
-  entity_type: CompanionSyncEvent['entityType']
+  entity_type: CompanionEncryptedSyncEvent['entityType']
   entity_id: string
   revision: number
   payload_json: string
@@ -45,10 +45,10 @@ interface EventRow extends Record<string, SqlStorageValue> {
 interface CommandRow extends Record<string, SqlStorageValue> {
   command_id: string
   protocol_version: number
-  type: CompanionCommand['type']
+  type: CompanionEncryptedCommand['type']
   payload_json: string
   source_device_id: string
-  status: CompanionCommand['status']
+  status: CompanionEncryptedCommand['status']
   result_json: string | null
   error: string | null
   created_at: string
@@ -66,23 +66,10 @@ interface PushDeviceRow extends Record<string, SqlStorageValue> {
 }
 
 const lastSeenWriteIntervalMs = 5 * 60_000
-const artifactCommandResultMaximumBytes = 128 * 1024
-
-function persistedCommandUpdate(
-  commandType: CompanionCommand['type'],
-  update: CompanionCommandUpdate
-): CompanionCommandUpdate {
-  if (commandType !== 'artifact.request-upload' || update.result === undefined) {
-    const { result: _discardedResult, ...statusOnlyUpdate } = update
-    return statusOnlyUpdate
-  }
-  const serialized = JSON.stringify(update.result)
-  if (new TextEncoder().encode(serialized).byteLength <= artifactCommandResultMaximumBytes) return update
-  return {
-    status: 'failed',
-    error: '附件上传结果过大，Relay 未保存；请从 iPhone 重新请求附件。'
-  }
-}
+const maximumRetainedEvents = 50_000
+const maximumRetainedCommands = 5_000
+const terminalCommandRetentionDays = 30
+const maintenanceIntervalMs = 24 * 60 * 60 * 1_000
 
 function randomToken(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength)
@@ -131,22 +118,22 @@ function mapDevice(row: DeviceRow): CompanionDevice {
   }
 }
 
-function mapEvent(row: EventRow): CompanionSyncEvent {
+function mapEvent(row: EventRow): CompanionEncryptedSyncEvent {
   return {
     eventId: row.event_id,
     sequence: row.sequence,
     protocolVersion: row.protocol_version,
-    type: row.type as CompanionSyncEvent['type'],
+    type: row.type as CompanionEncryptedSyncEvent['type'],
     entityType: row.entity_type,
     entityId: row.entity_id,
     revision: row.revision,
     payload: JSON.parse(row.payload_json) as unknown,
     sourceDeviceId: row.source_device_id,
     occurredAt: row.occurred_at
-  } as unknown as CompanionSyncEvent
+  } as unknown as CompanionEncryptedSyncEvent
 }
 
-function mapCommand(row: CommandRow): CompanionCommand {
+function mapCommand(row: CommandRow): CompanionEncryptedCommand {
   return {
     commandId: row.command_id,
     protocolVersion: row.protocol_version,
@@ -154,11 +141,13 @@ function mapCommand(row: CommandRow): CompanionCommand {
     payload: JSON.parse(row.payload_json) as unknown,
     sourceDeviceId: row.source_device_id,
     status: row.status,
-    result: row.result_json ? JSON.parse(row.result_json) as unknown : null,
-    error: row.error,
+    // Business outcomes are delivered only inside Mac-authored encrypted
+    // command.updated events. Relay command rows expose transport state only.
+    result: null,
+    error: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
-  } as unknown as CompanionCommand
+  } as unknown as CompanionEncryptedCommand
 }
 
 export class AccountRelay extends DurableObject<Env> {
@@ -223,6 +212,31 @@ export class AccountRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (2, datetime('now'));
     `)
+    if (!deviceColumns.some((column) => column.name === 'last_ack_sequence')) {
+      this.ctx.storage.sql.exec('ALTER TABLE devices ADD COLUMN last_ack_sequence INTEGER NOT NULL DEFAULT 0')
+    }
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (3, datetime('now'));
+    `)
+    const encryptedProtocolMigration = this.ctx.storage.sql.exec<{ id: number }>(
+      'SELECT id FROM _sql_schema_migrations WHERE id = 4'
+    ).toArray()[0]
+    if (!encryptedProtocolMigration) {
+      // Protocol v1 persisted plaintext event payloads and command outcomes.
+      // They cannot be upgraded without the account key, which Relay never has.
+      this.ctx.storage.sql.exec(
+        'DELETE FROM events WHERE protocol_version < ?',
+        companionMinimumProtocolVersion
+      )
+      this.ctx.storage.sql.exec(
+        'DELETE FROM commands WHERE protocol_version < ?',
+        companionMinimumProtocolVersion
+      )
+      this.ctx.storage.sql.exec('UPDATE commands SET result_json = NULL, error = NULL')
+      this.ctx.storage.sql.exec(
+        `INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (4, datetime('now'))`
+      )
+    }
   }
 
   async initializePairing(input: {
@@ -311,25 +325,33 @@ export class AccountRelay extends DurableObject<Env> {
   async appendEvent(
     deviceId: string,
     token: string,
-    input: CompanionSyncEventInput
-  ): Promise<CompanionSyncEvent | null> {
+    input: CompanionEncryptedSyncEventInput
+  ): Promise<CompanionEncryptedSyncEvent | null> {
     const device = await this.authorize(deviceId, token, 'mac')
     if (!device) return null
+    this.requireEventCapacity([input])
     const { event, inserted } = this.persistEvent(input, deviceId)
-    if (inserted) this.notifyEventsAvailable([event])
+    if (inserted) {
+      this.notifyEventsAvailable([event])
+      this.ctx.waitUntil(this.ensureMaintenanceAlarm())
+    }
     return event
   }
 
   async appendEvents(
     deviceId: string,
     token: string,
-    inputs: CompanionSyncEventInput[]
+    inputs: CompanionEncryptedSyncEventInput[]
   ): Promise<CompanionEventBatchResult | null> {
     const device = await this.authorize(deviceId, token, 'mac')
     if (!device) return null
+    this.requireEventCapacity(inputs)
     const persisted = this.ctx.storage.transactionSync(() => inputs.map((input) => this.persistEvent(input, deviceId)))
     const inserted = persisted.filter((result) => result.inserted).map((result) => result.event)
-    if (inserted.length > 0) this.notifyEventsAvailable(inserted)
+    if (inserted.length > 0) {
+      this.notifyEventsAvailable(inserted)
+      this.ctx.waitUntil(this.ensureMaintenanceAlarm())
+    }
     const events = persisted.map((result) => result.event)
     return {
       accepted: events.map((event) => ({ eventId: event.eventId, sequence: event.sequence })),
@@ -342,7 +364,7 @@ export class AccountRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec('UPDATE devices SET push_token = ? WHERE id = ?', pushToken.toLowerCase(), deviceId)
   }
 
-  async listEvents(deviceId: string, token: string, after: number, limit: number): Promise<CompanionEventPage> {
+  async listEvents(deviceId: string, token: string, after: number, limit: number): Promise<CompanionEncryptedEventPage> {
     await this.requireAuthorization(deviceId, token)
     const events = this.ctx.storage.sql.exec<EventRow>(
       'SELECT * FROM events WHERE sequence > ? ORDER BY sequence ASC LIMIT ?',
@@ -362,9 +384,18 @@ export class AccountRelay extends DurableObject<Env> {
     token: string,
     after: number,
     limit: number
-  ): Promise<CompanionEventPage | null> {
+  ): Promise<CompanionEncryptedEventPage | null> {
     const device = await this.authorize(deviceId, token)
     if (!device) return null
+    if (device.role === 'ios') {
+      const acknowledged = Math.min(Math.max(0, after), this.getLastSequence())
+      this.ctx.storage.sql.exec(`
+        UPDATE devices
+        SET last_ack_sequence = MAX(last_ack_sequence, ?)
+        WHERE id = ? AND role = 'ios' AND revoked_at IS NULL
+      `, acknowledged, deviceId)
+      this.compactAcknowledgedEvents()
+    }
     const events = this.ctx.storage.sql.exec<EventRow>(
       'SELECT * FROM events WHERE sequence > ? ORDER BY sequence ASC LIMIT ?',
       after,
@@ -379,8 +410,15 @@ export class AccountRelay extends DurableObject<Env> {
     }
   }
 
-  async createCommand(deviceId: string, token: string, input: CompanionCommandInput): Promise<CompanionCommand> {
+  async createCommand(deviceId: string, token: string, input: CompanionEncryptedCommandInput): Promise<CompanionEncryptedCommand> {
     await this.requireAuthorization(deviceId, token, 'ios')
+    const existing = this.ctx.storage.sql.exec<{ command_id: string }>(
+      'SELECT command_id FROM commands WHERE command_id = ?', input.commandId
+    ).toArray()[0]
+    if (!existing) {
+      const count = this.ctx.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM commands').one().count
+      if (count >= maximumRetainedCommands) throw new Error('账户命令存储已达到上限，请等待历史记录清理。')
+    }
     const inserted = this.ctx.storage.sql.exec<CommandRow>(
       `INSERT OR IGNORE INTO commands (
         command_id, protocol_version, type, payload_json, source_device_id,
@@ -397,18 +435,21 @@ export class AccountRelay extends DurableObject<Env> {
     const command = mapCommand(inserted ?? this.ctx.storage.sql.exec<CommandRow>(
       'SELECT * FROM commands WHERE command_id = ?', input.commandId
     ).one())
-    if (inserted) this.broadcast({ type: 'command.created', command }, 'role:mac')
+    if (inserted) {
+      this.broadcast({ type: 'command.created', command }, 'role:mac')
+      this.ctx.waitUntil(this.ensureMaintenanceAlarm())
+    }
     return command
   }
 
-  async listPendingCommands(deviceId: string, token: string): Promise<CompanionCommand[]> {
+  async listPendingCommands(deviceId: string, token: string): Promise<CompanionEncryptedCommand[]> {
     await this.requireAuthorization(deviceId, token, 'mac')
     return this.ctx.storage.sql.exec<CommandRow>(
       `SELECT * FROM commands WHERE status IN ('queued', 'delivered', 'executing') ORDER BY created_at ASC LIMIT 100`
     ).toArray().map(mapCommand)
   }
 
-  async pendingCommands(deviceId: string, token: string): Promise<CompanionCommand[] | null> {
+  async pendingCommands(deviceId: string, token: string): Promise<CompanionEncryptedCommand[] | null> {
     const device = await this.authorize(deviceId, token, 'mac')
     if (!device) return null
     return this.ctx.storage.sql.exec<CommandRow>(
@@ -421,7 +462,7 @@ export class AccountRelay extends DurableObject<Env> {
     token: string,
     commandId: string,
     update: CompanionCommandUpdate
-  ): Promise<CompanionCommand> {
+  ): Promise<CompanionEncryptedCommand> {
     await this.requireAuthorization(deviceId, token, 'mac')
     const existing = this.ctx.storage.sql.exec<CommandRow>(
       'SELECT * FROM commands WHERE command_id = ?', commandId
@@ -431,7 +472,7 @@ export class AccountRelay extends DurableObject<Env> {
       if (existing.status === update.status) return mapCommand(existing)
       throw new Error('远程命令已经结束，不能修改状态。')
     }
-    const allowedTransitions: Record<CompanionCommand['status'], CompanionCommandUpdate['status'][]> = {
+    const allowedTransitions: Record<CompanionEncryptedCommand['status'], CompanionCommandUpdate['status'][]> = {
       queued: ['delivered', 'executing', 'completed', 'failed'],
       delivered: ['executing', 'completed', 'failed'],
       executing: ['completed', 'failed'],
@@ -441,31 +482,18 @@ export class AccountRelay extends DurableObject<Env> {
     if (!allowedTransitions[existing.status].includes(update.status)) {
       throw new Error(`远程命令不能从 ${existing.status} 回退到 ${update.status}。`)
     }
-    const persistedUpdate = persistedCommandUpdate(existing.type, update)
     const updatedAt = new Date().toISOString()
     const updated = this.ctx.storage.sql.exec<CommandRow>(
       `UPDATE commands SET status = ?, result_json = ?, error = ?, updated_at = ?
        WHERE command_id = ? RETURNING *`,
-      persistedUpdate.status,
-      persistedUpdate.result === undefined ? null : JSON.stringify(persistedUpdate.result),
-      persistedUpdate.error ?? null,
+      update.status,
+      null,
+      null,
       updatedAt,
       commandId
     ).one()
     const command = mapCommand(updated)
-    const commandRevision = persistedUpdate.status === 'delivered' ? 1 : persistedUpdate.status === 'executing' ? 2 : 3
-    const { event, inserted } = this.persistEvent({
-      eventId: `${commandId}:${update.status}`,
-      protocolVersion: companionProtocolVersion,
-      type: 'command.updated',
-      entityType: 'command',
-      entityId: commandId,
-      revision: commandRevision,
-      payload: command,
-      occurredAt: updatedAt
-    }, deviceId)
     this.broadcast({ type: 'command.updated', command })
-    if (inserted) this.notifyEvent(event, false)
     return command
   }
 
@@ -496,6 +524,15 @@ export class AccountRelay extends DurableObject<Env> {
     ).one().sequence ?? 0
   }
 
+  async alarm(): Promise<void> {
+    this.compactAcknowledgedEvents()
+    this.pruneTerminalCommands()
+    const activeDevices = this.ctx.storage.sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM devices WHERE revoked_at IS NULL'
+    ).one().count
+    if (activeDevices > 0) await this.ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
+  }
+
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return Response.json({ error: 'WebSocket upgrade required.' }, { status: 426 })
@@ -517,7 +554,7 @@ export class AccountRelay extends DurableObject<Env> {
       type: 'sync.ready',
       presence: this.getPresence(),
       lastSequence: this.getLastSequence()
-    } satisfies CompanionSocketMessage))
+    } satisfies CompanionEncryptedSocketMessage))
     this.broadcastPresence()
     return new Response(null, { status: 101, webSocket: client })
   }
@@ -528,7 +565,7 @@ export class AccountRelay extends DurableObject<Env> {
       ws.send('pong')
       return
     }
-    ws.send(JSON.stringify({ type: 'error', message: 'WebSocket 仅用于服务端事件推送，请通过 HTTP API 写入。' } satisfies CompanionSocketMessage))
+    ws.send(JSON.stringify({ type: 'error', message: 'WebSocket 仅用于服务端事件推送，请通过 HTTP API 写入。' } satisfies CompanionEncryptedSocketMessage))
   }
 
   webSocketClose(): void {
@@ -540,9 +577,9 @@ export class AccountRelay extends DurableObject<Env> {
   }
 
   private persistEvent(
-    input: CompanionSyncEventInput,
+    input: CompanionEncryptedSyncEventInput,
     sourceDeviceId: string
-  ): { event: CompanionSyncEvent; inserted: boolean } {
+  ): { event: CompanionEncryptedSyncEvent; inserted: boolean } {
     const inserted = this.ctx.storage.sql.exec<EventRow>(
       `INSERT OR IGNORE INTO events (
         event_id, protocol_version, type, entity_type, entity_id, revision,
@@ -564,27 +601,69 @@ export class AccountRelay extends DurableObject<Env> {
     return { event: mapEvent(row), inserted: inserted !== undefined }
   }
 
-  private notifyEvent(event: CompanionSyncEvent, broadcast: boolean): void {
-    if (broadcast) this.broadcast({ type: 'sync.event', event })
-    const alert = agentTurnAlertRequest(event)
-    this.ctx.waitUntil(alert ? this.sendAlertPush(event, alert) : this.sendBackgroundPush(event))
+  private requireEventCapacity(inputs: CompanionEncryptedSyncEventInput[]): void {
+    const uniqueIds = [...new Set(inputs.map((input) => input.eventId))]
+    if (uniqueIds.length === 0) return
+    const existing = uniqueIds.reduce((count, id) => count + (
+      this.ctx.storage.sql.exec<{ event_id: string }>('SELECT event_id FROM events WHERE event_id = ?', id).toArray()[0]
+        ? 1
+        : 0
+    ), 0)
+    const retained = this.ctx.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM events').one().count
+    if (retained + uniqueIds.length - existing > maximumRetainedEvents) {
+      throw new Error('账户事件存储已达到上限，请先让已配对设备完成同步。')
+    }
   }
 
-  private notifyEventsAvailable(events: CompanionSyncEvent[]): void {
+  private compactAcknowledgedEvents(): void {
+    const devices = this.ctx.storage.sql.exec<{ last_ack_sequence: number }>(`
+      SELECT last_ack_sequence FROM devices WHERE role = 'ios' AND revoked_at IS NULL
+    `).toArray()
+    if (devices.length === 0) return
+    const minimumAck = Math.min(...devices.map((device) => device.last_ack_sequence))
+    if (minimumAck <= 0) return
+    const snapshot = this.ctx.storage.sql.exec<{ sequence: number }>(`
+      SELECT sequence FROM events
+      WHERE type = 'snapshot.created' AND sequence <= ?
+      ORDER BY sequence DESC LIMIT 1
+    `, minimumAck).toArray()[0]
+    if (!snapshot) return
+    this.ctx.storage.sql.exec('DELETE FROM events WHERE sequence < ?', snapshot.sequence)
+  }
+
+  private pruneTerminalCommands(): void {
+    this.ctx.storage.sql.exec(`
+      DELETE FROM commands
+      WHERE status IN ('completed', 'failed')
+        AND updated_at < datetime('now', ?)
+    `, `-${terminalCommandRetentionDays} days`)
+  }
+
+  private async ensureMaintenanceAlarm(): Promise<void> {
+    if (await this.ctx.storage.getAlarm() === null) {
+      await this.ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
+    }
+  }
+
+  private notifyEvent(event: CompanionEncryptedSyncEvent, broadcast: boolean): void {
+    if (broadcast) this.broadcast({ type: 'sync.event', event })
+    this.ctx.waitUntil(event.type === 'agent-turn.settled'
+      ? this.sendAgentTurnAlertPush(event)
+      : this.sendBackgroundPush(event))
+  }
+
+  private notifyEventsAvailable(events: CompanionEncryptedSyncEvent[]): void {
     const latest = events.reduce((current, event) => event.sequence > current.sequence ? event : current)
     this.broadcast({ type: 'sync.available', lastSequence: latest.sequence })
-    const alerts = events.flatMap((event) => {
-      const alert = agentTurnAlertRequest(event)
-      return alert ? [{ event, alert }] : []
-    })
+    const alerts = events.filter((event) => event.type === 'agent-turn.settled')
     if (alerts.length > 0) {
-      for (const { event, alert } of alerts) this.ctx.waitUntil(this.sendAlertPush(event, alert))
+      for (const event of alerts) this.ctx.waitUntil(this.sendAgentTurnAlertPush(event))
     } else {
       this.ctx.waitUntil(this.sendBackgroundPush(latest))
     }
   }
 
-  private broadcast(message: CompanionSocketMessage, tag?: string): void {
+  private broadcast(message: CompanionEncryptedSocketMessage, tag?: string): void {
     const payload = JSON.stringify(message)
     for (const socket of this.ctx.getWebSockets(tag)) {
       try {
@@ -609,7 +688,7 @@ export class AccountRelay extends DurableObject<Env> {
     this.broadcast({ type: 'presence.updated', presence: this.getPresence() })
   }
 
-  private async sendBackgroundPush(event: CompanionSyncEvent): Promise<void> {
+  private async sendBackgroundPush(event: CompanionEncryptedSyncEvent): Promise<void> {
     await this.sendPush(
       {
         pushType: 'background',
@@ -621,15 +700,19 @@ export class AccountRelay extends DurableObject<Env> {
     )
   }
 
-  private async sendAlertPush(
-    event: CompanionSyncEvent,
-    alert: { collapseId: string; body: Record<string, unknown> }
-  ): Promise<void> {
+  private async sendAgentTurnAlertPush(event: CompanionEncryptedSyncEvent): Promise<void> {
     await this.sendPush({
       pushType: 'alert',
       priority: '10',
-      collapseId: alert.collapseId,
-      body: alert.body
+      collapseId: `agent-turn-${event.entityId}`.slice(0, 64),
+      body: {
+        aps: {
+          alert: { title: 'Agent Run 已结束', body: '打开 Project Agent 查看结果' },
+          sound: 'default',
+          'content-available': 1
+        },
+        sequence: event.sequence
+      }
     }, true)
   }
 

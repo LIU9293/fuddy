@@ -6,6 +6,7 @@ coverage/
 .third-party-tools/
 ios/ProjectAgentCompanion/Resources/Whisper/*.bin
 .design-qa/
+design/audits/
 build/
 **/xcuserdata/
 *.xcuserstate

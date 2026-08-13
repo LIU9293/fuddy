@@ -7,6 +7,7 @@ import { defaultCompanionRelayUrl } from '../../shared/companion-sync'
 import { CompanionSyncService } from './companion-sync'
 import type { CredentialVault } from './credential-vault'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import type { TaskDispatcher } from './task-dispatcher'
 
 const enabled = process.env.RUN_COMPANION_RELAY_SMOKE === '1'
@@ -28,7 +29,7 @@ describe('CompanionSyncService live relay', () => {
   test('pairs, publishes a snapshot, and executes an iPhone command on the Mac', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-live-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'app.sqlite'))
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
     const secrets = new Map<string, string>()
     const credentials = {
       set: (key: string, value: string) => { secrets.set(key, value) },

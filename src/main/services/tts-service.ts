@@ -92,7 +92,7 @@ export class TtsService {
 
     const voiceName = 'Project Agent 中文女声'
     const voiceDescription = 'A warm, calm and intelligent Mandarin Chinese female voice in her early thirties. Clear standard pronunciation, measured pacing, trustworthy and concise, suitable for a private executive assistant delivering a morning business briefing.'
-    const previewText = '早上好，这是今天的项目简报。我会先告诉你最需要关注的变化，再说明关键数据、潜在风险和建议行动。Roombase 需要关注增长和运营，Vows 正在推进产品体验，AI Marketing 继续验证品牌素材生产流程。接下来，我们从最重要的一项开始，并把今天可以完成的行动安排清楚。'
+    const previewText = '早上好，这是今天的项目简报。我会先告诉你最需要关注的变化，再说明关键数据、潜在风险和建议行动。接下来，我们从最重要的一项开始，并把今天可以完成的行动安排清楚。'
     const existingVoice = await this.findElevenLabsVoice(endpoint, voiceName)
     if (existingVoice) {
       return this.verifyElevenLabsFlashVoice(endpoint, existingVoice.voice_id, existingVoice.name)

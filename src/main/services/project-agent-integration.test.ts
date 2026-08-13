@@ -1,7 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import type { CredentialVault } from './credential-vault'
 import type { AppDatabase } from './database'
 import { ProjectAgentIntegrationService } from './project-agent-integration'
+import { registerBundledProjectAnalyticsProfiles } from '../project-extensions/bundled-project-analytics'
+
+beforeAll(() => registerBundledProjectAnalyticsProfiles())
 
 describe('ProjectAgentIntegrationService', () => {
   it('uses the existing AI Marketing thread and SSE chat APIs', async () => {

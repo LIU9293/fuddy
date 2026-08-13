@@ -4,7 +4,7 @@ import {
   buildRoombaseDailySignals,
   deterministicRoombaseHeadline,
   renderDeterministicRoombaseBriefing
-} from './daily-briefing'
+} from '../project-extensions/roombase-daily-briefing'
 
 const sample = {
   reportDate: '2026-08-04',

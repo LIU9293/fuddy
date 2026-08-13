@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { CliAgentRuntime } from './cli-agent-runtime'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import type { PiTaskHarness, PiTaskTurnInput } from './pi-task-harness'
 import { TaskDispatcher } from './task-dispatcher'
 import { WorkspaceFilesService } from './workspace-files'
@@ -14,7 +15,7 @@ describe('TaskDispatcher project workspaces', () => {
     const primary = join(temporaryDirectory, 'app')
     const operations = join(temporaryDirectory, 'ops')
     const databasePath = join(temporaryDirectory, 'app.sqlite')
-    let database = new AppDatabase(databasePath)
+    let database = createTestDatabase(databasePath)
     const project = database.listProjects().find((item) => item.id === 'roombase')!
     database.updateProject({
       ...project,
@@ -47,7 +48,7 @@ describe('TaskDispatcher project workspaces', () => {
     }))
     expect(result.detail.run.workingDirectory).toBe(primary)
     database.close()
-    database = new AppDatabase(databasePath)
+    database = createTestDatabase(databasePath)
     expect(database.getAgentRun(result.detail.run.id)).toMatchObject({
       provider: 'pi',
       workingDirectory: primary

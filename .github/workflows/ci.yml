@@ -33,7 +33,46 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             cloud/relay/package-lock.json
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm --prefix cloud/relay ci
       - run: npm run relay:typecheck
       - run: npm run relay:test
+
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: brew install xcodegen
+      - run: npm run prepare:whisper
+      - run: cd ios && xcodegen generate
+      - run: npm run ios:typecheck
+      - name: Run iOS Simulator tests
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | ruby -rjson -e 'data=JSON.parse(STDIN.read); puts data["devices"].values.flatten.find { |d| d["name"].start_with?("iPhone") }&.fetch("udid", "")')
+          test -n "$DEVICE_ID"
+          DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
+            -project ios/ProjectAgentCompanion.xcodeproj \
+            -scheme ProjectAgentCompanion \
+            -destination "id=$DEVICE_ID" \
+            test
+
+  package-smoke:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run package:smoke
+      - name: Verify packaged application
+        run: |
+          APP_PATH=$(find dist -maxdepth 3 -name 'Project Agent.app' -print -quit)
+          test -n "$APP_PATH"
+          test -f "$APP_PATH/Contents/Resources/app.asar"

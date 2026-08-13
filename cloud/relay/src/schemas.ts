@@ -1,5 +1,10 @@
 import { z } from 'zod'
-export { commandSchema, commandUpdateSchema, syncEventBatchSchema, syncEventSchema } from '../../../src/shared/companion-schemas'
+export {
+  commandUpdateSchema,
+  encryptedCommandSchema as commandSchema,
+  encryptedSyncEventBatchSchema as syncEventBatchSchema,
+  encryptedSyncEventSchema as syncEventSchema
+} from '../../../src/shared/companion-schemas'
 
 const identifier = z.string().trim().min(1).max(200)
 const isoDate = z.string().datetime({ offset: true })

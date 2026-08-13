@@ -18,6 +18,7 @@ import {
   type CompanionEntityType,
   type CompanionEventType
 } from './companion-protocol'
+import type { CompanionEncryptedEnvelope } from './companion-crypto'
 
 export const companionProtocolVersion = companionProtocol.currentVersion
 export const companionMinimumProtocolVersion = companionProtocol.minimumVersion
@@ -92,6 +93,12 @@ export type CompanionSyncEvent<TType extends CompanionEventType = CompanionEvent
   sourceDeviceId: string
 }
 
+export type CompanionEncryptedSyncEventInput<TType extends CompanionEventType = CompanionEventType> =
+  Omit<CompanionSyncEventInput<TType>, 'payload'> & { payload: CompanionEncryptedEnvelope }
+
+export type CompanionEncryptedSyncEvent<TType extends CompanionEventType = CompanionEventType> =
+  CompanionEncryptedSyncEventInput<TType> & { sequence: number; sourceDeviceId: string }
+
 export type AgentTurnOutcome = 'completed' | 'failed'
 
 export interface AgentTurnSettledPayload {
@@ -123,9 +130,23 @@ export type CompanionCommand<TType extends CompanionCommandType = CompanionComma
   updatedAt: string
 }
 
+export type CompanionEncryptedCommandInput<TType extends CompanionCommandType = CompanionCommandType> =
+  Omit<CompanionCommandInput<TType>, 'payload'> & { payload: CompanionEncryptedEnvelope }
+
+export type CompanionEncryptedCommand<TType extends CompanionCommandType = CompanionCommandType> =
+  CompanionEncryptedCommandInput<TType> & {
+    sourceDeviceId: string
+    status: CompanionCommandStatus
+    result: null
+    error: null
+    updatedAt: string
+  }
+
 export interface CompanionCommandUpdate {
   status: Exclude<CompanionCommandStatus, 'queued'>
+  /** Local-only outcome; stripped before sending to the zero-knowledge Relay. */
   result?: unknown
+  /** Local-only error; delivered to iOS inside an encrypted command.updated event. */
   error?: string | null
 }
 
@@ -135,6 +156,10 @@ export interface CompanionEventPage {
   events: CompanionSyncEvent[]
   lastSequence: number
   presence?: CompanionPresence
+}
+
+export interface CompanionEncryptedEventPage extends Omit<CompanionEventPage, 'events'> {
+  events: CompanionEncryptedSyncEvent[]
 }
 
 export interface CompanionEventBatchResult {
@@ -154,6 +179,15 @@ export type CompanionSocketMessage =
   | { type: 'sync.event'; event: CompanionSyncEvent }
   | { type: 'command.created'; command: CompanionCommand }
   | { type: 'command.updated'; command: CompanionCommand }
+  | { type: 'presence.updated'; presence: CompanionPresence }
+  | { type: 'error'; message: string }
+
+export type CompanionEncryptedSocketMessage =
+  | { type: 'sync.ready'; presence: CompanionPresence; lastSequence: number }
+  | { type: 'sync.available'; lastSequence: number }
+  | { type: 'sync.event'; event: CompanionEncryptedSyncEvent }
+  | { type: 'command.created'; command: CompanionEncryptedCommand }
+  | { type: 'command.updated'; command: CompanionEncryptedCommand }
   | { type: 'presence.updated'; presence: CompanionPresence }
   | { type: 'error'; message: string }
 
@@ -180,6 +214,8 @@ export interface CompanionMacConfiguration {
   accountId: string
   macDeviceId: string
   pairedAt: string
+  /** Key material is stored in the credential vault; only its identifier is persisted here. */
+  encryptionKeyId?: string
 }
 
 export type CompanionConnectionState = 'not-configured' | 'connecting' | 'connected' | 'disconnected' | 'error'

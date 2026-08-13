@@ -936,7 +936,7 @@ export interface DispatchTaskResult {
 
 export interface DispatchProjectAgentInput {
   requestId: string
-  projectId: 'vows' | 'ai-marketing'
+  projectId: string
   prompt: string
 }
 

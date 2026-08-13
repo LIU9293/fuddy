@@ -5,11 +5,24 @@ import {
   companionProtocolVersionIsSupported,
   type CompanionEventType
 } from './companion-protocol'
-import type { CompanionCommand, CompanionCommandInput, CompanionSyncEventInput } from './companion-sync'
+import type {
+  CompanionCommand,
+  CompanionCommandInput,
+  CompanionEncryptedCommand,
+  CompanionEncryptedCommandInput,
+  CompanionEncryptedSyncEventInput,
+  CompanionSyncEventInput
+} from './companion-sync'
 
 const identifier = z.string().trim().min(1).max(200)
 const isoDate = z.string().datetime({ offset: true })
 const protocolVersion = z.number().int().refine(companionProtocolVersionIsSupported, 'Unsupported companion protocol version')
+export const companionEncryptedEnvelopeSchema = z.object({
+  algorithm: z.literal('A256GCM'),
+  keyId: z.string().regex(/^[A-Za-z0-9_-]{16}$/),
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{16}$/),
+  ciphertext: z.string().regex(/^[A-Za-z0-9_-]+$/).max(8 * 1024 * 1024)
+})
 const attachment = z.object({
   id: identifier,
   messageId: identifier.nullish().transform((value) => value ?? null),
@@ -123,6 +136,26 @@ export const syncEventSchema = z.object({
 
 export const syncEventBatchSchema = z.object({ events: z.array(syncEventSchema).min(1).max(100) })
 
+export const encryptedSyncEventSchema = z.object({
+  ...eventBase,
+  type: z.enum(companionEventTypes),
+  entityType: z.enum(companionEntityTypes),
+  payload: companionEncryptedEnvelopeSchema
+}).superRefine((event, context) => {
+  const expectedEntityType = companionEventDefinitions[event.type]
+  if (event.entityType !== expectedEntityType) {
+    context.addIssue({
+      code: 'custom',
+      path: ['entityType'],
+      message: `Event ${event.type} must use entity type ${expectedEntityType}.`
+    })
+  }
+}).transform((event) => event as CompanionEncryptedSyncEventInput)
+
+export const encryptedSyncEventBatchSchema = z.object({
+  events: z.array(encryptedSyncEventSchema).min(1).max(100)
+})
+
 const commandBase = { commandId: identifier, protocolVersion, createdAt: isoDate }
 const commandPayloadSchemas = {
   'assistant.send-message': z.object({ prompt: z.string().trim().min(1).max(20_000), attachments: z.array(attachment).max(4).optional() }),
@@ -173,8 +206,23 @@ export const companionCommandSchema = z.object({
   return { ...command, payload: parsedPayload.data } as CompanionCommand
 })
 
+export const encryptedCommandSchema = z.object({
+  ...commandBase,
+  type: z.enum(companionCommandTypes),
+  payload: companionEncryptedEnvelopeSchema
+}).transform((command) => command as CompanionEncryptedCommandInput)
+
+export const companionEncryptedCommandSchema = z.object({
+  ...commandBase,
+  type: z.enum(companionCommandTypes),
+  payload: companionEncryptedEnvelopeSchema,
+  sourceDeviceId: identifier,
+  status: z.enum(['queued', 'delivered', 'executing', 'completed', 'failed']),
+  result: z.null(),
+  error: z.null(),
+  updatedAt: isoDate
+}).transform((command) => command as CompanionEncryptedCommand)
+
 export const commandUpdateSchema = z.object({
-  status: z.enum(['delivered', 'executing', 'completed', 'failed']),
-  result: z.unknown().optional(),
-  error: z.string().max(8_000).nullable().optional()
-})
+  status: z.enum(['delivered', 'executing', 'completed', 'failed'])
+}).strict()

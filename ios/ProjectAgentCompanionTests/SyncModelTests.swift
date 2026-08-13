@@ -16,11 +16,40 @@ final class SyncModelTests: XCTestCase {
     }
 
     func testPairingPayloadDecodesMacPayload() throws {
-        let payload = #"{"minimumProtocolVersion":1,"protocolVersion":2,"relayUrl":"https://relay.example.com","accountId":"account","pairingSecret":"secret"}"#
+        let payload = #"{"minimumProtocolVersion":2,"protocolVersion":2,"relayUrl":"https://relay.example.com","accountId":"account","pairingSecret":"secret","encryptionKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","encryptionKeyId":"test-key-id"}"#
         let decoded = try JSONDecoder().decode(PairingPayload.self, from: Data(payload.utf8))
-        XCTAssertEqual(decoded.minimumProtocolVersion, 1)
+        XCTAssertEqual(decoded.minimumProtocolVersion, 2)
         XCTAssertEqual(decoded.protocolVersion, 2)
         XCTAssertEqual(decoded.accountId, "account")
+    }
+
+    func testCompanionCryptoRoundTripsJSONAndAttachments() throws {
+        let key = Data(repeating: 7, count: 32).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let envelope = try CompanionCrypto.sealJSON(
+            ["prompt": "private command"],
+            key: key,
+            associatedData: "command:test"
+        )
+        XCTAssertFalse(envelope.ciphertext.contains("private command"))
+        let decoded = try CompanionCrypto.openJSON(
+            [String: String].self,
+            envelope: envelope,
+            key: key,
+            associatedData: "command:test"
+        )
+        XCTAssertEqual(decoded["prompt"], "private command")
+
+        let plaintext = Data("private attachment".utf8)
+        let sealed = try CompanionCrypto.sealAttachment(plaintext, key: key, associatedData: "attachment:test")
+        XCTAssertFalse(String(decoding: sealed, as: UTF8.self).contains("private attachment"))
+        XCTAssertEqual(
+            try CompanionCrypto.openAttachment(sealed, key: key, associatedData: "attachment:test"),
+            plaintext
+        )
+        XCTAssertThrowsError(try CompanionCrypto.openAttachment(sealed, key: key, associatedData: "attachment:other"))
     }
 
     func testUnknownFutureEventTypeRemainsDecodable() throws {
@@ -297,21 +326,22 @@ final class SyncModelTests: XCTestCase {
         XCTAssertFalse(companionShouldRunForegroundTransport(for: .background))
     }
 
-    func testCommandFailureSocketEnvelopeDecodesWithoutPayloadDetails() throws {
-        let json = #"{"type":"command.updated","command":{"commandId":"command-1","protocolVersion":1,"type":"agent.send-message","payload":{},"sourceDeviceId":"ios-1","status":"failed","result":null,"error":"Run 不存在","createdAt":"2026-08-08T00:00:00Z","updatedAt":"2026-08-08T00:00:01Z"}}"#
+    func testCommandStatusSocketEnvelopeDecodesWithoutOutcomeDetails() throws {
+        let json = #"{"type":"command.updated","command":{"commandId":"command-1","protocolVersion":2,"type":"agent.send-message","payload":{"algorithm":"A256GCM","keyId":"abcdefghijklmnop","nonce":"abcdefghijklmnop","ciphertext":"encrypted"},"sourceDeviceId":"ios-1","status":"failed","result":null,"error":null,"createdAt":"2026-08-08T00:00:00Z","updatedAt":"2026-08-08T00:00:01Z"}}"#
         let envelope = try JSONDecoder().decode(SocketEnvelope.self, from: Data(json.utf8))
         XCTAssertEqual(envelope.command?.commandId, "command-1")
-        XCTAssertEqual(envelope.command?.error, "Run 不存在")
+        XCTAssertEqual(envelope.command?.status, "failed")
+        XCTAssertNil(envelope.command?.result)
+        XCTAssertNil(envelope.command?.error)
     }
 
-    func testArtifactUploadCommandDecodesAttachmentResult() throws {
-        let json = #"{"type":"command.updated","command":{"commandId":"upload-1","protocolVersion":1,"type":"artifact.request-upload","payload":{"artifactId":"artifact-1"},"sourceDeviceId":"ios-1","status":"completed","result":{"artifactId":"artifact-1","attachment":{"id":"artifact-1","messageId":null,"artifactId":"artifact-1","filename":"launch.md","mimeType":"text/markdown","size":8,"sha256":"abc","width":null,"height":null,"thumbnailAttachmentId":null,"createdAt":"2026-08-10T00:00:00Z"}},"error":null,"createdAt":"2026-08-10T00:00:00Z","updatedAt":"2026-08-10T00:00:01Z"}}"#
+    func testArtifactUploadCommandSocketDoesNotExposeAttachmentResult() throws {
+        let json = #"{"type":"command.updated","command":{"commandId":"upload-1","protocolVersion":2,"type":"artifact.request-upload","payload":{"algorithm":"A256GCM","keyId":"abcdefghijklmnop","nonce":"abcdefghijklmnop","ciphertext":"encrypted"},"sourceDeviceId":"ios-1","status":"completed","result":null,"error":null,"createdAt":"2026-08-10T00:00:00Z","updatedAt":"2026-08-10T00:00:01Z"}}"#
         let envelope = try JSONDecoder().decode(SocketEnvelope.self, from: Data(json.utf8))
-        let result = try XCTUnwrap(envelope.command?.result).decode(ArtifactUploadResult.self)
 
         XCTAssertEqual(envelope.command?.type, .artifactRequestUpload)
-        XCTAssertEqual(result.artifactId, "artifact-1")
-        XCTAssertEqual(result.attachment.filename, "launch.md")
+        XCTAssertNil(envelope.command?.result)
+        XCTAssertNil(envelope.command?.error)
     }
 
     func testSyncReadyResetsCursorWhenPairingAccountHasEarlierSequence() throws {

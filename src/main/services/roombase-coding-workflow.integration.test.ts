@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { CliAgentRuntime } from './cli-agent-runtime'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import type { PiTaskHarness } from './pi-task-harness'
 import { TaskDispatcher } from './task-dispatcher'
 import { WorkspaceFilesService } from './workspace-files'
@@ -22,7 +23,7 @@ integration('Roombase coding task delivery workflow', () => {
   it('routes the project default to Codex and persists the resumable result', async () => {
     const stateRoot = mkdtempSync(join(tmpdir(), 'project-agent-roombase-workflow-'))
     temporaryDirectories.push(stateRoot)
-    const database = new AppDatabase(join(stateRoot, 'app.sqlite'))
+    const database = createTestDatabase(join(stateRoot, 'app.sqlite'))
     const roombase = database.listProjects().find((project) => project.id === 'roombase')
     expect(roombase).toBeDefined()
     expect(roombase?.profile.defaultAgent).toBe('codex')

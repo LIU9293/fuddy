@@ -2,9 +2,7 @@ import { readFileSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import { Client } from 'pg'
 import type { EvidenceRef } from '../../shared/contracts'
-import { collectRoombaseDailyMetrics } from '../analytics/roombase-daily-metrics'
-import { collectVowsDailyMetrics } from '../analytics/vows-daily-metrics'
-import { collectAiMarketingDailyMetrics } from '../analytics/ai-marketing-daily-metrics'
+import { getPostgresAnalyticsCollector } from '../analytics/postgres-analytics-collectors'
 import { CredentialVault } from '../services/credential-vault'
 import type {
   ConnectorAdapter,
@@ -187,63 +185,16 @@ export class PostgresConnector implements ConnectorAdapter {
     const resolved = this.resolveConnection(context)
     const config = resolved.config
 
-    if (config.analyticsProfile === 'roombase-daily-v0') {
-      const { result: data } = await this.withResolvedReadOnlyClient(resolved, collectRoombaseDailyMetrics)
-      return {
-        summary: `已计算 Roombase ${data.reportDate} 的完整日指标与 7 日基线。`,
-        evidenceRefs: evidenceFor(config),
-        signal: null,
-        data
-      }
-    }
-    if (config.analyticsProfile === 'vows-growth-v1') {
-      const { result: data } = await this.withResolvedReadOnlyClient(resolved, collectVowsDailyMetrics)
-      const paidWithoutWedding = Number(data.snapshot.paid_without_wedding ?? 0)
-      return {
-        summary: `已计算 Vows ${data.reportDate} 的付费、婚礼创建与宾客互动指标。`,
-        evidenceRefs: evidenceFor(config),
-        signal: paidWithoutWedding > 0 ? {
-          fingerprint: 'vows-paid-without-wedding',
-          kind: 'risk',
-          title: `${paidWithoutWedding} 个已支付订单尚未创建婚礼`,
-          summary: '已支付订单与 wedding_id 的交付链路存在缺口。',
-          impact: '用户已经付费但未获得核心交付，需优先确认补偿或重试。',
-          urgency: 'high', confidence: 1,
-          suggestedActions: ['检查支付回调与婚礼创建日志', '逐单确认交付状态'],
-          evidenceRefs: evidenceFor(config), source: 'Vows Analytics Profile'
-        } : null,
-        resolvedSignals: paidWithoutWedding === 0 ? [{
-          fingerprint: 'vows-paid-without-wedding', summary: '没有已支付但未创建婚礼的订单。', evidenceRefs: evidenceFor(config)
-        }] : [],
-        data
-      }
-    }
-    if (config.analyticsProfile === 'ai-marketing-production-v1') {
-      const { result: data } = await this.withResolvedReadOnlyClient(resolved, collectAiMarketingDailyMetrics)
-      const stuckJobs = Number(data.snapshot.stuck_generation_jobs ?? 0)
-      const heartbeatAge = data.snapshot.worker_heartbeat_age_minutes
-      const workerStale = heartbeatAge === null || Number(heartbeatAge) > 5
-      const unhealthy = stuckJobs > 0 || workerStale
-      return {
-        summary: `已计算 AI Marketing ${data.reportDate} 的生成、评审与交付指标。`,
-        evidenceRefs: evidenceFor(config),
-        signal: unhealthy ? {
-          fingerprint: 'ai-marketing-production-health',
-          kind: 'risk',
-          title: 'AI Marketing 素材生产链路需要处理',
-          summary: `${stuckJobs} 个停滞任务；Worker 心跳 ${heartbeatAge === null ? '缺失' : `${heartbeatAge} 分钟前`}。`,
-          impact: '生成任务可能无法按预期进入评审与交付。', urgency: workerStale ? 'high' : 'medium', confidence: 1,
-          suggestedActions: ['检查 generation worker', '查看停滞任务错误与重试状态'],
-          evidenceRefs: evidenceFor(config), source: 'AI Marketing Analytics Profile'
-        } : null,
-        resolvedSignals: unhealthy ? [] : [{
-          fingerprint: 'ai-marketing-production-health', summary: '生成任务与 Worker 心跳当前正常。', evidenceRefs: evidenceFor(config)
-        }],
-        data
-      }
-    }
     if (config.analyticsProfile) {
-      throw new Error(`未知的 PostgreSQL Analytics Profile：${config.analyticsProfile}`)
+      const collector = getPostgresAnalyticsCollector(config.analyticsProfile)
+      if (collector) {
+        const { result } = await this.withResolvedReadOnlyClient(
+          resolved,
+          (client) => collector(client, evidenceFor(config))
+        )
+        return result
+      }
+      if (!config.metricView) throw new Error(`Analytics Profile ${config.analyticsProfile} 没有注册 collector 或指标 View。`)
     }
     if (!config.metricView) {
       const probe = await this.test(context)

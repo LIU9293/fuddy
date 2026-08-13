@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { ConnectorRuntime } from '../connectors/connector-runtime'
 import type { CredentialVault } from './credential-vault'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import { DailyBriefingService } from './daily-briefing'
 import { DecisionRemediationService } from './decision-remediation'
 import { MorningBriefingService } from './morning-briefing'
@@ -20,7 +21,7 @@ describe.skipIf(!enabled)('live morning briefing regeneration', () => {
       'ai-native-project-agent',
       'project-agent.sqlite'
     )
-    const database = new AppDatabase(databasePath)
+    const database = createTestDatabase(databasePath)
     const runtime: AgentRuntime = {
       isConfigured: () => false,
       run: async () => '',

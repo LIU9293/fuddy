@@ -1,7 +1,7 @@
 import type {
   CompanionDevice,
   CompanionEventBatchResult,
-  CompanionEventPage,
+  CompanionEncryptedEventPage,
   CompanionPairingStartResult,
   CompanionPairingClaimResult
 } from '../../../src/shared/companion-sync'
@@ -20,8 +20,8 @@ import {
 export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
-const maximumAttachmentBytes = 100 * 1024 * 1024
-const relayBuild = '2026-08-12.1'
+const maximumAttachmentBytes = 100 * 1024 * 1024 + 32
+const relayBuild = '2026-08-13.1'
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -113,6 +113,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/pairings') {
+    await enforceRateLimit(env.PAIRING_RATE_LIMIT, request, 'pairing-start')
     const input = pairingStartSchema.parse(await readJson(request))
     const accountId = crypto.randomUUID()
     const macToken = randomToken()
@@ -148,6 +149,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/pairings/claim') {
+    await enforceRateLimit(env.PAIRING_CLAIM_RATE_LIMIT, request, 'pairing-claim')
     const input = pairingClaimSchema.parse(await readJson(request))
     const claim = await relay(env, input.accountId).claimPairing(input)
     if (!claim.result) throw new HttpError(400, claim.error ?? '配对失败。')
@@ -163,7 +165,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const context = relayRequestContext(request, env, url)
     const after = Math.max(0, Number.parseInt(url.searchParams.get('after') ?? '0', 10) || 0)
     const limit = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get('limit') ?? '200', 10) || 200))
-    const page = await context.stub.syncPage(context.deviceId, context.token, after, limit) as CompanionEventPage | null
+    const page = await context.stub.syncPage(context.deviceId, context.token, after, limit) as CompanionEncryptedEventPage | null
     if (!page) throw new HttpError(401, '设备认证失败。')
     return Response.json(page)
   }
@@ -230,6 +232,9 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const attachmentId = attachmentMatch[1]
     const key = `${context.accountId}/${attachmentId}`
     if (request.method === 'PUT') {
+      if (request.headers.get('X-Companion-Encryption') !== 'A256GCM') {
+        throw new HttpError(400, 'End-to-end encrypted attachment envelope is required.')
+      }
       const contentLength = Number.parseInt(request.headers.get('Content-Length') ?? '0', 10)
       if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > maximumAttachmentBytes) {
         throw new HttpError(413, 'Attachment size is invalid or exceeds 100 MiB.')
@@ -253,7 +258,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         customMetadata: {
           accountId: context.accountId,
           uploadedBy: context.deviceId,
-          sha256
+          sha256,
+          encryption: 'A256GCM'
         }
       })
       return Response.json({ id: attachmentId, size: contentLength }, { status: 201 })
@@ -283,6 +289,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   throw new HttpError(404, 'Route not found.')
+}
+
+async function enforceRateLimit(binding: RateLimit, request: Request, scope: string): Promise<void> {
+  const client = request.headers.get('CF-Connecting-IP')?.trim() || 'unknown-client'
+  const outcome = await binding.limit({ key: `${scope}:${client}` })
+  if (!outcome.success) throw new HttpError(429, '请求过于频繁，请稍后重试。')
 }
 
 export default {

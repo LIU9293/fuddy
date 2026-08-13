@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRun, DecisionItem } from '../../shared/contracts'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import {
   DecisionRemediationService,
   extractGithubPullRequestUrls,
@@ -68,7 +69,7 @@ describe('decision remediation patrol', () => {
   it('links a Run PR to its decision and uses live Review state as the next gate', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-remediation-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     database.applyDecisionInspection({
       projectId: 'roombase',
       dedupeKey: 'roombase:onboarding:waiting-platform',
@@ -127,7 +128,7 @@ describe('decision remediation patrol', () => {
   it('waits for deployment instead of completing the decision when its linked PR is merged', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-remediation-merged-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     database.applyDecisionInspection({
       projectId: 'roombase',
       dedupeKey: 'roombase:onboarding:waiting-platform',
@@ -185,7 +186,7 @@ describe('decision remediation patrol', () => {
   it('keeps the last verified remediation when GitHub is temporarily unavailable', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-remediation-error-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     database.applyDecisionInspection({
       projectId: 'roombase',
       dedupeKey: 'roombase:onboarding:waiting-platform',

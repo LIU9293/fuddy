@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { mkdirSync } from 'node:fs'
 import { app, BrowserWindow, nativeTheme, Notification, shell } from 'electron'
 import * as Sentry from '@sentry/electron/main'
 import { ConnectorRuntime } from './connectors/connector-runtime'
@@ -31,6 +32,11 @@ import { WebResearchService } from './services/web-research'
 import { PiWorkAssistantAgent } from './services/work-assistant-agent'
 import { agentRunNotificationContent } from './services/agent-run-notifications'
 import { buildAgentModelLabels } from '../shared/model-display'
+import { loadProjectAnalyticsProfiles } from './analytics/project-analytics-profiles'
+import { registerBundledProjectAnalyticsProfiles } from './project-extensions/bundled-project-analytics'
+import { registerBundledPostgresCollectors } from './project-extensions/bundled-postgres-collectors'
+import { registerBundledDailyBriefingStrategies } from './project-extensions/roombase-daily-briefing'
+import { startAutoUpdateService } from './services/auto-update-service'
 
 Sentry.init({
   dsn: SENTRY_DSN,
@@ -51,6 +57,7 @@ let shutdownPromise: Promise<void> | null = null
 let shutdownComplete = false
 let companionSync: CompanionSyncService | null = null
 let pendingAgentRunNavigationId: string | null = null
+let stopAutoUpdates: (() => void) | null = null
 
 app.on('render-process-gone', (_event, webContents, details) => {
   if (details.reason === 'clean-exit' || details.reason === 'killed') return
@@ -89,12 +96,8 @@ function isSafeExternalUrl(url: string): boolean {
 }
 
 function resolveMacDockIconPath(): string {
-  const filename = nativeTheme.shouldUseDarkColors
-    ? 'fuddy-mac-icon-dark.png'
-    : 'fuddy-mac-icon-light.png'
-  return app.isPackaged
-    ? join(process.resourcesPath, 'branding', filename)
-    : join(app.getAppPath(), 'build', filename)
+  const filename = nativeTheme.shouldUseDarkColors ? 'fuddy-mac-icon-dark.png' : 'fuddy-mac-icon-light.png'
+  return app.isPackaged ? join(process.resourcesPath, 'branding', filename) : join(app.getAppPath(), 'build', filename)
 }
 
 function updateMacDockIcon(): void {
@@ -237,207 +240,228 @@ if (!hasLock) {
     showMainWindow()
   })
 
-  app.whenReady().then(async () => {
-    updateMacDockIcon()
-    nativeTheme.on('updated', updateMacDockIcon)
-    createSplashWindow()
-    await hydrateProcessEnvironmentFromZsh()
-    const userDataPath = app.getPath('userData')
-    const databasePath = join(userDataPath, 'project-agent.sqlite')
-    database = new AppDatabase(databasePath)
-    const credentialVault = new CredentialVault(join(userDataPath, 'credentials.enc'))
-    const providerSettings = new ProviderSettingsService(database, credentialVault)
-    const whisperRoot = app.isPackaged
-      ? join(process.resourcesPath, 'third-party', 'whisper')
-      : join(app.getAppPath(), '.third-party-tools', 'whisper', `darwin-${process.arch === 'arm64' ? 'arm64' : 'x64'}`)
-    const asrService = new AsrService(providerSettings, {
-      modelDirectory: join(userDataPath, 'asr-models'),
-      helperPath: join(whisperRoot, 'whisper-helper'),
-      temporaryDirectory: join(userDataPath, 'asr-temp'),
-      onDownloadProgress: (progress) => {
-        if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('asr:download-progress', progress)
-      }
-    })
-    const connectorRuntime = new ConnectorRuntime(database, credentialVault)
-    const runtime = new PiAgentRuntime(providerSettings)
-    const decisionRemediationService = new DecisionRemediationService(database)
-    const workspaceFiles = new WorkspaceFilesService(database, join(userDataPath, 'project-files'))
-    const mcpOptions = resolveThirdPartyMcpOptions({
-      appPath: app.getAppPath(),
-      resourcesPath: process.resourcesPath,
-      userDataPath,
-      packaged: app.isPackaged,
-      hostBundleId: 'dev.ainative.projectagent'
-    })
-    agentToolsMcp = new ThirdPartyMcpRuntime(mcpOptions)
-    const piTaskHarness = new PiTaskHarness(
-      providerSettings,
-      database,
-      agentToolsMcp,
-      join(userDataPath, 'pi-sessions')
-    )
-    const dispatcher = new TaskDispatcher(
-      database,
-      piTaskHarness,
-      workspaceFiles,
-      new CliAgentRuntime(agentToolsMcp, join(__dirname, 'project-agent-mcp.js'), databasePath, providerSettings),
-      undefined,
-      async (run, turn) => {
-        showAgentRunNotification(turn)
-        if (turn.outcome === 'completed') await decisionRemediationService.sync(run.projectId)
-      }
-    )
-    const dailyBriefingService = new DailyBriefingService(database, connectorRuntime, runtime)
-    const projectAgentIntegration = new ProjectAgentIntegrationService(
-      database,
-      credentialVault,
-      (input, onUpdate) => dispatcher.dispatch(input, onUpdate)
-    )
-    const goalTrackingService = new GoalTrackingService(database, runtime)
-    const workspaceAgentActions = new WorkspaceAgentActions(
-      database,
-      runtime,
-      goalTrackingService,
-      dispatcher,
-      new ProjectInspectionService(database, workspaceFiles),
-      new WebResearchService()
-    )
-    const workAssistantAgent = new PiWorkAssistantAgent(
-      providerSettings,
-      database,
-      workspaceAgentActions,
-      join(userDataPath, 'work-assistant-pi-session'),
-      userDataPath
-    )
-    const morningBriefingService = new MorningBriefingService(
-      database,
-      dailyBriefingService,
-      runtime,
-      goalTrackingService,
-      workspaceAgentActions,
-      decisionRemediationService,
-      workAssistantAgent
-    )
-    workspaceAgentActions.setMorningBriefingGenerator(() => morningBriefingService.generate())
-    companionSync = new CompanionSyncService(
-      database,
-      credentialVault,
-      dispatcher,
-      (question, attachments) => morningBriefingService.ask(null, question, null, attachments),
-      join(userDataPath, 'companion-uploads'),
-      () => providerSettings.getPublicSettings().codingAgents.defaultAgent,
-      workspaceFiles,
-      () => buildAgentModelLabels(providerSettings.getPublicSettings())
-    )
-    companionSync.setWorkAssistantActionExecutor((input) => morningBriefingService.executeAction(input))
-    companionSync.onStatusChanged((status) => {
-      if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:status-changed', status)
-    })
-    companionSync.onDataChanged(() => {
-      if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
-    })
-    const ttsService = new TtsService(database, providerSettings)
-    const automationRuntime = new AutomationRuntime(database, {
-      runAgentTask: async (job) => {
-        const result = await dispatcher.dispatch({
-          projectId: job.projectId,
-          provider: job.agentProvider,
-          title: `${job.name} · 自动运行`,
-          prompt: job.prompt
-        })
-        return { summary: result.message, agentRunId: result.detail.run.id }
-      },
-      runConnectors: async (projectId) => {
-        const result = await connectorRuntime.runConnectors(projectId)
-        const remediation = await decisionRemediationService.sync(projectId)
-        return `Connector 巡检完成：${result.succeeded} 成功，${result.failed} 失败；核验 ${remediation.remediations.length} 条修复进度。`
-      },
-      checkGoals: async (projectId) => {
-        const results = await goalTrackingService.checkDueGoals(projectId ?? undefined)
-        return results.length > 0 ? `已检查 ${results.length} 个到期目标。` : '当前没有到期目标。'
-      },
-      generateBriefing: async (projectId) => {
-        if (projectId) {
-          const result = await dailyBriefingService.generate(projectId)
+  app
+    .whenReady()
+    .then(async () => {
+      updateMacDockIcon()
+      nativeTheme.on('updated', updateMacDockIcon)
+      createSplashWindow()
+      await hydrateProcessEnvironmentFromZsh()
+      const userDataPath = app.getPath('userData')
+      const analyticsProfilePath = join(userDataPath, 'project-capabilities')
+      mkdirSync(analyticsProfilePath, { recursive: true })
+      registerBundledProjectAnalyticsProfiles()
+      registerBundledPostgresCollectors()
+      registerBundledDailyBriefingStrategies()
+      loadProjectAnalyticsProfiles(analyticsProfilePath)
+      const databasePath = join(userDataPath, 'project-agent.sqlite')
+      database = new AppDatabase(databasePath)
+      const credentialVault = new CredentialVault(join(userDataPath, 'credentials.enc'))
+      const providerSettings = new ProviderSettingsService(database, credentialVault)
+      const whisperRoot = app.isPackaged
+        ? join(process.resourcesPath, 'third-party', 'whisper')
+        : join(
+            app.getAppPath(),
+            '.third-party-tools',
+            'whisper',
+            `darwin-${process.arch === 'arm64' ? 'arm64' : 'x64'}`
+          )
+      const asrService = new AsrService(providerSettings, {
+        modelDirectory: join(userDataPath, 'asr-models'),
+        helperPath: join(whisperRoot, 'whisper-helper'),
+        temporaryDirectory: join(userDataPath, 'asr-temp'),
+        onDownloadProgress: (progress) => {
+          if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('asr:download-progress', progress)
+        }
+      })
+      const connectorRuntime = new ConnectorRuntime(database, credentialVault)
+      const runtime = new PiAgentRuntime(providerSettings)
+      const decisionRemediationService = new DecisionRemediationService(database)
+      const workspaceFiles = new WorkspaceFilesService(database, join(userDataPath, 'project-files'))
+      const mcpOptions = resolveThirdPartyMcpOptions({
+        appPath: app.getAppPath(),
+        resourcesPath: process.resourcesPath,
+        userDataPath,
+        packaged: app.isPackaged,
+        hostBundleId: 'dev.ainative.projectagent'
+      })
+      agentToolsMcp = new ThirdPartyMcpRuntime(mcpOptions)
+      const piTaskHarness = new PiTaskHarness(
+        providerSettings,
+        database,
+        agentToolsMcp,
+        join(userDataPath, 'pi-sessions')
+      )
+      const dispatcher = new TaskDispatcher(
+        database,
+        piTaskHarness,
+        workspaceFiles,
+        new CliAgentRuntime(agentToolsMcp, join(__dirname, 'project-agent-mcp.js'), databasePath, providerSettings),
+        undefined,
+        async (run, turn) => {
+          showAgentRunNotification(turn)
+          if (turn.outcome === 'completed') await decisionRemediationService.sync(run.projectId)
+        }
+      )
+      const dailyBriefingService = new DailyBriefingService(database, connectorRuntime, runtime)
+      const projectAgentIntegration = new ProjectAgentIntegrationService(database, credentialVault, (input, onUpdate) =>
+        dispatcher.dispatch(input, onUpdate)
+      )
+      const goalTrackingService = new GoalTrackingService(database, runtime)
+      const workspaceAgentActions = new WorkspaceAgentActions(
+        database,
+        runtime,
+        goalTrackingService,
+        dispatcher,
+        new ProjectInspectionService(database, workspaceFiles),
+        new WebResearchService()
+      )
+      const workAssistantAgent = new PiWorkAssistantAgent(
+        providerSettings,
+        database,
+        workspaceAgentActions,
+        join(userDataPath, 'work-assistant-pi-session'),
+        userDataPath
+      )
+      const morningBriefingService = new MorningBriefingService(
+        database,
+        dailyBriefingService,
+        runtime,
+        goalTrackingService,
+        workspaceAgentActions,
+        decisionRemediationService,
+        workAssistantAgent
+      )
+      workspaceAgentActions.setMorningBriefingGenerator(() => morningBriefingService.generate())
+      companionSync = new CompanionSyncService(
+        database,
+        credentialVault,
+        dispatcher,
+        (question, attachments) => morningBriefingService.ask(null, question, null, attachments),
+        join(userDataPath, 'companion-uploads'),
+        () => providerSettings.getPublicSettings().codingAgents.defaultAgent,
+        workspaceFiles,
+        () => buildAgentModelLabels(providerSettings.getPublicSettings())
+      )
+      companionSync.setWorkAssistantActionExecutor((input) => morningBriefingService.executeAction(input))
+      companionSync.onStatusChanged((status) => {
+        if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:status-changed', status)
+      })
+      companionSync.onDataChanged(() => {
+        if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
+      })
+      const ttsService = new TtsService(database, providerSettings)
+      const automationRuntime = new AutomationRuntime(database, {
+        runAgentTask: async (job) => {
+          const result = await dispatcher.dispatch({
+            projectId: job.projectId,
+            provider: job.agentProvider,
+            title: `${job.name} · 自动运行`,
+            prompt: job.prompt
+          })
+          return { summary: result.message, agentRunId: result.detail.run.id }
+        },
+        runConnectors: async (projectId) => {
+          const result = await connectorRuntime.runConnectors(projectId)
+          const remediation = await decisionRemediationService.sync(projectId)
+          return `Connector 巡检完成：${result.succeeded} 成功，${result.failed} 失败；核验 ${remediation.remediations.length} 条修复进度。`
+        },
+        checkGoals: async (projectId) => {
+          const results = await goalTrackingService.checkDueGoals(projectId ?? undefined)
+          return results.length > 0 ? `已检查 ${results.length} 个到期目标。` : '当前没有到期目标。'
+        },
+        generateBriefing: async (projectId) => {
+          if (projectId) {
+            const result = await dailyBriefingService.generate(projectId)
+            return result.briefing.headline
+          }
+          const result = await morningBriefingService.generate()
           return result.briefing.headline
         }
-        const result = await morningBriefingService.generate()
-        return result.briefing.headline
-      }
-    })
-    workspaceAgentActions.setAutomationRuntime(automationRuntime)
-    automationRuntime.onChanged(() => {
-      if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('automation:changed')
-    })
-    automationScheduler = new AutomationScheduler(database, automationRuntime)
-    dailyBriefingScheduler = new DailyBriefingScheduler(
-      database,
-      morningBriefingService,
-      (headline) => {
-        mainWindow?.webContents.send('briefing:morning-ready')
-        if (Notification.isSupported()) {
-          const notification = new Notification({
-            title: '每日简报已送达',
-            body: headline,
-            silent: false
-          })
-          notification.on('click', () => {
-            if (!mainWindow) createWindow()
-            if (mainWindow?.isMinimized()) mainWindow.restore()
-            mainWindow?.show()
-            mainWindow?.focus()
-          })
-          notification.show()
+      })
+      workspaceAgentActions.setAutomationRuntime(automationRuntime)
+      automationRuntime.onChanged(() => {
+        if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('automation:changed')
+      })
+      automationScheduler = new AutomationScheduler(database, automationRuntime)
+      dailyBriefingScheduler = new DailyBriefingScheduler(
+        database,
+        morningBriefingService,
+        (headline) => {
+          mainWindow?.webContents.send('briefing:morning-ready')
+          if (Notification.isSupported()) {
+            const notification = new Notification({
+              title: '每日简报已送达',
+              body: headline,
+              silent: false
+            })
+            notification.on('click', () => {
+              if (!mainWindow) createWindow()
+              if (mainWindow?.isMinimized()) mainWindow.restore()
+              mainWindow?.show()
+              mainWindow?.focus()
+            })
+            notification.show()
+          }
+        },
+        (error) => {
+          Sentry.captureException(error, { tags: { boundary: 'daily-briefing-scheduler' } })
+          console.error(
+            '[daily-briefing-scheduler] generation failed',
+            error instanceof Error ? error.message : 'Unknown error'
+          )
         }
-      },
-      (error) => {
-        Sentry.captureException(error, { tags: { boundary: 'daily-briefing-scheduler' } })
-        console.error('[daily-briefing-scheduler] generation failed', error instanceof Error ? error.message : 'Unknown error')
+      )
+      registerIpc(
+        database,
+        dispatcher,
+        connectorRuntime,
+        decisionRemediationService,
+        credentialVault,
+        dailyBriefingService,
+        morningBriefingService,
+        goalTrackingService,
+        providerSettings,
+        asrService,
+        ttsService,
+        workspaceFiles,
+        automationRuntime,
+        projectAgentIntegration,
+        companionSync
+      )
+      createWindow()
+      stopAutoUpdates = startAutoUpdateService((error) => {
+        Sentry.captureException(error, { tags: { boundary: 'auto-update' } })
+      })
+      void decisionRemediationService
+        .sync()
+        .then(() => {
+          if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
+        })
+        .catch((error: unknown) => {
+          Sentry.captureException(error, { tags: { boundary: 'decision-remediation-startup' } })
+        })
+      void companionSync.start()
+      if (process.env.PROJECT_AGENT_SENTRY_TEST === '1') {
+        setTimeout(() => {
+          Sentry.captureException(new Error('Project Agent main-process Sentry integration test'))
+          void Sentry.flush(5_000).then((sent) => console.info(`[sentry-test] flushed=${sent}`))
+        }, 1_000)
       }
-    )
-    registerIpc(
-      database,
-      dispatcher,
-      connectorRuntime,
-      decisionRemediationService,
-      credentialVault,
-      dailyBriefingService,
-      morningBriefingService,
-      goalTrackingService,
-      providerSettings,
-      asrService,
-      ttsService,
-      workspaceFiles,
-      automationRuntime,
-      projectAgentIntegration,
-      companionSync
-    )
-    createWindow()
-    void decisionRemediationService.sync().then(() => {
-      if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
-    }).catch((error: unknown) => {
-      Sentry.captureException(error, { tags: { boundary: 'decision-remediation-startup' } })
-    })
-    void companionSync.start()
-    if (process.env.PROJECT_AGENT_SENTRY_TEST === '1') {
-      setTimeout(() => {
-        Sentry.captureException(new Error('Project Agent main-process Sentry integration test'))
-        void Sentry.flush(5_000).then((sent) => console.info(`[sentry-test] flushed=${sent}`))
-      }, 1_000)
-    }
-    dailyBriefingScheduler.start()
-    automationScheduler.start()
+      dailyBriefingScheduler.start()
+      automationScheduler.start()
 
-    app.on('activate', () => {
-      if (!mainWindow) createWindow()
-      else showMainWindow()
+      app.on('activate', () => {
+        if (!mainWindow) createWindow()
+        else showMainWindow()
+      })
     })
-  }).catch(async (error: unknown) => {
-    splashWindow?.close()
-    Sentry.captureException(error, { tags: { boundary: 'app.whenReady' } })
-    await Sentry.flush(2_000)
-    app.quit()
-  })
+    .catch(async (error: unknown) => {
+      splashWindow?.close()
+      Sentry.captureException(error, { tags: { boundary: 'app.whenReady' } })
+      await Sentry.flush(2_000)
+      app.quit()
+    })
 }
 
 app.on('window-all-closed', () => {
@@ -452,6 +476,8 @@ async function shutdown(): Promise<void> {
     dailyBriefingScheduler = null
     automationScheduler?.stop()
     automationScheduler = null
+    stopAutoUpdates?.()
+    stopAutoUpdates = null
     companionSync?.stop()
     companionSync = null
     await agentToolsMcp?.stop()

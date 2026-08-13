@@ -1147,7 +1147,7 @@ export function AgentRunsView({
   if (!selectedRunId && !creating) {
     return (
       <section className="agent-runs-view agent-run-chat-view">
-        <header className="agent-run-page-header"><div><strong>Agent Runs</strong></div></header>
+        <header className="app-page-header agent-run-page-header"><div><strong className="app-page-header-title">Agent Runs</strong></div></header>
         <div className="agent-runs-empty">
           <MessageSquare size={28} />
           <strong>{runs.length === 0 ? '还没有 Agent Run' : '选择一个 Agent Run'}</strong>
@@ -1160,15 +1160,15 @@ export function AgentRunsView({
   if (creating) {
     return (
       <section className="agent-runs-view agent-run-chat-view">
-        <header className="agent-run-page-header">
-          <div><strong>创建 Agent Session</strong></div>
+        <header className="app-page-header agent-run-page-header">
+          <div><strong className="app-page-header-title">创建 Agent Session</strong></div>
         </header>
         <div className="agent-run-create-shell">
           <div className="agent-run-create-form">
             <label><span>项目</span><SelectMenu value={projectId ?? ''} options={[{ value: '', label: '共享任务' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]} onChange={(value) => { const nextProjectId = value || null; setProjectId(nextProjectId); setMilestoneValue(''); setProvider(projectDefaultAgent(nextProjectId)) }} ariaLabel="Run 所属项目" /></label>
             <label><span>Agent</span><SelectMenu value={provider} options={agentOptions} onChange={(value) => setProvider(value as AgentRunProvider)} ariaLabel="执行 Agent" /></label>
             <label><span>关联 Milestone（可选）</span><SelectMenu value={milestoneValue} options={[{ value: '', label: '不关联 Milestone' }, ...milestoneOptions]} onChange={setMilestoneValue} ariaLabel="关联 Milestone" /></label>
-            <label><span>Session 标题</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：分析 Roombase 入驻阻塞" /></label>
+            <label><span>Session 标题</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：分析项目上线阻塞" /></label>
             <button className="run-create-submit" onClick={() => void createRun()} disabled={!title.trim() || creatingBusy}>
               {creatingBusy ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}
               {creatingBusy ? '正在创建…' : '创建 Session'}
@@ -1208,9 +1208,9 @@ export function AgentRunsView({
         style={{ '--agent-run-info-width': `${infoSidebarWidth}px` } as React.CSSProperties}
       >
       <div className="agent-run-chat-main">
-      <header className="agent-run-page-header">
+      <header className="app-page-header agent-run-page-header">
         <div>
-          {renamingTitle === null ? <strong>{detail.run.title}</strong> : (
+          {renamingTitle === null ? <strong className="app-page-header-title">{detail.run.title}</strong> : (
             <form className="agent-run-rename-form" onSubmit={(event) => { event.preventDefault(); void renameSession() }}>
               <input autoFocus value={renamingTitle} maxLength={200} onChange={(event) => setRenamingTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setRenamingTitle(null) }} aria-label="Session 标题" />
               <button type="submit" disabled={!renamingTitle.trim() || sessionActionBusy}>保存</button>

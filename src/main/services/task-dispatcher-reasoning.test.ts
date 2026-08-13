@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { CliAgentRuntime, CliAgentTurnInput } from './cli-agent-runtime'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import type { PiTaskHarness } from './pi-task-harness'
 import { TaskDispatcher } from './task-dispatcher'
 import { WorkspaceFilesService } from './workspace-files'
@@ -11,7 +12,7 @@ import { WorkspaceFilesService } from './workspace-files'
 describe('TaskDispatcher reasoning timeline', () => {
   it('persists separate reasoning segments before their individual tool calls', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-reasoning-'))
-    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
     try {
       const project = database.listProjects().find((item) => item.id === 'vows')!
       database.updateProject({
@@ -61,7 +62,7 @@ describe('TaskDispatcher reasoning timeline', () => {
 
   it('promotes visible progress text before a tool into its own thinking segment', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-visible-thinking-'))
-    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
     try {
       const project = database.listProjects().find((item) => item.id === 'vows')!
       database.updateProject({
