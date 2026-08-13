@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AgentRunStreamUpdate } from '../../shared/contracts'
 import type { CliAgentRuntime, CliAgentTurnInput } from './cli-agent-runtime'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import type { PiTaskHarness } from './pi-task-harness'
 import { TaskDispatcher } from './task-dispatcher'
 import { WorkspaceFilesService } from './workspace-files'
@@ -12,7 +13,7 @@ import { WorkspaceFilesService } from './workspace-files'
 describe('TaskDispatcher coding approval callback', () => {
   it('auto-approves a coding-agent permission request without pausing the UI', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-approval-'))
-    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
     const project = database.listProjects().find((item) => item.id === 'vows')!
     database.updateProject({
       ...project,

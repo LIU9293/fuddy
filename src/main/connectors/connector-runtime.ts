@@ -58,7 +58,7 @@ export const connectorCatalog: ConnectorCatalogItem[] = [
   {
     kind: 'project-agent',
     label: 'Project Agent',
-    description: '连接 Vows 营销 Agent、AI Marketing Super Agent 等项目专属能力。',
+    description: '连接项目专属 Agent 或远程自动化能力。',
     availability: 'built-in',
     authType: 'project-api',
     capabilities: ['任务派发', '状态读取', '结果回投']
@@ -268,7 +268,7 @@ export class ConnectorRuntime {
         projectRoot: typeof connector.config.repoPath === 'string' ? connector.config.repoPath : undefined,
         description: 'Read connector-scoped metadata and return evidence to the decision inbox.',
         handlesCredentials: Boolean(connector.credentialRef || connector.config.credentialSource),
-        production: connector.config.analyticsProfile === 'roombase-daily-v0'
+        production: connector.config.credentialSource === 'env-file'
       }
       const permission = evaluateAggressivePermission(permissionIntent)
       this.database.recordPermissionEvaluation(permissionIntent, permission)

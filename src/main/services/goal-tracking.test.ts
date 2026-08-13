@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AgentRun, AgentSessionUpdate } from '../../shared/contracts'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import { GoalTrackingService } from './goal-tracking'
 import type { AgentRuntime } from './pi-runtime'
 
@@ -38,7 +39,7 @@ describe('GoalTrackingService', () => {
   it('creates a structured goal and records an evidence check-in', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-goal-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     const runtime = new StubRuntime([
       JSON.stringify({
         title: '让获客实验产生稳定线索',
@@ -96,7 +97,7 @@ describe('GoalTrackingService', () => {
   it('manually completes and deletes milestones while preserving linked Runs', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-milestone-actions-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     const runtime = new StubRuntime([JSON.stringify({
       title: '建立内容发布体系',
       description: '完成首轮内容生产与发布。',

@@ -67,16 +67,18 @@ export class ProjectAgentIntegrationService {
     if (!profile) throw new Error(`项目 ${input.projectId} 没有 Project Agent Profile。`)
     if (profile.agentIntegration.kind === 'repo-skill') {
       const integration = profile.agentIntegration
-      const skill = join(integration.repoPath, integration.skillPath)
-      const workspace = join(integration.repoPath, integration.workspacePath)
+      const project = this.database.listProjects().find((candidate) => candidate.id === profile.projectId)
+      const repoPath = project?.profile.repoPath ?? ''
+      const skill = join(repoPath, integration.skillPath)
+      const workspace = join(repoPath, integration.workspacePath)
       if (!existsSync(skill) || !existsSync(workspace)) {
-        throw new Error(`Vows 项目 Skill 或 marketing 工作区不存在：${skill}`)
+        throw new Error(`项目 Skill 或工作区不存在：${skill}`)
       }
       const result = await this.dispatchTask({
         projectId: profile.projectId,
         provider: integration.provider,
         title: `${profile.projectName} · wedding-promotion`,
-        workingDirectory: integration.repoPath,
+        workingDirectory: repoPath,
         prompt: [
           `使用项目现有 Skill ${integration.skillPath} 完成下面的营销任务。`,
           `必须先完整读取该 Skill 及其要求的项目文件；工作产物写入 ${integration.workspacePath}。`,
@@ -132,7 +134,7 @@ export class ProjectAgentIntegrationService {
     )
     const baseUrl = typeof connector?.config.baseUrl === 'string' ? connector.config.baseUrl.replace(/\/$/, '') : ''
     if (!connector || !baseUrl) {
-      throw new Error('请先为 AI Marketing 配置 Project Agent Base URL 与登录 Session Token。')
+      throw new Error('请先为该项目配置 Project Agent Base URL 与登录凭证。')
     }
     return { baseUrl, credentialRef: connector.credentialRef }
   }

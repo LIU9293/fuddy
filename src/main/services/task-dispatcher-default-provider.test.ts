@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CliAgentRuntime, CliAgentTurnInput } from './cli-agent-runtime'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import type { PiTaskHarness } from './pi-task-harness'
 import { TaskDispatcher } from './task-dispatcher'
 import { WorkspaceFilesService } from './workspace-files'
@@ -20,7 +21,7 @@ describe('TaskDispatcher project agent defaults', () => {
   it('creates a draft session with the project defaults without sending its first message', () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-draft-session-'))
     temporaryDirectories.push(root)
-    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
     const roombase = database.listProjects().find((project) => project.id === 'roombase')!
     database.updateProject({
       ...roombase,
@@ -67,7 +68,7 @@ describe('TaskDispatcher project agent defaults', () => {
   it('persists a draft prompt, clears it on first send, and registers changed project files as artifacts', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-draft-prompt-'))
     temporaryDirectories.push(root)
-    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
     const vows = database.listProjects().find((project) => project.id === 'vows')!
     database.updateProject({
       ...vows,
@@ -132,7 +133,7 @@ describe('TaskDispatcher project agent defaults', () => {
   it('uses the project default agent when dispatch omits provider', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-default-provider-'))
     temporaryDirectories.push(root)
-    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
     const roombase = database.listProjects().find((project) => project.id === 'roombase')
     expect(roombase).toBeDefined()
     database.updateProject({
@@ -182,7 +183,7 @@ describe('TaskDispatcher project agent defaults', () => {
   it('stops a turn and marks it failed after prolonged inactivity', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-inactivity-timeout-'))
     temporaryDirectories.push(root)
-    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
     const files = new WorkspaceFilesService(database, join(root, 'files'))
     let aborted = false
     const onRunSettled = vi.fn()
@@ -222,7 +223,7 @@ describe('TaskDispatcher project agent defaults', () => {
   it('recovers queued and running sessions left behind by an app restart', () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-recovery-'))
     temporaryDirectories.push(root)
-    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
     const timestamp = new Date(Date.now() - 60_000).toISOString()
     database.createAgentRun({
       id: 'interrupted-run',
@@ -257,7 +258,7 @@ describe('TaskDispatcher project agent defaults', () => {
   it('renames sessions and archives them without deleting their history', () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-archive-'))
     temporaryDirectories.push(root)
-    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
     const timestamp = new Date().toISOString()
     database.createAgentRun({
       id: 'session-to-archive',

@@ -1,12 +1,12 @@
-import { SELF } from 'cloudflare:test'
+import { SELF, env, runDurableObjectAlarm } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import type {
-  CompanionCommand,
+  CompanionEncryptedCommand,
+  CompanionEncryptedEventPage,
+  CompanionEncryptedSyncEvent,
   CompanionEventBatchResult,
-  CompanionEventPage,
   CompanionPairingClaimResult,
   CompanionPairingStartResult,
-  CompanionSyncEvent
 } from '../../../src/shared/companion-sync'
 import { companionProtocolVersion } from '../../../src/shared/companion-sync'
 
@@ -16,7 +16,7 @@ async function pairedDevices(): Promise<{
 }> {
   const pairingResponse = await SELF.fetch('https://relay.test/v1/pairings', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `test-${crypto.randomUUID()}` },
     body: JSON.stringify({ macDeviceId: 'mac-test', macDeviceName: 'Test Mac' })
   })
   expect(pairingResponse.status).toBe(201)
@@ -39,23 +39,44 @@ function authenticatedUrl(path: string, accountId: string, deviceId: string): st
   return `https://relay.test${path}${path.includes('?') ? '&' : '?'}accountId=${accountId}&deviceId=${deviceId}`
 }
 
+const encryptedPayload = {
+  algorithm: 'A256GCM',
+  keyId: 'keyidentifier123',
+  nonce: '0123456789abcdef',
+  ciphertext: 'opaque_ciphertext_AQID'
+} as const
+
 describe('companion relay', () => {
+  it('rate limits public pairing creation by client address', async () => {
+    const statuses: number[] = []
+    for (let index = 0; index < 11; index += 1) {
+      const response = await SELF.fetch('https://relay.test/v1/pairings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.10' },
+        body: JSON.stringify({ macDeviceId: `mac-rate-${index}`, macDeviceName: 'Rate Test Mac' })
+      })
+      statuses.push(response.status)
+    }
+    expect(statuses.slice(0, 10).every((status) => status === 201)).toBe(true)
+    expect(statuses[10]).toBe(429)
+  })
+
   it('reports protocol health', async () => {
     const response = await SELF.fetch('https://relay.test/health')
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
       status: 'ok',
-      minimumProtocolVersion: 1,
+      minimumProtocolVersion: 2,
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-12.1'
+      build: '2026-08-13.1'
     })
   })
 
   it('pairs devices and rejects a second claim', async () => {
     const { pairing, phone } = await pairedDevices()
-    expect(pairing.minimumProtocolVersion).toBe(1)
-    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({ minimumProtocolVersion: 1 })
-    expect(phone.minimumProtocolVersion).toBe(1)
+    expect(pairing.minimumProtocolVersion).toBe(2)
+    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({ minimumProtocolVersion: 2 })
+    expect(phone.minimumProtocolVersion).toBe(2)
     expect(phone.accountId).toBe(pairing.accountId)
     expect(phone.device.role).toBe('ios')
     expect(phone.deviceToken.length).toBeGreaterThan(20)
@@ -82,7 +103,7 @@ describe('companion relay', () => {
       entityType: 'agent-run' as const,
       entityId: 'run-1',
       revision: 1,
-      payload: { id: 'run-1', title: 'Remote Session', status: 'running', provider: 'codex' },
+      payload: encryptedPayload,
       occurredAt: new Date().toISOString()
     }
     const createdResponse = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
@@ -91,7 +112,7 @@ describe('companion relay', () => {
       body: JSON.stringify(input)
     })
     expect(createdResponse.status).toBe(201)
-    const created = await createdResponse.json<CompanionSyncEvent>()
+    const created = await createdResponse.json<CompanionEncryptedSyncEvent>()
     expect(created.sequence).toBe(1)
 
     const duplicateResponse = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
@@ -99,13 +120,13 @@ describe('companion relay', () => {
       headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(input)
     })
-    expect((await duplicateResponse.json<CompanionSyncEvent>()).sequence).toBe(created.sequence)
+    expect((await duplicateResponse.json<CompanionEncryptedSyncEvent>()).sequence).toBe(created.sequence)
 
     const pageResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
-    const page = await pageResponse.json<CompanionEventPage>()
-    expect(page).toMatchObject({ minimumProtocolVersion: 1, protocolVersion: companionProtocolVersion })
+    const page = await pageResponse.json<CompanionEncryptedEventPage>()
+    expect(page).toMatchObject({ minimumProtocolVersion: 2, protocolVersion: companionProtocolVersion })
     expect(page.events).toHaveLength(1)
     expect(page.events[0]).toMatchObject(input)
     expect(page.presence).toMatchObject({ macOnline: false, iosDevicesOnline: 0 })
@@ -131,13 +152,7 @@ describe('companion relay', () => {
       entityType: 'agent-message' as const,
       entityId: `message-${index}`,
       revision: index + 1,
-      payload: {
-        id: `message-${index}`,
-        runId: 'run-1',
-        role: 'assistant',
-        content: `message ${index}`,
-        createdAt: occurredAt
-      },
+      payload: { ...encryptedPayload, ciphertext: `opaque_${index}` },
       occurredAt
     }))
     const batchUrl = authenticatedUrl('/v1/events/batch', pairing.accountId, pairing.macDeviceId)
@@ -162,7 +177,7 @@ describe('companion relay', () => {
     const pageResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
-    const page = await pageResponse.json<CompanionEventPage>()
+    const page = await pageResponse.json<CompanionEncryptedEventPage>()
     expect(page.events.map((event) => event.entityId)).toEqual(['message-0', 'message-1', 'message-2'])
     await new Promise((resolve) => setTimeout(resolve, 0))
     const replayHints = messages
@@ -170,6 +185,60 @@ describe('companion relay', () => {
       .filter((message) => message.type === 'sync.available')
     expect(replayHints).toEqual([{ type: 'sync.available', lastSequence: 3 }])
     socket!.close()
+  })
+
+  it('compacts only events behind an acknowledged snapshot and preserves reset replay', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const occurredAt = new Date().toISOString()
+    const definitions = [
+      { type: 'snapshot.created', entityType: 'snapshot', entityId: 'current' },
+      { type: 'agent-run.updated', entityType: 'agent-run', entityId: 'run-before-snapshot' },
+      { type: 'snapshot.created', entityType: 'snapshot', entityId: 'current' },
+      { type: 'agent-run.updated', entityType: 'agent-run', entityId: 'run-after-snapshot' }
+    ] as const
+    const events = definitions.map((definition, index) => ({
+      eventId: crypto.randomUUID(),
+      protocolVersion: companionProtocolVersion,
+      ...definition,
+      revision: index + 1,
+      payload: { ...encryptedPayload, ciphertext: `opaque_compaction_${index}` },
+      occurredAt
+    }))
+    const batch = await SELF.fetch(authenticatedUrl('/v1/events/batch', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events })
+    })
+    expect(batch.status).toBe(201)
+
+    const acknowledge = await SELF.fetch(authenticatedUrl('/v1/events?after=4', pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    expect(acknowledge.status).toBe(200)
+
+    const reset = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    const page = await reset.json<CompanionEncryptedEventPage>()
+    expect(page.events.map((event) => event.sequence)).toEqual([3, 4])
+    expect(page.events[0]).toMatchObject({ type: 'snapshot.created', entityId: 'current' })
+  })
+
+  it('schedules recurring Durable Object maintenance after retained data changes', async () => {
+    const { pairing } = await pairedDevices()
+    const response = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventId: crypto.randomUUID(), protocolVersion: companionProtocolVersion,
+        type: 'snapshot.created', entityType: 'snapshot', entityId: 'current', revision: 1,
+        payload: encryptedPayload, occurredAt: new Date().toISOString()
+      })
+    })
+    expect(response.status).toBe(201)
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
   })
 
   it('queues iOS commands and lets the Mac complete them idempotently', async () => {
@@ -182,43 +251,33 @@ describe('companion relay', () => {
         commandId,
         protocolVersion: companionProtocolVersion,
         type: 'agent.send-message',
-        payload: { runId: 'run-1', prompt: '继续分析' },
+        payload: encryptedPayload,
         createdAt: new Date().toISOString()
       })
     })
     expect(commandResponse.status).toBe(201)
-    const command = await commandResponse.json<CompanionCommand>()
+    const command = await commandResponse.json<CompanionEncryptedCommand>()
     expect(command.status).toBe('queued')
 
     const pendingResponse = await SELF.fetch(authenticatedUrl('/v1/commands/pending', pairing.accountId, pairing.macDeviceId), {
       headers: { Authorization: `Bearer ${pairing.macToken}` }
     })
-    const pending = await pendingResponse.json<{ commands: CompanionCommand[] }>()
+    const pending = await pendingResponse.json<{ commands: CompanionEncryptedCommand[] }>()
     expect(pending.commands.map((item) => item.commandId)).toContain(commandId)
 
     const completedResponse = await SELF.fetch(authenticatedUrl(`/v1/commands/${commandId}`, pairing.accountId, pairing.macDeviceId), {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'completed', result: { accepted: true } })
+      body: JSON.stringify({ status: 'completed' })
     })
-    const completed = await completedResponse.json<CompanionCommand>()
+    const completed = await completedResponse.json<CompanionEncryptedCommand>()
     expect(completed.status).toBe('completed')
     expect(completed.result).toBeNull()
 
-    const updatesResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
-      headers: { Authorization: `Bearer ${phone.deviceToken}` }
-    })
-    const updates = await updatesResponse.json<CompanionEventPage>()
-    expect(updates.events).toHaveLength(1)
-    expect(updates.events[0]).toMatchObject({
-      type: 'command.updated',
-      entityType: 'command',
-      entityId: commandId,
-      payload: { commandId, status: 'completed' }
-    })
+    expect(JSON.stringify(completed)).not.toContain('accepted')
   })
 
-  it('discards oversized non-artifact command results before SQLite persistence', async () => {
+  it('rejects plaintext command outcomes and persists status only', async () => {
     const { pairing, phone } = await pairedDevices()
     const commandId = crypto.randomUUID()
     await SELF.fetch(authenticatedUrl('/v1/commands', pairing.accountId, phone.device.id), {
@@ -228,7 +287,7 @@ describe('companion relay', () => {
         commandId,
         protocolVersion: companionProtocolVersion,
         type: 'agent.send-message',
-        payload: { runId: 'run-large', prompt: '继续分析' },
+        payload: encryptedPayload,
         createdAt: new Date().toISOString()
       })
     })
@@ -242,8 +301,16 @@ describe('companion relay', () => {
       headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'completed', result: { detail: 'x'.repeat(3 * 1024 * 1024) } })
     })
-    expect(completedResponse.status).toBe(200)
-    const completed = await completedResponse.json<CompanionCommand>()
+    expect(completedResponse.status).toBe(400)
+    const statusOnlyResponse = await SELF.fetch(authenticatedUrl(
+      `/v1/commands/${commandId}`, pairing.accountId, pairing.macDeviceId
+    ), {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'completed' })
+    })
+    expect(statusOnlyResponse.status).toBe(200)
+    const completed = await statusOnlyResponse.json<CompanionEncryptedCommand>()
     expect(completed).toMatchObject({ commandId, status: 'completed', result: null })
   })
 
@@ -267,7 +334,7 @@ describe('companion relay', () => {
         commandId,
         protocolVersion: companionProtocolVersion,
         type: 'artifact.request-upload',
-        payload: { artifactId: 'artifact-1' },
+        payload: encryptedPayload,
         createdAt: new Date().toISOString()
       })
     })
@@ -288,9 +355,10 @@ describe('companion relay', () => {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${pairing.macToken}`,
-        'Content-Type': 'text/plain',
+        'Content-Type': 'application/octet-stream',
         'Content-Length': String(content.length),
-        'X-Content-SHA256': sha256
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
       },
       body: content
     })
@@ -307,9 +375,10 @@ describe('companion relay', () => {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${phone.deviceToken}`,
-        'Content-Type': 'text/plain',
+        'Content-Type': 'application/octet-stream',
         'Content-Length': String(content.length),
-        'X-Content-SHA256': sha256
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
       },
       body: content
     })
@@ -329,9 +398,10 @@ describe('companion relay', () => {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${phone.deviceToken}`,
-        'Content-Type': 'text/plain',
+        'Content-Type': 'application/octet-stream',
         'Content-Length': String(content.length),
-        'X-Content-SHA256': sha256
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
       },
       body: content
     })
@@ -341,9 +411,10 @@ describe('companion relay', () => {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${pairing.macToken}`,
-        'Content-Type': 'text/plain',
+        'Content-Type': 'application/octet-stream',
         'Content-Length': String(content.length),
-        'X-Content-SHA256': sha256
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
       },
       body: content
     })

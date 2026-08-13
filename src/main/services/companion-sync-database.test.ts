@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { CompanionCommand } from '../../shared/companion-sync'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 
 const temporaryDirectories: string[] = []
 
@@ -16,7 +17,7 @@ afterEach(() => {
 function createDatabase(): AppDatabase {
   const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-'))
   temporaryDirectories.push(directory)
-  return new AppDatabase(join(directory, 'app.sqlite'))
+  return createTestDatabase(join(directory, 'app.sqlite'))
 }
 
 describe('companion sync persistence', () => {

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AgentSessionUpdate, WorkAssistantImageAttachment } from '../../shared/contracts'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import type { DailyBriefingService } from './daily-briefing'
 import { GoalTrackingService } from './goal-tracking'
 import { MorningBriefingService } from './morning-briefing'
@@ -56,7 +57,7 @@ describe('Work Assistant task handoff', () => {
   it('starts a milestone conversation without requiring a daily briefing or completing it', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'work-assistant-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     const runtime = new OfflineRuntime()
     const goal = await new GoalTrackingService(database, runtime).createFromPrompt('vows', '建立社交媒体账号')
     const milestone = goal.milestones[0]
@@ -101,7 +102,7 @@ describe('Work Assistant task handoff', () => {
   it('persists image attachments and forwards them to the agent runtime', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'work-assistant-image-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     const runtime = new OfflineRuntime()
     const agent = new TestWorkAssistantAgent(() => ({ content: '已分析图片', proposals: [], linkedRunId: null }))
     const service = new MorningBriefingService(
@@ -132,7 +133,7 @@ describe('Work Assistant task handoff', () => {
   it('does not copy a previous Run link onto later conversation messages', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'work-assistant-run-link-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     const runtime = new OfflineRuntime()
     const now = '2026-08-10T00:00:00.000Z'
     database.createAgentRun({
@@ -179,7 +180,7 @@ describe('Work Assistant task handoff', () => {
   it('passes “跑一次每日总结” directly to the Agent and persists its ask_user buttons', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'work-assistant-briefing-confirm-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'test.sqlite'))
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
     const runtime = new OfflineRuntime()
     const agent = new TestWorkAssistantAgent((input) => ({
       content: '可以，我先请你确认。',

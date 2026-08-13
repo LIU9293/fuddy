@@ -1,0 +1,199 @@
+/* Conversation typography is intentionally one step larger than the dense app chrome. */
+.briefing-conversation .chat-turn-meta strong,
+.agent-run-thread .chat-turn-meta strong {
+  font-size: 12px;
+}
+
+.briefing-conversation .chat-turn-meta time,
+.agent-run-thread .chat-turn-meta time {
+  font-size: 12px;
+}
+
+.briefing-delivery-copy,
+.work-task-context,
+.agent-run-system-message {
+  font-size: 13px;
+}
+
+.briefing-conversation .chat-bubble,
+.briefing-conversation .chat-markdown,
+.agent-run-thread .chat-bubble,
+.agent-run-thread .chat-turn-content > .chat-markdown {
+  font-size: 14px;
+}
+
+.agent-thinking-marker-content > strong,
+.agent-tool-call-preview,
+.agent-tool-call-summary small,
+.agent-tool-call-group-summary small,
+.agent-tool-call-detail pre,
+.agent-tool-call-group-detail > pre {
+  font-size: 12px;
+}
+
+.agent-thinking-marker .chat-markdown,
+.agent-tool-call-summary strong,
+.agent-tool-call-group-summary strong {
+  font-size: 12px;
+}
+
+.composer-textarea {
+  font-size: 14px;
+}
+
+.composer-image-error,
+.composer .select-menu-trigger,
+.composer .select-menu-option {
+  font-size: 12px;
+}
+
+.chat-attachment-list {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.chat-attachment-list span {
+  display: inline-flex;
+  max-width: 280px;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  overflow: hidden;
+  border-radius: 7px;
+  color: #e9ebf3;
+  background: rgba(255, 255, 255, .11);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  .composer-model-label { color: #aaa9a3; background: rgba(255, 255, 248, .07); }
+  .agent-run-page-header {
+    border-bottom-color: rgba(255, 255, 248, .08);
+    background: #171816;
+  }
+  .agent-runs-sidebar-header button { color: #aaa9a3; }
+  .agent-runs-sidebar-header button:hover,
+  .agent-runs-sidebar-list > button:hover,
+  .agent-runs-sidebar-list > button.is-active { color: white; background: rgba(255, 255, 248, 0.08); }
+  .agent-runs-sidebar-header strong,
+  .agent-runs-sidebar-copy strong,
+  .agent-run-page-header strong { color: #ededeb; }
+  .agent-runs-sidebar-new { color: #20211f; background: #ededeb; }
+  .agent-runs-sidebar-label,
+  .agent-runs-sidebar-copy small,
+  .agent-runs-sidebar-copy > span,
+  .agent-run-page-header small { color: #969690; }
+  .agent-run-actions-trigger { color: #aaa9a3; }
+  .agent-run-info-toggle { color: #aaa9a3; }
+  .agent-run-actions-trigger:hover,
+  .agent-run-actions-menu.is-open .agent-run-actions-trigger,
+  .agent-run-info-toggle:hover,
+  .agent-run-info-toggle.is-active { color: #ededeb; background: rgba(255, 255, 248, .08); }
+  .agent-run-actions-popover { border-color: rgba(255, 255, 248, .1); background: #282926; box-shadow: 0 12px 30px rgba(0, 0, 0, .3); }
+  .agent-run-actions-popover button { color: #d7d7d2; }
+  .agent-run-actions-popover button:hover { background: rgba(255, 255, 248, .07); }
+  .agent-run-rename-form input { border-color: rgba(255, 255, 248, .15); color: #ededeb; background: #232421; }
+  .agent-run-rename-form button { color: #c5c5c0; background: rgba(255, 255, 248, .08); }
+  .agent-session-rename-backdrop { background: rgba(0, 0, 0, .38); }
+  .agent-session-rename-dialog { border-color: rgba(255, 255, 248, .1); background: #252623; box-shadow: 0 24px 70px rgba(0, 0, 0, .42); }
+  .agent-session-rename-dialog strong { color: #ededeb; }
+  .agent-session-rename-dialog input { border-color: rgba(255, 255, 248, .14); color: #ededeb; background: #1f201e; }
+  .agent-session-rename-dialog button { color: #c8c8c3; background: rgba(255, 255, 248, .08); }
+  .agent-session-rename-dialog button[type="submit"] { color: #20211f; background: #ededeb; }
+  .agent-run-info-sidebar { border-left-color: rgba(255, 255, 248, .09); background: rgba(35, 36, 33, .98); }
+  .agent-run-info-header,
+  .agent-run-info-tabs,
+  .agent-run-info-section,
+  .agent-run-file-preview-title { border-color: rgba(255, 255, 248, .08); }
+  .agent-run-info-header strong,
+  .agent-run-project-name > strong,
+  .agent-run-info-artifacts strong,
+  .agent-run-workspace-summary strong { color: #deded9; }
+  .agent-run-info-header > button,
+  .agent-run-info-section-title > button,
+  .agent-run-info-section-title,
+  .agent-run-info-header small,
+  .agent-run-info-empty,
+  .agent-run-info-note,
+  .agent-run-project-name > small,
+  .agent-run-project-summary dt,
+  .agent-run-workspace-summary,
+  .agent-run-workspace-summary code,
+  .agent-run-meta-grid small { color: #8f8f89; }
+  .agent-run-info-header > button:hover,
+  .agent-run-info-section-title > button:hover,
+  .agent-run-info-artifacts > button:hover { color: #deded9; background: rgba(255, 255, 248, .065); }
+  .agent-run-info-section-title > small,
+  .agent-run-meta-grid > span { background: rgba(255, 255, 248, .055); }
+  .agent-run-git-heading > span,
+  .agent-run-project-summary dd,
+  .agent-run-project-summary > p,
+  .agent-run-change-list > div,
+  .agent-run-meta-grid strong { color: #babbb5; }
+  .agent-run-git-stats { border-color: rgba(255, 255, 248, .08); background: rgba(255, 255, 248, .035); }
+  .agent-run-git-stats > span + span { border-left-color: rgba(255, 255, 248, .08); }
+  .agent-run-git-stats .is-addition strong { color: #72bd93; }
+  .agent-run-git-stats .is-deletion strong { color: #df8880; }
+  .agent-run-info-backdrop { background: rgba(0, 0, 0, .28); }
+  .agent-run-info-tabs > button { color: #8f8f89; }
+  .agent-run-info-tabs > button.is-active { color: #deded9; }
+  .agent-run-info-tabs > button.is-active::after { background: #c7c7c2; }
+  .agent-run-file-preview-header > button { color: #aaa9a3; }
+  .agent-run-file-preview-header > button:hover { color: #deded9; background: rgba(255, 255, 248, .065); }
+  .agent-run-file-preview-title { color: #aaa9a3; }
+  .agent-run-file-preview-title strong,
+  .agent-run-markdown-preview .chat-markdown { color: #d7d7d2; }
+  .agent-run-text-preview,
+  .agent-run-image-preview { border-color: rgba(255, 255, 248, .08); background: rgba(255, 255, 248, .035); }
+  .agent-run-text-preview { color: #c4c4bf; }
+  .agent-run-file-preview-state > button { color: #c7c7c2; background: rgba(255, 255, 248, .075); }
+  .agent-run-thread .chat-turn-content > .chat-markdown { color: #d9d9d5; }
+  .agent-run-composer-dock { background: transparent; }
+  .chat-scroll-to-latest {
+    border-color: rgba(255, 255, 248, .12);
+    color: #d0d0cb;
+    background: rgba(44, 45, 42, .92);
+    box-shadow: 0 6px 22px rgba(0, 0, 0, .3);
+  }
+  .chat-scroll-to-latest:hover { color: #fff; background: #353633; }
+  .agent-run-queued-message {
+    border-color: rgba(255,255,255,.08);
+    background: rgba(255,255,255,.045);
+    color: #d0d0cb;
+  }
+  .agent-run-system-message { border-color: rgba(220, 102, 94, .2); color: #e08b84; background: rgba(190, 76, 70, .1); }
+  .agent-run-thread .chat-markdown hr { border-top-color: rgba(255, 255, 248, .12); }
+  .chat-turn-hover-actions { color: #8f8f89; }
+  .chat-turn-hover-actions button:hover { color: #deded9; background: rgba(255, 255, 248, .07); }
+  .agent-thinking-marker { color: #aaaeb9; }
+  .agent-thinking-marker-content > strong { color: #bcc1cd; }
+  .agent-thinking-marker .chat-markdown { color: #aaaeb9; }
+  .agent-thinking-marker.is-running .agent-thinking-marker-content > strong,
+  .agent-thinking-marker.is-running .chat-markdown {
+    background-image: linear-gradient(90deg, #9297a3 0%, #9297a3 38%, #ffffff 50%, #9297a3 62%, #9297a3 100%);
+  }
+  .agent-tool-call,
+  .agent-tool-call-group { border: 0; background: transparent; color: #aaa9a3; }
+  .agent-tool-call.is-running,
+  .agent-tool-call-group.is-running { color: #90a9e2; background: transparent; box-shadow: none; }
+  .agent-tool-call.is-failed,
+  .agent-tool-call-group.is-failed { color: #df8880; background: transparent; }
+  .agent-tool-call-summary:hover,
+  .agent-tool-call-group-summary:hover { color: #d6d6d1; background: transparent; }
+  .agent-tool-call-summary strong,
+  .agent-tool-call-group-summary strong { color: #d0d0cb; }
+  .agent-tool-call-preview,
+  .agent-tool-call-summary small,
+  .agent-tool-call-detail pre { color: #969690; }
+  .agent-tool-call-detail,
+  .agent-tool-call-group-detail { border-color: rgba(255, 255, 248, .1); }
+  .agent-tool-call-group-detail > .agent-tool-call + .agent-tool-call { border: 0; }
+  .agent-tool-call-group-detail > pre { color: #969690; }
+  .agent-process-disclosure > button { color: #8f8f89; }
+  .agent-process-disclosure > button:hover { color: #d2d2cd; }
+}

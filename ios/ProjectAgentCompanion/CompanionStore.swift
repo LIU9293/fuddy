@@ -491,10 +491,6 @@ final class CompanionStore: ObservableObject {
                 persistCache()
             }
         }
-        if let command = envelope.command,
-           let commandError = applyCommandResult(command) {
-            operationError = commandError
-        }
         if envelope.type == "presence.updated" { return }
         await sync()
     }
@@ -624,8 +620,8 @@ final class CompanionStore: ObservableObject {
     private func seedDesignPreview() {
         let now = "2026-08-08T03:40:00.000Z"
         state.projects = [Project(
-            id: "roombase",
-            name: "Roombase",
+            id: "sample-project",
+            name: "示例项目",
             summary: "空间与服务预订平台",
             focus: "处理平台入驻与上线事项",
             status: "active",
@@ -635,11 +631,11 @@ final class CompanionStore: ObservableObject {
                 stage: "Growth",
                 mission: "",
                 vision: "",
-                repoPath: "/Users/kai/Code/shopmy",
-                workspaceRoots: [ProjectWorkspaceRoot(id: "primary", label: "Shopmy", path: "/Users/kai/Code/shopmy")],
+                repoPath: "/Users/demo/Code/sample-project",
+                workspaceRoots: [ProjectWorkspaceRoot(id: "primary", label: "示例项目", path: "/Users/demo/Code/sample-project")],
                 primaryWorkspaceRootId: "primary",
                 defaultAgent: "claude",
-                websiteUrl: "https://roombase.cn",
+                websiteUrl: "https://example.com",
                 surfaces: ["商家工作台", "用户端小程序"],
                 focusAreas: ["平台入驻", "支付与结算"],
                 dataSources: ["Production PostgreSQL", "Cloudflare Analytics"],
@@ -656,7 +652,7 @@ final class CompanionStore: ObservableObject {
             body: """
             ## 今天需要关注
 
-            **Roombase** 有 4 个小程序入驻仍在等待平台处理，最老一项已经等待 72.8 天。建议先确认各条记录卡在哪个审核节点，再决定是否需要人工跟进平台。
+            **示例项目** 有 4 个渠道申请仍在等待平台处理，最老一项已经等待 72.8 天。建议先确认各条记录卡在哪个审核节点，再决定是否需要人工跟进平台。
 
             ## 已恢复
 
@@ -668,7 +664,7 @@ final class CompanionStore: ObservableObject {
             2. 核对首次预订下降是否集中在特定来源或门店。
             3. 保持支付回调监控，暂不新增动作。
             """,
-            narration: "早上好。今天先处理两个需要你介入的事项。Roombase 有四个小程序入驻仍在等待平台处理，最老一项已经等待七十二点八天，建议先确认它们分别卡在哪个审核节点。昨日的支付回调监控已经恢复稳定，当前没有新的失败记录，可以继续观察。",
+            narration: "早上好。今天先处理两个需要你介入的事项。示例项目有四个渠道申请仍在等待平台处理，最老一项已经等待七十二点八天，建议先确认它们分别卡在哪个审核节点。昨日的支付回调监控已经恢复稳定，当前没有新的失败记录，可以继续观察。",
             estimatedDurationSeconds: 82,
             sourceBriefingIds: [],
             signalIds: [],
@@ -692,17 +688,17 @@ final class CompanionStore: ObservableObject {
             WorkAssistantMessage(
                 id: "assistant-preview-reply",
                 role: "assistant",
-                content: "Roombase 的平台入驻等待时间最长，建议先确认这 4 条记录当前卡在哪个审核节点。",
+                content: "示例项目的平台申请等待时间最长，建议先确认这 4 条记录当前卡在哪个审核节点。",
                 createdAt: "2026-08-08T03:42:00.000Z"
             )
         ]
-        state.decisions = [Decision(id: "decision-preview", projectId: "roombase", title: "Roombase 有长期等待平台处理的入驻事项", summary: "当前 4 个小程序入驻等待平台处理，最老一项已等待 72.8 天。", impact: "可能延迟商家上线", urgency: "high", status: "inbox", source: "每日巡检", createdAt: now)]
+        state.decisions = [Decision(id: "decision-preview", projectId: "sample-project", title: "示例项目有长期等待平台处理的申请", summary: "当前 4 个渠道申请等待平台处理，最老一项已等待 72.8 天。", impact: "可能延迟项目上线", urgency: "high", status: "inbox", source: "每日巡检", createdAt: now)]
         state.runs = [
             RunDetail(
-                run: AgentRun(id: "run-preview", projectId: "roombase", provider: "claude", title: "分析长期等待平台处理的入驻事项", status: "running", workingDirectory: "/Users/kai/Code/shopmy", summary: "", createdAt: now, updatedAt: now),
+                run: AgentRun(id: "run-preview", projectId: "sample-project", provider: "claude", title: "分析长期等待平台处理的申请", status: "running", workingDirectory: "/Users/demo/Code/sample-project", summary: "", createdAt: now, updatedAt: now),
                 messages: [
                     AgentMessage(id: "reasoning-1", runId: "run-preview", role: "assistant", content: "我先确认项目的工作区说明和入驻数据所在位置。", eventType: "reasoning", toolName: nil, createdAt: now),
-                    AgentMessage(id: "tool-1", runId: "run-preview", role: "tool", content: "{\"file_path\":\"/Users/kai/Code/shopmy/AGENTS.md\"}", eventType: "tool", toolName: "Read", createdAt: now),
+                    AgentMessage(id: "tool-1", runId: "run-preview", role: "tool", content: "{\"file_path\":\"/Users/demo/Code/sample-project/AGENTS.md\"}", eventType: "tool", toolName: "Read", createdAt: now),
                     AgentMessage(id: "tool-2", runId: "run-preview", role: "tool", content: "{\"command\":\"rg onboarding packages/api\"}", eventType: "tool", toolName: "Bash", createdAt: now),
                     AgentMessage(id: "reasoning-2", runId: "run-preview", role: "assistant", content: "已经找到生产库连接方式，接下来核对这 4 条入驻记录。", eventType: "reasoning", toolName: nil, createdAt: now),
                     AgentMessage(id: "tool-3", runId: "run-preview", role: "tool", content: "{\"command\":\"pnpm db:query onboarding\"}", eventType: "tool", toolName: "Bash", createdAt: now)
@@ -710,7 +706,7 @@ final class CompanionStore: ObservableObject {
                 artifacts: []
             ),
             RunDetail(
-                run: AgentRun(id: "run-preview-completed", projectId: "roombase", provider: "codex", title: "汇总平台入驻状态", status: "idle", workingDirectory: "/Users/kai/Code/shopmy", summary: "已核对 3 条入驻记录", createdAt: now, updatedAt: now),
+                run: AgentRun(id: "run-preview-completed", projectId: "sample-project", provider: "codex", title: "汇总平台申请状态", status: "idle", workingDirectory: "/Users/demo/Code/sample-project", summary: "已核对 3 条申请记录", createdAt: now, updatedAt: now),
                 messages: [
                     AgentMessage(id: "completed-reasoning", runId: "run-preview-completed", role: "assistant", content: "我先核对入驻记录和最近一次平台回执。", eventType: "reasoning", toolName: nil, createdAt: "2026-08-08T03:40:01.000Z"),
                     AgentMessage(id: "completed-tool", runId: "run-preview-completed", role: "tool", content: "{\"command\":\"pnpm db:query onboarding\"}", eventType: "tool", toolName: "Bash", createdAt: "2026-08-08T03:40:12.000Z"),
@@ -719,8 +715,8 @@ final class CompanionStore: ObservableObject {
 
                     | 项目 | 状态 | 等待时间 |
                     | :--- | :---: | ---: |
-                    | Roombase | 待平台处理 | 3 天 |
-                    | Vows | 已通过 | 1 天 |
+                    | 示例项目 | 待平台处理 | 3 天 |
+                    | 活动项目 | 已通过 | 1 天 |
                     | Studio | 需补充资料 | 5 天 |
                     """, eventType: nil, toolName: nil, createdAt: "2026-08-08T03:41:05.000Z")
                 ],

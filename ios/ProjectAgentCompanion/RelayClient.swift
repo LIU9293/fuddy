@@ -64,7 +64,9 @@ final class RelayClient {
             relayURL: pairing.relayUrl,
             accountID: result.accountId,
             deviceID: result.device.id,
-            deviceToken: result.deviceToken
+            deviceToken: result.deviceToken,
+            encryptionKey: pairing.encryptionKey,
+            encryptionKeyId: pairing.encryptionKeyId
         )
     }
 
@@ -73,7 +75,43 @@ final class RelayClient {
         components.queryItems?.append(URLQueryItem(name: "after", value: String(after)))
         let (data, response) = try await session.data(for: authorizedRequest(url: components.url!))
         try Self.validate(response: response, data: data)
-        return try JSONDecoder().decode(SyncEventPage.self, from: data)
+        let encrypted = try JSONDecoder().decode(EncryptedSyncEventPage.self, from: data)
+        let key = try encryptionKey()
+        let events = try encrypted.events.map { event in
+            let associatedData = CompanionCrypto.eventAssociatedData(
+                eventId: event.eventId,
+                protocolVersion: event.protocolVersion,
+                type: event.type,
+                entityType: event.entityType,
+                entityId: event.entityId,
+                revision: event.revision,
+                occurredAt: event.occurredAt
+            )
+            return SyncEvent(
+                eventId: event.eventId,
+                sequence: event.sequence,
+                protocolVersion: event.protocolVersion,
+                type: event.type,
+                entityType: event.entityType,
+                entityId: event.entityId,
+                revision: event.revision,
+                payload: try CompanionCrypto.openJSON(
+                    JSONValue.self,
+                    envelope: event.payload,
+                    key: key,
+                    associatedData: associatedData
+                ),
+                sourceDeviceId: event.sourceDeviceId,
+                occurredAt: event.occurredAt
+            )
+        }
+        return SyncEventPage(
+            minimumProtocolVersion: encrypted.minimumProtocolVersion,
+            protocolVersion: encrypted.protocolVersion,
+            events: events,
+            lastSequence: encrypted.lastSequence,
+            presence: encrypted.presence
+        )
     }
 
     func sendCommand<Payload: Codable>(
@@ -81,12 +119,24 @@ final class RelayClient {
         type: CompanionCommandType,
         payload: Payload
     ) async throws -> CommandResult {
-        let command = CommandInput(
+        let createdAt = ISO8601DateFormatter().string(from: Date())
+        let key = try encryptionKey()
+        let encryptedPayload = try CompanionCrypto.sealJSON(
+            payload,
+            key: key,
+            associatedData: CompanionCrypto.commandAssociatedData(
+                commandId: commandID,
+                protocolVersion: companionProtocolVersion,
+                type: type,
+                createdAt: createdAt
+            )
+        )
+        let command = EncryptedCommandInput(
             commandId: commandID,
             protocolVersion: companionProtocolVersion,
             type: type,
-            payload: payload,
-            createdAt: ISO8601DateFormatter().string(from: Date())
+            payload: encryptedPayload,
+            createdAt: createdAt
         )
         var request = authorizedRequest(url: authenticatedComponents(path: "/v1/commands").url!)
         request.httpMethod = "POST"
@@ -94,7 +144,14 @@ final class RelayClient {
         request.httpBody = try JSONEncoder().encode(command)
         let (data, response) = try await session.data(for: request)
         try Self.validate(response: response, data: data)
-        return try JSONDecoder().decode(CommandResult.self, from: data)
+        let encrypted = try JSONDecoder().decode(EncryptedCommandResult.self, from: data)
+        return CommandResult(
+            commandId: encrypted.commandId,
+            type: encrypted.type,
+            status: encrypted.status,
+            result: nil,
+            error: nil
+        )
     }
 
     func registerPushToken(_ token: String) async throws {
@@ -108,12 +165,22 @@ final class RelayClient {
 
     func uploadAttachment(_ attachment: PendingAttachment) async throws -> AttachmentDescriptor {
         let digest = SHA256.hash(data: attachment.data).map { String(format: "%02x", $0) }.joined()
+        let sealed = try CompanionCrypto.sealAttachment(
+            attachment.data,
+            key: encryptionKey(),
+            associatedData: CompanionCrypto.attachmentAssociatedData(
+                accountId: credentials.accountID,
+                attachmentId: attachment.id
+            )
+        )
+        let encryptedDigest = SHA256.hash(data: sealed).map { String(format: "%02x", $0) }.joined()
         var request = authorizedRequest(url: authenticatedComponents(path: "/v1/attachments/\(attachment.id)").url!)
         request.httpMethod = "PUT"
-        request.setValue(attachment.mimeType, forHTTPHeaderField: "Content-Type")
-        request.setValue(String(attachment.data.count), forHTTPHeaderField: "Content-Length")
-        request.setValue(digest, forHTTPHeaderField: "X-Content-SHA256")
-        let (data, response) = try await session.upload(for: request, from: attachment.data)
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue(String(sealed.count), forHTTPHeaderField: "Content-Length")
+        request.setValue(encryptedDigest, forHTTPHeaderField: "X-Content-SHA256")
+        request.setValue("A256GCM", forHTTPHeaderField: "X-Companion-Encryption")
+        let (data, response) = try await session.upload(for: request, from: sealed)
         try Self.validate(response: response, data: data)
         return AttachmentDescriptor(
             id: attachment.id,
@@ -132,16 +199,21 @@ final class RelayClient {
 
     func downloadAttachment(_ attachment: AttachmentDescriptor) async throws -> URL {
         let url = authenticatedComponents(path: "/v1/attachments/\(attachment.id)").url!
-        let (temporaryURL, response) = try await session.download(for: authorizedRequest(url: url))
-        try Self.validate(response: response, data: Data())
-        let downloadedSize = try temporaryURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        guard downloadedSize == attachment.size else {
-            try? FileManager.default.removeItem(at: temporaryURL)
+        let (sealed, response) = try await session.data(for: authorizedRequest(url: url))
+        try Self.validate(response: response, data: sealed)
+        let plaintext = try CompanionCrypto.openAttachment(
+            sealed,
+            key: encryptionKey(),
+            associatedData: CompanionCrypto.attachmentAssociatedData(
+                accountId: credentials.accountID,
+                attachmentId: attachment.id
+            )
+        )
+        guard plaintext.count == attachment.size else {
             throw RelayError.integrity("附件大小不一致。")
         }
-        let downloadedHash = try Self.sha256(of: temporaryURL)
+        let downloadedHash = SHA256.hash(data: plaintext).map { String(format: "%02x", $0) }.joined()
         guard downloadedHash.caseInsensitiveCompare(attachment.sha256) == .orderedSame else {
-            try? FileManager.default.removeItem(at: temporaryURL)
             throw RelayError.integrity("附件校验失败。")
         }
         let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -150,7 +222,7 @@ final class RelayClient {
         let safeFilename = URL(fileURLWithPath: attachment.filename).lastPathComponent
         let destination = directory.appendingPathComponent("\(attachment.id)-\(safeFilename)")
         try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: temporaryURL, to: destination)
+        try plaintext.write(to: destination, options: .atomic)
         return destination
     }
 
@@ -254,6 +326,14 @@ final class RelayClient {
         @unknown default: return nil
         }
         return try? JSONDecoder().decode(SocketEnvelope.self, from: data)
+    }
+
+    private func encryptionKey() throws -> String {
+        guard let key = credentials.encryptionKey, !key.isEmpty,
+              let keyId = credentials.encryptionKeyId, !keyId.isEmpty else {
+            throw RelayError.integrity("Companion 端到端加密密钥不存在，请重新配对。")
+        }
+        return key
     }
 
     private func scheduleReconnect() {

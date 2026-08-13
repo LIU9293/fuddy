@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 
 let database: AppDatabase | null = null
 let temporaryDirectory = ''
@@ -34,7 +35,7 @@ describe('project settings persistence', () => {
     `)
     legacyDatabase.close()
 
-    database = new AppDatabase(path)
+    database = createTestDatabase(path)
     const project = database.listProjects()[0]
     expect(project?.icon).toBeNull()
     expect(database.updateProject({ ...project!, icon: '🚀' }).icon).toBe('🚀')
@@ -43,7 +44,7 @@ describe('project settings persistence', () => {
   it('keeps an edited project profile after the database is reopened', () => {
     temporaryDirectory = mkdtempSync(join(tmpdir(), 'project-agent-settings-'))
     const path = join(temporaryDirectory, 'app.sqlite')
-    database = new AppDatabase(path)
+    database = createTestDatabase(path)
     const roombase = database.listProjects().find((project) => project.id === 'roombase')
     expect(roombase).toBeDefined()
 
@@ -66,7 +67,7 @@ describe('project settings persistence', () => {
       }
     })
     database.close()
-    database = new AppDatabase(path)
+    database = createTestDatabase(path)
 
     const reopened = database.listProjects().find((project) => project.id === 'roombase')
     expect(reopened?.summary).toBe('更新后的项目介绍')
@@ -85,7 +86,7 @@ describe('project settings persistence', () => {
   it('persists multiple workspace roots and keeps repo compatibility on the primary root', () => {
     temporaryDirectory = mkdtempSync(join(tmpdir(), 'project-agent-workspaces-'))
     const path = join(temporaryDirectory, 'app.sqlite')
-    database = new AppDatabase(path)
+    database = createTestDatabase(path)
     const roombase = database.listProjects().find((project) => project.id === 'roombase')!
 
     const updated = database.updateProject({

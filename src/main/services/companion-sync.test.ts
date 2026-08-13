@@ -2,7 +2,14 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import type { CompanionCommand, CompanionMacConfiguration, CompanionSyncEventInput } from '../../shared/companion-sync'
+import type { CompanionCommand, CompanionEncryptedCommand, CompanionMacConfiguration, CompanionSyncEventInput } from '../../shared/companion-sync'
+import { companionProtocolVersion } from '../../shared/companion-sync'
+import {
+  companionAccountKeyId,
+  companionCommandAssociatedData,
+  generateCompanionAccountKey,
+  sealCompanionJson
+} from '../../shared/companion-crypto'
 import type { AgentRunMessage } from '../../shared/contracts'
 import {
   companionAgentMessageForRelay,
@@ -24,10 +31,31 @@ import {
 } from './companion-sync'
 import type { CredentialVault } from './credential-vault'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import type { TaskDispatcher } from './task-dispatcher'
 import { WorkspaceFilesService } from './workspace-files'
 
 const directories: string[] = []
+const testEncryptionKey = generateCompanionAccountKey()
+
+async function encryptedCommand(command: CompanionCommand): Promise<CompanionEncryptedCommand> {
+  return {
+    ...command,
+    payload: await sealCompanionJson(
+      testEncryptionKey,
+      command.payload,
+      companionCommandAssociatedData(command)
+    ),
+    result: null,
+    error: null
+  }
+}
+
+function testCredentials(): CredentialVault {
+  return {
+    get: (reference: string) => reference.startsWith('companion.account-key:') ? testEncryptionKey : 'test-token'
+  } as unknown as CredentialVault
+}
 
 afterAll(() => {
   vi.unstubAllGlobals()
@@ -52,7 +80,7 @@ describe('Companion sync transport policy', () => {
   it('partitions relay events by count and serialized byte size', () => {
     const event = (index: number, payload = 'small'): CompanionSyncEventInput => ({
       eventId: `event-${index}`,
-      protocolVersion: 1 as const,
+      protocolVersion: companionProtocolVersion,
       type: 'agent-message.created',
       entityType: 'agent-message' as const,
       entityId: `message-${index}`,
@@ -129,7 +157,7 @@ describe('Companion sync transport policy', () => {
     expect(companionCommandRecovery('failed')).toBe('ack-terminal')
   })
 
-  it('keeps full command results local unless iPhone needs the artifact descriptor', () => {
+  it('keeps every command result behind the encrypted event channel', () => {
     const largeResult = { detail: 'x'.repeat(3 * 1024 * 1024) }
     expect(companionCommandUpdateForRelay('agent.send-message', {
       status: 'completed',
@@ -138,23 +166,22 @@ describe('Companion sync transport policy', () => {
     expect(companionCommandUpdateForRelay('artifact.request-upload', {
       status: 'completed',
       result: largeResult
-    })).toEqual({ status: 'completed', result: largeResult })
+    })).toEqual({ status: 'completed' })
   })
 
   it('continues publishing Agent progress while a remote turn is still running', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-sync-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'app.sqlite'))
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
     const configuration: CompanionMacConfiguration = {
       relayUrl: 'https://relay.example.com',
       accountId: 'test-account',
       macDeviceId: 'test-mac',
-      pairedAt: new Date().toISOString()
+      pairedAt: new Date().toISOString(),
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
     }
     database.setSetting('companion.mac-configuration', configuration)
-    const credentials = {
-      get: () => 'test-token'
-    } as unknown as CredentialVault
+    const credentials = testCredentials()
     let finishTurn: (() => void) | undefined
     const turn = new Promise<void>((resolve) => { finishTurn = resolve })
     const sendMessage = vi.fn(() => turn)
@@ -162,7 +189,7 @@ describe('Companion sync transport policy', () => {
     const now = new Date().toISOString()
     const command: CompanionCommand = {
       commandId: 'remote-agent-message',
-      protocolVersion: 1,
+      protocolVersion: companionProtocolVersion,
       type: 'agent.send-message',
       payload: {
         runId: 'run-from-phone',
@@ -176,13 +203,14 @@ describe('Companion sync transport policy', () => {
       createdAt: now,
       updatedAt: now
     }
+    const wireCommand = await encryptedCommand(command)
     let remoteStatus: CompanionCommand['status'] = 'queued'
     const publishedEventTypes: string[] = []
     const fetchMock = vi.fn(async (input: string | URL, init: RequestInit = {}) => {
       const url = new URL(String(input))
       const method = init.method ?? 'GET'
       if (url.pathname === '/v1/commands/pending' && method === 'GET') {
-        return jsonResponse({ commands: remoteStatus === 'queued' ? [command] : [] })
+        return jsonResponse({ commands: remoteStatus === 'queued' ? [wireCommand] : [] })
       }
       if (url.pathname === `/v1/commands/${command.commandId}` && method === 'PATCH') {
         const update = JSON.parse(String(init.body)) as { status: CompanionCommand['status'] }
@@ -234,7 +262,7 @@ describe('Companion sync transport policy', () => {
   it('uploads a project-file artifact when iPhone requests it', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-artifact-'))
     directories.push(directory)
-    const database = new AppDatabase(join(directory, 'app.sqlite'))
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
     const files = new WorkspaceFilesService(database, join(directory, 'project-files'))
     files.write('vows', 'notes/launch.md', '# Launch')
     const now = new Date().toISOString()
@@ -266,13 +294,14 @@ describe('Companion sync transport policy', () => {
       relayUrl: 'https://relay.example.com',
       accountId: 'test-account',
       macDeviceId: 'test-mac',
-      pairedAt: now
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
     }
     database.setSetting('companion.mac-configuration', configuration)
-    const credentials = { get: () => 'test-token' } as unknown as CredentialVault
+    const credentials = testCredentials()
     const command: CompanionCommand = {
       commandId: 'request-project-artifact',
-      protocolVersion: 1,
+      protocolVersion: companionProtocolVersion,
       type: 'artifact.request-upload',
       payload: { artifactId: 'artifact-from-project-files' },
       sourceDeviceId: 'test-phone',
@@ -282,8 +311,8 @@ describe('Companion sync transport policy', () => {
       createdAt: now,
       updatedAt: now
     }
+    const wireCommand = await encryptedCommand(command)
     let remoteStatus: CompanionCommand['status'] = 'queued'
-    let completedResult: Record<string, unknown> | undefined
     let uploaded = false
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
       const url = new URL(String(input))
@@ -296,20 +325,19 @@ describe('Companion sync transport policy', () => {
         }, 201)
       }
       if (url.pathname === '/v1/commands/pending' && method === 'GET') {
-        return jsonResponse({ commands: remoteStatus === 'queued' ? [command] : [] })
+        return jsonResponse({ commands: remoteStatus === 'queued' ? [wireCommand] : [] })
       }
       if (url.pathname === `/v1/commands/${command.commandId}` && method === 'PATCH') {
         const update = JSON.parse(String(init.body)) as {
           status: CompanionCommand['status']
-          result?: Record<string, unknown>
         }
         remoteStatus = update.status
-        if (update.status === 'completed') completedResult = update.result
-        return jsonResponse({ ...command, status: remoteStatus, result: update.result ?? null })
+        return jsonResponse({ ...wireCommand, status: remoteStatus })
       }
       if (url.pathname === '/v1/attachments/artifact-from-project-files' && method === 'PUT') {
         uploaded = true
-        expect(new Headers(init.headers).get('Content-Type')).toBe('text/markdown')
+        expect(new Headers(init.headers).get('Content-Type')).toBe('application/octet-stream')
+        expect(new Headers(init.headers).get('X-Companion-Encryption')).toBe('A256GCM')
         return jsonResponse({ accepted: true }, 201)
       }
       throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
@@ -328,7 +356,7 @@ describe('Companion sync transport policy', () => {
     await vi.waitFor(() => {
       expect(uploaded).toBe(true)
       expect(remoteStatus).toBe('completed')
-      expect(completedResult).toMatchObject({
+      expect(database.getCompanionCommand(command.commandId)?.result).toMatchObject({
         artifactId: 'artifact-from-project-files',
         attachment: {
           artifactId: 'artifact-from-project-files',

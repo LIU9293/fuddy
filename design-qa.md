@@ -58,6 +58,44 @@ final result: passed
 
 ---
 
+# Inbox and Settings Redesign QA · 2026-08-13
+
+- Source visual truth: `/Users/kai/Code/ai-native-project-agent/design/audits/2026-08-13-settings-review/`
+- Implementation screenshots: `/Users/kai/Code/ai-native-project-agent/design/audits/2026-08-13-settings-review/implementation/`
+- Side-by-side comparisons: `/Users/kai/Code/ai-native-project-agent/design/audits/2026-08-13-settings-review/qa/`
+- Viewport: Electron development build, 1179 × 768 px, device scale 1, light mode.
+- Scope: global Decision Inbox, General, Models, Voice/TTS, and Permissions. Work Assistant and Agent Run were intentionally excluded.
+
+## Findings
+
+- Global Decision Inbox now uses the concise `收件箱` title and removes the global Goal tab. Project-scoped Goal navigation remains available.
+- Non-resolved inbox states use a five-column, list-first layout with clearer scanning and row-level actions. Resolved items retain evidence-oriented cards.
+- The empty-state badge is hidden when the inbox count is zero.
+- General settings removes dashboard-like summaries and presents Companion and local capabilities as operational rows with recovery and disclosure actions.
+- Models separates Work Assistant and Coding Agents into a segmented control and hides secondary configuration behind edit disclosure.
+- Voice/TTS separates Input and Output, keeps advanced input controls disclosed on demand, and presents primary/backup voices clearly.
+- Permissions replaces misleading toggles with a prominent Full Access policy banner and read-only capability rows.
+- No actionable P0, P1, or P2 visual or usability issues remain in the reviewed states.
+
+## Primary interactions tested
+
+- Switched through empty, ignored, and resolved inbox states.
+- Opened Work Assistant editing and the Coding Agents segment.
+- Switched between Voice Input and Voice Output and expanded advanced controls.
+- Verified General recovery/details/disconnect affordances and the Permissions policy presentation.
+- Verified keyboard-accessible buttons and disclosure controls remained interactive in the development build.
+
+## Verification
+
+- `npm run typecheck` passed.
+- `npm test` passed: 62 files passed, 6 skipped; 202 tests passed, 11 skipped.
+- `npm run build` passed.
+- `git diff --check` passed.
+
+final result: passed
+
+---
+
 # Fuddy App Icon Wordmark Scale Design QA
 
 ## Visual truth and captured states
@@ -592,6 +630,52 @@ The source and updated implementation were opened together in one comparison inp
 
 - TypeScript typecheck passed.
 - 104 unit tests passed; 9 existing environment-gated tests remained skipped.
+- `git diff --check` passed.
+
+final result: passed
+
+---
+
+# iOS/macOS Grouped Settings Design QA · 2026-08-13
+
+- Source visual truth: `/Users/kai/Code/ai-native-project-agent/design/audits/2026-08-13-settings-ios-grouped/source.png`
+- Implementation screenshots: `/Users/kai/Code/ai-native-project-agent/design/audits/2026-08-13-settings-ios-grouped/implementation/`
+- Full-view comparison: `/Users/kai/Code/ai-native-project-agent/design/audits/2026-08-13-settings-ios-grouped/qa/general-comparison.png`
+- Focused group comparison: `/Users/kai/Code/ai-native-project-agent/design/audits/2026-08-13-settings-ios-grouped/qa/general-group-comparison.png`
+- Source pixels: 1487 × 1058. Implementation pixels: 1179 × 768.
+- CSS viewport: Electron development window at 1179 × 768, device scale 1.
+- Density normalization: the source and implementation were both normalized to 768 px high for the full-view comparison while preserving aspect ratio. The source has a narrower aspect ratio; horizontal page proportions were judged relative to each content shell rather than from stretched pixels.
+- State: light mode, General settings, paired iPhone, realtime connected, pending-sync warning visible.
+
+## Full-view comparison evidence
+
+The implementation preserves the selected reference hierarchy: a large page title and concise summary, quiet group labels, inset rounded setting groups, a strong Companion summary row, compact device/relay/sync rows, an in-group amber recovery row, and a second local-capabilities group. The implementation intentionally retains the product's 820 px Chat content rail, so the group is narrower than the generated reference at its original desktop width.
+
+## Focused comparison evidence
+
+The focused Companion group comparison confirms consistent row padding, icon alignment, title/secondary-copy baselines, trailing status alignment, subtle separators, corner radius, and semantic warning treatment. Static rows omit chevrons when no detail destination exists; interactive recovery and menu controls retain clear affordances.
+
+## Findings
+
+- Fonts and typography: the implementation uses the existing Inter/SF/PingFang system stack with the selected 28 px page-title hierarchy, 12 px group labels, 13 px row titles, and 11.5 px secondary text. Weight, wrapping, and contrast remain readable at the development viewport.
+- Spacing and layout rhythm: all four Settings sections share the 820 px maximum content rail, 13 px group radius, 17 px horizontal row padding, consistent row gaps, and 31 px group separation. No arbitrary label/value columns remain.
+- Colors and visual tokens: neutral grouped surfaces, purple interactive accents, green ready states, and amber recovery states match the selected reference without gradients or heavy shadows.
+- Image quality and asset fidelity: the screen contains no raster content beyond the existing app wordmark. Existing Lucide icons remain vector-sharp and consistent with the repository's established icon system.
+- Copy and content: live device IDs, relay host, provider state, and pending-event counts come from the development database. Differences from the mock's sample values are expected dynamic data, not design drift.
+- No actionable P0, P1, or P2 visual or usability issues remain. No blocking visual-fix iteration was required after the normalized comparison; static rows intentionally avoid misleading chevrons.
+
+## Primary interactions tested
+
+- Opened General, Models, Voice/TTS, and Permissions through the Settings sidebar.
+- Switched Models between Work Assistant and Coding Agents.
+- Switched Voice/TTS between Voice Input and Voice Output.
+- Opened the iPhone Companion overflow menu without activating the destructive disconnect action.
+- Confirmed the development terminal reported no renderer console errors during the reviewed flow.
+
+## Verification
+
+- `npm test` passed: 62 files passed, 6 skipped; 202 tests passed, 11 skipped.
+- `npm run build` passed, including TypeScript typecheck.
 - `git diff --check` passed.
 
 final result: passed

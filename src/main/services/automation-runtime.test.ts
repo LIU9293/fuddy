@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SaveAutomationInput } from '../../shared/contracts'
 import { AutomationRuntime, type AutomationActions } from './automation-runtime'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 
 const temporaryDirectories: string[] = []
 
@@ -15,7 +16,7 @@ function setup(overrides: Partial<AutomationActions> = {}): {
 } {
   const directory = mkdtempSync(join(tmpdir(), 'project-agent-automation-'))
   temporaryDirectories.push(directory)
-  const database = new AppDatabase(join(directory, 'test.sqlite'))
+  const database = createTestDatabase(join(directory, 'test.sqlite'))
   const actions: AutomationActions = {
     runAgentTask: vi.fn().mockResolvedValue({ summary: 'Agent 完成', agentRunId: 'run-1' }),
     runConnectors: vi.fn().mockResolvedValue('巡检完成'),

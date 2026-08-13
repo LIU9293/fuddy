@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import { WorkspaceFilesService } from './workspace-files'
 
 const temporaryDirectories: string[] = []
@@ -17,7 +18,7 @@ afterEach(() => {
 function createWorkspace(): { database: AppDatabase; files: WorkspaceFilesService } {
   const directory = mkdtempSync(join(tmpdir(), 'project-agent-files-'))
   temporaryDirectories.push(directory)
-  const database = new AppDatabase(join(directory, 'test.sqlite'))
+  const database = createTestDatabase(join(directory, 'test.sqlite'))
   const files = new WorkspaceFilesService(database, join(directory, 'files'))
   return { database, files }
 }

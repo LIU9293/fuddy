@@ -1,0 +1,55 @@
+:root {
+  --page-header-height: 66px;
+  --page-header-padding-inline: 18px;
+  --page-header-gap: 18px;
+  --page-header-title-size: 12px;
+  --page-header-title-weight: 650;
+  --page-header-title-letter-spacing: 0;
+  --page-header-border-color: rgba(45, 45, 40, 0.075);
+  --page-header-background: #fff;
+  --page-header-title-color: #30302c;
+}
+
+/* Shared shell for top-level task pages. Page-specific styles only own unique content. */
+.app-page-header {
+  display: flex;
+  width: 100%;
+  min-height: var(--page-header-height);
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--page-header-gap);
+  padding: 0 var(--page-header-padding-inline);
+  border-bottom: 1px solid var(--page-header-border-color);
+  background: var(--page-header-background);
+  -webkit-app-region: drag;
+}
+
+.app-page-header .app-page-header-title {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--page-header-title-color);
+  font-size: var(--page-header-title-size);
+  font-weight: var(--page-header-title-weight);
+  letter-spacing: var(--page-header-title-letter-spacing);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-page-header button,
+.app-page-header input,
+.app-page-header textarea,
+.app-page-header select,
+.app-page-header a {
+  -webkit-app-region: no-drag;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page-header-border-color: rgba(255, 255, 248, 0.08);
+    --page-header-background: #171816;
+    --page-header-title-color: #ededeb;
+  }
+}

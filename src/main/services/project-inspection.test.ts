@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AppDatabase } from './database'
+import { createTestDatabase } from '../test-support/project-fixtures'
 import { ProjectInspectionService } from './project-inspection'
 import { WorkspaceFilesService } from './workspace-files'
 
@@ -20,7 +21,7 @@ describe('ProjectInspectionService', () => {
     mkdirSync(join(repository, 'assets'), { recursive: true })
     writeFileSync(join(repository, 'README.md'), '# Vows\n微信小程序婚礼产品。')
     writeFileSync(join(repository, 'assets', 'vows-logo.svg'), '<svg aria-label="Vows logo" />')
-    const database = new AppDatabase(join(root, 'app.sqlite'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
     const vows = database.listProjects().find((project) => project.id === 'vows')!
     database.updateProject({
       ...vows,

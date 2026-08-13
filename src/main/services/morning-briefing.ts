@@ -32,25 +32,6 @@ import type { WorkAssistantAgentRuntime } from './work-assistant-agent'
 const MAX_NARRATION_CHARACTERS = 620
 const CHINESE_CHARACTERS_PER_SECOND = 4
 
-function object(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {}
-}
-
-function number(value: unknown, fallback = 0): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
-}
-
-function metric(data: Record<string, unknown>, key: string): Record<string, unknown> {
-  return object(object(data.metrics)[key])
-}
-
-function pct(value: unknown): string {
-  const numeric = number(value)
-  return `${numeric > 0 ? '+' : ''}${numeric.toFixed(1)}%`
-}
-
 function shortenNarration(value: string): string {
   const compact = value.replace(/\s+/g, ' ').trim()
   if (compact.length <= MAX_NARRATION_CHARACTERS) return compact
@@ -74,7 +55,7 @@ function topDecisions(decisions: DecisionItem[]): DecisionItem[] {
 
 export function buildMorningBriefingContent(input: {
   reportDate: string
-  roombaseBriefing: DailyBriefing | null
+  projectBriefings?: DailyBriefing[]
   decisions: DecisionItem[]
   remediations?: DecisionRemediation[]
   projects: Project[]
@@ -85,16 +66,12 @@ export function buildMorningBriefingContent(input: {
   executionWindowStartAt?: string | null
   pulses?: ProjectPulse[]
 }): Pick<MorningBriefing, 'headline' | 'body' | 'narration' | 'estimatedDurationSeconds' | 'signalIds'> {
-  const { reportDate, roombaseBriefing, projects } = input
-  const metrics = roombaseBriefing?.metrics ?? null
-  let roombaseLine: string | null = null
-  if (metrics) {
-    const newUsers = metric(metrics, 'newUsers')
-    const firstBookings = metric(metrics, 'firstBookingUsers')
-    const bookings = metric(metrics, 'bookings')
-    const netPaid = metric(metrics, 'netPaidCny')
-    roombaseLine = `Roombase：新用户 ${number(newUsers.value)}，较 7 日均值 ${pct(newUsers.vsSevenDayAveragePct)}；首次预订用户 ${number(firstBookings.value)}，较基线 ${pct(firstBookings.vsSevenDayAveragePct)}；预订 ${number(bookings.value)}，净实收 ¥${number(netPaid.value).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}。`
-  }
+  const { reportDate, projects } = input
+  const projectBriefings = input.projectBriefings ?? []
+  const dataSummaries = Object.fromEntries(projectBriefings.map((briefing) => {
+    const projectName = projects.find((project) => project.id === briefing.projectId)?.name ?? briefing.projectId
+    return [briefing.projectId, `${projectName}：${briefing.headline}`]
+  }))
 
   const pulses = input.pulses ?? buildProjectPulses({
     projects,
@@ -103,8 +80,8 @@ export function buildMorningBriefingContent(input: {
     remediations: input.remediations ?? [],
     runs: input.runs ?? [],
     artifacts: input.artifacts ?? [],
-    projectBriefings: roombaseBriefing ? [roombaseBriefing] : [],
-    dataSummaries: roombaseLine ? { roombase: roombaseLine } : {},
+    projectBriefings,
+    dataSummaries,
     reportDate,
     generatedAt: input.generatedAt ?? `${reportDate}T16:00:00.000Z`,
     executionWindowStartAt: input.executionWindowStartAt
@@ -271,30 +248,32 @@ export class MorningBriefingService {
     } catch {
       // A goal check failure must not prevent the morning briefing from arriving.
     }
-    const projectResult = await this.dailyBriefingService.generate('roombase')
     try {
       await this.decisionRemediationService?.sync()
     } catch {
       // GitHub state is enrichment. Missing remote evidence must not erase the last verified state.
     }
     const projects = this.database.listProjects().filter((project) => project.status === 'active')
+    const postgresProjectIds = new Set(this.database.listConnectors()
+      .filter((connector) => connector.kind === 'postgres' && connector.enabled)
+      .map((connector) => connector.projectId))
+    const projectResults = await Promise.all(projects
+      .filter((project) => postgresProjectIds.has(project.id))
+      .map((project) => this.dailyBriefingService.generate(project.id)))
     const decisions = this.database.listDecisions()
     const remediations = this.database.listDecisionRemediations()
     const goals = this.database.listGoals()
     const runs = this.database.listRuns()
     const artifacts = runs.flatMap((run) => this.database.listAgentRunArtifacts(run.id))
-    const roombaseBriefing = projectResult.briefing.status === 'completed' ? projectResult.briefing : null
+    const projectBriefings = projectResults
+      .map((result) => result.briefing)
+      .filter((briefing) => briefing.status === 'completed')
     const previousMorningBriefing = this.database.listMorningBriefings()
       .find((item) => item.status === 'completed' && item.id !== `morning-${reportDate}`) ?? null
-    let roombaseLine: string | null = null
-    if (roombaseBriefing?.metrics) {
-      const data = roombaseBriefing.metrics
-      const newUsers = metric(data, 'newUsers')
-      const firstBookings = metric(data, 'firstBookingUsers')
-      const bookings = metric(data, 'bookings')
-      const netPaid = metric(data, 'netPaidCny')
-      roombaseLine = `Roombase：新用户 ${number(newUsers.value)}，较 7 日均值 ${pct(newUsers.vsSevenDayAveragePct)}；首次预订用户 ${number(firstBookings.value)}，较基线 ${pct(firstBookings.vsSevenDayAveragePct)}；预订 ${number(bookings.value)}，净实收 ¥${number(netPaid.value).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}。`
-    }
+    const dataSummaries = Object.fromEntries(projectBriefings.map((briefing) => {
+      const projectName = projects.find((project) => project.id === briefing.projectId)?.name ?? briefing.projectId
+      return [briefing.projectId, `${projectName}：${briefing.headline}`]
+    }))
     const pulses = buildProjectPulses({
       projects,
       goals,
@@ -302,15 +281,15 @@ export class MorningBriefingService {
       remediations,
       runs,
       artifacts,
-      projectBriefings: roombaseBriefing ? [roombaseBriefing] : [],
-      dataSummaries: roombaseLine ? { roombase: roombaseLine } : {},
+      projectBriefings,
+      dataSummaries,
       reportDate,
       generatedAt,
       executionWindowStartAt: previousMorningBriefing?.generatedAt ?? null
     })
     const deterministicContent = buildMorningBriefingContent({
       reportDate,
-      roombaseBriefing,
+      projectBriefings,
       decisions,
       remediations,
       projects,
@@ -343,12 +322,12 @@ export class MorningBriefingService {
       timezone: 'Asia/Shanghai',
       status: 'completed',
       ...content,
-      sourceBriefingIds: projectResult.briefing.status === 'completed' ? [projectResult.briefing.id] : [],
+      sourceBriefingIds: projectBriefings.map((briefing) => briefing.id),
       generatedAt,
-      error: projectResult.briefing.status === 'failed' ? projectResult.briefing.error : null,
+      error: projectResults.map((result) => result.briefing.error).filter(Boolean).join('；') || null,
       generation
     })
-    return { briefing, createdSignals: projectResult.createdSignals }
+    return { briefing, createdSignals: projectResults.flatMap((result) => result.createdSignals) }
   }
 
   async ask(

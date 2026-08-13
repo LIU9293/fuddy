@@ -35,6 +35,13 @@ describe('AppDatabase lifecycle', () => {
     reopened.close()
   })
 
+  it('starts a clean install without private or sample projects', () => {
+    const database = new AppDatabase(temporaryDatabasePath())
+    expect(database.listProjects()).toEqual([])
+    expect(database.listConnectors()).toEqual([])
+    database.close()
+  })
+
   it('rejects a newer database before seed or schema writes occur', () => {
     const path = temporaryDatabasePath()
     const future = new DatabaseSync(path)

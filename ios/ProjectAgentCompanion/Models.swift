@@ -15,6 +15,8 @@ struct PairingPayload: Codable {
     let relayUrl: String
     let accountId: String
     let pairingSecret: String
+    let encryptionKey: String
+    let encryptionKeyId: String
 }
 
 struct PairingClaimResult: Codable {
@@ -40,12 +42,38 @@ struct CompanionCredentials: Codable {
     let accountID: String
     let deviceID: String
     let deviceToken: String
+    let encryptionKey: String?
+    let encryptionKeyId: String?
+
+    init(
+        relayURL: String,
+        accountID: String,
+        deviceID: String,
+        deviceToken: String,
+        encryptionKey: String? = nil,
+        encryptionKeyId: String? = nil
+    ) {
+        self.relayURL = relayURL
+        self.accountID = accountID
+        self.deviceID = deviceID
+        self.deviceToken = deviceToken
+        self.encryptionKey = encryptionKey
+        self.encryptionKeyId = encryptionKeyId
+    }
 }
 
 struct SyncEventPage: Codable {
     let minimumProtocolVersion: Int?
     let protocolVersion: Int?
     let events: [SyncEvent]
+    let lastSequence: Int
+    let presence: CompanionPresence?
+}
+
+struct EncryptedSyncEventPage: Codable {
+    let minimumProtocolVersion: Int?
+    let protocolVersion: Int?
+    let events: [EncryptedSyncEvent]
     let lastSequence: Int
     let presence: CompanionPresence?
 }
@@ -71,10 +99,23 @@ struct SyncEvent: Codable, Identifiable {
     var id: String { eventId }
 }
 
+struct EncryptedSyncEvent: Codable {
+    let eventId: String
+    let sequence: Int
+    let protocolVersion: Int
+    let type: CompanionEventType
+    let entityType: String
+    let entityId: String
+    let revision: Int64
+    let payload: CompanionEncryptedEnvelope
+    let sourceDeviceId: String
+    let occurredAt: String
+}
+
 struct SocketEnvelope: Codable {
     let type: String
     let event: SyncEvent?
-    let command: CommandResult?
+    let command: EncryptedCommandResult?
     let lastSequence: Int?
     let presence: CompanionPresence?
 }
@@ -89,6 +130,27 @@ struct CommandInput<Payload: Codable>: Codable {
     let type: CompanionCommandType
     let payload: Payload
     let createdAt: String
+}
+
+struct EncryptedCommandInput: Codable {
+    let commandId: String
+    let protocolVersion: Int
+    let type: CompanionCommandType
+    let payload: CompanionEncryptedEnvelope
+    let createdAt: String
+}
+
+struct EncryptedCommandResult: Codable {
+    let commandId: String
+    let protocolVersion: Int
+    let type: CompanionCommandType
+    let payload: CompanionEncryptedEnvelope
+    let sourceDeviceId: String
+    let status: String
+    let result: JSONValue?
+    let error: String?
+    let createdAt: String
+    let updatedAt: String
 }
 
 struct CommandResult: Codable {

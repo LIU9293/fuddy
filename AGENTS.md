@@ -97,6 +97,9 @@ RUN_COMPANION_RELAY_SMOKE=1 npx vitest run src/main/services/companion-sync.inte
 ### UI conventions
 
 - The main area should carry one primary task. Agent Run details use the full chat layout with the Session list in the sidebar.
+- Treat page layout as a shared system, not a collection of page-specific values. Top-level task pages such as Work Assistant, Decision Inbox, and Agent Run must use the shared page-header primitive and its tokens for height, horizontal padding, title typography, border, and background; do not copy or redefine those values in feature CSS.
+- Reuse the established layout family for each surface. Chat pages share the same conversation rail, max width, timeline spacing, and composer shell. Settings sections share one page-intro, segmented-control, group, and row system. Add a consolidated variant only when the interaction genuinely requires a different layout; do not create one-off header, row, or content-width rules for a single page.
+- When adding or changing a screen, compare it with at least one sibling screen at a resizable window width and in both Light and Dark mode. Prefer shared components, semantic layout classes, and design tokens over duplicated JSX or literal CSS dimensions.
 - In Session lists, show a spinner only while running; completed and failed sessions do not need status icons or a “current” label.
 - Keep each supported reasoning summary as its own timeline segment. Group only the consecutive tool calls between two reasoning segments, collapse each group by default, and emphasize its latest active call without exposing unsupported private chain-of-thought data.
 - Session rename and archive belong in the three-dot menu in both list and detail contexts.
