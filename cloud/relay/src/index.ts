@@ -245,16 +245,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       }
       const existing = await env.ATTACHMENTS.head(key)
       if (existing) {
-        if (existing.customMetadata?.uploadedBy !== context.deviceId) {
-          throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
-        }
-        const identicalRetry = existing.customMetadata?.sha256 === sha256
+        const identicalRetry = existing.customMetadata?.uploadedBy === context.deviceId
+          && existing.customMetadata?.sha256 === sha256
           && existing.size === contentLength
-        if (identicalRetry) {
-          return Response.json({ id: attachmentId, size: existing.size }, { status: 200 })
-        }
-        // AES-GCM produces a fresh ciphertext for each sealing attempt. The same
-        // authenticated device may safely refresh its own content-versioned key.
+        if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
+        return Response.json({ id: attachmentId, size: existing.size }, { status: 200 })
       }
       await env.ATTACHMENTS.put(key, request.body, {
         httpMetadata: {
@@ -267,7 +262,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           encryption: 'A256GCM'
         }
       })
-      return Response.json({ id: attachmentId, size: contentLength }, { status: existing ? 200 : 201 })
+      return Response.json({ id: attachmentId, size: contentLength }, { status: 201 })
     }
     if (request.method === 'GET' || request.method === 'HEAD') {
       const object = await env.ATTACHMENTS.get(key)

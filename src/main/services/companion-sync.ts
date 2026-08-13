@@ -489,7 +489,14 @@ export class CompanionSyncService {
       },
       companionAttachmentRequestTimeoutMs
     )
-    await responseJson(response)
+    if (response.status !== 409 || !await this.existingAttachmentMatches(
+      context,
+      attachmentId,
+      file.size,
+      sha256
+    )) {
+      await responseJson(response)
+    }
     return {
       id: attachmentId,
       messageId: null,
@@ -502,6 +509,32 @@ export class CompanionSyncService {
       height: null,
       thumbnailAttachmentId: null,
       createdAt: artifact.createdAt
+    }
+  }
+
+  private async existingAttachmentMatches(
+    context: AuthenticatedCompanionContext,
+    attachmentId: string,
+    expectedSize: number,
+    expectedSha256: string
+  ): Promise<boolean> {
+    const response = await fetchWithTimeout(
+      this.authenticatedUrl(`/v1/attachments/${attachmentId}`, context.configuration),
+      { headers: { Authorization: `Bearer ${context.token}` } },
+      companionAttachmentRequestTimeoutMs
+    )
+    if (!response.ok) return false
+    try {
+      const sealed = new Uint8Array(await response.arrayBuffer())
+      const plaintext = await openCompanionAttachment(
+        context.encryptionKey,
+        sealed,
+        companionAttachmentAssociatedData(context.configuration.accountId, attachmentId)
+      )
+      return plaintext.byteLength === expectedSize
+        && createHash('sha256').update(plaintext).digest('hex') === expectedSha256
+    } catch {
+      return false
     }
   }
 

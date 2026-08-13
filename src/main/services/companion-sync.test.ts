@@ -6,8 +6,10 @@ import type { CompanionCommand, CompanionEncryptedCommand, CompanionMacConfigura
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import {
   companionAccountKeyId,
+  companionAttachmentAssociatedData,
   companionCommandAssociatedData,
   generateCompanionAccountKey,
+  sealCompanionAttachment,
   sealCompanionJson
 } from '../../shared/companion-crypto'
 import type { AgentRunMessage } from '../../shared/contracts'
@@ -325,6 +327,11 @@ describe('Companion sync transport policy', () => {
     let uploaded = false
     const plaintextSha256 = 'df1e79ca2a1b6778e23b1419d39f840201d65bd85531e9464bdd86bad678c046'
     const attachmentId = companionAttachmentStorageId('artifact-from-project-files', plaintextSha256)
+    const existingSealed = await sealCompanionAttachment(
+      testEncryptionKey,
+      new TextEncoder().encode('# Launch'),
+      companionAttachmentAssociatedData(configuration.accountId, attachmentId)
+    )
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
       const url = new URL(String(input))
       const method = init.method ?? 'GET'
@@ -349,7 +356,14 @@ describe('Companion sync transport policy', () => {
         uploaded = true
         expect(new Headers(init.headers).get('Content-Type')).toBe('application/octet-stream')
         expect(new Headers(init.headers).get('X-Companion-Encryption')).toBe('A256GCM')
-        return jsonResponse({ accepted: true }, 201)
+        return jsonResponse({ error: 'Attachment IDs are immutable and already in use.' }, 409)
+      }
+      if (url.pathname === `/v1/attachments/${attachmentId}` && method === 'GET') {
+        const responseBody = new Uint8Array(existingSealed)
+        return new Response(responseBody.buffer, {
+          status: 200,
+          headers: { 'Content-Type': 'application/octet-stream' }
+        })
       }
       throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
     }))

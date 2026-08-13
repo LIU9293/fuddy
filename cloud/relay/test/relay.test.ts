@@ -421,13 +421,26 @@ describe('companion relay', () => {
       },
       body: resealedContent
     })
-    expect(retry.status).toBe(200)
+    expect(retry.status).toBe(409)
+
+    const identicalRetry = await SELF.fetch(macUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${pairing.macToken}`,
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(content.length),
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
+      },
+      body: content
+    })
+    expect(identicalRetry.status).toBe(200)
 
     const refreshed = await SELF.fetch(authenticatedUrl(`/v1/attachments/${attachmentId}`, pairing.accountId, phone.device.id), {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
     expect(refreshed.status).toBe(200)
-    expect(await refreshed.text()).toBe(resealedContent)
+    expect(await refreshed.text()).toBe(content)
   })
 
   it('rejects malformed JSON and oversized bodies without relying on Content-Length', async () => {
