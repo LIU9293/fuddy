@@ -8,8 +8,11 @@ const { autoUpdater } = electronUpdater
 const updateCheckIntervalMs = 6 * 60 * 60 * 1_000
 
 /** Starts signed GitHub-release updates only in packaged builds. */
-export function startAutoUpdateService(onError: (error: Error) => void): () => void {
-  if (!app.isPackaged) return () => undefined
+export function startAutoUpdateService(
+  onError: (error: Error) => void,
+  enabled = app.isPackaged
+): () => void {
+  if (!enabled) return () => undefined
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.on('error', onError)

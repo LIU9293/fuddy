@@ -102,6 +102,11 @@ export function codexCompletedReasoningSummaries(item: JsonRecord): Array<{ segm
   })
 }
 
+export function codexAgentMessagePhase(item: JsonRecord): 'commentary' | 'final_answer' | null {
+  if (item.type !== 'agentMessage') return null
+  return item.phase === 'commentary' || item.phase === 'final_answer' ? item.phase : null
+}
+
 export function claudeSdkReasoningOptions(reasoningEffort?: string | null): { effort?: ClaudeEffort } {
   return reasoningEffort ? { effort: reasoningEffort as ClaudeEffort } : {}
 }
@@ -537,7 +542,11 @@ export class CliAgentRuntime {
       let stderr = ''
       let nextId = 1
       let sessionId = input.sessionId
-      let streamedText = ''
+      let finalAnswerText = ''
+      let legacyText = ''
+      let lastAgentMessageText = ''
+      const streamedAgentMessages = new Map<string, string>()
+      const agentMessagePhases = new Map<string, 'commentary' | 'final_answer' | null>()
       const streamedReasoning = new Map<string, string>()
       let settled = false
       const pending = new Map<number, { resolve: (value: JsonRecord) => void; reject: (error: Error) => void }>()
@@ -561,7 +570,7 @@ export class CliAgentRuntime {
       input.abortController.signal.addEventListener('abort', abortChild, { once: true })
       const finishSuccess = (): void => {
         if (settled) return
-        const text = streamedText.trim()
+        const text = (finalAnswerText || legacyText || lastAgentMessageText).trim()
         if (!text) return finishError(new Error('Codex app-server 没有返回 Agent 消息。'))
         settled = true
         input.abortController.signal.removeEventListener('abort', abortChild)
@@ -603,11 +612,18 @@ export class CliAgentRuntime {
           })
         }
         if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
-          streamedText += params.delta
-          input.onUpdate({ type: 'message_delta', messageId: `stream-${sessionId ?? 'new'}`, delta: params.delta })
+          const messageId = textValue(params.itemId) || textValue(params.item_id) || `stream-${sessionId ?? 'new'}`
+          const phase = agentMessagePhases.get(messageId) ?? null
+          streamedAgentMessages.set(messageId, (streamedAgentMessages.get(messageId) ?? '') + params.delta)
+          if (phase === 'final_answer') finalAnswerText += params.delta
+          else if (phase === null) legacyText += params.delta
+          input.onUpdate({ type: 'message_delta', messageId, delta: params.delta, phase })
         }
         if (method === 'item/started' && params.item && typeof params.item === 'object') {
-          const tool = codexAppServerToolRecord(params.item as JsonRecord)
+          const item = params.item as JsonRecord
+          const itemId = textValue(item.id)
+          if (item.type === 'agentMessage' && itemId) agentMessagePhases.set(itemId, codexAgentMessagePhase(item))
+          const tool = codexAppServerToolRecord(item)
           if (tool) input.onUpdate({
             type: 'tool',
             toolCallId: tool.id,
@@ -618,7 +634,22 @@ export class CliAgentRuntime {
         }
         if (method === 'item/completed' && params.item && typeof params.item === 'object') {
           const item = params.item as JsonRecord
-          if (item.type === 'agentMessage' && !streamedText && typeof item.text === 'string') streamedText = item.text
+          if (item.type === 'agentMessage' && typeof item.text === 'string') {
+            const messageId = textValue(item.id) || `stream-${sessionId ?? 'new'}`
+            const phase = codexAgentMessagePhase(item)
+            const emitted = streamedAgentMessages.get(messageId) ?? ''
+            const delta = emitted
+              ? item.text.startsWith(emitted) ? item.text.slice(emitted.length) : ''
+              : item.text
+            agentMessagePhases.set(messageId, phase)
+            lastAgentMessageText = item.text
+            if (phase === 'final_answer') finalAnswerText = item.text
+            else if (phase === null) legacyText = item.text
+            if (delta) {
+              streamedAgentMessages.set(messageId, emitted + delta)
+              input.onUpdate({ type: 'message_delta', messageId, delta, phase })
+            }
+          }
           for (const summary of codexCompletedReasoningSummaries(item)) {
             const emitted = streamedReasoning.get(summary.segmentId) ?? ''
             const delta = emitted

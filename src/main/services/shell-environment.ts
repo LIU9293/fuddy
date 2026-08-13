@@ -2,6 +2,18 @@ import { execFile } from 'node:child_process'
 
 const environmentMarker = '__PROJECT_AGENT_SHELL_ENVIRONMENT__'
 const environmentCommand = `printf '\\0${environmentMarker}\\0'; /usr/bin/env -0`
+const shellEnvironmentDeadlineMs = 10_000
+
+interface ShellEnvironmentProcess {
+  kill(): unknown
+}
+
+interface ShellEnvironmentReadOptions {
+  deadlineMs?: number
+  launch?: (
+    onComplete: (error: Error | null, stdout: string) => void
+  ) => ShellEnvironmentProcess
+}
 
 export function parseShellEnvironment(output: string): NodeJS.ProcessEnv {
   const marker = `\0${environmentMarker}\0`
@@ -21,21 +33,42 @@ export function parseShellEnvironment(output: string): NodeJS.ProcessEnv {
 }
 
 export function readInteractiveZshEnvironment(
-  baseEnvironment: NodeJS.ProcessEnv = process.env
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
+  options: ShellEnvironmentReadOptions = {}
 ): Promise<NodeJS.ProcessEnv> {
   return new Promise((resolve) => {
-    execFile('/bin/zsh', ['-ic', environmentCommand], {
-      encoding: 'utf8',
-      env: { ...baseEnvironment },
-      timeout: 10_000,
-      maxBuffer: 2 * 1024 * 1024
-    }, (error, stdout) => {
+    let settled = false
+    let processHandle: ShellEnvironmentProcess | null = null
+    const settle = (environment: NodeJS.ProcessEnv): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(deadline)
+      resolve(environment)
+    }
+    const onComplete = (error: Error | null, stdout: string): void => {
       if (error) {
-        resolve({})
+        settle({})
         return
       }
-      resolve(parseShellEnvironment(stdout))
-    })
+      settle(parseShellEnvironment(stdout))
+    }
+    const deadline = setTimeout(() => {
+      processHandle?.kill()
+      settle({})
+    }, options.deadlineMs ?? shellEnvironmentDeadlineMs)
+
+    try {
+      processHandle = options.launch
+        ? options.launch(onComplete)
+        : execFile('/bin/zsh', ['-ic', environmentCommand], {
+            encoding: 'utf8',
+            env: { ...baseEnvironment },
+            timeout: shellEnvironmentDeadlineMs - 500,
+            maxBuffer: 2 * 1024 * 1024
+          }, onComplete)
+    } catch {
+      settle({})
+    }
   })
 }
 

@@ -32,6 +32,16 @@ npm run ios:generate
 npm run ios:typecheck
 ```
 
+## Local production and development isolation
+
+- A daily-use production Fuddy may already be running on the development Mac. Treat it and its data as protected external state: do not quit, kill, relaunch, replace, automate, or inspect it unless the user explicitly asks for that exact production action.
+- `npm run dev`, local UI automation, QA inspection, integration smoke tests, and packaged smoke builds must use **Fuddy Dev**. They must never open or migrate the production database at `~/Library/Application Support/ai-native-project-agent`.
+- Fuddy Dev owns `~/Library/Application Support/ai-native-project-agent-dev`, a distinct app identity, single-instance lock, database, credential vault, project files, Agent sessions, Browser Use state, Companion pairing, outbox, and schedulers. Never copy production credentials, pairing tokens, or live customer data into it.
+- Target the development window by the explicit `Fuddy Dev` name or its exact development app path. Do not use the production bundle ID or `/Applications/Fuddy.app` as a convenient UI-test target. If Fuddy Dev is not running, start a new isolated dev process; do not stop production to free a lock or port.
+- Packaged development and smoke builds use bundle ID `dev.ainative.projectagent.dev`, product name `Fuddy Dev`, disabled auto-updates, and an isolated or temporary dev `userData`. The production bundle keeps `dev.ainative.projectagent` and the legacy production data path for upgrade compatibility.
+- Before any Mac UI test, resolve the exact target process and verify that its runtime profile is development. After the test, stop only the dev process created for that test. A generic `Electron`, `Fuddy`, or bundle-ID match is not sufficient when multiple copies exist.
+- The daily QA Inspector scheduler may live in production Fuddy, but production is only its control plane. When a Fuddy QA run starts, connect to an existing Fuddy Dev instance or start a new isolated dev process from the Workspace; report a blocker if that fails. Never fall back to the installed production app, production database, production Companion account, or production relay identity.
+
 Regenerate the iOS project with `cd ios && xcodegen generate`. Use `/Applications/Xcode.app` through `DEVELOPER_DIR` for builds; accepting the Xcode license and selecting an Apple Developer team are user-owned legal/account steps. Simulator builds must keep local ad-hoc signing enabled because pairing uses Keychain; do not pass `CODE_SIGNING_ALLOWED=NO`. After a Simulator runtime is installed, run the `ProjectAgentCompanion` scheme's XCTest suite on an available iPhone simulator.
 
 Use `npm run prepare:agent-tools` before packaging or running the optional Browser Use / Computer Use smoke tests. The integration smoke tests are opt-in because they require installed local tools and live authentication:

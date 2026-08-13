@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import type { AgentRunStreamUpdate } from '../../shared/contracts'
 import type { CliAgentRuntime, CliAgentTurnInput } from './cli-agent-runtime'
 import { AppDatabase } from './database'
 import { createTestDatabase } from '../test-support/project-fixtures'
@@ -78,12 +79,22 @@ describe('TaskDispatcher reasoning timeline', () => {
       })
       const cli = {
         runTurn: vi.fn(async (input: CliAgentTurnInput) => {
-          input.onUpdate({ type: 'message_delta', messageId: 'message-1', delta: '我先读取项目说明，再核对配置。' })
+          input.onUpdate({
+            type: 'message_delta',
+            messageId: 'commentary-1',
+            delta: '我先读取项目说明，再核对配置。',
+            phase: 'commentary'
+          })
           input.onUpdate({ type: 'tool', toolCallId: 'tool-1', toolName: 'Read', status: 'running', detail: 'README.md' })
           input.onTool('Read', 'README.md content')
           input.onUpdate({ type: 'tool', toolCallId: 'tool-1', toolName: 'Read', status: 'completed', detail: 'README.md content' })
-          input.onUpdate({ type: 'message_delta', messageId: 'message-1', delta: '检查完成，没有修改文件。' })
-          return { text: '我先读取项目说明，再核对配置。检查完成，没有修改文件。', sessionId: 'session-1' }
+          input.onUpdate({
+            type: 'message_delta',
+            messageId: 'final-1',
+            delta: '检查完成，没有修改文件。',
+            phase: 'final_answer'
+          })
+          return { text: '检查完成，没有修改文件。', sessionId: 'session-1' }
         })
       } as unknown as CliAgentRuntime
       const dispatcher = new TaskDispatcher(
@@ -93,7 +104,13 @@ describe('TaskDispatcher reasoning timeline', () => {
         cli
       )
 
+      const broadcastUpdates: Array<{ runId: string; type: AgentRunStreamUpdate['type'] }> = []
+      const stopListening = dispatcher.onRunUpdate((runId, update) => {
+        broadcastUpdates.push({ runId, type: update.type })
+      })
+
       const result = await dispatcher.dispatch({ projectId: 'vows', provider: 'claude', prompt: '只读检查' })
+      stopListening()
       expect(result.detail.messages.map((message) => [message.role, message.eventType, message.toolName])).toEqual([
         ['user', null, null],
         ['assistant', 'reasoning', null],
@@ -105,6 +122,13 @@ describe('TaskDispatcher reasoning timeline', () => {
         metadata: { segmentId: 'visible-thinking-0' }
       })
       expect(result.detail.messages[3].content).toBe('检查完成，没有修改文件。')
+      expect(broadcastUpdates.map((update) => update.type)).toEqual(expect.arrayContaining([
+        'created',
+        'status',
+        'message_delta',
+        'tool'
+      ]))
+      expect(new Set(broadcastUpdates.map((update) => update.runId))).toEqual(new Set([result.detail.run.id]))
     } finally {
       database.close()
       rmSync(root, { recursive: true, force: true })

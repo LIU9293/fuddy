@@ -7,6 +7,7 @@ import {
   buildCodexAppServerArgs,
   claudeSdkReasoningOptions,
   codingAgentRuntimeRoots,
+  codexAgentMessagePhase,
   codexAppServerToolRecord,
   codexCompletedReasoningSummaries,
   codexReasoningSegmentId,
@@ -62,6 +63,13 @@ describe('coding CLI MCP injection', () => {
       .toBe('正在检查依赖关系。')
     expect(codexReasoningSummaryDelta('item/reasoning/textDelta', { delta: 'raw chain of thought' }))
       .toBe('')
+  })
+
+  it('preserves Codex commentary and final-answer phases from app-server items', () => {
+    expect(codexAgentMessagePhase({ type: 'agentMessage', phase: 'commentary' })).toBe('commentary')
+    expect(codexAgentMessagePhase({ type: 'agentMessage', phase: 'final_answer' })).toBe('final_answer')
+    expect(codexAgentMessagePhase({ type: 'agentMessage', phase: null })).toBeNull()
+    expect(codexAgentMessagePhase({ type: 'commandExecution' })).toBeNull()
   })
 
   it('keeps Codex reasoning summary sections as separate timeline segments', () => {

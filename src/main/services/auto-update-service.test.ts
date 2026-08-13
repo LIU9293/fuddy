@@ -19,6 +19,13 @@ afterEach(() => {
 })
 
 describe('auto update service', () => {
+  it('does not initialize the production updater for an isolated development build', () => {
+    const stop = startAutoUpdateService(vi.fn(), false)
+    expect(updater.on).not.toHaveBeenCalled()
+    expect(updater.checkForUpdatesAndNotify).not.toHaveBeenCalled()
+    stop()
+  })
+
   it('checks signed release metadata after startup and cleans up listeners', async () => {
     vi.useFakeTimers()
     const onError = vi.fn()

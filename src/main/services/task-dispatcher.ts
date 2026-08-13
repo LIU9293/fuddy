@@ -77,6 +77,7 @@ function isWithinWorkspace(target: string, root: string): boolean {
 
 export class TaskDispatcher {
   private readonly providerRegistry: AgentProviderRegistry
+  private readonly runUpdateListeners = new Set<(runId: string, update: AgentRunStreamUpdate) => void>()
   private readonly turnQueueTails = new Map<string, Promise<AgentRunDetail>>()
   private readonly activeTurns = new Map<string, {
     abortController: AbortController
@@ -100,6 +101,21 @@ export class TaskDispatcher {
   ) {
     this.providerRegistry = providerRegistry ?? createDefaultAgentProviderRegistry(piHarness, cliRuntime)
     this.database.recoverInterruptedAgentRuns(new Date().toISOString())
+  }
+
+  onRunUpdate(listener: (runId: string, update: AgentRunStreamUpdate) => void): () => void {
+    this.runUpdateListeners.add(listener)
+    return () => this.runUpdateListeners.delete(listener)
+  }
+
+  private publishRunUpdate(runId: string, update: AgentRunStreamUpdate): void {
+    for (const listener of this.runUpdateListeners) {
+      try {
+        listener(runId, update)
+      } catch {
+        // A renderer observer must never interrupt the Agent turn itself.
+      }
+    }
   }
 
   private publishTurnSettled(runId: string, turnId: string, outcome: AgentTurnOutcome): void {
@@ -161,7 +177,9 @@ export class TaskDispatcher {
       updatedAt: now
     }
     this.database.createAgentRun(run)
-    onUpdate({ type: 'created', run })
+    const createdUpdate = { type: 'created', run } as const
+    this.publishRunUpdate(run.id, createdUpdate)
+    onUpdate(createdUpdate)
     const detail = await this.sendMessage(run.id, input.prompt, onUpdate)
     return { detail, message: detail.run.summary }
   }
@@ -205,6 +223,7 @@ export class TaskDispatcher {
       updatedAt: now
     }
     this.database.createAgentRun(run)
+    this.publishRunUpdate(run.id, { type: 'created', run })
     return this.database.getAgentRunDetail(run.id)
   }
 
@@ -230,7 +249,11 @@ export class TaskDispatcher {
   ): Promise<AgentRunDetail> {
     this.database.getAgentRun(runId)
     const previous = this.turnQueueTails.get(runId)
-    if (previous) onUpdate({ type: 'status', status: 'queued' })
+    if (previous) {
+      const queuedUpdate = { type: 'status', status: 'queued' } as const
+      this.publishRunUpdate(runId, queuedUpdate)
+      onUpdate(queuedUpdate)
+    }
     const execute = (): Promise<AgentRunDetail> => this.executeTurn(
       runId,
       prompt,
@@ -281,7 +304,8 @@ export class TaskDispatcher {
       createdAt: string
     } | null = null
     let activeVisibleText = ''
-    let sawVisibleText = false
+    let activeVisibleMessageId: string | null = null
+    let activeVisiblePhase: 'commentary' | 'final_answer' | null = null
     let visibleThinkingIndex = 0
     const persistReasoning = (content: string, segmentId: string | null, id: string = randomUUID(), createdAt = new Date().toISOString()): void => {
       const normalized = content.trim()
@@ -305,7 +329,11 @@ export class TaskDispatcher {
     }
     const flushVisibleTextAsReasoning = (): void => {
       const content = activeVisibleText
+      const phase = activeVisiblePhase
       activeVisibleText = ''
+      activeVisibleMessageId = null
+      activeVisiblePhase = null
+      if (phase === 'final_answer') return
       persistReasoning(content, `visible-thinking-${visibleThinkingIndex++}`)
     }
     const touchActivity = (): void => {
@@ -333,14 +361,19 @@ export class TaskDispatcher {
         activeReasoning.content += update.delta
       } else if (update.type === 'message_delta') {
         flushReasoning()
+        const phase = update.phase ?? null
+        const continuesCurrentMessage = activeVisibleMessageId === update.messageId && activeVisiblePhase === phase
+        if (activeVisibleText.trim() && !continuesCurrentMessage) flushVisibleTextAsReasoning()
+        activeVisibleMessageId = update.messageId
+        activeVisiblePhase = phase
         activeVisibleText += update.delta
-        sawVisibleText = true
       } else if (update.type === 'tool' || update.type === 'approval') {
         flushReasoning()
         flushVisibleTextAsReasoning()
       } else if (update.type === 'status' && update.status !== 'running') {
         flushReasoning()
       }
+      this.publishRunUpdate(runId, update)
       onUpdate(update)
     }
     let run = this.database.getAgentRun(runId)
@@ -455,7 +488,8 @@ export class TaskDispatcher {
       }
 
       flushReasoning()
-      const finalResponse = sawVisibleText && activeVisibleText.trim() ? activeVisibleText.trim() : response
+      if (activeVisiblePhase !== 'final_answer') flushVisibleTextAsReasoning()
+      const finalResponse = response
       const assistantMessage: AgentRunMessage = {
         id: randomUUID(),
         runId,
@@ -474,7 +508,7 @@ export class TaskDispatcher {
         summary: finalResponse.replace(/\s+/g, ' ').slice(0, 240),
         updatedAt
       })
-      onUpdate({ type: 'status', status: 'idle' })
+      trackedUpdate({ type: 'status', status: 'idle' })
       this.publishTurnSettled(run.id, userMessage.id, 'completed')
       this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
       return this.database.getAgentRunDetail(run.id)
@@ -488,7 +522,7 @@ export class TaskDispatcher {
           summary: run.summary === '等待首次消息' ? '当前回复已停止' : run.summary,
           updatedAt: new Date().toISOString()
         })
-        onUpdate({ type: 'status', status: 'idle', detail: '当前回复已停止。' })
+        trackedUpdate({ type: 'status', status: 'idle', detail: '当前回复已停止。' })
         this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
         return this.database.getAgentRunDetail(run.id)
       }
@@ -510,7 +544,7 @@ export class TaskDispatcher {
         summary: message,
         updatedAt: new Date().toISOString()
       })
-      onUpdate({ type: 'status', status: 'failed', detail: message })
+      trackedUpdate({ type: 'status', status: 'failed', detail: message })
       this.publishTurnSettled(run.id, userMessage.id, 'failed')
       this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
       return this.database.getAgentRunDetail(run.id)

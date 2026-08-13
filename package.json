@@ -2,6 +2,7 @@
   "name": "ai-native-project-agent",
   "version": "0.1.0",
   "private": true,
+  "fuddyRuntimeProfile": "production",
   "type": "module",
   "description": "A native decision inbox and project agent for macOS.",
   "main": "./out/main/index.js",
@@ -25,7 +26,8 @@
     "prepare:whisper": "node scripts/prepare-whisper.mjs",
     "prepare:whisper:ios": "node scripts/prepare-whisper.mjs --ios",
     "dist:mac": "npm run prepare:agent-tools && npm run prepare:whisper && npm run build && electron-builder --mac dmg zip",
-    "package:smoke": "npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.extraResources=[]"
+    "dist:mac:dev": "npm run prepare:agent-tools && npm run prepare:whisper && npm run build && electron-builder --mac dmg zip --publish never -c.appId=dev.ainative.projectagent.dev -c.productName='Fuddy Dev' -c.extraMetadata.fuddyRuntimeProfile=development -c.mac.identity=null -c.directories.output=dist/dev",
+    "package:smoke": "npm run build && electron-builder --dir --mac --publish never -c.appId=dev.ainative.projectagent.dev -c.productName='Fuddy Dev' -c.extraMetadata.fuddyRuntimeProfile=development -c.mac.identity=null -c.extraResources=[] -c.directories.output=dist/dev-smoke"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.224",

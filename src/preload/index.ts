@@ -129,6 +129,11 @@ const api: DesktopApi = {
     }
     return () => { openAgentRunCallbacks.delete(callback) }
   },
+  onAgentRunUpdate: (callback: (envelope: AgentRunStreamEnvelope) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, envelope: AgentRunStreamEnvelope): void => callback(envelope)
+    ipcRenderer.on('agent-run:broadcast', listener)
+    return () => ipcRenderer.removeListener('agent-run:broadcast', listener)
+  },
   sendAgentRunMessage: (
     input: SendAgentRunMessageInput,
     onUpdate: (update: AgentRunStreamUpdate) => void

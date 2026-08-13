@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AppBootstrap } from '../../../../shared/contracts'
+import { agentRunUpdateStore } from '../agent-runs/agent-run-update-store'
 
 interface UseAppBootstrapOptions {
   onOpenAgentRun: (runId: string) => void
@@ -50,6 +51,10 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
       refreshFromMain()
       callbacks.current.onOpenAgentRun(runId)
     })
+    const stopAgentRuns = window.projectAgent.onAgentRunUpdate((envelope) => {
+      agentRunUpdateStore.publish(envelope)
+      if (envelope.update.type === 'created' || envelope.update.type === 'status') refreshFromMain()
+    })
     return () => {
       active = false
       if (retryTimer !== null) window.clearTimeout(retryTimer)
@@ -57,6 +62,7 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
       stopAutomations()
       stopCompanionData()
       stopOpenAgentRun()
+      stopAgentRuns()
     }
   }, [])
 
