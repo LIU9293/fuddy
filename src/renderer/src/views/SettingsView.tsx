@@ -458,6 +458,7 @@ export function SettingsView({
     if (companionBusy) return
     setCompanionBusy('pair')
     setCompanionError(null)
+    setCompanionPairing(null)
     try {
       const pairing = await window.projectAgent.beginCompanionPairing(companionRelayUrl.trim())
       setCompanionPairing(pairing)
@@ -996,13 +997,13 @@ export function SettingsView({
                 <div className="settings-row-main">
                   <span className="settings-row-icon"><Smartphone size={16} /></span>
                   <div className="settings-row-copy">
-                    <strong>配对设备</strong>
-                    <p>当前连接的设备</p>
+                    <strong>Mac 配对身份</strong>
+                    <p>用于连接 Relay 的本机设备</p>
                   </div>
                 </div>
                 <div className="settings-row-trailing">
                   <span className="settings-row-value">
-                    iPhone · Mac Device {companionStatus.configuration.macDeviceId.slice(0, 8)}
+                    Mac · {companionStatus.configuration.macDeviceId.slice(0, 8)}
                   </span>
                 </div>
               </article>
@@ -1036,6 +1037,23 @@ export function SettingsView({
                 >
                   {companionBusy === 'sync' ? <LoaderCircle className="spin" size={13} /> : null}
                   同步
+                </button>
+              </article>
+              <article>
+                <div className="settings-row-main">
+                  <span className="settings-row-icon"><Smartphone size={16} /></span>
+                  <div className="settings-row-copy">
+                    <strong>重新配对 iPhone</strong>
+                    <p>生成新的单次二维码，并替换当前 Companion 连接。</p>
+                  </div>
+                </div>
+                <button
+                  className="settings-row-link-action"
+                  onClick={() => void beginCompanionPairing()}
+                  disabled={Boolean(companionBusy)}
+                >
+                  {companionBusy === 'pair' ? <LoaderCircle className="spin" size={13} /> : null}
+                  重新配对
                 </button>
               </article>
               </>

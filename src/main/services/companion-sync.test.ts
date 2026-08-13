@@ -73,6 +73,62 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 describe('Companion sync transport policy', () => {
+  it('keeps the existing pairing when a replacement Relay is incompatible', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-repair-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const previousConfiguration: CompanionMacConfiguration = {
+      relayUrl: 'https://existing-relay.example.com',
+      accountId: 'existing-account',
+      macDeviceId: 'existing-mac',
+      pairedAt: new Date().toISOString(),
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', previousConfiguration)
+    const fetchMock = vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.origin === 'https://replacement-relay.example.com' && url.pathname === '/v1/pairings') {
+        return jsonResponse({
+          minimumProtocolVersion: 1,
+          protocolVersion: 1,
+          accountId: 'provisional-account',
+          macDeviceId: 'provisional-mac',
+          macToken: 'provisional-token',
+          pairingSecret: 'provisional-secret',
+          pairingPayload: '{}',
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        }, 201)
+      }
+      if (url.origin === 'https://replacement-relay.example.com'
+        && url.pathname === '/v1/account'
+        && method === 'DELETE') {
+        expect(url.searchParams.get('accountId')).toBe('provisional-account')
+        expect(new Headers(init.headers).get('Authorization')).toBe('Bearer provisional-token')
+        return new Response(null, { status: 204 })
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await expect(service.beginPairing('https://replacement-relay.example.com')).rejects.toThrow(
+      'Companion Relay 协议版本不兼容。'
+    )
+    expect(service.getStatus().configuration).toEqual(previousConfiguration)
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('existing-account'),
+      expect.objectContaining({ method: 'DELETE' })
+    )
+    service.stop()
+    database.close()
+  })
+
   it('uses stable content-versioned IDs for artifact attachments', () => {
     const first = companionAttachmentStorageId('artifact-1', 'a'.repeat(64))
     expect(first).toMatch(/^[a-f0-9]{64}$/)

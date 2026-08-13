@@ -242,8 +242,6 @@ export class CompanionSyncService {
 
   async beginPairing(relayUrl: string, deviceName?: string): Promise<CompanionPairingSession> {
     const previousConfiguration = this.configuration
-    if (this.configuration) await this.revokeRemoteAccount()
-    this.closeTransports()
     const origin = normalizedRelayUrl(relayUrl)
     const macDeviceId = crypto.randomUUID()
     const response = await fetchWithTimeout(`${origin}/v1/pairings`, {
@@ -256,8 +254,13 @@ export class CompanionSyncService {
     })
     const pairing = await responseJson<CompanionPairingStartResult>(response)
     if (pairing.protocolVersion !== companionProtocolVersion) {
+      await this.revokePairingAccount(origin, pairing).catch(() => {
+        // Preserve the compatibility error if the incompatible Relay cannot clean up the provisional account.
+      })
       throw new Error('Companion Relay 协议版本不兼容。')
     }
+    if (previousConfiguration) await this.revokeRemoteAccount()
+    this.closeTransports()
     if (previousConfiguration) {
       this.credentials.delete(this.tokenReference(previousConfiguration.accountId))
       this.credentials.delete(this.encryptionKeyReference(previousConfiguration.accountId))
@@ -988,6 +991,24 @@ export class CompanionSyncService {
     const response = await fetchWithTimeout(this.authenticatedUrl('/v1/account', context.configuration), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${context.token}` }
+    })
+    if (response.status === 204) return
+    await responseJson(response)
+  }
+
+  private async revokePairingAccount(
+    relayUrl: string,
+    pairing: Pick<CompanionPairingStartResult, 'accountId' | 'macDeviceId' | 'macToken'>
+  ): Promise<void> {
+    const configuration: CompanionMacConfiguration = {
+      relayUrl,
+      accountId: pairing.accountId,
+      macDeviceId: pairing.macDeviceId,
+      pairedAt: new Date().toISOString()
+    }
+    const response = await fetchWithTimeout(this.authenticatedUrl('/v1/account', configuration), {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
     })
     if (response.status === 204) return
     await responseJson(response)
