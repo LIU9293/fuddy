@@ -291,7 +291,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   throw new HttpError(404, 'Route not found.')
 }
 
-async function enforceRateLimit(binding: RateLimit, request: Request, scope: string): Promise<void> {
+export async function enforceRateLimit(binding: RateLimit, request: Request, scope: string): Promise<void> {
   const client = request.headers.get('CF-Connecting-IP')?.trim() || 'unknown-client'
   const outcome = await binding.limit({ key: `${scope}:${client}` })
   if (!outcome.success) throw new HttpError(429, '请求过于频繁，请稍后重试。')

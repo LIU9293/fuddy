@@ -1,5 +1,5 @@
 import { SELF, env, runDurableObjectAlarm } from 'cloudflare:test'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type {
   CompanionEncryptedCommand,
   CompanionEncryptedEventPage,
@@ -9,6 +9,7 @@ import type {
   CompanionPairingStartResult,
 } from '../../../src/shared/companion-sync'
 import { companionProtocolVersion } from '../../../src/shared/companion-sync'
+import { enforceRateLimit } from '../src/index'
 
 async function pairedDevices(): Promise<{
   pairing: CompanionPairingStartResult
@@ -47,18 +48,20 @@ const encryptedPayload = {
 } as const
 
 describe('companion relay', () => {
-  it('rate limits public pairing creation by client address', async () => {
-    const statuses: number[] = []
-    for (let index = 0; index < 11; index += 1) {
-      const response = await SELF.fetch('https://relay.test/v1/pairings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.10' },
-        body: JSON.stringify({ macDeviceId: `mac-rate-${index}`, macDeviceName: 'Rate Test Mac' })
-      })
-      statuses.push(response.status)
-    }
-    expect(statuses.slice(0, 10).every((status) => status === 201)).toBe(true)
-    expect(statuses[10]).toBe(429)
+  it('keys public pairing limits by client address and rejects exhausted bindings', async () => {
+    const limit = vi.fn()
+      .mockResolvedValueOnce({ success: true })
+      .mockResolvedValueOnce({ success: false })
+    const binding = { limit } as unknown as RateLimit
+    const request = new Request('https://relay.test/v1/pairings', {
+      method: 'POST',
+      headers: { 'CF-Connecting-IP': '203.0.113.10' }
+    })
+
+    await expect(enforceRateLimit(binding, request, 'pairing-start')).resolves.toBeUndefined()
+    await expect(enforceRateLimit(binding, request, 'pairing-start')).rejects.toMatchObject({ status: 429 })
+    expect(limit).toHaveBeenCalledTimes(2)
+    expect(limit).toHaveBeenCalledWith({ key: 'pairing-start:203.0.113.10' })
   })
 
   it('reports protocol health', async () => {
