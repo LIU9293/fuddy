@@ -119,4 +119,5 @@ RUN_COMPANION_RELAY_SMOKE=1 npx vitest run src/main/services/companion-sync.inte
 - Use `rg` / `rg --files` for search and `apply_patch` for manual edits.
 - Do not change shell startup files, local Agent config, credentials, or user project repositories unless the user explicitly requests it.
 - Do not commit or push unless the user asks. When asked to push all changes, review the final diff, run the full checks, and report the commit and remote branch.
+- Whenever creating a pull request, create it as ready for review; do not create draft pull requests.
 - Keep `README.md` current when product behavior, Agent runtime policy, setup steps, or major workflow status changes.
