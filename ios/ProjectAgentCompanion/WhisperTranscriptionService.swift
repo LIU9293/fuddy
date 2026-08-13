@@ -103,7 +103,12 @@ final class CompanionVoiceInput: ObservableObject, @unchecked Sendable {
         }
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            #if compiler(>=6.2)
+            let categoryOptions: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .allowBluetoothHFP]
+            #else
+            let categoryOptions: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .allowBluetooth]
+            #endif
+            try session.setCategory(.playAndRecord, mode: .measurement, options: categoryOptions)
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             sampleLock.withLock { sampleChunks.removeAll(keepingCapacity: true) }
             let input = engine.inputNode
