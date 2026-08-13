@@ -407,7 +407,23 @@ describe('companion relay', () => {
     })
     expect(overwrite.status).toBe(409)
 
+    const resealedContent = 'attachment body with a fresh nonce'
+    const resealedSha256 = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(resealedContent))
+      .then((digest) => Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join(''))
     const retry = await SELF.fetch(macUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${pairing.macToken}`,
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(resealedContent.length),
+        'X-Content-SHA256': resealedSha256,
+        'X-Companion-Encryption': 'A256GCM'
+      },
+      body: resealedContent
+    })
+    expect(retry.status).toBe(409)
+
+    const identicalRetry = await SELF.fetch(macUrl, {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${pairing.macToken}`,
@@ -418,7 +434,13 @@ describe('companion relay', () => {
       },
       body: content
     })
-    expect(retry.status).toBe(200)
+    expect(identicalRetry.status).toBe(200)
+
+    const refreshed = await SELF.fetch(authenticatedUrl(`/v1/attachments/${attachmentId}`, pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    expect(refreshed.status).toBe(200)
+    expect(await refreshed.text()).toBe(content)
   })
 
   it('rejects malformed JSON and oversized bodies without relying on Content-Length', async () => {

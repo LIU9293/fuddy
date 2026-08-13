@@ -6,13 +6,16 @@ import type { CompanionCommand, CompanionEncryptedCommand, CompanionMacConfigura
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import {
   companionAccountKeyId,
+  companionAttachmentAssociatedData,
   companionCommandAssociatedData,
   generateCompanionAccountKey,
+  sealCompanionAttachment,
   sealCompanionJson
 } from '../../shared/companion-crypto'
 import type { AgentRunMessage } from '../../shared/contracts'
 import {
   companionAgentMessageForRelay,
+  companionAttachmentStorageId,
   companionCommandUpdateForRelay,
   companionCommandRecovery,
   companionConnectedFallbackSyncIntervalMs,
@@ -70,6 +73,14 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 describe('Companion sync transport policy', () => {
+  it('uses stable content-versioned IDs for artifact attachments', () => {
+    const first = companionAttachmentStorageId('artifact-1', 'a'.repeat(64))
+    expect(first).toMatch(/^[a-f0-9]{64}$/)
+    expect(companionAttachmentStorageId('artifact-1', 'A'.repeat(64))).toBe(first)
+    expect(companionAttachmentStorageId('artifact-1', 'b'.repeat(64))).not.toBe(first)
+    expect(companionAttachmentStorageId('artifact-2', 'a'.repeat(64))).not.toBe(first)
+  })
+
   it('uses a one-minute fallback instead of high-frequency polling', () => {
     expect(companionFallbackSyncIntervalMs).toBe(60_000)
     expect(companionConnectedFallbackSyncIntervalMs).toBe(300_000)
@@ -314,6 +325,13 @@ describe('Companion sync transport policy', () => {
     const wireCommand = await encryptedCommand(command)
     let remoteStatus: CompanionCommand['status'] = 'queued'
     let uploaded = false
+    const plaintextSha256 = 'df1e79ca2a1b6778e23b1419d39f840201d65bd85531e9464bdd86bad678c046'
+    const attachmentId = companionAttachmentStorageId('artifact-from-project-files', plaintextSha256)
+    const existingSealed = await sealCompanionAttachment(
+      testEncryptionKey,
+      new TextEncoder().encode('# Launch'),
+      companionAttachmentAssociatedData(configuration.accountId, attachmentId)
+    )
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
       const url = new URL(String(input))
       const method = init.method ?? 'GET'
@@ -334,11 +352,18 @@ describe('Companion sync transport policy', () => {
         remoteStatus = update.status
         return jsonResponse({ ...wireCommand, status: remoteStatus })
       }
-      if (url.pathname === '/v1/attachments/artifact-from-project-files' && method === 'PUT') {
+      if (url.pathname === `/v1/attachments/${attachmentId}` && method === 'PUT') {
         uploaded = true
         expect(new Headers(init.headers).get('Content-Type')).toBe('application/octet-stream')
         expect(new Headers(init.headers).get('X-Companion-Encryption')).toBe('A256GCM')
-        return jsonResponse({ accepted: true }, 201)
+        return jsonResponse({ error: 'Attachment IDs are immutable and already in use.' }, 409)
+      }
+      if (url.pathname === `/v1/attachments/${attachmentId}` && method === 'GET') {
+        const responseBody = new Uint8Array(existingSealed)
+        return new Response(responseBody.buffer, {
+          status: 200,
+          headers: { 'Content-Type': 'application/octet-stream' }
+        })
       }
       throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
     }))
@@ -359,6 +384,7 @@ describe('Companion sync transport policy', () => {
       expect(database.getCompanionCommand(command.commandId)?.result).toMatchObject({
         artifactId: 'artifact-from-project-files',
         attachment: {
+          id: attachmentId,
           artifactId: 'artifact-from-project-files',
           filename: 'launch.md',
           mimeType: 'text/markdown',

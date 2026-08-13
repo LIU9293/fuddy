@@ -245,10 +245,10 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       }
       const existing = await env.ATTACHMENTS.head(key)
       if (existing) {
-        const sameUpload = existing.customMetadata?.uploadedBy === context.deviceId
+        const identicalRetry = existing.customMetadata?.uploadedBy === context.deviceId
           && existing.customMetadata?.sha256 === sha256
           && existing.size === contentLength
-        if (!sameUpload) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
+        if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
         return Response.json({ id: attachmentId, size: existing.size }, { status: 200 })
       }
       await env.ATTACHMENTS.put(key, request.body, {
