@@ -132,6 +132,21 @@ function textFromToolResult(result: unknown, fallback: string): string {
   return content?.filter((item) => item.type === 'text').map((item) => item.text ?? '').join('\n').trim() || fallback
 }
 
+export function piToolResultMetadata(
+  result: unknown,
+  arguments_: Record<string, unknown>,
+  isError: boolean
+): Record<string, unknown> {
+  const details = result && typeof result === 'object'
+    ? (result as { details?: Record<string, unknown> }).details
+    : undefined
+  return {
+    ...(details ?? {}),
+    arguments: arguments_,
+    status: isError ? 'failed' : 'completed'
+  }
+}
+
 export class PiTaskHarness {
   constructor(
     private readonly providerSettings: ProviderSettingsService,
@@ -205,10 +220,15 @@ export class PiTaskHarness {
           }
           if (event.type === 'tool_execution_end') {
             const detail = textFromToolResult(event.result, event.toolName)
-            const resultDetails = event.result && typeof event.result === 'object'
-              ? (event.result as { details?: Record<string, unknown> }).details
-              : undefined
-            input.onTool(event.toolName, detail, { ...(resultDetails ?? {}), arguments: toolArguments.get(event.toolCallId) ?? {} })
+            input.onTool(
+              event.toolName,
+              detail,
+              piToolResultMetadata(
+                event.result,
+                toolArguments.get(event.toolCallId) ?? {},
+                event.isError
+              )
+            )
             toolArguments.delete(event.toolCallId)
             input.onUpdate({ type: 'tool', toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? 'failed' : 'completed', detail })
           }
