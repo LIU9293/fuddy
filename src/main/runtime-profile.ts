@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
 export type FuddyRuntimeChannel = 'production' | 'development'
@@ -46,6 +46,24 @@ function canonicalPathIdentity(path: string, caseInsensitive: boolean): string {
   return caseInsensitive ? normalized.toLocaleLowerCase('en-US') : normalized
 }
 
+function existingFileSystemIdentity(path: string): { device: bigint; inode: bigint } | null {
+  try {
+    const stats = statSync(path, { bigint: true })
+    return { device: stats.dev, inode: stats.ino }
+  } catch {
+    return null
+  }
+}
+
+function pathsReferToSameFileSystemLocation(firstPath: string, secondPath: string, caseInsensitive: boolean): boolean {
+  const firstIdentity = existingFileSystemIdentity(firstPath)
+  const secondIdentity = existingFileSystemIdentity(secondPath)
+  if (firstIdentity && secondIdentity) {
+    return firstIdentity.device === secondIdentity.device && firstIdentity.inode === secondIdentity.inode
+  }
+  return canonicalPathIdentity(firstPath, caseInsensitive) === canonicalPathIdentity(secondPath, caseInsensitive)
+}
+
 export function resolveFuddyRuntimeProfile(input: {
   appDataPath: string
   appName: string
@@ -84,8 +102,7 @@ export function resolveFuddyRuntimeProfile(input: {
 
   const caseInsensitivePaths = (input.platform ?? process.platform) === 'darwin'
   if (channel === 'development'
-    && canonicalPathIdentity(userDataPath, caseInsensitivePaths)
-      === canonicalPathIdentity(productionUserDataPath, caseInsensitivePaths)) {
+    && pathsReferToSameFileSystemLocation(userDataPath, productionUserDataPath, caseInsensitivePaths)) {
     throw new Error('Fuddy Dev 的 userData 不能指向 production 数据目录。')
   }
 

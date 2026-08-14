@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -95,6 +95,26 @@ describe('Fuddy runtime profile', () => {
     try {
       mkdirSync(productionPath)
       symlinkSync(productionPath, aliasPath, 'dir')
+
+      expect(() => resolveFuddyRuntimeProfile({
+        appDataPath: root,
+        appName: 'Fuddy Dev',
+        isPackaged: true,
+        packagedRuntimeChannel: 'development',
+        environment: { FUDDY_DEV_USER_DATA_DIR: aliasPath }
+      })).toThrow('不能指向 production')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects an existing alias with the same filesystem identity but different canonical path text', () => {
+    const root = mkdtempSync(join(tmpdir(), 'fuddy-runtime-identity-'))
+    const productionPath = join(root, productionUserDataDirectoryName)
+    const aliasPath = join(root, 'fuddy-dev-filesystem-alias')
+    try {
+      writeFileSync(productionPath, 'identity fixture')
+      linkSync(productionPath, aliasPath)
 
       expect(() => resolveFuddyRuntimeProfile({
         appDataPath: root,
