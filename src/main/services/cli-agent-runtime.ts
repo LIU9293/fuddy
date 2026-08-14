@@ -53,7 +53,7 @@ type ParsedCliRecord = {
 export const CODEX_THREAD_SANDBOX = 'danger-full-access' as const
 export const CODEX_TURN_SANDBOX_POLICY = 'dangerFullAccess' as const
 export const CODEX_APPROVAL_POLICY = 'never' as const
-export const CODEX_REASONING_SUMMARY = 'auto' as const
+export const CODEX_REASONING_SUMMARY = 'none' as const
 
 export function codingAgentRuntimeRoots(input: Pick<CliAgentTurnInput, 'workingDirectory' | 'workspaceRoots' | 'filesDirectory'>): string[] {
   return [...new Set([input.workingDirectory, ...input.workspaceRoots, input.filesDirectory])]
@@ -70,36 +70,6 @@ function streamTextValue(value: unknown): string {
 export function codexTomlStringMap(values: Record<string, string>): string {
   const entries = Object.entries(values).map(([key, value]) => `${JSON.stringify(key)} = ${JSON.stringify(value)}`)
   return `{ ${entries.join(', ')} }`
-}
-
-export function codexReasoningSummaryDelta(method: string, params: JsonRecord): string {
-  return method === 'item/reasoning/summaryTextDelta' ? streamTextValue(params.delta) : ''
-}
-
-export function codexReasoningSegmentId(params: JsonRecord): string | undefined {
-  const itemId = textValue(params.itemId) || textValue(params.item_id)
-  if (!itemId) return undefined
-  const summaryIndex = typeof params.summaryIndex === 'number' && Number.isInteger(params.summaryIndex)
-    ? params.summaryIndex
-    : null
-  return summaryIndex === null ? itemId : `${itemId}:summary:${summaryIndex}`
-}
-
-export function codexCompletedReasoningSummaries(item: JsonRecord): Array<{ segmentId: string; text: string }> {
-  if (item.type !== 'reasoning' || !Array.isArray(item.summary)) return []
-  const itemId = textValue(item.id)
-  return item.summary.flatMap((entry, summaryIndex) => {
-    const text = typeof entry === 'string'
-      ? entry
-      : entry && typeof entry === 'object'
-        ? streamTextValue((entry as JsonRecord).text)
-        : ''
-    if (!text.trim()) return []
-    return [{
-      segmentId: itemId ? `${itemId}:summary:${summaryIndex}` : `reasoning:summary:${summaryIndex}`,
-      text
-    }]
-  })
 }
 
 export function codexAgentMessagePhase(item: JsonRecord): 'commentary' | 'final_answer' | null {
@@ -547,7 +517,6 @@ export class CliAgentRuntime {
       let lastAgentMessageText = ''
       const streamedAgentMessages = new Map<string, string>()
       const agentMessagePhases = new Map<string, 'commentary' | 'final_answer' | null>()
-      const streamedReasoning = new Map<string, string>()
       let settled = false
       const pending = new Map<number, { resolve: (value: JsonRecord) => void; reject: (error: Error) => void }>()
       const write = (record: JsonRecord): void => {
@@ -601,16 +570,6 @@ export class CliAgentRuntime {
           return
         }
         const params = record.params && typeof record.params === 'object' ? record.params as JsonRecord : {}
-        const reasoningDelta = codexReasoningSummaryDelta(method, params)
-        if (reasoningDelta) {
-          const segmentId = codexReasoningSegmentId(params)
-          if (segmentId) streamedReasoning.set(segmentId, (streamedReasoning.get(segmentId) ?? '') + reasoningDelta)
-          input.onUpdate({
-            type: 'reasoning_delta',
-            segmentId,
-            delta: reasoningDelta
-          })
-        }
         if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
           const messageId = textValue(params.itemId) || textValue(params.item_id) || `stream-${sessionId ?? 'new'}`
           const phase = agentMessagePhases.get(messageId) ?? null
@@ -649,19 +608,6 @@ export class CliAgentRuntime {
               streamedAgentMessages.set(messageId, emitted + delta)
               input.onUpdate({ type: 'message_delta', messageId, delta, phase })
             }
-          }
-          for (const summary of codexCompletedReasoningSummaries(item)) {
-            const emitted = streamedReasoning.get(summary.segmentId) ?? ''
-            const delta = emitted
-              ? summary.text.startsWith(emitted) ? summary.text.slice(emitted.length) : ''
-              : summary.text
-            if (!delta) continue
-            streamedReasoning.set(summary.segmentId, emitted + delta)
-            input.onUpdate({
-              type: 'reasoning_delta',
-              segmentId: summary.segmentId,
-              delta
-            })
           }
           const tool = codexAppServerToolRecord(item)
           if (tool) {

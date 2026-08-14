@@ -922,7 +922,7 @@
 }
 
 .agent-run-live-message {
-  width: min(680px, 100%);
+  width: 100%;
   color: #42423d;
   font-size: 13px;
   line-height: 1.68;
@@ -947,10 +947,15 @@
 .agent-run-thread .chat-bubble .chat-markdown > :last-child,
 .agent-run-thread .chat-markdown > :last-child { margin-bottom: 0; }
 
+.agent-run-thread .chat-turn.is-assistant,
+.agent-run-thread .chat-turn.is-assistant > .chat-turn-content,
+.agent-run-thread .chat-turn.is-assistant .agent-run-live,
+.agent-run-thread .agent-process-disclosure,
 .agent-run-thread .agent-tool-call,
 .agent-run-thread .agent-tool-call-group,
 .agent-run-thread .agent-thinking-marker {
-  width: min(680px, 90%);
+  width: 100%;
+  max-width: none;
 }
 
 .agent-run-system-message {
