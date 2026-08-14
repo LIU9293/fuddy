@@ -2162,7 +2162,7 @@ textarea:focus {
     radial-gradient(circle at 92% 12%, rgba(168, 187, 255, 0.3), transparent 34%),
     radial-gradient(circle at 4% 110%, rgba(134, 103, 236, 0.38), transparent 42%),
     linear-gradient(145deg, #22283a, #303b61 62%, #3c4f83);
-  box-shadow: 0 16px 38px rgba(32, 43, 76, 0.16);
+  box-shadow: none;
 }
 
 .audio-briefing-card.is-expanded {
@@ -2387,6 +2387,7 @@ textarea:focus {
   position: relative;
   z-index: 2;
   flex: 0 0 auto;
-  padding: 12px 0 18px;
-  background: transparent;
+  margin-top: -17px;
+  padding: 0 0 18px;
+  background: linear-gradient(to bottom, transparent 17px, #fff 17px);
 }

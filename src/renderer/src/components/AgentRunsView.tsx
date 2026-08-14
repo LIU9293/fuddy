@@ -27,7 +27,7 @@ import {
   X,
   Wrench
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type {
@@ -53,7 +53,7 @@ import { AgentModelPicker } from './AgentModelPicker'
 import { ConversationMessageActions } from './ConversationMessageActions'
 import { ProjectIcon } from './ProjectIcon'
 import { SelectMenu } from './SelectMenu'
-import { chatIsAtLatest } from '../chat-scroll'
+import { chatIsAtLatest, syncChatToLatest } from '../chat-scroll'
 import { agentRunUpdateStore } from '../features/agent-runs/agent-run-update-store'
 import type { AgentModelLabels } from '../../../shared/model-display'
 import { formatAgentModelLabel, formatAgentProviderName } from '../../../shared/model-display'
@@ -862,7 +862,6 @@ export function AgentRunsView({
   const [title, setTitle] = useState('')
   const titleInputRef = useRef<HTMLInputElement | null>(null)
   const threadRef = useRef<HTMLElement | null>(null)
-  const threadEndRef = useRef<HTMLDivElement | null>(null)
   const isAtLatestMessageRef = useRef(true)
   const [isAtLatestMessage, setIsAtLatestMessage] = useState(true)
   const previousCreatingRef = useRef(creating)
@@ -1027,14 +1026,16 @@ export function AgentRunsView({
     return () => window.clearTimeout(timer)
   }, [detail?.run.id, detail?.run.status, detail?.messages.length, reply])
 
-  useEffect(() => {
-    if (!isAtLatestMessageRef.current) return
-    threadEndRef.current?.scrollIntoView({ block: 'end' })
+  useLayoutEffect(() => {
+    const thread = threadRef.current
+    if (thread) syncChatToLatest(thread, isAtLatestMessageRef.current)
   }, [selectedRunId, detail?.messages.length, runBusy, liveActivities, streamingText])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     isAtLatestMessageRef.current = true
     setIsAtLatestMessage(true)
+    const thread = threadRef.current
+    if (thread) syncChatToLatest(thread, true)
   }, [selectedRunId])
 
   function updateLatestMessagePosition(): void {
@@ -1048,7 +1049,8 @@ export function AgentRunsView({
   function scrollToLatestMessage(): void {
     isAtLatestMessageRef.current = true
     setIsAtLatestMessage(true)
-    threadEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+    const thread = threadRef.current
+    thread?.scrollTo({ top: thread.scrollHeight, behavior: 'smooth' })
   }
 
   function appendOptimisticMessage(
@@ -1437,7 +1439,6 @@ export function AgentRunsView({
               </div>
             </article>
           )}
-          <div ref={threadEndRef} />
         </div>
       </section>
       <footer className="agent-run-composer-dock">

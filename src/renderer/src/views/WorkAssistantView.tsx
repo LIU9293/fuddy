@@ -37,7 +37,7 @@ import {
   X,
   Trash2
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { QRCodeSVG } from 'qrcode.react'
@@ -51,7 +51,7 @@ import { AutomationsView } from '../components/AutomationsView'
 import { normalizeChatMarkdown } from '../markdown'
 import { maxChatImages, prepareChatImages } from '../chat-attachments'
 import { workAssistantRunIds } from '../work-assistant-links'
-import { chatIsAtLatest } from '../chat-scroll'
+import { chatIsAtLatest, syncChatToLatest } from '../chat-scroll'
 import { microphoneAccessError } from '../voice-input'
 import fuddyWordmark from '../assets/fuddy-wordmark.png'
 import type {
@@ -481,7 +481,6 @@ export function WorkAssistantView({
     plan: AgentPlanEntry[]
   } | null>(null)
   const threadRef = useRef<HTMLElement | null>(null)
-  const threadEndRef = useRef<HTMLDivElement | null>(null)
   const isAtLatestMessageRef = useRef(true)
   const [isAtLatestMessage, setIsAtLatestMessage] = useState(true)
   useAutoDismissMessage(imageError, () => setImageError(null))
@@ -502,9 +501,9 @@ export function WorkAssistantView({
     }))
   ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
 
-  useEffect(() => {
-    if (!isAtLatestMessageRef.current) return
-    threadEndRef.current?.scrollIntoView({ block: 'end' })
+  useLayoutEffect(() => {
+    const thread = threadRef.current
+    if (thread) syncChatToLatest(thread, isAtLatestMessageRef.current)
   }, [timeline.length, asking, pendingTurn?.assistantContent])
 
   function updateLatestMessagePosition(): void {
@@ -518,7 +517,8 @@ export function WorkAssistantView({
   function scrollToLatestMessage(): void {
     isAtLatestMessageRef.current = true
     setIsAtLatestMessage(true)
-    threadEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+    const thread = threadRef.current
+    thread?.scrollTo({ top: thread.scrollHeight, behavior: 'smooth' })
   }
 
   async function submitQuestion(
@@ -717,7 +717,6 @@ export function WorkAssistantView({
               </article>
             </>
           )}
-          <div ref={threadEndRef} />
         </div>
       </section>
 

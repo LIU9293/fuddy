@@ -124,6 +124,17 @@ func companionReplayCursor(cachedSequence: Int, remoteSequence: Int) -> Int {
     remoteSequence < cachedSequence ? 0 : cachedSequence
 }
 
+@discardableResult
+func companionResetReplayCursorIfNeeded(state: inout CachedState, remoteSequence: Int) -> Bool {
+    let replayCursor = companionReplayCursor(
+        cachedSequence: state.lastSequence,
+        remoteSequence: remoteSequence
+    )
+    guard replayCursor != state.lastSequence else { return false }
+    state.lastSequence = replayCursor
+    return true
+}
+
 struct CommandInput<Payload: Codable>: Codable {
     let commandId: String
     let protocolVersion: Int

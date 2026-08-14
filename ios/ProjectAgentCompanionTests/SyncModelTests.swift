@@ -190,6 +190,20 @@ final class SyncModelTests: XCTestCase {
         }
     }
 
+    func testRunProcessKeepsItsScrollIdentityWhenItCompletes() {
+        let processMessages = [
+            AgentMessage(id: "thinking", runId: "run", role: "assistant", content: "先检查", eventType: "reasoning", toolName: nil, createdAt: "1"),
+            AgentMessage(id: "tool", runId: "run", role: "tool", content: "读取", eventType: "tool", toolName: "Read", createdAt: "2")
+        ]
+        let activeID = groupRunMessages(processMessages)[0].id
+        let completedID = groupRunMessages(processMessages + [
+            AgentMessage(id: "result", runId: "run", role: "assistant", content: "完成", eventType: nil, toolName: nil, createdAt: "3")
+        ])[0].id
+
+        XCTAssertEqual(activeID, "process-thinking")
+        XCTAssertEqual(completedID, activeID)
+    }
+
     func testCodexClaudeAndOpenCodeFixturesShareOneStageContract() {
         let providerFixtures: [[AgentMessage]] = [
             [
@@ -379,6 +393,13 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(envelope.presence?.macOnline, true)
         XCTAssertEqual(companionReplayCursor(cachedSequence: 141, remoteSequence: 136), 0)
         XCTAssertEqual(companionReplayCursor(cachedSequence: 120, remoteSequence: 136), 120)
+
+        var cachedState = CachedState()
+        cachedState.lastSequence = 141
+        cachedState.modelLabels.workAssistant = "保留现有聊天"
+        XCTAssertTrue(companionResetReplayCursorIfNeeded(state: &cachedState, remoteSequence: 136))
+        XCTAssertEqual(cachedState.lastSequence, 0)
+        XCTAssertEqual(cachedState.modelLabels.workAssistant, "保留现有聊天")
     }
 
     func testCompanionSocketReconnectsAfterMissedHeartbeat() {
@@ -453,6 +474,7 @@ final class SyncModelTests: XCTestCase {
     }
 
     func testChatLatestDistanceUsesVisibleAreaAboveComposer() {
+        XCTAssertEqual(companionChatLatestDistanceThreshold, 50)
         XCTAssertEqual(
             companionDistanceFromLatest(bottomY: 700, viewportHeight: 844, bottomInset: 144),
             0
@@ -460,6 +482,14 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(
             companionDistanceFromLatest(bottomY: 745, viewportHeight: 844, bottomInset: 144),
             45
+        )
+        XCTAssertEqual(
+            companionDistanceFromLatest(bottomY: 750, viewportHeight: 844, bottomInset: 144),
+            companionChatLatestDistanceThreshold
+        )
+        XCTAssertGreaterThan(
+            companionDistanceFromLatest(bottomY: 751, viewportHeight: 844, bottomInset: 144),
+            companionChatLatestDistanceThreshold
         )
         XCTAssertEqual(
             companionDistanceFromLatest(bottomY: 12, viewportHeight: 100, bottomInset: 120),

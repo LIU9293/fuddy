@@ -2,6 +2,7 @@
 .briefing-composer-dock > .composer {
   width: min(var(--content-area-width), calc(100% - var(--content-area-gutter)));
   margin: 0 auto;
+  box-shadow: none;
 }
 
 .chat-scroll-to-latest {
@@ -4709,7 +4710,7 @@
   }
 
   .briefing-composer-dock {
-    background: transparent;
+    background: linear-gradient(to bottom, transparent 17px, #171816 17px);
   }
 
   .content-column.is-briefing {

@@ -482,12 +482,7 @@ final class CompanionStore: ObservableObject {
             macOnline = presence.macOnline
         }
         if envelope.type == "sync.ready", let remoteSequence = envelope.lastSequence {
-            let replayCursor = companionReplayCursor(
-                cachedSequence: state.lastSequence,
-                remoteSequence: remoteSequence
-            )
-            if replayCursor != state.lastSequence {
-                state = CachedState()
+            if companionResetReplayCursorIfNeeded(state: &state, remoteSequence: remoteSequence) {
                 persistCache()
             }
         }
@@ -500,18 +495,20 @@ final class CompanionStore: ObservableObject {
         switch event.type {
             case .snapshotCreated:
                 let snapshot = try event.payload.decode(SnapshotPayload.self)
-                state.modelLabels = snapshot.modelLabels ?? .fallback
-                state.projects = snapshot.projects
-                state.goals = snapshot.goals
-                state.decisions = snapshot.decisions
-                state.morningBriefings = snapshot.morningBriefings ?? []
-                state.workAssistantMessages = snapshot.workAssistantMessages
-                state.runs = snapshot.runs
-                state.attachments = Dictionary(
+                var nextState = state
+                nextState.modelLabels = snapshot.modelLabels ?? .fallback
+                nextState.projects = snapshot.projects
+                nextState.goals = snapshot.goals
+                nextState.decisions = snapshot.decisions
+                nextState.morningBriefings = snapshot.morningBriefings ?? []
+                nextState.workAssistantMessages = snapshot.workAssistantMessages
+                nextState.runs = snapshot.runs
+                nextState.attachments = Dictionary(
                     uniqueKeysWithValues: (snapshot.attachments ?? []).compactMap { attachment in
                         attachment.artifactId.map { ($0, attachment) }
                     }
                 )
+                state = nextState
             case .projectCreated, .projectUpdated:
                 upsert(try event.payload.decode(Project.self), in: &state.projects)
             case .goalCreated, .goalUpdated:

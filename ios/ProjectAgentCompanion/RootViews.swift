@@ -4,6 +4,7 @@ import UIKit
 
 private let companionChatItemSpacing: CGFloat = 20
 private let companionChatHorizontalPadding: CGFloat = 20
+let companionChatLatestDistanceThreshold: CGFloat = 50
 
 enum CompanionSection: String, CaseIterable, Identifiable {
     case assistant, runs, inbox, projects, settings
@@ -595,16 +596,16 @@ struct WorkAssistantView: View {
                         bottomY: bottomY,
                         viewportHeight: viewportSize.height,
                         bottomInset: bottomInset
-                    ) <= 44
+                    ) <= companionChatLatestDistanceThreshold
                 }
                 .onChange(of: scrollToLatestRequest) { _, _ in
                     withAnimation(.easeOut(duration: 0.24)) {
                         proxy.scrollTo(latestAnchorID, anchor: .bottom)
                     }
                 }
-                .onChange(of: timeline.count) { _, _ in
+                .onChange(of: timeline) { _, _ in
                     guard isAtLatestMessage else { return }
-                    withAnimation { proxy.scrollTo(latestAnchorID, anchor: .bottom) }
+                    proxy.scrollTo(latestAnchorID, anchor: .bottom)
                 }
             }
         } composer: {
@@ -645,7 +646,7 @@ struct WorkAssistantView: View {
     }
 }
 
-private enum AssistantTimelineItem: Identifiable {
+private enum AssistantTimelineItem: Identifiable, Equatable {
     case message(WorkAssistantMessage)
     case briefing(MorningBriefing)
 
@@ -1120,9 +1121,8 @@ enum RunTimelineBlock: Identifiable {
     var id: String {
         switch self {
         case .message(let message): return message.id
-        case .activity(let messages): return "activity-\(messages.first?.id ?? UUID().uuidString)"
-        case .process(let messages, _):
-            return "process-\(messages.first?.id ?? "unknown")-\(messages.last?.id ?? "unknown")"
+        case .activity(let messages), .process(let messages, _):
+            return "process-\(messages.first?.id ?? "unknown")"
         }
     }
 }
@@ -1203,14 +1203,6 @@ func companionDistanceFromLatest(
     bottomY - max(0, viewportHeight - bottomInset)
 }
 
-private struct CompanionRunMessagePositionKey: PreferenceKey {
-    static let defaultValue: [String: CGFloat] = [:]
-
-    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
-    }
-}
-
 struct RunDetailView: View {
     @EnvironmentObject private var store: CompanionStore
     @Environment(\.dismiss) private var dismiss
@@ -1249,8 +1241,9 @@ struct RunDetailView: View {
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: companionChatItemSpacing) {
                                 let blocks = groupRunMessages(detail.messages)
-                                ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
-                                    let active = index == blocks.count - 1 && ["running", "queued"].contains(detail.run.status)
+                                let lastBlockID = blocks.last?.id
+                                ForEach(blocks) { block in
+                                    let active = block.id == lastBlockID && ["running", "queued"].contains(detail.run.status)
                                     Group {
                                         switch block {
                                         case .message(let message): MessageView(message: message, active: active)
@@ -1261,18 +1254,6 @@ struct RunDetailView: View {
                                         }
                                     }
                                     .id(block.id)
-                                    .background {
-                                        GeometryReader { blockGeometry in
-                                            Color.clear.preference(
-                                                key: CompanionRunMessagePositionKey.self,
-                                                value: [
-                                                    block.id: blockGeometry.frame(
-                                                        in: .named(scrollCoordinateSpace)
-                                                    ).midY
-                                                ]
-                                            )
-                                        }
-                                    }
                                 }
                                 if ["running", "queued"].contains(detail.run.status),
                                    detail.messages.last?.role == "user" {
@@ -1296,6 +1277,7 @@ struct RunDetailView: View {
                                         }
                                     }
                             }
+                            .scrollTargetLayout()
                             .frame(
                                 width: max(0, viewportSize.width - companionChatHorizontalPadding * 2),
                                 alignment: .leading
@@ -1305,19 +1287,7 @@ struct RunDetailView: View {
                         }
                         .defaultScrollAnchor(.bottom)
                         .coordinateSpace(name: scrollCoordinateSpace)
-                        .onPreferenceChange(CompanionRunMessagePositionKey.self) { positions in
-                            guard didRestoreScrollPosition, !positions.isEmpty else { return }
-                            let visibleTop = topInset
-                            let visibleBottom = max(visibleTop, viewportSize.height - bottomInset)
-                            let visibleCenter = (visibleTop + visibleBottom) / 2
-                            let visiblePositions = positions.filter {
-                                $0.value >= visibleTop && $0.value <= visibleBottom
-                            }
-                            let candidates = visiblePositions.isEmpty ? positions : visiblePositions
-                            scrollPosition = candidates.min {
-                                abs($0.value - visibleCenter) < abs($1.value - visibleCenter)
-                            }?.key
-                        }
+                        .scrollPosition(id: $scrollPosition, anchor: .center)
                         .onPreferenceChange(CompanionChatBottomPositionKey.self) { bottomY in
                             guard bottomY.isFinite else { return }
                             let distanceFromBottom = companionDistanceFromLatest(
@@ -1325,7 +1295,7 @@ struct RunDetailView: View {
                                 viewportHeight: viewportSize.height,
                                 bottomInset: bottomInset
                             )
-                            isAtLatestMessage = distanceFromBottom <= 44
+                            isAtLatestMessage = distanceFromBottom <= companionChatLatestDistanceThreshold
                             if distanceFromBottom > 220 {
                                 bottomRefreshArmed = true
                             } else if distanceFromBottom <= 80, bottomRefreshArmed {
@@ -1340,21 +1310,22 @@ struct RunDetailView: View {
                             let savedPosition = store.savedRunScrollPosition(runID: runID)
                             let destination = savedPosition.flatMap { blockIDs.contains($0) || $0 == latestAnchorID ? $0 : nil }
                                 ?? latestAnchorID
-                            scrollPosition = destination
                             DispatchQueue.main.async {
                                 proxy.scrollTo(destination, anchor: destination == latestAnchorID ? .bottom : .center)
                             }
                         }
                         .onDisappear {
-                            store.saveRunScrollPosition(scrollPosition, runID: runID)
+                            if let scrollPosition {
+                                store.saveRunScrollPosition(scrollPosition, runID: runID)
+                            }
                         }
-                        .onChange(of: scrollPosition) { _, position in
-                            guard didRestoreScrollPosition else { return }
-                            store.saveRunScrollPosition(position, runID: runID)
-                        }
-                        .onChange(of: detail.messages.count) { _, _ in
+                        .onChange(of: detail.messages) { _, _ in
                             guard isAtLatestMessage else { return }
-                            withAnimation { proxy.scrollTo(latestAnchorID, anchor: .bottom) }
+                            proxy.scrollTo(latestAnchorID, anchor: .bottom)
+                        }
+                        .onChange(of: detail.run.status) { _, _ in
+                            guard isAtLatestMessage else { return }
+                            proxy.scrollTo(latestAnchorID, anchor: .bottom)
                         }
                         .onChange(of: scrollToLatestRequest) { _, _ in
                             withAnimation(.easeOut(duration: 0.24)) {
