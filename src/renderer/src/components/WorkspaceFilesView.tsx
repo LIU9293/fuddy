@@ -9,6 +9,7 @@ import {
   FolderOpen,
   FolderPlus,
   Import,
+  Image as ImageIcon,
   LoaderCircle,
   Pencil,
   Save,
@@ -19,12 +20,10 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { Project, WorkspaceFileEntry } from '../../../shared/contracts'
+import type { Project, WorkspaceFileContent, WorkspaceFileEntry } from '../../../shared/contracts'
 import { SelectMenu } from './SelectMenu'
 
-interface OpenFileTab {
-  entry: WorkspaceFileEntry
-  content: string | null
+interface OpenFileTab extends WorkspaceFileContent {
   draft: string
 }
 
@@ -47,9 +46,19 @@ function isMarkdown(entry: WorkspaceFileEntry): boolean {
   return entry.mimeType === 'text/markdown' || /\.(md|markdown)$/i.test(entry.name)
 }
 
+function isImage(entry: WorkspaceFileEntry): boolean {
+  return entry.mimeType?.startsWith('image/') ?? false
+}
+
+function isPdf(entry: WorkspaceFileEntry): boolean {
+  return entry.mimeType === 'application/pdf' || /\.pdf$/i.test(entry.name)
+}
+
 function FileTypeIcon({ entry, size = 38 }: { entry: WorkspaceFileEntry; size?: number }): React.JSX.Element {
   if (entry.kind === 'directory') return <Folder size={size} strokeWidth={1.35} />
+  if (isImage(entry)) return <ImageIcon size={size} strokeWidth={1.35} />
   if (isMarkdown(entry) || entry.mimeType?.startsWith('text/')) return <FileText size={size} strokeWidth={1.35} />
+  if (isPdf(entry)) return <FileText size={size} strokeWidth={1.35} />
   if (entry.mimeType?.includes('json') || /\.(json|jsonl|ya?ml)$/i.test(entry.name)) return <Braces size={size} strokeWidth={1.35} />
   if (/\.(csv|tsv)$/i.test(entry.name)) return <Table2 size={size} strokeWidth={1.35} />
   return <File size={size} strokeWidth={1.35} />
@@ -124,8 +133,7 @@ export function WorkspaceFilesView({
     try {
       const result = await window.projectAgent.readWorkspaceFile(projectId, entry.relativePath)
       setTabs((current) => [...current, {
-        entry: result.entry,
-        content: result.content,
+        ...result,
         draft: result.content ?? ''
       }])
       setActivePath(entry.relativePath)
@@ -366,20 +374,11 @@ export function WorkspaceFilesView({
             </div>
           </div>
 
-          {activeTab.content === null ? (
-            <div className="workspace-preview-empty">
-              <FileTypeIcon entry={activeTab.entry} size={42} />
-              <strong>{activeTab.entry.name}</strong>
-              <span>{activeTab.entry.mimeType ?? '二进制文件'} · 当前格式请在外部应用中查看。</span>
-              <button className="secondary-action-button" onClick={() => void window.projectAgent.revealWorkspacePath(projectId, activeTab.entry.relativePath)}>
-                在 Finder 中显示
-              </button>
-            </div>
-          ) : isMarkdown(activeTab.entry) && documentMode === 'preview' ? (
+          {activeTab.kind === 'markdown' && documentMode === 'preview' ? (
             <article className="workspace-markdown-preview">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeTab.draft}</ReactMarkdown>
             </article>
-          ) : (
+          ) : activeTab.kind === 'text' || (activeTab.kind === 'markdown' && documentMode === 'edit') ? (
             <textarea
               className="workspace-text-editor"
               value={activeTab.draft}
@@ -391,6 +390,23 @@ export function WorkspaceFilesView({
               }}
               spellCheck={false}
             />
+          ) : activeTab.kind === 'image' && activeTab.previewUrl ? (
+            <div className="workspace-image-preview">
+              <img src={activeTab.previewUrl} alt={activeTab.entry.name} />
+            </div>
+          ) : activeTab.kind === 'pdf' && activeTab.previewUrl ? (
+            <div className="workspace-pdf-preview">
+              <iframe src={activeTab.previewUrl} title={`PDF 预览：${activeTab.entry.name}`} />
+            </div>
+          ) : (
+            <div className="workspace-preview-empty">
+              <FileTypeIcon entry={activeTab.entry} size={42} />
+              <strong>{activeTab.entry.name}</strong>
+              <span>{activeTab.previewMessage ?? `${activeTab.entry.mimeType ?? '二进制文件'} · 当前格式请在外部应用中查看。`}</span>
+              <button className="secondary-action-button" onClick={() => void window.projectAgent.revealWorkspacePath(projectId, activeTab.entry.relativePath)}>
+                在 Finder 中显示
+              </button>
+            </div>
           )}
         </div>
       ) : (

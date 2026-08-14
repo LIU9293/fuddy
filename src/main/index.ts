@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { app, BrowserWindow, nativeTheme, Notification, shell } from 'electron'
+import { app, BrowserWindow, nativeTheme, Notification, protocol, shell } from 'electron'
 import * as Sentry from '@sentry/electron/main'
 import { ConnectorRuntime } from './connectors/connector-runtime'
 import { registerIpc } from './ipc'
@@ -38,6 +38,13 @@ import { registerBundledPostgresCollectors } from './project-extensions/bundled-
 import { registerBundledDailyBriefingStrategies } from './project-extensions/roombase-daily-briefing'
 import { startAutoUpdateService } from './services/auto-update-service'
 import { resolveFuddyRuntimeProfile } from './runtime-profile'
+import { registerWorkspaceFileProtocol } from './services/workspace-file-protocol'
+import { workspaceFilePreviewScheme } from '../shared/workspace-file-preview'
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: workspaceFilePreviewScheme,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+}])
 
 function packagedRuntimeChannel(): string | null {
   try {
@@ -316,6 +323,7 @@ if (!hasLock) {
       const runtime = new PiAgentRuntime(providerSettings)
       const decisionRemediationService = new DecisionRemediationService(database)
       const workspaceFiles = new WorkspaceFilesService(database, join(userDataPath, 'project-files'))
+      registerWorkspaceFileProtocol(workspaceFiles)
       const mcpOptions = resolveThirdPartyMcpOptions({
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath,

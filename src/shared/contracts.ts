@@ -252,7 +252,10 @@ export interface WorkspaceFileEntry {
 
 export interface WorkspaceFileContent {
   entry: WorkspaceFileEntry
+  kind: 'markdown' | 'text' | 'image' | 'pdf' | 'unsupported'
   content: string | null
+  previewUrl: string | null
+  previewMessage: string | null
 }
 
 export type GoalStatus = 'planned' | 'active' | 'at-risk' | 'completed' | 'paused'

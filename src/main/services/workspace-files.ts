@@ -9,11 +9,16 @@ import {
 } from 'node:fs'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 import type { AgentRunArtifact, AgentRunArtifactPreview, Project, WorkspaceFileContent, WorkspaceFileEntry } from '../../shared/contracts'
+import { workspaceFilePreviewUrl } from '../../shared/workspace-file-preview'
 import { AppDatabase } from './database'
 
 const editableExtensions = new Set([
   '.txt', '.md', '.markdown', '.json', '.jsonl', '.csv', '.tsv', '.html', '.css', '.xml', '.yaml', '.yml'
 ])
+
+const maximumTextPreviewSize = 2 * 1024 * 1024
+const maximumImagePreviewSize = 12 * 1024 * 1024
+const maximumPdfPreviewSize = 20 * 1024 * 1024
 
 const mimeTypes: Record<string, string> = {
   '.txt': 'text/plain',
@@ -90,9 +95,72 @@ export class WorkspaceFilesService {
     const absolutePath = this.resolveInside(root, normalized)
     const entry = this.toEntry(projectId, root, normalized)
     if (entry.kind !== 'file') throw new Error('请选择一个文件。')
-    if (!entry.editable) return { entry, content: null }
-    if (entry.size > 2 * 1024 * 1024) throw new Error('文本文件超过 2 MB，请在外部应用中打开。')
-    return { entry, content: readFileSync(absolutePath, 'utf8') }
+    const extension = extname(absolutePath).toLowerCase()
+
+    if (entry.editable) {
+      if (entry.size > maximumTextPreviewSize) {
+        return {
+          entry,
+          kind: 'unsupported',
+          content: null,
+          previewUrl: null,
+          previewMessage: '文本文件超过 2 MB，请在 Finder 中打开。'
+        }
+      }
+      return {
+        entry,
+        kind: extension === '.md' || extension === '.markdown' ? 'markdown' : 'text',
+        content: readFileSync(absolutePath, 'utf8'),
+        previewUrl: null,
+        previewMessage: null
+      }
+    }
+
+    if (entry.mimeType?.startsWith('image/')) {
+      if (entry.size > maximumImagePreviewSize) {
+        return {
+          entry,
+          kind: 'unsupported',
+          content: null,
+          previewUrl: null,
+          previewMessage: '图片超过 12 MB，请在 Finder 中打开。'
+        }
+      }
+      return {
+        entry,
+        kind: 'image',
+        content: null,
+        previewUrl: `data:${entry.mimeType};base64,${readFileSync(absolutePath).toString('base64')}`,
+        previewMessage: null
+      }
+    }
+
+    if (entry.mimeType === 'application/pdf') {
+      if (entry.size > maximumPdfPreviewSize) {
+        return {
+          entry,
+          kind: 'unsupported',
+          content: null,
+          previewUrl: null,
+          previewMessage: 'PDF 超过 20 MB，请在 Finder 中打开。'
+        }
+      }
+      return {
+        entry,
+        kind: 'pdf',
+        content: null,
+        previewUrl: workspaceFilePreviewUrl(projectId, normalized),
+        previewMessage: null
+      }
+    }
+
+    return {
+      entry,
+      kind: 'unsupported',
+      content: null,
+      previewUrl: null,
+      previewMessage: `${entry.mimeType ?? '二进制文件'} · 当前格式请在外部应用中查看。`
+    }
   }
 
   previewArtifact(artifact: AgentRunArtifact): AgentRunArtifactPreview {
@@ -103,7 +171,7 @@ export class WorkspaceFilesService {
     if (entry.kind !== 'file') throw new Error('产物不是文件。')
 
     if (entry.editable) {
-      if (entry.size > 2 * 1024 * 1024) throw new Error('文本文件超过 2 MB，请在 Finder 中打开。')
+      if (entry.size > maximumTextPreviewSize) throw new Error('文本文件超过 2 MB，请在 Finder 中打开。')
       const extension = extname(absolutePath).toLowerCase()
       return {
         artifact,
@@ -115,7 +183,7 @@ export class WorkspaceFilesService {
     }
 
     if (entry.mimeType?.startsWith('image/')) {
-      if (entry.size > 12 * 1024 * 1024) throw new Error('图片超过 12 MB，请在 Finder 中打开。')
+      if (entry.size > maximumImagePreviewSize) throw new Error('图片超过 12 MB，请在 Finder 中打开。')
       return {
         artifact,
         kind: 'image',
