@@ -7,10 +7,8 @@ import {
   buildCodexAppServerArgs,
   claudeSdkReasoningOptions,
   codingAgentRuntimeRoots,
+  codexAgentMessagePhase,
   codexAppServerToolRecord,
-  codexCompletedReasoningSummaries,
-  codexReasoningSegmentId,
-  codexReasoningSummaryDelta,
   CODEX_APPROVAL_POLICY,
   CODEX_REASONING_SUMMARY,
   CODEX_THREAD_SANDBOX,
@@ -57,24 +55,11 @@ describe('coding CLI MCP injection', () => {
     })).toEqual({ reasoning: '正在检查项目数据库连接方式。' })
   })
 
-  it('forwards Codex reasoning summaries without exposing raw reasoning deltas', () => {
-    expect(codexReasoningSummaryDelta('item/reasoning/summaryTextDelta', { delta: '正在检查依赖关系。' }))
-      .toBe('正在检查依赖关系。')
-    expect(codexReasoningSummaryDelta('item/reasoning/textDelta', { delta: 'raw chain of thought' }))
-      .toBe('')
-  })
-
-  it('keeps Codex reasoning summary sections as separate timeline segments', () => {
-    expect(codexReasoningSegmentId({ itemId: 'reasoning-1', summaryIndex: 2 }))
-      .toBe('reasoning-1:summary:2')
-    expect(codexCompletedReasoningSummaries({
-      id: 'reasoning-1',
-      type: 'reasoning',
-      summary: ['先检查依赖。', { type: 'summary_text', text: '再运行测试。' }]
-    })).toEqual([
-      { segmentId: 'reasoning-1:summary:0', text: '先检查依赖。' },
-      { segmentId: 'reasoning-1:summary:1', text: '再运行测试。' }
-    ])
+  it('preserves Codex commentary and final-answer phases from app-server items', () => {
+    expect(codexAgentMessagePhase({ type: 'agentMessage', phase: 'commentary' })).toBe('commentary')
+    expect(codexAgentMessagePhase({ type: 'agentMessage', phase: 'final_answer' })).toBe('final_answer')
+    expect(codexAgentMessagePhase({ type: 'agentMessage', phase: null })).toBeNull()
+    expect(codexAgentMessagePhase({ type: 'commandExecution' })).toBeNull()
   })
 
   it('preserves OpenCode reasoning parts for the shared reasoning UI', () => {
@@ -234,8 +219,8 @@ describe('coding CLI MCP injection', () => {
   })
 
   it('passes configured effort to the active Codex app-server turn and Claude SDK', () => {
-    expect(CODEX_REASONING_SUMMARY).toBe('auto')
-    expect(buildCodexTurnStartParams('thread', 'test', 'xhigh')).toMatchObject({ effort: 'xhigh', summary: 'auto' })
+    expect(CODEX_REASONING_SUMMARY).toBe('none')
+    expect(buildCodexTurnStartParams('thread', 'test', 'xhigh')).toMatchObject({ effort: 'xhigh', summary: 'none' })
     expect(buildCodexTurnStartParams('thread', 'test')).not.toHaveProperty('effort')
     expect(claudeSdkReasoningOptions('max')).toEqual({ effort: 'max' })
     expect(claudeSdkReasoningOptions()).toEqual({})

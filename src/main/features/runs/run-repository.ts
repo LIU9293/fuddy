@@ -38,6 +38,12 @@ function parseJson<T>(value: string | null, fallback: T): T {
   }
 }
 
+export function isCodexGeneratedReasoningSummary(message: AgentRunMessage): boolean {
+  if (message.eventType !== 'reasoning') return false
+  const segmentId = typeof message.metadata?.segmentId === 'string' ? message.metadata.segmentId : ''
+  return /:summary:\d+$/.test(segmentId)
+}
+
 export class RunRepository {
   constructor(
     private readonly database: DatabaseSync,
@@ -168,7 +174,7 @@ export class RunRepository {
     const rows = this.database
       .prepare('SELECT * FROM agent_run_messages WHERE run_id = ? ORDER BY created_at ASC, rowid ASC')
       .all(runId) as SqlRow[]
-    return rows.map((row) => ({
+    const messages = rows.map((row) => ({
       id: String(row.id),
       runId: String(row.run_id),
       role: row.role as AgentRunMessage['role'],
@@ -178,6 +184,10 @@ export class RunRepository {
       metadata: parseJson<Record<string, unknown> | null>(row.metadata_json ? String(row.metadata_json) : null, null),
       createdAt: String(row.created_at)
     }))
+    const providerRow = this.database.prepare('SELECT provider FROM agent_runs WHERE id = ?').get(runId) as SqlRow | undefined
+    return providerRow?.provider === 'codex'
+      ? messages.filter((message) => !isCodexGeneratedReasoningSummary(message))
+      : messages
   }
 
   listArtifacts(runId: string): AgentRunArtifact[] {

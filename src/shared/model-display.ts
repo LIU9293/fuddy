@@ -12,6 +12,17 @@ const providerLabels: Record<AgentRunProvider, string> = {
   opencode: 'OpenCode Default'
 }
 
+const providerNames: Record<AgentRunProvider, string> = {
+  pi: 'Pi Agent',
+  codex: 'Codex',
+  claude: 'Claude Code',
+  opencode: 'OpenCode'
+}
+
+export function formatAgentProviderName(provider: AgentRunProvider): string {
+  return providerNames[provider]
+}
+
 export const emptyAgentModelLabels: AgentModelLabels = {
   workAssistant: 'Model Default',
   providers: { ...providerLabels }

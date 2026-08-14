@@ -31,12 +31,39 @@ describe('WorkspaceFilesService', () => {
     const written = files.write('vows', 'marketing/launch.md', '# Launch plan')
 
     expect(written.mimeType).toBe('text/markdown')
-    expect(files.read('vows', 'marketing/launch.md').content).toBe('# Launch plan')
+    expect(files.read('vows', 'marketing/launch.md')).toMatchObject({
+      kind: 'markdown',
+      content: '# Launch plan',
+      previewUrl: null,
+      previewMessage: null
+    })
     expect(files.list('vows').map((entry) => entry.relativePath)).toEqual([
       'marketing',
       'marketing/launch.md'
     ])
     expect(files.list('roombase')).toEqual([])
+
+    database.close()
+  })
+
+  it('returns inline file-page previews for images and PDFs', () => {
+    const { database, files } = createWorkspace()
+
+    files.writeDataUrl('vows', 'cover.png', 'data:image/png;base64,aW1hZ2U=')
+    files.writeDataUrl('vows', 'launch.pdf', 'data:application/pdf;base64,cGRm')
+
+    expect(files.read('vows', 'cover.png')).toMatchObject({
+      kind: 'image',
+      content: null,
+      previewUrl: 'data:image/png;base64,aW1hZ2U=',
+      previewMessage: null
+    })
+    expect(files.read('vows', 'launch.pdf')).toMatchObject({
+      kind: 'pdf',
+      content: null,
+      previewUrl: 'fuddy-file://workspace/vows/launch.pdf',
+      previewMessage: null
+    })
 
     database.close()
   })

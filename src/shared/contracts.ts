@@ -223,7 +223,12 @@ export interface GitWorkingTreeSummary {
 export type AgentRunStreamUpdate =
   | { type: 'created'; run: AgentRun }
   | { type: 'status'; status: AgentRunStatus; detail?: string }
-  | { type: 'message_delta'; messageId: string; delta: string }
+  | {
+      type: 'message_delta'
+      messageId: string
+      delta: string
+      phase?: 'commentary' | 'final_answer' | null
+    }
   | { type: 'reasoning_delta'; segmentId?: string; delta: string }
   | { type: 'tool'; toolCallId?: string; toolName: string; status: 'running' | 'completed' | 'failed'; detail: string }
   | { type: 'approval'; request: AgentApprovalRequest }
@@ -247,7 +252,10 @@ export interface WorkspaceFileEntry {
 
 export interface WorkspaceFileContent {
   entry: WorkspaceFileEntry
+  kind: 'markdown' | 'text' | 'image' | 'pdf' | 'unsupported'
   content: string | null
+  previewUrl: string | null
+  previewMessage: string | null
 }
 
 export type GoalStatus = 'planned' | 'active' | 'at-risk' | 'completed' | 'paused'
@@ -1052,6 +1060,7 @@ export interface DesktopApi {
   ): () => void
   onCompanionDataChanged(callback: () => void): () => void
   onOpenAgentRun(callback: (runId: string) => void): () => void
+  onAgentRunUpdate(callback: (envelope: AgentRunStreamEnvelope) => void): () => void
   sendAgentRunMessage(
     input: SendAgentRunMessageInput,
     onUpdate: (update: AgentRunStreamUpdate) => void

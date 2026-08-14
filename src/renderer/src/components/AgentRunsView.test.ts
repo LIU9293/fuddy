@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import type { AgentRunMessage, AgentRunStreamUpdate } from '../../../shared/contracts'
 import {
   applyAgentLiveUpdate,
@@ -8,6 +10,7 @@ import {
   groupLiveActivities,
   groupLiveActivityStages,
   groupMessageTimeline,
+  RunLiveActivity,
   shouldBlockAgentRunDetailRefresh,
   type LiveActivity
 } from './AgentRunsView'
@@ -53,6 +56,39 @@ describe('Agent Run live activity timeline', () => {
     expect(withBothRuns['run-2']).toMatchObject({
       streamingText: '第二个 Run 的回复',
       activities: []
+    })
+  })
+
+  it('renders streamed assistant text before the final response is persisted', () => {
+    const markup = renderToStaticMarkup(createElement(RunLiveActivity, {
+      activities: [],
+      streamingText: '正在检查 Cron 运行状态…',
+      approval: null,
+      onApproval: async () => undefined
+    }))
+
+    expect(markup).toContain('正在检查 Cron 运行状态…')
+    expect(markup).not.toContain('正在思考…')
+  })
+
+  it('turns commentary into an activity when the final answer starts streaming', () => {
+    const commentary = applyAgentLiveUpdateForRun({}, 'run-1', {
+      type: 'message_delta',
+      messageId: 'commentary-1',
+      phase: 'commentary',
+      delta: '先检查运行环境。'
+    })
+    const finalAnswer = applyAgentLiveUpdateForRun(commentary, 'run-1', {
+      type: 'message_delta',
+      messageId: 'answer-1',
+      phase: 'final_answer',
+      delta: '检查完成。'
+    })
+
+    expect(finalAnswer['run-1']).toMatchObject({
+      streamingText: '检查完成。',
+      streamingPhase: 'final_answer',
+      activities: [{ kind: 'thinking', value: { content: '先检查运行环境。' } }]
     })
   })
 

@@ -1,6 +1,6 @@
 import { join } from 'node:path'
-import { mkdirSync } from 'node:fs'
-import { app, BrowserWindow, nativeTheme, Notification, shell } from 'electron'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { app, BrowserWindow, nativeTheme, Notification, protocol, shell } from 'electron'
 import * as Sentry from '@sentry/electron/main'
 import { ConnectorRuntime } from './connectors/connector-runtime'
 import { registerIpc } from './ipc'
@@ -37,10 +37,45 @@ import { registerBundledProjectAnalyticsProfiles } from './project-extensions/bu
 import { registerBundledPostgresCollectors } from './project-extensions/bundled-postgres-collectors'
 import { registerBundledDailyBriefingStrategies } from './project-extensions/roombase-daily-briefing'
 import { startAutoUpdateService } from './services/auto-update-service'
+import { resolveFuddyRuntimeProfile } from './runtime-profile'
+import { registerWorkspaceFileProtocol } from './services/workspace-file-protocol'
+import { workspaceFilePreviewScheme } from '../shared/workspace-file-preview'
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: workspaceFilePreviewScheme,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+}])
+
+function packagedRuntimeChannel(): string | null {
+  try {
+    const packageMetadata = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as {
+      fuddyRuntimeProfile?: unknown
+    }
+    return typeof packageMetadata.fuddyRuntimeProfile === 'string' ? packageMetadata.fuddyRuntimeProfile : null
+  } catch {
+    return null
+  }
+}
+
+const runtimeProfile = resolveFuddyRuntimeProfile({
+  appDataPath: app.getPath('appData'),
+  appName: app.getName(),
+  appExecutablePath: process.execPath,
+  isPackaged: app.isPackaged,
+  packagedRuntimeChannel: packagedRuntimeChannel(),
+  environment: process.env
+})
+mkdirSync(runtimeProfile.userDataPath, { recursive: true })
+// Production keeps the historical package name internally because Electron
+// derives its macOS Safe Storage identity from it. The bundle and every visible
+// window still use Fuddy; changing this internal name would orphan existing
+// encrypted credentials. Development uses a separate name and vault identity.
+if (runtimeProfile.channel === 'development') app.setName(runtimeProfile.appName)
+app.setPath('userData', runtimeProfile.userDataPath)
 
 Sentry.init({
   dsn: SENTRY_DSN,
-  environment: app.isPackaged ? 'production' : 'development',
+  environment: runtimeProfile.channel,
   release: `${SENTRY_PROJECT}@${app.getVersion()}`,
   sendDefaultPii: false,
   skipOpenTelemetrySetup: true,
@@ -102,7 +137,9 @@ function resolveMacDockIconPath(): string {
 
 function updateMacDockIcon(): void {
   if (process.platform !== 'darwin') return
-  app.dock?.setIcon(resolveMacDockIconPath())
+  const iconPath = resolveMacDockIconPath()
+  if (existsSync(iconPath)) app.dock?.setIcon(iconPath)
+  app.dock?.setBadge(runtimeProfile.channel === 'development' ? 'DEV' : '')
 }
 
 function createSplashWindow(): void {
@@ -116,7 +153,7 @@ function createSplashWindow(): void {
     maximizable: false,
     fullscreenable: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#000000' : '#ffffff',
-    title: 'Fuddy',
+    title: runtimeProfile.appName,
     webPreferences: {
       sandbox: true,
       contextIsolation: true,
@@ -126,6 +163,10 @@ function createSplashWindow(): void {
   })
 
   splashWindow.once('ready-to-show', () => splashWindow?.show())
+  splashWindow.on('page-title-updated', (event) => {
+    event.preventDefault()
+    splashWindow?.setTitle(runtimeProfile.appName)
+  })
   splashWindow.on('closed', () => {
     splashWindow = null
   })
@@ -144,7 +185,7 @@ function createWindow(): void {
     minWidth: 980,
     minHeight: 680,
     show: false,
-    title: 'Fuddy',
+    title: runtimeProfile.appName,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 18, y: 18 },
     backgroundColor: '#f7f7f4',
@@ -162,6 +203,10 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     splashWindow?.close()
     showMainWindow()
+  })
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault()
+    mainWindow?.setTitle(runtimeProfile.appName)
   })
   mainWindow.on('closed', () => {
     mainWindow = null
@@ -278,12 +323,13 @@ if (!hasLock) {
       const runtime = new PiAgentRuntime(providerSettings)
       const decisionRemediationService = new DecisionRemediationService(database)
       const workspaceFiles = new WorkspaceFilesService(database, join(userDataPath, 'project-files'))
+      registerWorkspaceFileProtocol(workspaceFiles)
       const mcpOptions = resolveThirdPartyMcpOptions({
         appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath,
         userDataPath,
         packaged: app.isPackaged,
-        hostBundleId: 'dev.ainative.projectagent'
+        hostBundleId: runtimeProfile.hostBundleId
       })
       agentToolsMcp = new ThirdPartyMcpRuntime(mcpOptions)
       const piTaskHarness = new PiTaskHarness(
@@ -303,6 +349,11 @@ if (!hasLock) {
           if (turn.outcome === 'completed') await decisionRemediationService.sync(run.projectId)
         }
       )
+      dispatcher.onRunUpdate((runId, update) => {
+        const targetWindow = mainWindow
+        if (!targetWindow || targetWindow.webContents.isDestroyed()) return
+        targetWindow.webContents.send('agent-run:broadcast', { requestId: '', runId, update })
+      })
       const dailyBriefingService = new DailyBriefingService(database, connectorRuntime, runtime)
       const projectAgentIntegration = new ProjectAgentIntegrationService(database, credentialVault, (input, onUpdate) =>
         dispatcher.dispatch(input, onUpdate)
@@ -430,9 +481,10 @@ if (!hasLock) {
         companionSync
       )
       createWindow()
+      const updateConfigurationExists = existsSync(join(process.resourcesPath, 'app-update.yml'))
       stopAutoUpdates = startAutoUpdateService((error) => {
         Sentry.captureException(error, { tags: { boundary: 'auto-update' } })
-      })
+      }, runtimeProfile.autoUpdatesEnabled && updateConfigurationExists)
       void decisionRemediationService
         .sync()
         .then(() => {

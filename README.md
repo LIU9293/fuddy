@@ -217,6 +217,7 @@ Goal → Milestone → Evidence → Check-in → Briefing / Decision → Agent R
 - 输出位置；
 - 是否需要人工确认；
 - 上次运行、下次运行和当前状态；
+- 后台 Cron 触发的 Agent Run 会把状态、思考摘要、工具活动和回复增量实时广播到已打开的 Run 对话；
 - 失败提醒与重试策略；
 - 可审计的运行记录。
 
@@ -261,7 +262,7 @@ Mac 主侧边栏保留工作助理、决策收件箱、文件、项目和自动�
 
 - 在 Agent Runs 前提供跨项目文件入口，用于集中保存运营、Marketing、分析和内容生产产物；
 - 每个项目拥有独立文件空间，另有不归属具体项目的共享空间；
-- 支持新建文件与文件夹、导入、文本预览和编辑，并可在 Finder 中打开；
+- 支持新建文件与文件夹、导入、Markdown 预览 / 编辑、文本编辑和图片直接预览；20 MB 以内的 PDF 使用内嵌原生阅读器打开，超限或不支持的格式保留 Finder 入口；
 - Agent 只能在绑定的项目 Workspace Roots 和所选文件空间内工作，不能越过项目目录；代码与随产品发布的资源进入 Workspace，Marketing、运营、研究、报告、品牌与宣传素材等代码无关产物进入项目文件空间；
 - Agent 真实写入的文件会作为 Artifact 关联回产生它的 Agent Run，避免只在对话里声称“已保存”。
 
@@ -274,11 +275,11 @@ Mac 主侧边栏保留工作助理、决策收件箱、文件、项目和自动�
 - Pi 使用内置 Agent Harness；Codex、Claude Code 和 OpenCode 连接本机已登录的运行时，并继续拥有各自的认证、模型配置和 Session；
 - 每个项目可在项目设置中选择默认 Agent；全局 Coding Agents 设置另有一个默认 Coding Agent，供“去处理”等未显式选择 Agent 的入口使用；单次 Run 仍可覆盖；
 - Session 保存对应运行时返回的 Session ID，后续消息恢复同一个 Agent 上下文；工作目录使用项目主 Workspace，其他 Workspace Roots 和项目文件空间作为额外可访问目录；
-- 新建 Session 先进入 `draft`，创建页只配置项目、Agent、关联里程碑和标题；第一条消息在聊天页由用户发送；
+- 新建 Agent Run 先进入 `draft`，创建页只配置项目、Agent、关联里程碑和标题；聊天页明确显示“草稿 · 尚未运行”，第一条消息由用户发送；
 - 从决策收件箱点击“去处理”时，系统直接创建草稿 Session 并把建议任务预填到聊天输入框，不自动执行；
 - 从 Goal Milestone 点击“开始任务”时复用已有未归档关联 Run，或创建新的草稿 Run；预填 Prompt 会在 Mac 与 iPhone 间同步，编辑后自动保存，首条消息仍由用户发送；
 - Codex、Claude Code 与 OpenCode 使用各自本机默认账号和配置，不注入 CC Switch 配置；应用继承交互式 zsh 环境，并只在用户选择模型或 Reasoning Effort 后显式传入对应参数；
-- 三个外部 Agent 默认使用完整本机访问和自动批准模式。每段思考摘要独立保存和显示；两个 Thinking 之间的连续工具调用归为一个默认折叠的调用组，当前 Thinking 与正在运行的工具会显示动态工作状态。
+- 三个外部 Agent 默认使用完整本机访问和自动批准模式。每段思考摘要独立保存和显示；两个 Thinking 之间的连续工具调用归为一个默认折叠的调用组，当前 Thinking、正在运行的工具和可见回复增量会实时显示。
 
 ### 项目状态
 
@@ -551,6 +552,8 @@ npm run prepare:agent-tools
 npm run prepare:whisper
 npm run dev
 ```
+
+`npm run dev` 始终启动隔离的 **Fuddy Dev**，使用 `~/Library/Application Support/ai-native-project-agent-dev`。它与 `/Applications/Fuddy.app` 的 production 数据库、凭证、Companion 配对、Agent Session、自动化调度和单实例锁完全分离，因此两者可以同时运行。开发与 QA 不得把 production Fuddy 当作测试目标；需要测试打包形态时使用 `npm run package:smoke` 或 `npm run dist:mac:dev`，产物拥有独立的 `dev.ainative.projectagent.dev` Bundle ID 且禁用自动更新。production Fuddy 继续使用 `~/Library/Application Support/ai-native-project-agent`，保证现有安装升级后仍能读取原数据。
 
 验证：
 

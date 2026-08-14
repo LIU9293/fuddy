@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseShellEnvironment, readInteractiveZshEnvironment } from './shell-environment'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('interactive shell environment', () => {
   it('ignores zsh startup output and parses the null-separated environment after the marker', () => {
@@ -29,5 +33,19 @@ describe('interactive shell environment', () => {
     })
     expect(environment.PROJECT_AGENT_SHELL_ENV_TEST).toBe('inherited')
     expect(environment.PATH).toBeTruthy()
+  })
+
+  it('does not block app startup when a shell descendant keeps the output pipe open', async () => {
+    vi.useFakeTimers()
+    const kill = vi.fn()
+    const environmentPromise = readInteractiveZshEnvironment({}, {
+      deadlineMs: 100,
+      launch: () => ({ kill })
+    })
+
+    await vi.advanceTimersByTimeAsync(100)
+
+    await expect(environmentPromise).resolves.toEqual({})
+    expect(kill).toHaveBeenCalledOnce()
   })
 })

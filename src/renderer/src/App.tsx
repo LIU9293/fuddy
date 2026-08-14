@@ -83,7 +83,7 @@ import type {
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import type { CompanionMacStatus, CompanionPairingSession } from '../../shared/companion-sync'
 import { defaultCompanionRelayUrl } from '../../shared/companion-sync'
-import { buildAgentModelLabels } from '../../shared/model-display'
+import { buildAgentModelLabels, formatAgentProviderName } from '../../shared/model-display'
 import { useAppBootstrap } from './features/app-shell/useAppBootstrap'
 import { buildMilestoneDraftPrompt, DecisionRow, EmptyState, GoalsView } from './views/InboxGoalsView'
 import { ProjectSettingsView, ProjectStatusView } from './views/ProjectViews'
@@ -341,7 +341,7 @@ export default function App(): React.JSX.Element {
       setSelectedAgentRunId(detail.run.id)
       setCreatingAgentRun(false)
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Agent Session 创建失败。')
+      setNotice(error instanceof Error ? error.message : 'Agent Run 创建失败。')
     } finally {
       setHandlingDecisionId(null)
     }
@@ -461,9 +461,9 @@ export default function App(): React.JSX.Element {
       setSidebarRunRenameTarget(null)
       setSidebarRunRenameTitle('')
       await refresh()
-      setNotice('Session 已重命名。')
+      setNotice('Agent Run 已重命名。')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Session 重命名失败。')
+      setNotice(error instanceof Error ? error.message : 'Agent Run 重命名失败。')
     } finally {
       setSidebarRunActionBusy(false)
     }
@@ -479,9 +479,9 @@ export default function App(): React.JSX.Element {
         setCreatingAgentRun(false)
       }
       await refresh()
-      setNotice('Session 已归档。')
+      setNotice('Agent Run 已归档。')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Session 归档失败。')
+      setNotice(error instanceof Error ? error.message : 'Agent Run 归档失败。')
     } finally {
       setSidebarRunActionBusy(false)
     }
@@ -675,7 +675,7 @@ export default function App(): React.JSX.Element {
                         <span>
                           <strong>{run.title}</strong>
                           <small>
-                            {project?.name ?? '共享'} · {run.provider}
+                            {project?.name ?? '共享'} · {formatAgentProviderName(run.provider)}
                           </small>
                         </span>
                         {active && <LoaderCircle size={14} className="spin" />}
@@ -1099,7 +1099,7 @@ export default function App(): React.JSX.Element {
               void renameSidebarRun()
             }}
           >
-            <strong>重命名 Session</strong>
+            <strong>重命名 Agent Run</strong>
             <input
               autoFocus
               value={sidebarRunRenameTitle}
@@ -1108,7 +1108,7 @@ export default function App(): React.JSX.Element {
               onKeyDown={(event) => {
                 if (event.key === 'Escape' && !sidebarRunActionBusy) setSidebarRunRenameTarget(null)
               }}
-              aria-label="Session 新标题"
+              aria-label="Agent Run 新标题"
             />
             <div>
               <button type="button" disabled={sidebarRunActionBusy} onClick={() => setSidebarRunRenameTarget(null)}>

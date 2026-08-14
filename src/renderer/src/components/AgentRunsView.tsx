@@ -54,8 +54,9 @@ import { ConversationMessageActions } from './ConversationMessageActions'
 import { ProjectIcon } from './ProjectIcon'
 import { SelectMenu } from './SelectMenu'
 import { chatIsAtLatest } from '../chat-scroll'
+import { agentRunUpdateStore } from '../features/agent-runs/agent-run-update-store'
 import type { AgentModelLabels } from '../../../shared/model-display'
-import { formatAgentModelLabel } from '../../../shared/model-display'
+import { formatAgentModelLabel, formatAgentProviderName } from '../../../shared/model-display'
 import {
   agentToolGroupSummary,
   agentToolPresentation,
@@ -131,7 +132,7 @@ function AgentRunActionsMenu({
       <button
         type="button"
         className="agent-run-actions-trigger"
-        aria-label="Session 操作"
+        aria-label="Agent Run 操作"
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={disabled}
@@ -140,12 +141,12 @@ function AgentRunActionsMenu({
         <Ellipsis size={18} />
       </button>
       {open && (
-        <div className="agent-run-actions-popover" role="menu" aria-label="Session 操作">
+        <div className="agent-run-actions-popover" role="menu" aria-label="Agent Run 操作">
           <button type="button" role="menuitem" onClick={() => { setOpen(false); onRename() }}>
-            <Pencil size={14} /> Rename
+            <Pencil size={14} /> 重命名
           </button>
           <button type="button" role="menuitem" disabled={archiveDisabled} onClick={() => { setOpen(false); onArchive() }}>
-            <Archive size={14} /> Archive
+            <Archive size={14} /> 归档
           </button>
         </div>
       )}
@@ -268,13 +269,13 @@ function AgentRunInfoSidebar({
   }
 
   return (
-    <aside className="agent-run-info-sidebar" aria-label="Session 信息">
+    <aside className="agent-run-info-sidebar" aria-label="Agent Run 信息">
       <div className="agent-run-info-header">
-        <div><strong>Session 信息</strong><small>上下文与文件预览</small></div>
+        <div><strong>Agent Run 信息</strong><small>上下文与文件预览</small></div>
         <button type="button" onClick={onClose} aria-label="收起信息栏"><X size={16} /></button>
       </div>
 
-      <div className="agent-run-info-tabs" role="tablist" aria-label="Session 信息分类">
+      <div className="agent-run-info-tabs" role="tablist" aria-label="Agent Run 信息分类">
         <button type="button" role="tab" aria-selected={activeTab === 'info'} className={activeTab === 'info' ? 'is-active' : ''} onClick={() => onTabChange('info')}>基本信息</button>
         <button type="button" role="tab" aria-selected={activeTab === 'files'} className={activeTab === 'files' ? 'is-active' : ''} onClick={() => onTabChange('files')}>文件 <small>{detail.artifacts.length}</small></button>
       </div>
@@ -313,7 +314,7 @@ function AgentRunInfoSidebar({
               {milestoneTitle && <><dt>Milestone</dt><dd>{milestoneTitle}</dd></>}
               <dt>默认 Agent</dt><dd>{project.profile.defaultAgent}</dd>
             </dl>
-          </div> : <p className="agent-run-info-empty">这是一个共享 Session，没有关联项目。</p>}
+          </div> : <p className="agent-run-info-empty">这是一个共享 Agent Run，没有关联项目。</p>}
         </section>
 
         <section className="agent-run-info-section">
@@ -323,7 +324,7 @@ function AgentRunInfoSidebar({
             <span><strong>{primaryWorkspace?.label ?? '工作目录'}</strong><code title={detail.run.workingDirectory ?? ''}>{detail.run.workingDirectory ?? '未配置'}</code></span>
           </div>
           <div className="agent-run-meta-grid">
-            <span><small>Agent</small><strong>{detail.run.provider}</strong></span>
+            <span><small>Agent</small><strong>{formatAgentProviderName(detail.run.provider)}</strong></span>
             <span><small>状态</small><strong>{detail.run.status}</strong></span>
             <span><small>更新于</small><strong>{formatTimestamp(detail.run.updatedAt)}</strong></span>
           </div>
@@ -356,7 +357,7 @@ function AgentRunInfoSidebar({
                   <ChevronRight size={13} />
                 </button>
               ))}
-            </div> : <p className="agent-run-info-empty">这个 Session 还没有登记文件。</p>}
+            </div> : <p className="agent-run-info-empty">这个 Agent Run 还没有登记文件。</p>}
           </section>
         )}
       </div>
@@ -541,6 +542,8 @@ export function applyAgentLiveUpdate(activities: LiveActivity[], update: AgentRu
 export type AgentRunLiveState = {
   busy: boolean
   streamingText: string
+  streamingMessageId: string | null
+  streamingPhase: 'commentary' | 'final_answer' | null
   activities: LiveActivity[]
   pendingApproval: AgentApprovalRequest | null
   visibleThinkingIndex: number
@@ -556,6 +559,8 @@ function emptyAgentRunLiveState(busy = false): AgentRunLiveState {
   return {
     busy,
     streamingText: '',
+    streamingMessageId: null,
+    streamingPhase: null,
     activities: [],
     pendingApproval: null,
     visibleThinkingIndex: 0
@@ -566,15 +571,41 @@ export function applyScopedAgentLiveUpdate(
   state: AgentRunLiveState,
   update: AgentRunStreamUpdate
 ): AgentRunLiveState {
+  if (update.type === 'status'
+    && (update.status === 'running' || update.status === 'queued')
+    && !state.busy) {
+    return emptyAgentRunLiveState(true)
+  }
   let streamingText = state.streamingText
+  let streamingMessageId = state.streamingMessageId
+  let streamingPhase = state.streamingPhase
   let activities = state.activities
   let visibleThinkingIndex = state.visibleThinkingIndex
 
-  if (update.type === 'message_delta') streamingText += update.delta
+  if (update.type === 'message_delta') {
+    const phase = update.phase ?? null
+    const continuesCurrentMessage = streamingMessageId === update.messageId && streamingPhase === phase
+    if (streamingText.trim() && !continuesCurrentMessage) {
+      if (streamingPhase !== 'final_answer') {
+        const segmentId = `visible-thinking-${visibleThinkingIndex++}`
+        activities = applyAgentLiveUpdate(activities, {
+          type: 'reasoning_delta',
+          segmentId,
+          delta: streamingText.trim()
+        })
+      }
+      streamingText = ''
+    }
+    streamingMessageId = update.messageId
+    streamingPhase = phase
+    streamingText += update.delta
+  }
   if (update.type === 'tool' && streamingText.trim()) {
     const content = streamingText.trim()
     const segmentId = `visible-thinking-${visibleThinkingIndex++}`
     streamingText = ''
+    streamingMessageId = null
+    streamingPhase = null
     activities = applyAgentLiveUpdate(
       applyAgentLiveUpdate(activities, { type: 'reasoning_delta', segmentId, delta: content }),
       update
@@ -585,7 +616,12 @@ export function applyScopedAgentLiveUpdate(
 
   return {
     ...state,
+    busy: update.type === 'status'
+      ? update.status === 'running' || update.status === 'queued'
+      : state.busy,
     streamingText,
+    streamingMessageId,
+    streamingPhase,
     activities,
     visibleThinkingIndex,
     pendingApproval: update.type === 'approval' ? update.request : state.pendingApproval
@@ -824,6 +860,7 @@ export function AgentRunsView({
   const [projectId, setProjectId] = useState<string | null>(projects[0]?.id ?? null)
   const [milestoneValue, setMilestoneValue] = useState('')
   const [title, setTitle] = useState('')
+  const titleInputRef = useRef<HTMLInputElement | null>(null)
   const threadRef = useRef<HTMLElement | null>(null)
   const threadEndRef = useRef<HTMLDivElement | null>(null)
   const isAtLatestMessageRef = useRef(true)
@@ -846,7 +883,7 @@ export function AgentRunsView({
   }, [])
 
   const visibleLiveState = detail ? liveStateByRunId[detail.run.id] : undefined
-  const runBusy = visibleLiveState?.busy ?? false
+  const runBusy = visibleLiveState?.busy ?? Boolean(detail && runIsActive(detail.run))
   const queuedMessages = detail ? queuedMessagesByRunId[detail.run.id] ?? [] : []
   const runActive = Boolean(detail && (runBusy || runIsActive(detail.run) || queuedMessages.length > 0))
   const streamingText = visibleLiveState?.streamingText ?? ''
@@ -929,6 +966,16 @@ export function AgentRunsView({
     })
     return () => { cancelled = true }
   }, [selectedRunId, selectedRunUpdatedAt])
+
+  useEffect(() => agentRunUpdateStore.subscribe(({ runId, update }) => {
+    if (activeRequestIdByRunRef.current.has(runId) || update.type === 'created') return
+    setLiveStateByRunId((current) => applyAgentLiveUpdateForRun(current, runId, update))
+    if (update.type !== 'status' || update.status === 'running' || update.status === 'queued') return
+    void window.projectAgent.getAgentRun(runId).then((nextDetail) => {
+      if (selectedRunIdRef.current === runId) setDetail(nextDetail)
+    }).catch(() => undefined)
+    void onRefresh()
+  }), [onRefresh])
 
   useEffect(() => {
     if (!prefill || !detail || detail.run.id !== prefill.runId) return
@@ -1089,7 +1136,10 @@ export function AgentRunsView({
   useEffect(() => {
     const justStartedCreating = creating && !previousCreatingRef.current
     previousCreatingRef.current = creating
-    if (justStartedCreating) resetNewRun()
+    if (justStartedCreating) {
+      resetNewRun()
+      window.requestAnimationFrame(() => titleInputRef.current?.focus())
+    }
   }, [creating])
 
   async function createRun(): Promise<void> {
@@ -1191,9 +1241,9 @@ export function AgentRunsView({
       setDetail((current) => current ? { ...current, run } : current)
       setRenamingTitle(null)
       await onRefresh()
-      onNotice('Session 已重命名。')
+      onNotice('Agent Run 已重命名。')
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Session 重命名失败。')
+      onNotice(error instanceof Error ? error.message : 'Agent Run 重命名失败。')
     } finally {
       setSessionActionBusy(false)
     }
@@ -1227,9 +1277,9 @@ export function AgentRunsView({
       setDetail(null)
       onSelectRun(null)
       await onRefresh()
-      onNotice('Session 已归档。')
+      onNotice('Agent Run 已归档。')
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Session 归档失败。')
+      onNotice(error instanceof Error ? error.message : 'Agent Run 归档失败。')
     } finally {
       setSessionActionBusy(false)
     }
@@ -1242,7 +1292,7 @@ export function AgentRunsView({
         <div className="agent-runs-empty">
           <MessageSquare size={28} />
           <strong>{runs.length === 0 ? '还没有 Agent Run' : '选择一个 Agent Run'}</strong>
-          <button className="primary-small-button" onClick={() => onCreatingChange(true)}><Plus size={14} /> 新建 Run</button>
+          <button className="primary-small-button" onClick={() => onCreatingChange(true)}><Plus size={14} /> 新建 Agent Run</button>
         </div>
       </section>
     )
@@ -1252,17 +1302,17 @@ export function AgentRunsView({
     return (
       <section className="agent-runs-view agent-run-chat-view">
         <header className="app-page-header agent-run-page-header">
-          <div><strong className="app-page-header-title">创建 Agent Session</strong></div>
+          <div><strong className="app-page-header-title">新建 Agent Run</strong></div>
         </header>
         <div className="agent-run-create-shell">
           <div className="agent-run-create-form">
             <label><span>项目</span><SelectMenu value={projectId ?? ''} options={[{ value: '', label: '共享任务' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]} onChange={(value) => { const nextProjectId = value || null; setProjectId(nextProjectId); setMilestoneValue(''); setProvider(projectDefaultAgent(nextProjectId)) }} ariaLabel="Run 所属项目" /></label>
             <label><span>Agent</span><SelectMenu value={provider} options={agentOptions} onChange={(value) => setProvider(value as AgentRunProvider)} ariaLabel="执行 Agent" /></label>
             <label><span>关联 Milestone（可选）</span><SelectMenu value={milestoneValue} options={[{ value: '', label: '不关联 Milestone' }, ...milestoneOptions]} onChange={setMilestoneValue} ariaLabel="关联 Milestone" /></label>
-            <label><span>Session 标题</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：分析项目上线阻塞" /></label>
+            <label><span>Run 标题</span><input ref={titleInputRef} autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：分析项目上线阻塞" /></label>
             <button className="run-create-submit" onClick={() => void createRun()} disabled={!title.trim() || creatingBusy}>
               {creatingBusy ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}
-              {creatingBusy ? '正在创建…' : '创建 Session'}
+              {creatingBusy ? '正在创建…' : '创建 Agent Run'}
             </button>
           </div>
         </div>
@@ -1275,8 +1325,10 @@ export function AgentRunsView({
   const detailMilestone = detailGoal?.milestones.find((milestone) => milestone.id === detail?.run.milestoneId)
 
   if (loadingDetail || !detail || detail.run.id !== selectedRunId) {
-    return <section className="agent-runs-view agent-run-chat-view"><div className="agent-run-loading"><LoaderCircle size={20} className="spin" /> 正在读取 Session…</div></section>
+    return <section className="agent-runs-view agent-run-chat-view"><div className="agent-run-loading"><LoaderCircle size={20} className="spin" /> 正在读取 Agent Run…</div></section>
   }
+
+  const untouchedDraft = detail.run.status === 'draft' && detail.messages.length === 0
 
   const openArtifact = (artifactId: string | null): void => {
     setSelectedArtifactId(artifactId)
@@ -1288,7 +1340,7 @@ export function AgentRunsView({
     if (/^(https?:|mailto:)/i.test(href) || href.startsWith('#')) return false
     const artifact = findArtifactForHref(detail.artifacts, href)
     if (artifact) openArtifact(artifact.id)
-    else onNotice('这个文件尚未登记为当前 Session 的产物，无法在侧边栏预览。')
+    else onNotice('这个文件尚未登记为当前 Agent Run 的产物，无法在侧边栏预览。')
     return true
   }
 
@@ -1303,14 +1355,14 @@ export function AgentRunsView({
         <div>
           {renamingTitle === null ? <strong className="app-page-header-title">{detail.run.title}</strong> : (
             <form className="agent-run-rename-form" onSubmit={(event) => { event.preventDefault(); void renameSession() }}>
-              <input autoFocus value={renamingTitle} maxLength={200} onChange={(event) => setRenamingTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setRenamingTitle(null) }} aria-label="Session 标题" />
+              <input autoFocus value={renamingTitle} maxLength={200} onChange={(event) => setRenamingTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setRenamingTitle(null) }} aria-label="Agent Run 标题" />
               <button type="submit" disabled={!renamingTitle.trim() || sessionActionBusy}>保存</button>
               <button type="button" disabled={sessionActionBusy} onClick={() => setRenamingTitle(null)}>取消</button>
             </form>
           )}
           <small className="agent-run-project-meta">
             {detailProject && <ProjectIcon project={detailProject} className="is-agent-run-meta" />}
-            <span>{detailProject?.name ?? '共享任务'} · {detail.run.provider}</span>
+            <span>{detailProject?.name ?? '共享任务'} · {formatAgentProviderName(detail.run.provider)}</span>
           </small>
         </div>
         <div className="agent-run-header-actions">
@@ -1318,7 +1370,7 @@ export function AgentRunsView({
             type="button"
             className={`agent-run-info-toggle ${infoSidebarOpen ? 'is-active' : ''}`}
             onClick={() => setInfoSidebarOpen((current) => !current)}
-            aria-label={infoSidebarOpen ? '收起 Session 信息' : '展开 Session 信息'}
+            aria-label={infoSidebarOpen ? '收起 Agent Run 信息' : '展开 Agent Run 信息'}
             aria-expanded={infoSidebarOpen}
           ><PanelRight size={17} /></button>
           <AgentRunActionsMenu
@@ -1336,6 +1388,13 @@ export function AgentRunsView({
         onScroll={updateLatestMessagePosition}
       >
         <div className="agent-run-thread-inner">
+          {untouchedDraft && !runBusy && (
+            <div className="agent-run-draft-empty" role="status">
+              <Bot size={22} />
+              <strong>草稿 · 尚未运行</strong>
+              <span>发送第一条消息后，{formatAgentProviderName(detail.run.provider)} 才会开始工作。</span>
+            </div>
+          )}
           {groupMessageTimeline(detail.messages).map((block) => {
             if (block.kind === 'tool-group') {
               return <ToolCallGroup
@@ -1373,7 +1432,7 @@ export function AgentRunsView({
           {runBusy && (
             <article className="chat-turn is-assistant is-pending">
               <div className="chat-turn-content">
-                <div className="chat-turn-meta"><strong>{detail.run.provider}</strong><time>正在回复</time></div>
+                <div className="chat-turn-meta"><strong>{formatAgentProviderName(detail.run.provider)}</strong><time>正在回复</time></div>
                 <RunLiveActivity activities={liveActivities} streamingText={streamingText} approval={pendingApproval} onApproval={respondToApproval} />
               </div>
             </article>
@@ -1405,7 +1464,9 @@ export function AgentRunsView({
           value={reply}
           onChange={setReply}
           onSubmit={sendReply}
-          placeholder={`继续这个 ${detail.run.provider} Session…`}
+          placeholder={untouchedDraft
+            ? `给 ${formatAgentProviderName(detail.run.provider)} 发送第一条消息…`
+            : `继续这个 ${formatAgentProviderName(detail.run.provider)} Run…`}
           busy={runActive}
           allowSubmitWhileBusy
           onStop={stopCurrentReply}
@@ -1447,7 +1508,7 @@ export function AgentRunsView({
         />
       </footer>
       </div>
-      <button className="agent-run-info-backdrop" type="button" aria-label="收起 Session 信息" onClick={() => setInfoSidebarOpen(false)} />
+      <button className="agent-run-info-backdrop" type="button" aria-label="收起 Agent Run 信息" onClick={() => setInfoSidebarOpen(false)} />
       <AgentRunInfoSidebar
         detail={detail}
         project={detailProject}
@@ -1464,7 +1525,7 @@ export function AgentRunsView({
       <div
         className="agent-run-info-resize-handle"
         role="separator"
-        aria-label="调整 Session 信息栏宽度"
+        aria-label="调整 Agent Run 信息栏宽度"
         aria-orientation="vertical"
         aria-valuemin={minimumAgentRunInfoWidth}
         aria-valuemax={maximumAgentRunInfoWidth}
@@ -1492,8 +1553,9 @@ export function AgentRunsView({
   )
 }
 
-function RunLiveActivity({
+export function RunLiveActivity({
   activities,
+  streamingText,
   approval,
   onApproval
 }: {
@@ -1503,14 +1565,18 @@ function RunLiveActivity({
   onApproval: (decision: 'approve' | 'deny') => Promise<void>
 }): React.JSX.Element {
   return (
-    <div className="agent-run-live">
+    <div className="agent-run-live" aria-live="polite" aria-atomic={false} aria-busy="true">
       {approval && <div className="agent-run-approval">
         <ShieldCheck size={15} />
         <span><strong>{approval.title}</strong>{approval.detail}</span>
         <button onClick={() => void onApproval('deny')}>拒绝</button>
         <button className="is-primary" onClick={() => void onApproval('approve')}>仅批准这次</button>
       </div>}
-      <ActivityStages stages={groupLiveActivityStages(activities)} live />
+      {activities.length > 0 && <ActivityStages stages={groupLiveActivityStages(activities)} live />}
+      {streamingText.trim() && <div className="agent-run-live-message"><Markdown content={streamingText} /></div>}
+      {activities.length === 0 && !streamingText.trim() && !approval && (
+        <div className="agent-run-live-idle" role="status">正在思考…</div>
+      )}
     </div>
   )
 }

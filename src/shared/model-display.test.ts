@@ -1,12 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderSettings } from './contracts'
-import { buildAgentModelLabels, compactModelName, formatAgentModelLabel } from './model-display'
+import {
+  buildAgentModelLabels,
+  compactModelName,
+  formatAgentModelLabel,
+  formatAgentProviderName
+} from './model-display'
 
 describe('agent model display', () => {
   it('formats the configured model and reasoning effort as a compact label', () => {
     expect(compactModelName('openai/gpt-5.6-sol')).toBe('5.6 Sol')
     expect(formatAgentModelLabel('gpt-5.6-sol', 'high')).toBe('5.6 Sol High')
     expect(formatAgentModelLabel('', '', 'Codex Default')).toBe('Codex Default')
+  })
+
+  it('keeps provider names consistent in user-facing Run metadata', () => {
+    expect(formatAgentProviderName('pi')).toBe('Pi Agent')
+    expect(formatAgentProviderName('codex')).toBe('Codex')
+    expect(formatAgentProviderName('claude')).toBe('Claude Code')
+    expect(formatAgentProviderName('opencode')).toBe('OpenCode')
   })
 
   it('builds labels for the work assistant and every Agent Run provider', () => {
