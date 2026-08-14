@@ -1,4 +1,5 @@
-import { isAbsolute, join, resolve } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
 export type FuddyRuntimeChannel = 'production' | 'development'
 
@@ -21,6 +22,30 @@ function requestedChannel(environment: NodeJS.ProcessEnv): FuddyRuntimeChannel |
   throw new Error('FUDDY_RUNTIME_PROFILE 只支持 production 或 development。')
 }
 
+function canonicalPathIdentity(path: string, caseInsensitive: boolean): string {
+  const missingSegments: string[] = []
+  let existingPath = resolve(path)
+  let canonicalPath: string
+
+  while (true) {
+    try {
+      canonicalPath = resolve(realpathSync.native(existingPath), ...missingSegments.reverse())
+      break
+    } catch {
+      const parent = dirname(existingPath)
+      if (parent === existingPath) {
+        canonicalPath = resolve(path)
+        break
+      }
+      missingSegments.push(basename(existingPath))
+      existingPath = parent
+    }
+  }
+
+  const normalized = canonicalPath.normalize('NFC')
+  return caseInsensitive ? normalized.toLocaleLowerCase('en-US') : normalized
+}
+
 export function resolveFuddyRuntimeProfile(input: {
   appDataPath: string
   appName: string
@@ -28,6 +53,7 @@ export function resolveFuddyRuntimeProfile(input: {
   isPackaged: boolean
   packagedRuntimeChannel?: string | null
   environment?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
 }): FuddyRuntimeProfile {
   const environment = input.environment ?? process.env
   const requested = requestedChannel(environment)
@@ -56,7 +82,10 @@ export function resolveFuddyRuntimeProfile(input: {
     ? productionUserDataPath
     : resolve(requestedDevelopmentPath || join(input.appDataPath, developmentUserDataDirectoryName))
 
-  if (channel === 'development' && userDataPath === productionUserDataPath) {
+  const caseInsensitivePaths = (input.platform ?? process.platform) === 'darwin'
+  if (channel === 'development'
+    && canonicalPathIdentity(userDataPath, caseInsensitivePaths)
+      === canonicalPathIdentity(productionUserDataPath, caseInsensitivePaths)) {
     throw new Error('Fuddy Dev 的 userData 不能指向 production 数据目录。')
   }
 

@@ -134,4 +134,43 @@ describe('TaskDispatcher reasoning timeline', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it('does not duplicate an unphased final response as reasoning', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'project-agent-unphased-final-'))
+    const database = createTestDatabase(join(root, 'app.sqlite'))
+    try {
+      const project = database.listProjects().find((item) => item.id === 'vows')!
+      database.updateProject({
+        ...project,
+        profile: {
+          ...project.profile,
+          workspaceRoots: [{ id: 'primary', label: 'Primary', path: root }],
+          primaryWorkspaceRootId: 'primary'
+        }
+      })
+      const cli = {
+        runTurn: vi.fn(async (input: CliAgentTurnInput) => {
+          input.onUpdate({ type: 'message_delta', messageId: 'message-1', delta: '这是普通回复，' })
+          input.onUpdate({ type: 'message_delta', messageId: 'message-1', delta: '不应成为 reasoning。' })
+          return { text: '这是普通回复，不应成为 reasoning。', sessionId: 'session-1' }
+        })
+      } as unknown as CliAgentRuntime
+      const dispatcher = new TaskDispatcher(
+        database,
+        {} as PiTaskHarness,
+        new WorkspaceFilesService(database, join(root, 'files')),
+        cli
+      )
+
+      const result = await dispatcher.dispatch({ projectId: 'vows', provider: 'claude', prompt: '直接回答' })
+
+      expect(result.detail.messages.map((message) => [message.role, message.eventType, message.content])).toEqual([
+        ['user', null, '直接回答'],
+        ['assistant', null, '这是普通回复，不应成为 reasoning。']
+      ])
+    } finally {
+      database.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

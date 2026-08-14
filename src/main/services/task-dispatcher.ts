@@ -336,6 +336,15 @@ export class TaskDispatcher {
       if (phase === 'final_answer') return
       persistReasoning(content, `visible-thinking-${visibleThinkingIndex++}`)
     }
+    const flushVisibleTextAtTurnEnd = (): void => {
+      if (activeVisiblePhase === 'commentary') {
+        flushVisibleTextAsReasoning()
+        return
+      }
+      activeVisibleText = ''
+      activeVisibleMessageId = null
+      activeVisiblePhase = null
+    }
     const touchActivity = (): void => {
       if (inactivityTimer) clearTimeout(inactivityTimer)
       inactivityTimer = setTimeout(() => {
@@ -488,7 +497,7 @@ export class TaskDispatcher {
       }
 
       flushReasoning()
-      if (activeVisiblePhase !== 'final_answer') flushVisibleTextAsReasoning()
+      flushVisibleTextAtTurnEnd()
       const finalResponse = response
       const assistantMessage: AgentRunMessage = {
         id: randomUUID(),
@@ -514,7 +523,7 @@ export class TaskDispatcher {
       return this.database.getAgentRunDetail(run.id)
     } catch (error) {
       flushReasoning()
-      flushVisibleTextAsReasoning()
+      flushVisibleTextAtTurnEnd()
       if (error instanceof AgentRunStoppedError || abortController.signal.reason instanceof AgentRunStoppedError) {
         run = this.database.updateAgentRun({
           ...run,
