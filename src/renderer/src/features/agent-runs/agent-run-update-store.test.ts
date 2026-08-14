@@ -35,4 +35,60 @@ describe('Agent Run update store', () => {
 
     expect(listener).not.toHaveBeenCalled()
   })
+
+  it('replays only the unpersisted tail after a tool boundary', () => {
+    const store = createAgentRunUpdateStore()
+    store.publish({ requestId: '', runId: 'run-1', update: { type: 'status', status: 'running' } })
+    store.publish({
+      requestId: '',
+      runId: 'run-1',
+      update: { type: 'message_delta', messageId: 'commentary-1', phase: 'commentary', delta: '先读取文件。' }
+    })
+    store.publish({
+      requestId: '',
+      runId: 'run-1',
+      update: { type: 'tool', toolCallId: 'tool-1', toolName: 'Read', status: 'running', detail: 'README.md' }
+    })
+    store.publish({
+      requestId: '',
+      runId: 'run-1',
+      update: { type: 'tool', toolCallId: 'tool-1', toolName: 'Read', status: 'completed', detail: 'README.md' }
+    })
+    store.publish({
+      requestId: '',
+      runId: 'run-1',
+      update: { type: 'reasoning_delta', segmentId: 'thinking-2', delta: '继续检查配置。' }
+    })
+    const listener = vi.fn()
+
+    store.subscribe(listener)
+
+    expect(listener.mock.calls.map(([envelope]) => envelope.update)).toEqual([
+      { type: 'status', status: 'running' },
+      { type: 'reasoning_delta', segmentId: 'thinking-2', delta: '继续检查配置。' }
+    ])
+  })
+
+  it('keeps an active tool but drops commentary persisted at its boundary', () => {
+    const store = createAgentRunUpdateStore()
+    store.publish({ requestId: '', runId: 'run-1', update: { type: 'status', status: 'running' } })
+    store.publish({
+      requestId: '',
+      runId: 'run-1',
+      update: { type: 'message_delta', messageId: 'commentary-1', phase: 'commentary', delta: '准备读取。' }
+    })
+    store.publish({
+      requestId: '',
+      runId: 'run-1',
+      update: { type: 'tool', toolCallId: 'tool-1', toolName: 'Read', status: 'running', detail: 'README.md' }
+    })
+    const listener = vi.fn()
+
+    store.subscribe(listener)
+
+    expect(listener.mock.calls.map(([envelope]) => envelope.update)).toEqual([
+      { type: 'status', status: 'running' },
+      { type: 'tool', toolCallId: 'tool-1', toolName: 'Read', status: 'running', detail: 'README.md' }
+    ])
+  })
 })

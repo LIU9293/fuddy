@@ -35,6 +35,34 @@ function appendUpdate(
   return [...history, envelope].slice(-128)
 }
 
+function isSameToolCall(first: AgentRunStreamUpdate, second: AgentRunStreamUpdate): boolean {
+  if (first.type !== 'tool' || second.type !== 'tool') return false
+  if (first.toolCallId && second.toolCallId) return first.toolCallId === second.toolCallId
+  return first.toolName === second.toolName
+}
+
+function appendReplayableUpdate(
+  history: AgentRunStreamEnvelope[],
+  envelope: AgentRunStreamEnvelope
+): AgentRunStreamEnvelope[] {
+  const update = envelope.update
+  if (update.type === 'status') {
+    return [envelope, ...history.filter((entry) => entry.update.type !== 'status')]
+  }
+  if (update.type === 'tool') {
+    const retained = history.filter((entry) => entry.update.type === 'status'
+      || (entry.update.type === 'tool'
+        && entry.update.status === 'running'
+        && !isSameToolCall(entry.update, update)))
+    return update.status === 'running' ? appendUpdate(retained, envelope) : retained
+  }
+  if (update.type === 'approval') {
+    const activeStatus = history.filter((entry) => entry.update.type === 'status')
+    return appendUpdate(activeStatus, envelope)
+  }
+  return appendUpdate(history, envelope)
+}
+
 export function createAgentRunUpdateStore(): AgentRunUpdateStore {
   const listeners = new Set<AgentRunUpdateListener>()
   const activeHistoryByRunId = new Map<string, AgentRunStreamEnvelope[]>()
@@ -46,10 +74,10 @@ export function createAgentRunUpdateStore(): AgentRunUpdateStore {
         const current = activeHistoryByRunId.get(runId)
         const previousUpdate = current?.at(-1)?.update
         const history = !current || (previousUpdate && isTerminalStatus(previousUpdate)) ? [] : current
-        activeHistoryByRunId.set(runId, appendUpdate(history, envelope))
+        activeHistoryByRunId.set(runId, appendReplayableUpdate(history, envelope))
       } else if (update.type !== 'created') {
         const current = activeHistoryByRunId.get(runId)
-        if (current) activeHistoryByRunId.set(runId, appendUpdate(current, envelope))
+        if (current) activeHistoryByRunId.set(runId, appendReplayableUpdate(current, envelope))
       }
 
       for (const listener of listeners) listener(envelope)
