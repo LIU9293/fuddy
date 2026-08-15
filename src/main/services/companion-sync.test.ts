@@ -504,6 +504,84 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('reuses an uploaded history image when retrying after a later upload fails', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-history-image-retry-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    const configuration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', configuration)
+    database.createBriefingMessage({
+      id: 'assistant-retry-images',
+      briefingId: null,
+      role: 'assistant',
+      content: 'Retry images',
+      attachments: [
+        { id: 'retry-image-1', name: 'one.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,b25l' },
+        { id: 'retry-image-2', name: 'two.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,dHdv' }
+      ],
+      taskContext: null,
+      createdAt: now
+    })
+    database.enqueueCompanionPairingSnapshot()
+    let firstImageUploadCount = 0
+    let secondImageUploadCount = 0
+    let firstImageSealed: Uint8Array | null = null
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/attachments/retry-image-1' && method === 'PUT') {
+        firstImageUploadCount += 1
+        if (firstImageUploadCount === 1) {
+          firstImageSealed = new Uint8Array(init.body as Uint8Array)
+          return jsonResponse({ uploaded: true }, 201)
+        }
+        return jsonResponse({ error: 'Attachment IDs are immutable and already in use.' }, 409)
+      }
+      if (url.pathname === '/v1/attachments/retry-image-1' && method === 'GET') {
+        if (!firstImageSealed) throw new Error('Expected the first encrypted upload to be retained.')
+        const responseBody = new Uint8Array(firstImageSealed)
+        return new Response(responseBody.buffer, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } })
+      }
+      if (url.pathname === '/v1/attachments/retry-image-2' && method === 'PUT') {
+        secondImageUploadCount += 1
+        return secondImageUploadCount === 1
+          ? jsonResponse({ error: 'Temporary attachment failure.' }, 500)
+          : jsonResponse({ uploaded: true }, 201)
+      }
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') return jsonResponse({ commands: [] })
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    expect((await service.syncNow()).state).toBe('error')
+    expect(database.countPendingCompanionEvents()).toBe(1)
+    expect((await service.syncNow()).state).toBe('connected')
+    expect(firstImageUploadCount).toBe(2)
+    expect(secondImageUploadCount).toBe(2)
+    expect(database.countPendingCompanionEvents()).toBe(0)
+    service.stop()
+    database.close()
+  })
+
   it('uploads a project-file artifact when iPhone requests it', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-artifact-'))
     directories.push(directory)

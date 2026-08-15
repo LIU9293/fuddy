@@ -659,7 +659,14 @@ export class CompanionSyncService {
       },
       companionAttachmentRequestTimeoutMs
     )
-    await responseJson(response)
+    if (response.status !== 409 || !await this.existingAttachmentMatches(
+      context,
+      attachmentId,
+      bytes.byteLength,
+      sha256
+    )) {
+      await responseJson(response)
+    }
   }
 
   private async hashFile(path: string): Promise<string> {
