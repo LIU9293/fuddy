@@ -15,12 +15,14 @@ describe('renderer CSS architecture', () => {
       './styles/tokens.css',
       './styles/base.css',
       './styles/page-layout.css',
-      './styles/shell-settings-inbox.css',
       './styles/conversations-workspace.css',
+      './styles/shell-settings-inbox.css',
       './styles/agent-runs.css',
       './styles/conversation-typography.css',
       './styles/settings-current.css'
     ])
+    expect(imports.indexOf('./styles/shell-settings-inbox.css'))
+      .toBeGreaterThan(imports.indexOf('./styles/conversations-workspace.css'))
     expect(entrypoint).not.toContain('final-overrides')
   })
 
