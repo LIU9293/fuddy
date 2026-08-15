@@ -397,6 +397,70 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('uploads a snapshot Work Assistant image once when it also appears in the chat page', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-snapshot-image-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    const configuration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', configuration)
+    database.createBriefingMessage({
+      id: 'assistant-image-message',
+      briefingId: null,
+      role: 'assistant',
+      content: 'Snapshot image',
+      attachments: [{
+        id: 'snapshot-image',
+        name: 'pixel.png',
+        mimeType: 'image/png',
+        dataUrl: 'data:image/png;base64,cGl4ZWw='
+      }],
+      taskContext: null,
+      createdAt: now
+    })
+    database.enqueueCompanionPairingSnapshot()
+    let uploadCount = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/attachments/snapshot-image' && method === 'PUT') {
+        uploadCount += 1
+        return jsonResponse({ uploaded: true }, 201)
+      }
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') {
+        return jsonResponse({ commands: [] })
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const status = await service.syncNow()
+
+    expect(status.state).toBe('connected')
+    expect(uploadCount).toBe(1)
+    expect(database.countPendingCompanionEvents()).toBe(0)
+    service.stop()
+    database.close()
+  })
+
   it('uploads a project-file artifact when iPhone requests it', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-artifact-'))
     directories.push(directory)
