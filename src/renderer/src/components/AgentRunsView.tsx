@@ -1,6 +1,5 @@
 import {
   Archive,
-  ArrowDown,
   ArrowLeft,
   Bot,
   ChevronDown,
@@ -27,7 +26,7 @@ import {
   X,
   Wrench
 } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type {
@@ -49,11 +48,11 @@ import type {
 import { normalizeChatMarkdown } from '../markdown'
 import { maxChatImages, prepareChatImages } from '../chat-attachments'
 import { ChatComposer } from './ChatComposer'
+import { ConversationShell } from './ConversationShell'
 import { AgentModelPicker } from './AgentModelPicker'
 import { ConversationMessageActions } from './ConversationMessageActions'
 import { ProjectIcon } from './ProjectIcon'
 import { SelectMenu } from './SelectMenu'
-import { chatIsAtLatest, syncChatToLatest } from '../chat-scroll'
 import { agentRunUpdateStore } from '../features/agent-runs/agent-run-update-store'
 import type { AgentModelLabels } from '../../../shared/model-display'
 import { formatAgentModelLabel, formatAgentProviderName } from '../../../shared/model-display'
@@ -861,9 +860,6 @@ export function AgentRunsView({
   const [milestoneValue, setMilestoneValue] = useState('')
   const [title, setTitle] = useState('')
   const titleInputRef = useRef<HTMLInputElement | null>(null)
-  const threadRef = useRef<HTMLElement | null>(null)
-  const isAtLatestMessageRef = useRef(true)
-  const [isAtLatestMessage, setIsAtLatestMessage] = useState(true)
   const previousCreatingRef = useRef(creating)
   const selectedRunIdRef = useRef(selectedRunId)
   const activeRequestIdByRunRef = useRef(new Map<string, string>())
@@ -1025,33 +1021,6 @@ export function AgentRunsView({
     }, 350)
     return () => window.clearTimeout(timer)
   }, [detail?.run.id, detail?.run.status, detail?.messages.length, reply])
-
-  useLayoutEffect(() => {
-    const thread = threadRef.current
-    if (thread) syncChatToLatest(thread, isAtLatestMessageRef.current)
-  }, [selectedRunId, detail?.messages.length, runBusy, liveActivities, streamingText])
-
-  useLayoutEffect(() => {
-    isAtLatestMessageRef.current = true
-    setIsAtLatestMessage(true)
-    const thread = threadRef.current
-    if (thread) syncChatToLatest(thread, true)
-  }, [selectedRunId])
-
-  function updateLatestMessagePosition(): void {
-    const thread = threadRef.current
-    if (!thread) return
-    const atLatest = chatIsAtLatest(thread)
-    isAtLatestMessageRef.current = atLatest
-    setIsAtLatestMessage(atLatest)
-  }
-
-  function scrollToLatestMessage(): void {
-    isAtLatestMessageRef.current = true
-    setIsAtLatestMessage(true)
-    const thread = threadRef.current
-    thread?.scrollTo({ top: thread.scrollHeight, behavior: 'smooth' })
-  }
 
   function appendOptimisticMessage(
     runId: string,
@@ -1383,13 +1352,69 @@ export function AgentRunsView({
           />
         </div>
       </header>
-      <section
-        className="agent-run-thread"
-        aria-label={`${detail.run.title} 对话`}
-        ref={threadRef}
-        onScroll={updateLatestMessagePosition}
+      <ConversationShell
+        className="agent-run-conversation"
+        ariaLabel={`${detail.run.title} 对话`}
+        resetKey={selectedRunId}
+        composerTopContent={queuedMessages.length > 0 ? (
+          <div className="agent-run-message-queue" aria-label="已排队消息">
+            {queuedMessages.map((message) => (
+              <div className="agent-run-queued-message" key={message.requestId}>
+                <span>{message.content}</span>
+                <small>{message.attachments.length > 0 ? `${message.attachments.length} 个附件 · ` : ''}排队中</small>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        composer={(
+          <ChatComposer
+            value={reply}
+            onChange={setReply}
+            onSubmit={sendReply}
+            placeholder={untouchedDraft
+              ? `给 ${formatAgentProviderName(detail.run.provider)} 发送第一条消息…`
+              : `继续这个 ${formatAgentProviderName(detail.run.provider)} Run…`}
+            busy={runActive}
+            allowSubmitWhileBusy
+            onStop={stopCurrentReply}
+            attachments={replyAttachments}
+            attachmentError={replyAttachmentError}
+            onAttachmentsSelected={addReplyAttachments}
+            onRemoveAttachment={(id) => {
+              setReplyAttachments((current) => current.filter((attachment) => attachment.id !== id))
+              setReplyAttachmentError(null)
+            }}
+            submitAriaLabel="发送消息"
+            modelControl={(
+              <AgentModelPicker
+                provider={detail.run.provider}
+                model={detail.run.model ?? ''}
+                reasoningEffort={detail.run.reasoningEffort ?? ''}
+                inheritedModel={detail.run.provider === 'pi'
+                  ? ''
+                  : codingAgentSettings[detail.run.provider].defaultModel}
+                inheritedReasoningEffort={detail.run.provider === 'pi'
+                  ? ''
+                  : codingAgentSettings[detail.run.provider].defaultReasoningEffort}
+                label={detail.run.provider === 'pi'
+                  ? modelLabels.providers.pi
+                  : formatAgentModelLabel(
+                      detail.run.model ?? codingAgentSettings[detail.run.provider].defaultModel,
+                      detail.run.reasoningEffort ?? codingAgentSettings[detail.run.provider].defaultReasoningEffort,
+                      modelLabels.providers[detail.run.provider]
+                    )}
+                catalog={codingAgentModels}
+                allowPi
+                disabled={runActive}
+                status={codingAgentModels ? '切换后会在下一条消息生效。' : '正在读取可用模型…'}
+                onChange={(nextProvider, model, reasoningEffort) => {
+                  void updateExecutionSettings(nextProvider, model || null, reasoningEffort || null)
+                }}
+              />
+            )}
+          />
+        )}
       >
-        <div className="agent-run-thread-inner">
           {untouchedDraft && !runBusy && (
             <div className="agent-run-draft-empty" role="status">
               <Bot size={22} />
@@ -1439,75 +1464,7 @@ export function AgentRunsView({
               </div>
             </article>
           )}
-        </div>
-      </section>
-      <footer className="agent-run-composer-dock">
-        {!isAtLatestMessage && (
-          <button
-            type="button"
-            className="chat-scroll-to-latest"
-            onClick={scrollToLatestMessage}
-            aria-label="回到最新消息"
-            title="回到最新消息"
-          ><ArrowDown size={17} strokeWidth={2.2} /></button>
-        )}
-        {queuedMessages.length > 0 && (
-          <div className="agent-run-message-queue" aria-label="已排队消息">
-            {queuedMessages.map((message) => (
-              <div className="agent-run-queued-message" key={message.requestId}>
-                <span>{message.content}</span>
-                <small>{message.attachments.length > 0 ? `${message.attachments.length} 个附件 · ` : ''}排队中</small>
-              </div>
-            ))}
-          </div>
-        )}
-        <ChatComposer
-          value={reply}
-          onChange={setReply}
-          onSubmit={sendReply}
-          placeholder={untouchedDraft
-            ? `给 ${formatAgentProviderName(detail.run.provider)} 发送第一条消息…`
-            : `继续这个 ${formatAgentProviderName(detail.run.provider)} Run…`}
-          busy={runActive}
-          allowSubmitWhileBusy
-          onStop={stopCurrentReply}
-          attachments={replyAttachments}
-          attachmentError={replyAttachmentError}
-          onAttachmentsSelected={addReplyAttachments}
-          onRemoveAttachment={(id) => {
-            setReplyAttachments((current) => current.filter((attachment) => attachment.id !== id))
-            setReplyAttachmentError(null)
-          }}
-          submitAriaLabel="发送消息"
-          modelControl={(
-            <AgentModelPicker
-              provider={detail.run.provider}
-              model={detail.run.model ?? ''}
-              reasoningEffort={detail.run.reasoningEffort ?? ''}
-              inheritedModel={detail.run.provider === 'pi'
-                ? ''
-                : codingAgentSettings[detail.run.provider].defaultModel}
-              inheritedReasoningEffort={detail.run.provider === 'pi'
-                ? ''
-                : codingAgentSettings[detail.run.provider].defaultReasoningEffort}
-              label={detail.run.provider === 'pi'
-                ? modelLabels.providers.pi
-                : formatAgentModelLabel(
-                    detail.run.model ?? codingAgentSettings[detail.run.provider].defaultModel,
-                    detail.run.reasoningEffort ?? codingAgentSettings[detail.run.provider].defaultReasoningEffort,
-                    modelLabels.providers[detail.run.provider]
-                  )}
-              catalog={codingAgentModels}
-              allowPi
-              disabled={runActive}
-              status={codingAgentModels ? '切换后会在下一条消息生效。' : '正在读取可用模型…'}
-              onChange={(nextProvider, model, reasoningEffort) => {
-                void updateExecutionSettings(nextProvider, model || null, reasoningEffort || null)
-              }}
-            />
-          )}
-        />
-      </footer>
+      </ConversationShell>
       </div>
       <button className="agent-run-info-backdrop" type="button" aria-label="收起 Agent Run 信息" onClick={() => setInfoSidebarOpen(false)} />
       <AgentRunInfoSidebar

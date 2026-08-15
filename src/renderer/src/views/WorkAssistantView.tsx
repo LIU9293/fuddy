@@ -1,6 +1,5 @@
 import {
   ArchiveX,
-  ArrowDown,
   ArrowLeft,
   Bot,
   Check,
@@ -37,11 +36,12 @@ import {
   X,
   Trash2
 } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { QRCodeSVG } from 'qrcode.react'
 import { ChatComposer } from '../components/ChatComposer'
+import { ConversationShell } from '../components/ConversationShell'
 import { AgentRunsView } from '../components/AgentRunsView'
 import { ConversationMessageActions } from '../components/ConversationMessageActions'
 import { isProjectImageIcon, ProjectIcon } from '../components/ProjectIcon'
@@ -51,7 +51,6 @@ import { AutomationsView } from '../components/AutomationsView'
 import { normalizeChatMarkdown } from '../markdown'
 import { maxChatImages, prepareChatImages } from '../chat-attachments'
 import { workAssistantRunIds } from '../work-assistant-links'
-import { chatIsAtLatest, syncChatToLatest } from '../chat-scroll'
 import { microphoneAccessError } from '../voice-input'
 import fuddyWordmark from '../assets/fuddy-wordmark.png'
 import type {
@@ -480,9 +479,6 @@ export function WorkAssistantView({
     assistantMessageId: string | null
     plan: AgentPlanEntry[]
   } | null>(null)
-  const threadRef = useRef<HTMLElement | null>(null)
-  const isAtLatestMessageRef = useRef(true)
-  const [isAtLatestMessage, setIsAtLatestMessage] = useState(true)
   useAutoDismissMessage(imageError, () => setImageError(null))
   const completedBriefings = briefings.filter((briefing) => briefing.status === 'completed')
   const latestBriefing = completedBriefings[0]
@@ -500,26 +496,6 @@ export function WorkAssistantView({
       message
     }))
   ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-
-  useLayoutEffect(() => {
-    const thread = threadRef.current
-    if (thread) syncChatToLatest(thread, isAtLatestMessageRef.current)
-  }, [timeline.length, asking, pendingTurn?.assistantContent])
-
-  function updateLatestMessagePosition(): void {
-    const thread = threadRef.current
-    if (!thread) return
-    const atLatest = chatIsAtLatest(thread)
-    isAtLatestMessageRef.current = atLatest
-    setIsAtLatestMessage(atLatest)
-  }
-
-  function scrollToLatestMessage(): void {
-    isAtLatestMessageRef.current = true
-    setIsAtLatestMessage(true)
-    const thread = threadRef.current
-    thread?.scrollTo({ top: thread.scrollHeight, behavior: 'smooth' })
-  }
 
   async function submitQuestion(
     value = question,
@@ -604,14 +580,27 @@ export function WorkAssistantView({
   }
 
   return (
-    <div className="briefing-conversation">
-      <section
-        className="briefing-thread"
-        aria-label="与工作助理的对话"
-        ref={threadRef}
-        onScroll={updateLatestMessagePosition}
-      >
-        <div className="briefing-thread-inner">
+    <ConversationShell
+      className="briefing-conversation"
+      ariaLabel="与工作助理的对话"
+      composer={(
+        <ChatComposer
+          value={question}
+          onChange={setQuestion}
+          onSubmit={submitQuestion}
+          placeholder="和工作助理讨论任务、目标或项目问题…"
+          busy={asking}
+          attachments={imageAttachments}
+          attachmentError={imageError}
+          onAttachmentsSelected={addImages}
+          onRemoveAttachment={(id) => {
+            setImageAttachments((current) => current.filter((attachment) => attachment.id !== id))
+            setImageError(null)
+          }}
+          submitAriaLabel="发送问题"
+        />
+      )}
+    >
           {timeline.length === 0 ? (
             <div className="morning-empty">
               <span className="morning-empty-icon">
@@ -717,37 +706,6 @@ export function WorkAssistantView({
               </article>
             </>
           )}
-        </div>
-      </section>
-
-      <footer className="briefing-composer-dock">
-        {!isAtLatestMessage && (
-          <button
-            type="button"
-            className="chat-scroll-to-latest"
-            onClick={scrollToLatestMessage}
-            aria-label="回到最新消息"
-            title="回到最新消息"
-          >
-            <ArrowDown size={17} strokeWidth={2.2} />
-          </button>
-        )}
-        <ChatComposer
-          value={question}
-          onChange={setQuestion}
-          onSubmit={submitQuestion}
-          placeholder="和工作助理讨论任务、目标或项目问题…"
-          busy={asking}
-          attachments={imageAttachments}
-          attachmentError={imageError}
-          onAttachmentsSelected={addImages}
-          onRemoveAttachment={(id) => {
-            setImageAttachments((current) => current.filter((attachment) => attachment.id !== id))
-            setImageError(null)
-          }}
-          submitAriaLabel="发送问题"
-        />
-      </footer>
-    </div>
+    </ConversationShell>
   )
 }
