@@ -3,6 +3,16 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to build and publish
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -12,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -41,6 +53,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -49,9 +63,8 @@ jobs:
       - run: npm run prepare:agent-tools
       - run: npm run prepare:whisper
       - run: npm run build
-      - name: Build, sign, notarize, and publish update artifacts
+      - name: Build, sign, and notarize update artifacts
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12 }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -63,4 +76,49 @@ jobs:
           test -n "$APPLE_ID"
           test -n "$APPLE_APP_SPECIFIC_PASSWORD"
           test -n "$APPLE_TEAM_ID"
-          npx electron-builder --mac dmg zip --publish always
+          npx electron-builder --mac dmg zip --publish never
+      - name: Upload and publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *) echo "Release tag must start with v: $RELEASE_TAG" >&2; exit 1 ;;
+          esac
+
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          test "$PACKAGE_VERSION" = "$RELEASE_VERSION"
+
+          artifacts=(
+            "dist/Fuddy-${RELEASE_VERSION}-arm64.dmg"
+            "dist/Fuddy-${RELEASE_VERSION}-arm64.dmg.blockmap"
+            "dist/Fuddy-${RELEASE_VERSION}-arm64-mac.zip"
+            "dist/Fuddy-${RELEASE_VERSION}-arm64-mac.zip.blockmap"
+            "dist/latest-mac.yml"
+          )
+          for artifact in "${artifacts[@]}"; do
+            test -s "$artifact"
+          done
+
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --generate-notes \
+              --title "$RELEASE_VERSION"
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            "${artifacts[@]}"
+
+          ASSET_COUNT="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')"
+          test "$ASSET_COUNT" -eq "${#artifacts[@]}"
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest
