@@ -27,6 +27,8 @@ export const mutableBootstrapKeys = [
 
 export const automationBootstrapKeys = mutableBootstrapKeys
 export const companionBootstrapKeys = mutableBootstrapKeys
+/** A settled Run may have updated project configuration through the project MCP tool. */
+export const agentRunStatusBootstrapKeys = ['runs', 'projects'] as const satisfies readonly AppBootstrapDataKey[]
 
 export function applyAppBootstrapPatch(current: AppBootstrap, patch: AppBootstrapPatch): AppBootstrap {
   return { ...current, ...patch }

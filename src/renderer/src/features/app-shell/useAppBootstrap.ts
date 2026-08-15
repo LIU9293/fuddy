@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import type { AppBootstrap, AppBootstrapDataKey } from '../../../../shared/contracts'
 import { agentRunUpdateStore } from '../agent-runs/agent-run-update-store'
 import {
+  agentRunStatusBootstrapKeys,
   automationBootstrapKeys,
   companionBootstrapKeys,
   mergeBootstrapKeys,
@@ -108,7 +109,8 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
     })
     const stopAgentRuns = window.projectAgent.onAgentRunUpdate((envelope) => {
       agentRunUpdateStore.publish(envelope)
-      if (envelope.update.type === 'created' || envelope.update.type === 'status') refreshPatch(['runs'])
+      if (envelope.update.type === 'created') refreshPatch(['runs'])
+      if (envelope.update.type === 'status') refreshPatch(agentRunStatusBootstrapKeys)
     })
     return () => {
       mounted.current = false

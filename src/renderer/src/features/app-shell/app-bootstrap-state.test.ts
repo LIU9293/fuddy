@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { AppBootstrap } from '../../../../shared/contracts'
-import { applyAppBootstrapPatch, mergeBootstrapKeys, mutableBootstrapKeys } from './app-bootstrap-state'
+import {
+  agentRunStatusBootstrapKeys,
+  applyAppBootstrapPatch,
+  mergeBootstrapKeys,
+  mutableBootstrapKeys
+} from './app-bootstrap-state'
 
 describe('app bootstrap patches', () => {
   it('replaces only requested domains and preserves stable references elsewhere', () => {
@@ -29,5 +34,9 @@ describe('app bootstrap patches', () => {
     expect(mutableBootstrapKeys).not.toContain('providerSettings')
     expect(mutableBootstrapKeys).not.toContain('capabilities')
     expect(mutableBootstrapKeys).not.toContain('credentialStorage')
+  })
+
+  it('refreshes projects after Agent Run status changes', () => {
+    expect(agentRunStatusBootstrapKeys).toEqual(['runs', 'projects'])
   })
 })
