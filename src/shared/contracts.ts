@@ -924,6 +924,36 @@ export interface AppBootstrap {
   permissionMode: 'full-access'
 }
 
+function defineAppBootstrapDataKeys<const TKeys extends readonly (keyof AppBootstrap)[]>(
+  keys: TKeys & (keyof AppBootstrap extends TKeys[number] ? unknown : never)
+): TKeys {
+  return keys
+}
+
+export const appBootstrapDataKeys = defineAppBootstrapDataKeys([
+  'projects',
+  'goals',
+  'decisions',
+  'decisionRemediations',
+  'runs',
+  'connectors',
+  'connectorRuns',
+  'dailyBriefings',
+  'morningBriefings',
+  'briefingMessages',
+  'automations',
+  'automationRuns',
+  'providerSettings',
+  'connectorCatalog',
+  'analyticsProfiles',
+  'capabilities',
+  'credentialStorage',
+  'permissionMode'
+] as const)
+
+export type AppBootstrapDataKey = (typeof appBootstrapDataKeys)[number]
+export type AppBootstrapPatch = Partial<Pick<AppBootstrap, AppBootstrapDataKey>>
+
 export interface CreateDecisionInput {
   projectId: string | null
   goalId?: string | null
@@ -1021,6 +1051,7 @@ export interface MicrophoneAccessResult {
 
 export interface DesktopApi {
   getBootstrap(): Promise<AppBootstrap>
+  getBootstrapPatch(keys: AppBootstrapDataKey[]): Promise<AppBootstrapPatch>
   requestComputerUsePermissions(): Promise<Capability[]>
   requestMicrophoneAccess(): Promise<MicrophoneAccessResult>
   openMicrophoneSettings(): Promise<void>

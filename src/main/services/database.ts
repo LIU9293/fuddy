@@ -9,6 +9,8 @@ import type {
   AgentRunArtifact,
   AgentRunDetail,
   AgentRunMessage,
+  AppBootstrapDataKey,
+  AppBootstrapPatch,
   AppBootstrap,
   AuditEntry,
   BriefingMessage,
@@ -69,7 +71,7 @@ import type {
   CompanionCommand,
   CompanionCommandStatus,
   CompanionEntityType,
-  CompanionEventPayloadMap,
+  CompanionOutboxPayloadMap,
   CompanionEventType,
   CompanionOutboxEvent,
   CompanionSnapshotPayload
@@ -223,6 +225,40 @@ export class AppDatabase {
       credentialStorage,
       permissionMode: 'full-access'
     }
+  }
+
+  getBootstrapPatch(
+    keys: readonly AppBootstrapDataKey[],
+    capabilities: Capability[],
+    connectorCatalog: ConnectorCatalogItem[],
+    analyticsProfiles: ProjectAnalyticsProfileSummary[],
+    credentialStorage: CredentialStorageStatus,
+    providerSettings: ProviderSettings
+  ): AppBootstrapPatch {
+    const patch: AppBootstrapPatch = {}
+    for (const key of keys) {
+      switch (key) {
+        case 'projects': patch.projects = this.listProjects(); break
+        case 'goals': patch.goals = this.listGoals(); break
+        case 'decisions': patch.decisions = this.listDecisions(); break
+        case 'decisionRemediations': patch.decisionRemediations = this.listDecisionRemediations(); break
+        case 'runs': patch.runs = this.listRuns(); break
+        case 'connectors': patch.connectors = this.listConnectors(); break
+        case 'connectorRuns': patch.connectorRuns = this.listConnectorRuns(); break
+        case 'dailyBriefings': patch.dailyBriefings = this.listDailyBriefings(); break
+        case 'morningBriefings': patch.morningBriefings = this.listMorningBriefings(); break
+        case 'briefingMessages': patch.briefingMessages = this.listBriefingMessages(); break
+        case 'automations': patch.automations = this.listAutomations(); break
+        case 'automationRuns': patch.automationRuns = this.listAutomationRuns(); break
+        case 'providerSettings': patch.providerSettings = providerSettings; break
+        case 'connectorCatalog': patch.connectorCatalog = connectorCatalog; break
+        case 'analyticsProfiles': patch.analyticsProfiles = analyticsProfiles; break
+        case 'capabilities': patch.capabilities = capabilities; break
+        case 'credentialStorage': patch.credentialStorage = credentialStorage; break
+        case 'permissionMode': patch.permissionMode = 'full-access'; break
+      }
+    }
+    return patch
   }
 
   listProjects(): Project[] {
@@ -646,7 +682,7 @@ export class AppDatabase {
     type: TType,
     entityType: (typeof companionEventDefinitions)[TType],
     entityId: string,
-    payload: CompanionEventPayloadMap[TType]
+    payload: CompanionOutboxPayloadMap[TType]
   ): CompanionOutboxEvent<TType> {
     return this.companion.enqueue(type, entityType, entityId, payload)
   }

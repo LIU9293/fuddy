@@ -11,6 +11,7 @@ import type {
   ProjectGoal
 } from './contracts'
 import {
+  companionCommandPayloadDefinitions,
   companionCommandTypes,
   companionEventDefinitions,
   companionProtocol,
@@ -84,7 +85,7 @@ export type CompanionSyncEventInput<TType extends CompanionEventType = Companion
   [K in TType]: CompanionSyncEventBase & {
     type: K
     entityType: (typeof companionEventDefinitions)[K]
-    payload: CompanionEventPayloadMap[K]
+    payload: CompanionRelayEventPayloadMap[K]
   }
 }[TType]
 
@@ -237,11 +238,6 @@ export interface CompanionPairingSession {
   status: CompanionMacStatus
 }
 
-export type CompanionOutboxEvent<TType extends CompanionEventType = CompanionEventType> = CompanionSyncEventInput<TType> & {
-  attempts: number
-  lastError: string | null
-}
-
 export interface CompanionSnapshotPayload {
   generatedAt: string
   modelLabels: AgentModelLabels
@@ -263,6 +259,14 @@ export interface CompanionArtifactEventPayload {
   attachment: CompanionAttachmentDescriptor | null
 }
 
+export type CompanionRelayWorkAssistantMessage = Omit<BriefingMessage, 'attachments'> & {
+  attachments: CompanionAttachmentDescriptor[]
+}
+
+export type CompanionRelaySnapshotPayload = Omit<CompanionSnapshotPayload, 'workAssistantMessages'> & {
+  workAssistantMessages: CompanionRelayWorkAssistantMessage[]
+}
+
 export interface CompanionCommandRecord {
   commandId: string
   protocolVersion: number
@@ -276,7 +280,7 @@ export interface CompanionCommandRecord {
   updatedAt: string
 }
 
-export interface CompanionEventPayloadMap {
+export interface CompanionOutboxPayloadMap {
   'snapshot.created': CompanionSnapshotPayload
   'project.created': Project
   'project.updated': Project
@@ -297,16 +301,45 @@ export interface CompanionEventPayloadMap {
   'command.updated': CompanionCommandRecord
 }
 
-export interface CompanionCommandPayloadMap {
-  'assistant.send-message': { prompt: string; attachments?: CompanionAttachmentDescriptor[] }
-  'assistant.execute-action': { messageId: string; proposalId: string; optionId: string }
-  'agent.send-message': { runId: string; prompt: string; attachments?: CompanionAttachmentDescriptor[]; clientMessageId?: string }
-  'agent.stop-message': { runId: string }
-  'agent.rename-session': { runId: string; title: string }
-  'agent.update-draft-prompt': { runId: string; draftPrompt: string }
-  'agent.archive-session': { runId: string }
-  'artifact.request-upload': { artifactId: string }
-  'decision.update-status': { decisionId: string; status: DecisionStatus }
-  'decision.handle': { decisionId: string; runId: string }
-  'project.update': { project: Project }
+export interface CompanionRelayEventPayloadMap extends Omit<CompanionOutboxPayloadMap,
+  'snapshot.created' | 'artifact.updated' | 'work-assistant-message.created' | 'work-assistant-message.updated'> {
+  'snapshot.created': CompanionRelaySnapshotPayload
+  'artifact.updated': AgentRunArtifact | CompanionArtifactEventPayload
+  'work-assistant-message.created': CompanionRelayWorkAssistantMessage
+  'work-assistant-message.updated': CompanionRelayWorkAssistantMessage
+}
+
+export type CompanionOutboxEvent<TType extends CompanionEventType = CompanionEventType> = {
+  [K in TType]: CompanionSyncEventBase & {
+    type: K
+    entityType: (typeof companionEventDefinitions)[K]
+    payload: CompanionOutboxPayloadMap[K]
+    attempts: number
+    lastError: string | null
+  }
+}[TType]
+
+type CompanionCommandPayloadFieldValue = {
+  string: string
+  'optional-string': string
+  attachments: CompanionAttachmentDescriptor[]
+  'optional-attachments': CompanionAttachmentDescriptor[]
+  'decision-status': DecisionStatus
+  project: Project
+}
+
+type CompanionCommandPayloadFields = Record<string, keyof CompanionCommandPayloadFieldValue>
+type RequiredCommandPayloadFields<TFields extends CompanionCommandPayloadFields> = {
+  [TKey in keyof TFields as TFields[TKey] extends `optional-${string}` ? never : TKey]:
+    CompanionCommandPayloadFieldValue[TFields[TKey]]
+}
+type OptionalCommandPayloadFields<TFields extends CompanionCommandPayloadFields> = {
+  [TKey in keyof TFields as TFields[TKey] extends `optional-${string}` ? TKey : never]?:
+    CompanionCommandPayloadFieldValue[TFields[TKey]]
+}
+type CompanionCommandPayload<TFields extends CompanionCommandPayloadFields> =
+  RequiredCommandPayloadFields<TFields> & OptionalCommandPayloadFields<TFields>
+
+export type CompanionCommandPayloadMap = {
+  [TType in CompanionCommandType]: CompanionCommandPayload<(typeof companionCommandPayloadDefinitions)[TType]['fields']>
 }

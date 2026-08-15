@@ -3,6 +3,30 @@ import XCTest
 @testable import ProjectAgentCompanion
 
 final class SyncModelTests: XCTestCase {
+    func testCompanionContractFingerprintRejectsMixedClientBuilds() {
+        XCTAssertTrue(companionContractFingerprintIsSupported(companionContractFingerprint))
+        XCTAssertTrue(companionContractFingerprintIsSupported(nil))
+        XCTAssertFalse(companionContractFingerprintIsSupported("different-contract"))
+    }
+
+    func testGeneratedSnapshotPayloadKeepsLegacyOptionalCollectionsCompatible() throws {
+        let payload = """
+        {
+          "generatedAt": "2026-08-14T15:00:00.000Z",
+          "projects": [],
+          "goals": [],
+          "decisions": [],
+          "workAssistantMessages": [],
+          "runs": []
+        }
+        """.data(using: .utf8)!
+
+        let snapshot = try JSONDecoder().decode(SnapshotPayload.self, from: payload)
+        XCTAssertNil(snapshot.modelLabels)
+        XCTAssertNil(snapshot.morningBriefings)
+        XCTAssertNil(snapshot.attachments)
+    }
+
     func testNotificationRunIDAcceptsOnlyNonEmptyRunIdentifiers() {
         XCTAssertEqual(companionNotificationRunID(["runId": "run-1"]), "run-1")
         XCTAssertNil(companionNotificationRunID(["runId": "   "]))

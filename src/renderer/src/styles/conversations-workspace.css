@@ -4407,10 +4407,6 @@
 }
 
 @media (max-width: 1080px) {
-  :root {
-    --sidebar-width: 230px;
-    --content-area-gutter: 44px;
-  }
   .permission-pill { display: none; }
   .decision-completion-card { grid-template-columns: 1fr auto; }
   .decision-completion-heading { grid-column: 1 / -1; }
@@ -4434,16 +4430,6 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    color: #ededeb;
-    background: #171816;
-    --border: rgba(245, 245, 238, 0.1);
-    --muted: #a2a29c;
-    --surface: rgba(32, 33, 31, 0.8);
-    --surface-raised: rgba(38, 39, 37, 0.96);
-  }
-
   .app-shell,
   .loading-screen {
     background:

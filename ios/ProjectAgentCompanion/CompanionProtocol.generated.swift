@@ -3,6 +3,7 @@ import Foundation
 
 let companionMinimumProtocolVersion = 2
 let companionProtocolVersion = 2
+let companionContractFingerprint = "4b3ea223dc9f349305850b56"
 
 func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
     version >= companionMinimumProtocolVersion && version <= companionProtocolVersion
@@ -10,6 +11,10 @@ func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
 
 func companionProtocolRangeSupportsLocalVersion(minimumVersion: Int, currentVersion: Int) -> Bool {
     companionProtocolVersion >= minimumVersion && companionProtocolVersion <= currentVersion
+}
+
+func companionContractFingerprintIsSupported(_ fingerprint: String?) -> Bool {
+    fingerprint == nil || fingerprint == companionContractFingerprint
 }
 
 enum CompanionEventType: Hashable, Codable {
@@ -141,4 +146,102 @@ enum CompanionCommandType: Hashable, Codable {
         var container = encoder.singleValueContainer()
         try container.encode(rawValue)
     }
+}
+
+struct AssistantSendMessagePayload: Codable {
+    let prompt: String
+    let attachments: [AttachmentDescriptor]?
+}
+
+struct AssistantExecuteActionPayload: Codable {
+    let messageId: String
+    let proposalId: String
+    let optionId: String
+}
+
+struct AgentSendMessagePayload: Codable {
+    let runId: String
+    let prompt: String
+    let attachments: [AttachmentDescriptor]?
+    let clientMessageId: String?
+}
+
+struct AgentStopMessagePayload: Codable {
+    let runId: String
+}
+
+struct AgentRenameSessionPayload: Codable {
+    let runId: String
+    let title: String
+}
+
+struct AgentUpdateDraftPromptPayload: Codable {
+    let runId: String
+    let draftPrompt: String
+}
+
+struct AgentArchiveSessionPayload: Codable {
+    let runId: String
+}
+
+struct ArtifactRequestUploadPayload: Codable {
+    let artifactId: String
+}
+
+struct DecisionUpdateStatusPayload: Codable {
+    let decisionId: String
+    let status: String
+}
+
+struct DecisionHandlePayload: Codable {
+    let decisionId: String
+    let runId: String
+}
+
+struct ProjectUpdatePayload: Codable {
+    let project: Project
+}
+
+struct SnapshotPayload: Codable {
+    let generatedAt: String
+    let modelLabels: AgentModelLabels?
+    let projects: [Project]
+    let goals: [ProjectGoal]
+    let decisions: [Decision]
+    let morningBriefings: [MorningBriefing]?
+    let workAssistantMessages: [WorkAssistantMessage]
+    let attachments: [AttachmentDescriptor]?
+    let runs: [RunDetail]
+}
+
+struct ArtifactEventPayload: Codable {
+    let artifact: AgentArtifact
+    let attachment: AttachmentDescriptor?
+}
+
+struct AgentRunArchivedPayload: Codable {
+    let id: String
+    let archivedAt: String
+}
+
+struct AgentTurnSettledPayload: Codable {
+    let runId: String
+    let turnId: String
+    let title: String
+    let outcome: String
+    let summary: String
+    let settledAt: String
+}
+
+struct CommandResult: Codable {
+    let commandId: String
+    let type: CompanionCommandType?
+    let status: String
+    let result: JSONValue?
+    let error: String?
+}
+
+struct ArtifactUploadResult: Codable {
+    let artifactId: String
+    let attachment: AttachmentDescriptor
 }

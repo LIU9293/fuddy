@@ -1,6 +1,9 @@
+/* Cascade order: foundations, shared layouts, feature styles, deliberate current-state refinements. */
+@import './styles/tokens.css';
+@import './styles/base.css';
+@import './styles/page-layout.css';
 @import './styles/shell-settings-inbox.css';
 @import './styles/conversations-workspace.css';
 @import './styles/agent-runs.css';
 @import './styles/conversation-typography.css';
-@import './styles/page-layout.css';
-@import './styles/final-overrides.css';
+@import './styles/settings-current.css';

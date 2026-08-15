@@ -1,7 +1,7 @@
 import { BrowserWindow, dialog, ipcMain, shell, systemPreferences } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import type { DecisionStatus, GoalStatus, PermissionIntent } from '../../shared/contracts'
+import { appBootstrapDataKeys, type DecisionStatus, type GoalStatus, type PermissionIntent } from '../../shared/contracts'
 import { evaluateAggressivePermission } from '../../shared/permissions'
 import { createProjectSchema, updateProjectSchema } from '../../shared/project-validation'
 import { connectorCatalog } from '../connectors/connector-runtime'
@@ -55,6 +55,19 @@ export function registerCoreIpc(context: IpcContext): void {
   ipcMain.handle('app:get-bootstrap', () => {
     const settings = providerSettings.getPublicSettings()
     return database.getBootstrap(
+      getCapabilities(settings),
+      connectorCatalog,
+      listProjectAnalyticsProfileSummaries(),
+      credentialVault.getStatus(),
+      settings
+    )
+  })
+
+  ipcMain.handle('app:get-bootstrap-patch', (_event, rawKeys: unknown) => {
+    const keys = z.array(z.enum(appBootstrapDataKeys)).min(1).max(appBootstrapDataKeys.length).parse(rawKeys)
+    const settings = providerSettings.getPublicSettings()
+    return database.getBootstrapPatch(
+      [...new Set(keys)],
       getCapabilities(settings),
       connectorCatalog,
       listProjectAnalyticsProfileSummaries(),

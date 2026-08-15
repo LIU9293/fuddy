@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import type { CompanionCommand, CompanionEncryptedCommand, CompanionMacConfiguration, CompanionMacStatus, CompanionSyncEventInput } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
+import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import {
   companionAccountKeyId,
   companionAttachmentAssociatedData,
@@ -133,6 +134,7 @@ describe('Companion sync transport policy', () => {
     expect(JSON.parse(pairing.pairingPayload)).toMatchObject({
       accountId: 'new-account',
       pairingSecret: 'new-secret',
+      contractFingerprint: companionContractFingerprint,
       encryptionKey: expect.any(String),
       encryptionKeyId: expect.any(String)
     })

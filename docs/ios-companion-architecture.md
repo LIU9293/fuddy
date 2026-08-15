@@ -51,6 +51,7 @@ Each event page and WebSocket presence frame also carries current Durable Object
 - Mac requests an account ID, a one-time pairing secret, and a Mac bearer token.
 - The pairing secret expires after ten minutes and can be claimed once.
 - Mac renders the complete pairing payload as a QR code. iOS scans it with VisionKit's native `DataScannerViewController`, validates an HTTPS Relay origin, and claims it without retyping secrets; Universal Clipboard paste remains the fallback.
+- The pairing payload carries a generated contract fingerprint. iOS rejects a different fingerprint before claiming the pairing, so TypeScript/Swift DTO drift fails visibly instead of corrupting the local cache. Payloads from pre-fingerprint Mac builds remain accepted during the compatibility window.
 - iOS stores its bearer token in Keychain with `AfterFirstUnlockThisDeviceOnly`; Mac stores its token in the existing encrypted credential vault/macOS Keychain path.
 - Durable Object storage contains only SHA-256 token hashes. Tokens and pairing secrets are never logged or stored in SQLite on the Mac.
 - Every account/device operation requires account ID, device ID, and bearer token. Role checks ensure only Mac can append authoritative events or complete commands, while only iOS can create commands.
@@ -108,7 +109,7 @@ The deployment target is iOS 17. The project is generated with XcodeGen from `io
 
 | Area | Reuse |
 | --- | --- |
-| Domain meaning and wire protocol | Shared conceptually; TypeScript and Swift have matching versioned Codable contracts |
+| Domain meaning and wire protocol | Shared versioned contract manifest; Swift event/command enums, command payloads, Snapshot and non-entity event payloads are generated, while complete nested Zod schemas validate Relay writes and a generated fingerprint guards core DTO declarations |
 | Cloud relay API | Fully shared by both clients |
 | SQLite schema and Electron services | Mac only; iOS has a deliberately smaller JSON read cache |
 | React components and CSS | Not reused |
@@ -116,7 +117,7 @@ The deployment target is iOS 17. The project is generated with XcodeGen from `io
 | Product terminology, information hierarchy, visual behavior | Reimplemented natively in SwiftUI |
 | Attachments | Shared object metadata and R2 bytes; Mac uploads, iOS caches/previews |
 
-Generating Swift models from a language-neutral JSON Schema is the next maintainability improvement. Runtime code should not be shared merely to avoid duplicating small models; execution authority must remain visibly separated.
+Snapshot and non-entity event DTOs are generated alongside command payloads. Entity events deliberately reuse their domain models, while the TypeScript contract distinguishes local outbox messages from Relay wire messages—for example, local Work Assistant image data becomes authenticated attachment descriptors before transport. Remaining handwritten Swift domain presentation models may migrate incrementally, but runtime code should not be shared merely to avoid small models and execution authority must remain visibly separated.
 
 ## Build and verification
 
@@ -129,6 +130,10 @@ npm --prefix cloud/relay run smoke
 # Regenerate iOS project
 brew install xcodegen
 npm run ios:generate
+
+# Regenerate and verify shared Companion wire contracts/fingerprint
+npm run generate:companion-contracts
+npm run check:companion-contracts
 
 # Swift 6 typecheck for the app and XCTest sources; this works before accepting
 # the local Xcode license because it invokes the installed toolchain directly.

@@ -11,6 +11,7 @@ import type {
   CompanionEncryptedCommand,
   CompanionEncryptedCommandInput,
   CompanionEncryptedSyncEventInput,
+  CompanionRelayEventPayloadMap,
   CompanionSyncEventInput
 } from './companion-sync'
 
@@ -36,15 +37,215 @@ const attachment = z.object({
   thumbnailAttachmentId: identifier.nullish().transform((value) => value ?? null),
   createdAt: isoDate
 })
-const project = z.object({ id: identifier, name: z.string().trim().min(1), status: z.string(), profile: z.record(z.string(), z.unknown()) }).passthrough()
-const goal = z.object({ id: identifier, projectId: identifier, title: z.string(), status: z.string() }).passthrough()
-const decision = z.object({ id: identifier, title: z.string(), status: z.string() }).passthrough()
-const agentRun = z.object({ id: identifier, title: z.string(), status: z.string(), provider: z.string() }).passthrough()
-const agentMessage = z.object({ id: identifier, runId: identifier, role: z.string(), content: z.string(), createdAt: isoDate }).passthrough()
-const artifact = z.object({ id: identifier, runId: identifier, relativePath: z.string(), createdAt: isoDate }).passthrough()
-const morningBriefing = z.object({ id: identifier, status: z.string(), generatedAt: isoDate }).passthrough()
-const assistantMessage = z.object({ id: identifier, role: z.string(), content: z.string(), createdAt: isoDate }).passthrough()
-const modelLabels = z.record(z.string(), z.unknown())
+const evidence = z.object({ label: z.string(), uri: z.string() })
+const workspaceRoot = z.object({ id: identifier, label: z.string(), path: z.string() })
+const projectCurrentState = z.object({
+  summary: z.string(),
+  facts: z.array(z.string()),
+  source: z.enum(['user', 'agent', 'connector']),
+  updatedAt: isoDate.nullable()
+})
+const projectProfile = z.object({
+  productType: z.string(),
+  stage: z.string(),
+  mission: z.string(),
+  vision: z.string(),
+  repoPath: z.string(),
+  workspaceRoots: z.array(workspaceRoot),
+  primaryWorkspaceRootId: identifier.nullable(),
+  defaultAgent: z.enum(['pi', 'codex', 'claude', 'opencode']),
+  websiteUrl: z.string().nullable(),
+  surfaces: z.array(z.string()),
+  focusAreas: z.array(z.string()),
+  dataSources: z.array(z.string()),
+  nextMoves: z.array(z.string()),
+  currentState: projectCurrentState
+})
+const project = z.object({
+  id: identifier,
+  name: z.string().trim().min(1),
+  icon: z.string().nullable().optional(),
+  summary: z.string(),
+  focus: z.string(),
+  status: z.enum(['active', 'watching', 'paused']),
+  accent: z.string(),
+  profile: projectProfile
+})
+const goalMetric = z.object({
+  label: z.string(), unit: z.string(), baseline: z.number().nullable(), current: z.number().nullable(), target: z.number().nullable()
+})
+const goalMilestone = z.object({
+  id: identifier,
+  goalId: identifier,
+  title: z.string(),
+  status: z.enum(['pending', 'completed', 'blocked']),
+  dueAt: isoDate.nullable(),
+  evidenceRefs: z.array(evidence),
+  sortOrder: z.number().int(),
+  createdAt: isoDate,
+  updatedAt: isoDate,
+  completedAt: isoDate.nullable()
+})
+const goalCheckIn = z.object({
+  id: identifier,
+  goalId: identifier,
+  status: z.enum(['planned', 'active', 'at-risk', 'completed', 'paused']),
+  progress: z.number(),
+  summary: z.string(),
+  evidenceRefs: z.array(evidence),
+  generation: z.enum(['agent', 'deterministic']),
+  createdAt: isoDate
+})
+const goal = z.object({
+  id: identifier,
+  projectId: identifier,
+  title: z.string(),
+  description: z.string(),
+  status: z.enum(['planned', 'active', 'at-risk', 'completed', 'paused']),
+  priority: z.enum(['P0', 'P1', 'P2']),
+  metric: goalMetric,
+  deadline: isoDate.nullable(),
+  nextCheckInAt: isoDate.nullable(),
+  progress: z.number(),
+  confidence: z.number(),
+  agentSummary: z.string(),
+  monitoringSources: z.array(z.string()),
+  milestones: z.array(goalMilestone),
+  checkIns: z.array(goalCheckIn),
+  createdBy: z.enum(['user', 'agent']),
+  createdAt: isoDate,
+  updatedAt: isoDate,
+  completedAt: isoDate.nullable()
+})
+const decision = z.object({
+  id: identifier,
+  projectId: identifier.nullable(),
+  goalId: identifier.nullable().optional(),
+  dedupeKey: z.string().nullable().optional(),
+  kind: z.enum(['risk', 'opportunity', 'decision', 'result', 'info']),
+  title: z.string(),
+  summary: z.string(),
+  impact: z.string(),
+  urgency: z.enum(['low', 'medium', 'high']),
+  confidence: z.number(),
+  suggestedActions: z.array(z.string()),
+  evidenceRefs: z.array(evidence),
+  status: z.enum(['inbox', 'in_progress', 'waiting', 'resolved', 'ignored']),
+  waitingReason: z.enum(['deployment', 'verification', 'external', 'measurement', 'user', 'scheduled']).nullable().optional(),
+  statusSummary: z.string().nullable().optional(),
+  statusUpdatedAt: isoDate.optional(),
+  reopenCount: z.number().int().optional(),
+  source: z.string(),
+  createdAt: isoDate,
+  firstSeenAt: isoDate.optional(),
+  lastSeenAt: isoDate.optional(),
+  occurrenceCount: z.number().int().optional(),
+  resolvedAt: isoDate.nullable().optional(),
+  resolutionSummary: z.string().nullable().optional()
+})
+const agentRun = z.object({
+  id: identifier,
+  projectId: identifier.nullable(),
+  decisionId: identifier.nullable().optional(),
+  goalId: identifier.nullable().optional(),
+  milestoneId: identifier.nullable().optional(),
+  provider: z.enum(['pi', 'codex', 'claude', 'opencode']),
+  model: z.string().nullable().optional(),
+  reasoningEffort: z.string().nullable().optional(),
+  title: z.string(),
+  status: z.enum(['draft', 'queued', 'running', 'idle', 'completed', 'failed', 'cancelled']),
+  sessionId: z.string().nullable(),
+  workingDirectory: z.string().nullable(),
+  startedAt: isoDate.nullable(),
+  completedAt: isoDate.nullable(),
+  summary: z.string(),
+  draftPrompt: z.string().nullable(),
+  createdAt: isoDate,
+  updatedAt: isoDate
+})
+const agentMessage = z.object({
+  id: identifier,
+  runId: identifier,
+  role: z.enum(['user', 'assistant', 'system', 'tool']),
+  content: z.string(),
+  eventType: z.string().nullable(),
+  toolName: z.string().nullable(),
+  toolStatus: z.enum(['completed', 'failed']).optional(),
+  toolKind: z.enum(['read', 'search', 'edit', 'command', 'browser', 'other']).optional(),
+  toolSummary: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+  createdAt: isoDate
+})
+const artifact = z.object({
+  id: identifier,
+  runId: identifier,
+  projectId: identifier.nullable(),
+  relativePath: z.string(),
+  label: z.string(),
+  mimeType: z.string().nullable(),
+  createdAt: isoDate
+})
+const morningBriefing = z.object({
+  id: identifier,
+  reportDate: z.string(),
+  timezone: z.string(),
+  status: z.enum(['completed', 'failed']),
+  headline: z.string(),
+  body: z.string(),
+  narration: z.string(),
+  estimatedDurationSeconds: z.number().int(),
+  sourceBriefingIds: z.array(identifier),
+  signalIds: z.array(identifier),
+  generatedAt: isoDate,
+  error: z.string().nullable(),
+  generation: z.enum(['agent', 'deterministic'])
+})
+const workAssistantTaskContext = z.object({
+  projectId: identifier,
+  goalId: identifier,
+  milestoneId: identifier,
+  projectName: z.string(),
+  goalTitle: z.string(),
+  milestoneTitle: z.string()
+})
+const workAssistantActionOption = z.object({
+  id: identifier,
+  label: z.string(),
+  style: z.enum(['primary', 'secondary', 'quiet']),
+  capability: z.enum([
+    'project.list', 'project.inspect', 'project.create', 'project.update', 'project.pause',
+    'agent-run.find', 'agent-run.inspect', 'agent-run.open', 'agent-run.create', 'agent-run.update',
+    'agent-run.archive', 'agent-run.send', 'goal.manage', 'inbox.manage', 'files.search', 'files.read',
+    'web.search', 'web.read', 'briefing.read', 'briefing.generate', 'automation.manage', 'assistant.dismiss'
+  ]),
+  payload: z.record(z.string(), z.unknown())
+})
+const workAssistantAction = z.object({
+  id: identifier,
+  title: z.string(),
+  description: z.string(),
+  status: z.enum(['pending', 'accepted', 'dismissed', 'expired']),
+  context: z.string().nullable(),
+  options: z.array(workAssistantActionOption),
+  acceptedOptionId: identifier.nullable(),
+  createdAt: isoDate,
+  resolvedAt: isoDate.nullable()
+})
+const assistantMessage = z.object({
+  id: identifier,
+  briefingId: identifier.nullable(),
+  role: z.enum(['user', 'assistant']),
+  content: z.string(),
+  attachments: z.array(attachment),
+  taskContext: workAssistantTaskContext.nullable(),
+  linkedRunId: identifier.nullable().optional(),
+  actions: z.array(workAssistantAction).optional(),
+  createdAt: isoDate
+})
+const modelLabels = z.object({
+  workAssistant: z.string(),
+  providers: z.object({ pi: z.string(), codex: z.string(), claude: z.string(), opencode: z.string() })
+})
 
 const payloadSchemas = {
   'snapshot.created': z.object({
@@ -85,14 +286,15 @@ const payloadSchemas = {
     commandId: identifier,
     protocolVersion,
     type: z.enum(companionCommandTypes),
+    payload: z.unknown(),
     sourceDeviceId: identifier,
     status: z.enum(['queued', 'delivered', 'executing', 'completed', 'failed']),
     result: z.unknown().nullable(),
     error: z.string().nullable(),
     createdAt: isoDate,
     updatedAt: isoDate
-  }).passthrough()
-} satisfies Record<CompanionEventType, z.ZodType>
+  })
+} satisfies { [TType in CompanionEventType]: z.ZodType<CompanionRelayEventPayloadMap[TType]> }
 
 const eventBase = {
   eventId: identifier,

@@ -116,6 +116,9 @@ final class CompanionStore: ObservableObject {
         do {
             guard let data = payloadText.data(using: .utf8) else { throw RelayError.invalidResponse }
             let pairing = try JSONDecoder().decode(PairingPayload.self, from: data)
+            guard companionContractFingerprintIsSupported(pairing.contractFingerprint) else {
+                throw RelayError.protocolMismatch
+            }
             let name = UIDevice.current.name
             let credentials = try await RelayClient.claim(pairing: pairing, deviceName: name)
             try KeychainStore.save(credentials)
@@ -255,7 +258,7 @@ final class CompanionStore: ObservableObject {
         guard let client else { throw RelayError.invalidResponse }
         _ = try await client.sendCommand(
             type: .agentStopMessage,
-            payload: AgentArchivePayload(runId: runID)
+            payload: AgentStopMessagePayload(runId: runID)
         )
     }
 
@@ -335,7 +338,7 @@ final class CompanionStore: ObservableObject {
         guard let client else { throw RelayError.invalidResponse }
         _ = try await client.sendCommand(
             type: .agentRenameSession,
-            payload: AgentRenamePayload(runId: runID, title: title)
+            payload: AgentRenameSessionPayload(runId: runID, title: title)
         )
     }
 
@@ -350,7 +353,7 @@ final class CompanionStore: ObservableObject {
         do {
             _ = try await client.sendCommand(
                 type: .agentUpdateDraftPrompt,
-                payload: AgentDraftPromptPayload(runId: runID, draftPrompt: draftPrompt)
+                payload: AgentUpdateDraftPromptPayload(runId: runID, draftPrompt: draftPrompt)
             )
         } catch {
             if let current = state.runs.firstIndex(where: { $0.run.id == runID }) {
@@ -363,7 +366,7 @@ final class CompanionStore: ObservableObject {
 
     func archive(runID: String) async throws {
         guard let client else { throw RelayError.invalidResponse }
-        _ = try await client.sendCommand(type: .agentArchiveSession, payload: AgentArchivePayload(runId: runID))
+        _ = try await client.sendCommand(type: .agentArchiveSession, payload: AgentArchiveSessionPayload(runId: runID))
     }
 
     func updateDecision(id: String, status: String) async throws {
@@ -376,7 +379,7 @@ final class CompanionStore: ObservableObject {
         do {
             _ = try await client.sendCommand(
                 type: .decisionUpdateStatus,
-                payload: DecisionStatusPayload(decisionId: id, status: status)
+                payload: DecisionUpdateStatusPayload(decisionId: id, status: status)
             )
         } catch {
             if let previousStatus, let index = state.decisions.firstIndex(where: { $0.id == id }) {
@@ -427,7 +430,7 @@ final class CompanionStore: ObservableObject {
         _ = try await client.sendCommand(
             commandID: commandID,
             type: .artifactRequestUpload,
-            payload: ArtifactUploadRequestPayload(artifactId: artifact.id)
+            payload: ArtifactRequestUploadPayload(artifactId: artifact.id)
         )
 
         let deadline = Date().addingTimeInterval(30)

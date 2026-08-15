@@ -23,6 +23,7 @@ import type {
   CompanionSnapshotPayload
 } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
+import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
@@ -298,6 +299,7 @@ export class CompanionSyncService {
     return {
       pairingPayload: JSON.stringify({
         ...(JSON.parse(pairing.pairingPayload) as Record<string, unknown>),
+        contractFingerprint: companionContractFingerprint,
         encryptionKey,
         encryptionKeyId
       }),
@@ -460,7 +462,7 @@ export class CompanionSyncService {
     if (event.type === 'agent-message.created') {
       return companionAgentMessageForRelay(event.payload as AgentRunMessage)
     }
-    if (event.type === 'work-assistant-message.created') {
+    if (event.type === 'work-assistant-message.created' || event.type === 'work-assistant-message.updated') {
       return await this.prepareWorkAssistantMessage(event.payload as BriefingMessage)
     }
     if (event.type !== 'artifact.updated') return event.payload

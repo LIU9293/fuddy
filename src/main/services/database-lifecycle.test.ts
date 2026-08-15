@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { CredentialStorageStatus, ProviderSettings } from '../../shared/contracts'
 import { AppDatabase } from './database'
 
 const temporaryDirectories: string[] = []
@@ -59,6 +60,22 @@ describe('AppDatabase lifecycle', () => {
     const database = new AppDatabase(temporaryDatabasePath())
     expect(database.listProjects()).toEqual([])
     expect(database.listConnectors()).toEqual([])
+    database.close()
+  })
+
+  it('loads only requested bootstrap domains for renderer event refreshes', () => {
+    const database = new AppDatabase(temporaryDatabasePath())
+    const patch = database.getBootstrapPatch(
+      ['projects', 'permissionMode'],
+      [],
+      [],
+      [],
+      {} as CredentialStorageStatus,
+      {} as ProviderSettings
+    )
+
+    expect(patch).toEqual({ projects: [], permissionMode: 'full-access' })
+    expect(patch).not.toHaveProperty('runs')
     database.close()
   })
 
