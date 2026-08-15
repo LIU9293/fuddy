@@ -180,6 +180,12 @@ export class BriefingRepository {
     return rows.map((row) => this.mapMessage(row))
   }
 
+  getMessage(id: string): BriefingMessage | null {
+    const row = this.database.prepare('SELECT * FROM work_assistant_messages WHERE id = ?').get(id) as
+      SqlRow | undefined
+    return row ? this.mapMessage(row) : null
+  }
+
   private mapMessage(row: SqlRow): BriefingMessage {
     return {
       id: String(row.id),
@@ -245,7 +251,7 @@ export class BriefingRepository {
         )
         .run(JSON.stringify(actions), linkedRunId ?? null, messageId)
       if (Number(result.changes) === 0) throw new Error('没有找到这条工作助理消息。')
-      const message = this.listMessages().find((item) => item.id === messageId)
+      const message = this.getMessage(messageId)
       if (!message) throw new Error('没有找到这条工作助理消息。')
       this.publish({
         type: 'work-assistant-message.updated',

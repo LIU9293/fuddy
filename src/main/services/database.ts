@@ -431,6 +431,10 @@ export class AppDatabase {
     return this.briefings.listMessages(briefingId)
   }
 
+  getBriefingMessage(id: string): BriefingMessage | null {
+    return this.briefings.getMessage(id)
+  }
+
   createBriefingMessage(message: BriefingMessage): BriefingMessage {
     return this.briefings.createMessage(message)
   }

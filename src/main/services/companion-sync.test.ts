@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
-import type { CompanionCommand, CompanionEncryptedCommand, CompanionMacConfiguration, CompanionMacStatus, CompanionSyncEventInput } from '../../shared/companion-sync'
+import type { CompanionChatPage, CompanionCommand, CompanionEncryptedCommand, CompanionMacConfiguration, CompanionMacStatus, CompanionSyncEventInput } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import {
@@ -18,6 +18,7 @@ import {
 import type { AgentRunMessage } from '../../shared/contracts'
 import {
   companionAgentMessageForRelay,
+  companionChatPageForRelay,
   companionAttachmentStorageId,
   companionCommandUpdateForRelay,
   companionCommandRecovery,
@@ -255,6 +256,48 @@ describe('Companion sync transport policy', () => {
     expect(relayMessage.toolKind).toBe('command')
     expect(relayMessage.toolSummary).toBe('private command')
     expect(message.content.length).toBeGreaterThan(relayMessage.content.length)
+  })
+
+  it('sanitizes Agent tool messages inside unified chat pages', async () => {
+    const toolMessage: AgentRunMessage = {
+      id: 'page-tool-1',
+      runId: 'run-1',
+      role: 'tool',
+      content: `private output ${'/Users/example/private.txt '.repeat(80)}`,
+      eventType: 'tool',
+      toolName: 'Read',
+      metadata: { status: 'completed', arguments: { path: '/Users/example/private.txt' } },
+      createdAt: new Date().toISOString()
+    }
+    const page: CompanionChatPage = {
+      chatId: 'run-1',
+      chatKind: 'agent',
+      records: [{
+        id: 'process-page-tool-1',
+        chatId: 'run-1',
+        chatKind: 'agent',
+        kind: 'process',
+        createdAt: toolMessage.createdAt,
+        completedAt: toolMessage.createdAt,
+        assistantMessage: null,
+        agentMessages: [toolMessage],
+        morningBriefing: null
+      }],
+      hasMore: false,
+      nextBefore: null
+    }
+
+    const relayPage = await companionChatPageForRelay(page, async () => {
+      throw new Error('Agent pages must not prepare Work Assistant messages.')
+    })
+
+    expect(relayPage.records[0]?.agentMessages[0]).toMatchObject({
+      metadata: null,
+      toolKind: 'read',
+      toolStatus: 'completed'
+    })
+    expect(relayPage.records[0]?.agentMessages[0]?.content.length)
+      .toBeLessThanOrEqual(companionToolSummaryMaximumCharacters + 1)
   })
 
   it('backs WebSocket reconnects off to one minute', () => {

@@ -116,6 +116,22 @@ export function companionAgentMessageForRelay(message: AgentRunMessage): AgentRu
   }
 }
 
+export async function companionChatPageForRelay(
+  page: CompanionChatPage,
+  prepareWorkAssistantMessage: (message: BriefingMessage) => Promise<CompanionRelayWorkAssistantMessage>
+): Promise<CompanionRelayChatPage> {
+  return {
+    ...page,
+    records: await Promise.all(page.records.map(async (record) => ({
+      ...record,
+      assistantMessage: record.assistantMessage
+        ? await prepareWorkAssistantMessage(record.assistantMessage)
+        : null,
+      agentMessages: record.agentMessages.map(companionAgentMessageForRelay)
+    })))
+  }
+}
+
 export function partitionCompanionEventBatches<T extends CompanionSyncEventInput | CompanionEncryptedSyncEventInput>(events: T[]): T[][] {
   const batches: T[][] = []
   let current: T[] = []
@@ -470,7 +486,7 @@ export class CompanionSyncService {
           (snapshot.workAssistantMessages ?? []).map((message) => prepareWorkAssistantMessage(message as BriefingMessage))
         ),
         chatPages: snapshot.chatPages
-          ? await Promise.all(snapshot.chatPages.map((page) => this.prepareChatPage(page, prepareWorkAssistantMessage)))
+          ? await Promise.all(snapshot.chatPages.map((page) => companionChatPageForRelay(page, prepareWorkAssistantMessage)))
           : undefined
       }
     }
@@ -586,21 +602,6 @@ export class CompanionSyncService {
       return null
     }
     return existsSync(filePath) ? filePath : null
-  }
-
-  private async prepareChatPage(
-    page: CompanionChatPage,
-    prepareWorkAssistantMessage: (message: BriefingMessage) => Promise<CompanionRelayWorkAssistantMessage>
-  ): Promise<CompanionRelayChatPage> {
-    return {
-      ...page,
-      records: await Promise.all(page.records.map(async (record) => ({
-        ...record,
-        assistantMessage: record.assistantMessage
-          ? await prepareWorkAssistantMessage(record.assistantMessage)
-          : null
-      })))
-    }
   }
 
   private async prepareWorkAssistantMessage(message: BriefingMessage): Promise<CompanionRelayWorkAssistantMessage> {
@@ -825,7 +826,7 @@ export class CompanionSyncService {
           typeof payload.before === 'string' ? payload.before : null,
           limit
         )
-        return await this.prepareChatPage(page, (message) => this.prepareWorkAssistantMessage(message))
+        return await companionChatPageForRelay(page, (message) => this.prepareWorkAssistantMessage(message))
       }
       case 'artifact.request-upload': {
         const artifactId = this.requiredString(payload, 'artifactId')

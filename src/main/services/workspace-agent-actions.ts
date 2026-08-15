@@ -328,7 +328,7 @@ export class WorkspaceAgentActions {
   }
 
   async executeProposal(input: ExecuteWorkAssistantActionInput): Promise<ExecuteWorkAssistantActionResult> {
-    const message = this.database.listBriefingMessages().find((item) => item.id === input.messageId)
+    const message = this.database.getBriefingMessage(input.messageId)
     if (!message || message.role !== 'assistant') throw new Error('没有找到这条工作助理 Action。')
     const actions = message.actions ?? []
     const proposal = actions.find((item) => item.id === input.proposalId)
