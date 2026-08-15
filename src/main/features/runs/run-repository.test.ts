@@ -57,6 +57,9 @@ describe('RunRepository reasoning visibility', () => {
         .toEqual(['codex-commentary'])
       expect(database.getAgentRunDetail('codex-run').messages.map((message) => message.id))
         .toEqual(['codex-commentary'])
+      expect(database.getCompanionChatPage('agent', 'codex-run').records.flatMap((record) =>
+        record.agentMessages.map((message) => message.id)
+      )).toEqual(['codex-commentary'])
       expect(database.listAgentRunMessages('claude-run').map((message) => message.id))
         .toEqual(['claude-summary'])
     } finally {

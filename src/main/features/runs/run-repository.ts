@@ -38,6 +38,23 @@ function parseJson<T>(value: string | null, fallback: T): T {
   }
 }
 
+const codexGeneratedSummaryFilterSql = `
+  AND NOT (
+    event_type = 'reasoning'
+    AND json_valid(metadata_json)
+    AND typeof(json_extract(metadata_json, '$.segmentId')) = 'text'
+    AND instr(json_extract(metadata_json, '$.segmentId'), ':summary:') > 0
+    AND substr(
+      json_extract(metadata_json, '$.segmentId'),
+      instr(json_extract(metadata_json, '$.segmentId'), ':summary:') + length(':summary:')
+    ) <> ''
+    AND substr(
+      json_extract(metadata_json, '$.segmentId'),
+      instr(json_extract(metadata_json, '$.segmentId'), ':summary:') + length(':summary:')
+    ) NOT GLOB '*[^0-9]*'
+  )
+`
+
 export function isCodexGeneratedReasoningSummary(message: AgentRunMessage): boolean {
   if (message.eventType !== 'reasoning') return false
   const segmentId = typeof message.metadata?.segmentId === 'string' ? message.metadata.segmentId : ''
@@ -174,7 +191,114 @@ export class RunRepository {
     const rows = this.database
       .prepare('SELECT * FROM agent_run_messages WHERE run_id = ? ORDER BY created_at ASC, rowid ASC')
       .all(runId) as SqlRow[]
-    const messages = rows.map((row) => ({
+    const messages = rows.map((row) => this.mapMessage(row))
+    const providerRow = this.database.prepare('SELECT provider FROM agent_runs WHERE id = ?').get(runId) as SqlRow | undefined
+    return providerRow?.provider === 'codex'
+      ? messages.filter((message) => !isCodexGeneratedReasoningSummary(message))
+      : messages
+  }
+
+  listChatWindow(runId: string, beforeRecordId: string | null, limit: number): {
+    messages: AgentRunMessage[]
+    hasMore: boolean
+    trailingProcessCompletedAt: string | null
+  } {
+    const run = this.get(runId)
+    const visibleFilter = run.provider === 'codex' ? codexGeneratedSummaryFilterSql : ''
+    const cursorMessageId = beforeRecordId?.startsWith('agent-message-')
+      ? beforeRecordId.slice('agent-message-'.length)
+      : beforeRecordId?.startsWith('process-')
+        ? beforeRecordId.slice('process-'.length)
+        : null
+    const cursor = cursorMessageId
+      ? this.database.prepare(`
+          SELECT id, role, event_type, created_at, rowid AS sort_rowid
+          FROM agent_run_messages
+          WHERE run_id = ? AND id = ? ${visibleFilter}
+        `).get(runId, cursorMessageId) as SqlRow | undefined
+      : undefined
+    if (beforeRecordId && !cursor) throw new Error('聊天历史游标已失效，请刷新后重试。')
+    if (cursor) {
+      const cursorIsProcess = cursor.event_type === 'reasoning' || cursor.role === 'tool'
+      if (beforeRecordId?.startsWith('process-') !== cursorIsProcess) {
+        throw new Error('聊天历史游标已失效，请刷新后重试。')
+      }
+      if (cursorIsProcess) {
+        const previous = this.database.prepare(`
+            SELECT role, event_type
+            FROM agent_run_messages
+            WHERE run_id = ? ${visibleFilter}
+              AND (created_at < ? OR (created_at = ? AND rowid < ?))
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+          `).get(runId, cursor.created_at, cursor.created_at, cursor.sort_rowid) as SqlRow | undefined
+        if (previous && (previous.event_type === 'reasoning' || previous.role === 'tool')) {
+          throw new Error('聊天历史游标已失效，请刷新后重试。')
+        }
+      }
+    }
+
+    const selectedIds: string[] = []
+    const chunkSize = Math.max(256, limit * 4)
+    let boundaryCreatedAt = cursor ? String(cursor.created_at) : null
+    let boundaryRowId = cursor ? Number(cursor.sort_rowid) : null
+    let previousWasProcess = false
+    let blockCount = 0
+    let hasMore = false
+    scan: while (true) {
+      const rows = this.database.prepare(`
+          SELECT id, role, event_type, created_at, rowid AS sort_rowid
+          FROM agent_run_messages
+          WHERE run_id = ? ${visibleFilter}
+            AND (
+              ? IS NULL
+              OR created_at < ?
+              OR (created_at = ? AND rowid < ?)
+            )
+          ORDER BY created_at DESC, rowid DESC
+          LIMIT ?
+        `).all(
+          runId,
+          boundaryCreatedAt,
+          boundaryCreatedAt,
+          boundaryCreatedAt,
+          boundaryRowId,
+          chunkSize
+        ) as SqlRow[]
+      for (const row of rows) {
+        const isProcess = row.event_type === 'reasoning' || row.role === 'tool'
+        if (!isProcess || !previousWasProcess) blockCount += 1
+        if (blockCount > limit) {
+          hasMore = true
+          break scan
+        }
+        selectedIds.push(String(row.id))
+        previousWasProcess = isProcess
+      }
+      if (rows.length < chunkSize) break
+      const oldest = rows.at(-1) as SqlRow
+      boundaryCreatedAt = String(oldest.created_at)
+      boundaryRowId = Number(oldest.sort_rowid)
+    }
+
+    const messageStatement = this.database.prepare(
+      'SELECT * FROM agent_run_messages WHERE run_id = ? AND id = ?'
+    )
+    const messages = selectedIds.reverse().flatMap((id) => {
+      const row = messageStatement.get(runId, id) as SqlRow | undefined
+      return row ? [this.mapMessage(row)] : []
+    })
+    return {
+      messages,
+      hasMore,
+      trailingProcessCompletedAt: cursor?.role === 'assistant' && cursor.event_type !== 'reasoning'
+        ? String(cursor.created_at)
+        : null
+    }
+  }
+
+  private mapMessage(row: SqlRow): AgentRunMessage {
+    return {
       id: String(row.id),
       runId: String(row.run_id),
       role: row.role as AgentRunMessage['role'],
@@ -183,11 +307,7 @@ export class RunRepository {
       toolName: row.tool_name ? String(row.tool_name) : null,
       metadata: parseJson<Record<string, unknown> | null>(row.metadata_json ? String(row.metadata_json) : null, null),
       createdAt: String(row.created_at)
-    }))
-    const providerRow = this.database.prepare('SELECT provider FROM agent_runs WHERE id = ?').get(runId) as SqlRow | undefined
-    return providerRow?.provider === 'codex'
-      ? messages.filter((message) => !isCodexGeneratedReasoningSummary(message))
-      : messages
+    }
   }
 
   listArtifacts(runId: string): AgentRunArtifact[] {

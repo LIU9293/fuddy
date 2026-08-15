@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CompanionCommand, CompanionSnapshotPayload } from '../../shared/companion-sync'
 import { AppDatabase } from './database'
 import { createTestDatabase } from '../test-support/project-fixtures'
@@ -125,6 +125,76 @@ describe('companion sync persistence', () => {
     const snapshot = database.enqueueCompanionSnapshot().payload as CompanionSnapshotPayload
     expect(snapshot.workAssistantMessages).toHaveLength(100)
     expect(snapshot.chatPages?.find((item) => item.chatId === 'work-assistant')).toEqual(page)
+    database.close()
+  })
+
+  it('pages Agent display blocks without materializing the full Run detail', () => {
+    const database = createDatabase()
+    const base = Date.UTC(2026, 0, 1)
+    database.createAgentRun({
+      id: 'paged-agent-run',
+      projectId: 'vows',
+      provider: 'pi',
+      title: 'Paged Agent Run',
+      status: 'idle',
+      sessionId: null,
+      workingDirectory: '/tmp/paged-agent-run',
+      startedAt: new Date(base).toISOString(),
+      completedAt: null,
+      summary: '',
+      draftPrompt: null,
+      createdAt: new Date(base).toISOString(),
+      updatedAt: new Date(base).toISOString()
+    })
+    for (let index = 0; index < 20; index += 1) {
+      database.createAgentRunMessage({
+        id: `normal-${index}`,
+        runId: 'paged-agent-run',
+        role: 'user',
+        content: `normal ${index}`,
+        eventType: null,
+        toolName: null,
+        metadata: null,
+        createdAt: new Date(base + index * 1_000).toISOString()
+      })
+    }
+    database.createAgentRunMessage({
+      id: 'reasoning-1', runId: 'paged-agent-run', role: 'assistant', content: 'reasoning',
+      eventType: 'reasoning', toolName: null, metadata: null, createdAt: new Date(base + 20_000).toISOString()
+    })
+    database.createAgentRunMessage({
+      id: 'tool-1', runId: 'paged-agent-run', role: 'tool', content: 'tool',
+      eventType: 'tool', toolName: 'Read', metadata: null, createdAt: new Date(base + 21_000).toISOString()
+    })
+    for (let index = 20; index < 120; index += 1) {
+      database.createAgentRunMessage({
+        id: `normal-${index}`,
+        runId: 'paged-agent-run',
+        role: index === 20 ? 'assistant' : 'user',
+        content: `normal ${index}`,
+        eventType: null,
+        toolName: null,
+        metadata: null,
+        createdAt: new Date(base + (index + 2) * 1_000).toISOString()
+      })
+    }
+    const getDetail = vi.spyOn(database, 'getAgentRunDetail')
+
+    const newest = database.getCompanionChatPage('agent', 'paged-agent-run')
+    expect(newest.records).toHaveLength(100)
+    expect(newest.records[0]?.agentMessages[0]?.id).toBe('normal-20')
+    expect(newest.records.at(-1)?.agentMessages[0]?.id).toBe('normal-119')
+    expect(newest.hasMore).toBe(true)
+
+    const older = database.getCompanionChatPage('agent', 'paged-agent-run', newest.nextBefore)
+    expect(older.records).toHaveLength(21)
+    expect(older.records.at(-1)).toMatchObject({
+      id: 'process-reasoning-1',
+      completedAt: new Date(base + 22_000).toISOString(),
+      agentMessages: [{ id: 'reasoning-1' }, { id: 'tool-1' }]
+    })
+    expect(older.hasMore).toBe(false)
+    expect(getDetail).not.toHaveBeenCalled()
     database.close()
   })
 

@@ -52,7 +52,6 @@ import {
   companionInitialChatBlockLimit,
   companionMaximumChatPageLimit,
   flattenAgentChatRecords,
-  paginateCompanionChatRecords,
   workAssistantChatId,
   workAssistantPageCollections
 } from '../../shared/companion-chat'
@@ -608,14 +607,13 @@ export class AppDatabase {
     const assistantPage = this.getCompanionChatPage('assistant', workAssistantChatId)
     const assistantCollections = workAssistantPageCollections(assistantPage)
     const runDetails = this.listRuns().map((run) => {
-      const detail = this.getAgentRunDetail(run.id)
-      const page = paginateCompanionChatRecords(
-        run.id,
-        'agent',
-        buildAgentChatRecords(run.id, detail.messages)
-      )
+      const page = this.getCompanionChatPage('agent', run.id)
       return {
-        detail: { ...detail, messages: flattenAgentChatRecords(page.records) },
+        detail: {
+          run,
+          messages: flattenAgentChatRecords(page.records),
+          artifacts: this.listAgentRunArtifacts(run.id)
+        },
         page
       }
     })
@@ -659,13 +657,23 @@ export class AppDatabase {
     if (!this.listRuns().some((run) => run.id === chatId)) {
       throw new Error('没有找到这个 Agent Run。')
     }
-    const detail = this.getAgentRunDetail(chatId)
-    return paginateCompanionChatRecords(
+    const pageLimit = Math.min(
+      companionMaximumChatPageLimit,
+      Math.max(1, Math.trunc(limit ?? companionInitialChatBlockLimit))
+    )
+    const window = this.runs.listChatWindow(chatId, before ?? null, pageLimit)
+    const records = buildAgentChatRecords(chatId, window.messages)
+    const trailingRecord = records.at(-1)
+    if (trailingRecord?.kind === 'process' && window.trailingProcessCompletedAt) {
+      trailingRecord.completedAt = window.trailingProcessCompletedAt
+    }
+    return {
       chatId,
       chatKind,
-      buildAgentChatRecords(chatId, detail.messages),
-      { before, limit }
-    )
+      records,
+      hasMore: window.hasMore,
+      nextBefore: window.hasMore ? records[0]?.id ?? null : null
+    }
   }
 
   enqueueAgentTurnSettled(payload: AgentTurnSettledPayload): CompanionOutboxEvent {
