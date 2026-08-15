@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { CompanionCommand } from '../../shared/companion-sync'
+import type { CompanionCommand, CompanionSnapshotPayload } from '../../shared/companion-sync'
 import { AppDatabase } from './database'
 import { createTestDatabase } from '../test-support/project-fixtures'
 
@@ -82,6 +82,37 @@ describe('companion sync persistence', () => {
 
     database.markCompanionEventPublished(snapshot.eventId, new Date().toISOString())
     expect(database.countPendingCompanionEvents()).toBe(3)
+    database.close()
+  })
+
+  it('windows every chat snapshot at the newest 100 presentation blocks', () => {
+    const database = createDatabase()
+    const base = Date.UTC(2026, 0, 1)
+    for (let index = 0; index < 220; index += 1) {
+      database.createBriefingMessage({
+        id: `message-${index}`,
+        briefingId: null,
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: `message ${index}`,
+        attachments: [],
+        taskContext: null,
+        createdAt: new Date(base + index * 1_000).toISOString()
+      })
+    }
+
+    expect(database.listBriefingMessages()).toHaveLength(200)
+    expect(database.listBriefingMessages()[0]?.id).toBe('message-20')
+    expect(database.listBriefingMessages().at(-1)?.id).toBe('message-219')
+
+    const page = database.getCompanionChatPage('assistant', 'work-assistant')
+    expect(page.records).toHaveLength(100)
+    expect(page.records[0]?.assistantMessage?.id).toBe('message-120')
+    expect(page.records.at(-1)?.assistantMessage?.id).toBe('message-219')
+    expect(page.hasMore).toBe(true)
+
+    const snapshot = database.enqueueCompanionSnapshot().payload as CompanionSnapshotPayload
+    expect(snapshot.workAssistantMessages).toHaveLength(100)
+    expect(snapshot.chatPages?.find((item) => item.chatId === 'work-assistant')).toEqual(page)
     database.close()
   })
 

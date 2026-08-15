@@ -92,6 +92,14 @@ export class BriefingRepository {
     ).map((row) => this.mapMorning(row))
   }
 
+  listAllMorning(): MorningBriefing[] {
+    return (
+      this.database
+        .prepare('SELECT * FROM morning_briefings ORDER BY generated_at ASC, rowid ASC')
+        .all() as SqlRow[]
+    ).map((row) => this.mapMorning(row))
+  }
+
   getMorning(reportDate: string): MorningBriefing | null {
     const row = this.database.prepare('SELECT * FROM morning_briefings WHERE report_date = ?').get(reportDate) as
       SqlRow | undefined
@@ -153,9 +161,27 @@ export class BriefingRepository {
           .prepare('SELECT * FROM work_assistant_messages WHERE source_briefing_id = ? ORDER BY created_at ASC')
           .all(briefingId) as SqlRow[])
       : (this.database
-          .prepare('SELECT * FROM work_assistant_messages ORDER BY created_at ASC LIMIT 200')
+          .prepare(`
+            SELECT * FROM (
+              SELECT *, rowid AS sort_rowid
+              FROM work_assistant_messages
+              ORDER BY created_at DESC, rowid DESC
+              LIMIT 200
+            ) ORDER BY created_at ASC, sort_rowid ASC
+          `)
           .all() as SqlRow[])
-    return rows.map((row) => ({
+    return rows.map((row) => this.mapMessage(row))
+  }
+
+  listAllMessages(): BriefingMessage[] {
+    const rows = this.database
+      .prepare('SELECT * FROM work_assistant_messages ORDER BY created_at ASC, rowid ASC')
+      .all() as SqlRow[]
+    return rows.map((row) => this.mapMessage(row))
+  }
+
+  private mapMessage(row: SqlRow): BriefingMessage {
+    return {
       id: String(row.id),
       briefingId: row.source_briefing_id ? String(row.source_briefing_id) : null,
       role: row.role as BriefingMessage['role'],
@@ -171,7 +197,7 @@ export class BriefingRepository {
       linkedRunId: row.linked_run_id ? String(row.linked_run_id) : null,
       actions: parseJson<WorkAssistantActionProposal[]>(row.actions_json ? String(row.actions_json) : null, []),
       createdAt: String(row.created_at)
-    }))
+    }
   }
 
   createMessage(message: BriefingMessage): BriefingMessage {

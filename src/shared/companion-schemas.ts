@@ -16,6 +16,7 @@ import type {
 } from './companion-sync'
 
 const identifier = z.string().trim().min(1).max(200)
+const chatRecordIdentifier = z.string().trim().min(1).max(260)
 const isoDate = z.string().datetime({ offset: true })
 const protocolVersion = z.number().int().refine(companionProtocolVersionIsSupported, 'Unsupported companion protocol version')
 export const companionEncryptedEnvelopeSchema = z.object({
@@ -242,6 +243,60 @@ const assistantMessage = z.object({
   actions: z.array(workAssistantAction).optional(),
   createdAt: isoDate
 })
+const chatRecord = z.object({
+  id: chatRecordIdentifier,
+  chatId: identifier,
+  chatKind: z.enum(['assistant', 'agent']),
+  kind: z.enum(['message', 'process', 'briefing']),
+  createdAt: isoDate,
+  completedAt: isoDate.nullable(),
+  assistantMessage: assistantMessage.nullable(),
+  agentMessages: z.array(agentMessage),
+  morningBriefing: morningBriefing.nullable()
+}).superRefine((record, context) => {
+  const reject = (message: string): void => {
+    context.addIssue({ code: 'custom', message })
+  }
+  if (record.kind !== 'process' && record.completedAt !== null) {
+    reject('Only process blocks may contain completedAt.')
+  }
+  if (record.chatKind === 'assistant') {
+    if (record.kind === 'message' && record.assistantMessage === null) reject('Assistant message block requires assistantMessage.')
+    if (record.kind === 'briefing' && record.morningBriefing === null) reject('Briefing block requires morningBriefing.')
+    if (record.kind === 'process') reject('Assistant chat cannot contain process blocks.')
+    if (record.agentMessages.length > 0) reject('Assistant chat cannot contain Agent messages.')
+    if (record.kind !== 'message' && record.assistantMessage !== null) reject('Only message blocks may contain assistantMessage.')
+    if (record.kind !== 'briefing' && record.morningBriefing !== null) reject('Only briefing blocks may contain morningBriefing.')
+    return
+  }
+  if (record.kind === 'briefing') reject('Agent chat cannot contain briefing blocks.')
+  if (record.assistantMessage !== null || record.morningBriefing !== null) {
+    reject('Agent chat cannot contain Assistant payloads.')
+  }
+  if (record.agentMessages.length === 0) reject('Agent chat block requires Agent messages.')
+  if (record.kind === 'message' && record.agentMessages.length !== 1) reject('Agent message block requires exactly one message.')
+  if (record.agentMessages.some((message) => message.runId !== record.chatId)) {
+    reject('Agent message runId must match chatId.')
+  }
+})
+const chatPage = z.object({
+  chatId: identifier,
+  chatKind: z.enum(['assistant', 'agent']),
+  records: z.array(chatRecord).max(100),
+  hasMore: z.boolean(),
+  nextBefore: chatRecordIdentifier.nullable()
+}).superRefine((page, context) => {
+  if (page.hasMore && page.records.length === 0) {
+    context.addIssue({ code: 'custom', path: ['records'], message: 'A paged chat window cannot be empty.' })
+  }
+  if (page.records.some((record) => record.chatId !== page.chatId || record.chatKind !== page.chatKind)) {
+    context.addIssue({ code: 'custom', path: ['records'], message: 'Chat records must match their page.' })
+  }
+  const expectedCursor = page.hasMore ? page.records[0]?.id ?? null : null
+  if (page.nextBefore !== expectedCursor) {
+    context.addIssue({ code: 'custom', path: ['nextBefore'], message: 'Chat history cursor must reference the first record.' })
+  }
+})
 const modelLabels = z.object({
   workAssistant: z.string(),
   providers: z.object({ pi: z.string(), codex: z.string(), claude: z.string(), opencode: z.string() })
@@ -257,7 +312,8 @@ const payloadSchemas = {
     morningBriefings: z.array(morningBriefing),
     workAssistantMessages: z.array(assistantMessage),
     attachments: z.array(attachment),
-    runs: z.array(z.object({ run: agentRun, messages: z.array(agentMessage), artifacts: z.array(artifact) }))
+    runs: z.array(z.object({ run: agentRun, messages: z.array(agentMessage), artifacts: z.array(artifact) })),
+    chatPages: z.array(chatPage).optional()
   }),
   'project.created': project,
   'project.updated': project,
@@ -367,6 +423,12 @@ const commandPayloadSchemas = {
   'agent.rename-session': z.object({ runId: identifier, title: z.string().trim().min(1).max(200) }),
   'agent.update-draft-prompt': z.object({ runId: identifier, draftPrompt: z.string().max(20_000) }),
   'agent.archive-session': z.object({ runId: identifier }),
+  'chat.load-history': z.object({
+    chatKind: z.enum(['assistant', 'agent']),
+    chatId: identifier,
+    before: chatRecordIdentifier.optional(),
+    limit: z.number().int().min(1).max(100)
+  }),
   'artifact.request-upload': z.object({ artifactId: identifier }),
   'decision.update-status': z.object({ decisionId: identifier, status: z.enum(['inbox', 'in_progress', 'waiting', 'resolved', 'ignored']) }),
   'decision.handle': z.object({ decisionId: identifier, runId: identifier }),

@@ -11,6 +11,7 @@ final class CompanionStore: ObservableObject {
     @Published private(set) var connection: ConnectionState = .unpaired
     @Published private(set) var macOnline = false
     @Published private(set) var credentials: CompanionCredentials?
+    @Published private(set) var loadingOlderChatIDs: Set<String> = []
     @Published var operationError: String?
 
     private var client: RelayClient?
@@ -19,11 +20,12 @@ final class CompanionStore: ObservableObject {
     private var activeSyncID: UUID?
     private var syncRequested = false
     private var commandErrors: [String: String] = [:]
+    private var historyRequestChatIDs: [String: String] = [:]
     private var notificationObservers: [NSObjectProtocol] = []
     private var notificationAuthorizationRequested = false
     private let cacheURL: URL
     private let previewMode = ProcessInfo.processInfo.arguments.contains("--design-preview")
-    private let runScrollPositionKeyPrefix = "agent-run.scroll-position."
+    private let chatScrollPositionKeyPrefix = "chat.scroll-position."
 
     init() {
         cacheURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -34,6 +36,7 @@ final class CompanionStore: ObservableObject {
             connection = .connected
             macOnline = true
             seedDesignPreview()
+            reconcileChatPages()
             return
         }
 #endif
@@ -68,14 +71,46 @@ final class CompanionStore: ObservableObject {
     var morningBriefings: [MorningBriefing] { state.morningBriefings.sorted { $0.generatedAt < $1.generatedAt } }
     var workAssistantMessages: [WorkAssistantMessage] { state.workAssistantMessages.sorted { $0.createdAt < $1.createdAt } }
 
-    func savedRunScrollPosition(runID: String) -> String? {
-        UserDefaults.standard.string(forKey: runScrollPositionKeyPrefix + runID)
+    func chatPage(chatID: String) -> CompanionChatPage? {
+        state.chatPages.first { $0.chatId == chatID }
     }
 
-    func saveRunScrollPosition(_ position: String?, runID: String) {
-        let key = runScrollPositionKeyPrefix + runID
+    func savedChatScrollPosition(chatID: String) -> String? {
+        UserDefaults.standard.string(forKey: chatScrollPositionKeyPrefix + chatID)
+    }
+
+    func saveChatScrollPosition(_ position: String?, chatID: String) {
+        let key = chatScrollPositionKeyPrefix + chatID
         if let position { UserDefaults.standard.set(position, forKey: key) }
         else { UserDefaults.standard.removeObject(forKey: key) }
+    }
+
+    func loadOlderChatRecords(chatID: String) async {
+        guard !previewMode,
+              !loadingOlderChatIDs.contains(chatID),
+              let page = chatPage(chatID: chatID),
+              page.hasMore,
+              let before = page.nextBefore,
+              let client else { return }
+        let commandID = UUID().uuidString
+        loadingOlderChatIDs.insert(chatID)
+        historyRequestChatIDs[commandID] = chatID
+        do {
+            _ = try await client.sendCommand(
+                commandID: commandID,
+                type: .chatLoadHistory,
+                payload: ChatLoadHistoryPayload(
+                    chatKind: page.chatKind,
+                    chatId: page.chatId,
+                    before: before,
+                    limit: companionInitialChatBlockLimit
+                )
+            )
+        } catch {
+            loadingOlderChatIDs.remove(chatID)
+            historyRequestChatIDs[commandID] = nil
+            operationError = error.localizedDescription
+        }
     }
 
     func start() {
@@ -228,6 +263,7 @@ final class CompanionStore: ObservableObject {
             toolName: nil,
             createdAt: now
         ), in: &state.runs)
+        rebuildAgentChatPage(runID: runID)
         state.runs[runIndex].run.status = "running"
         state.runs[runIndex].run.updatedAt = now
         persistCache()
@@ -317,6 +353,13 @@ final class CompanionStore: ObservableObject {
             messages: [],
             artifacts: []
         ))
+        state.chatPages.append(CompanionChatPage(
+            chatId: runID,
+            chatKind: "agent",
+            records: [],
+            hasMore: false,
+            nextBefore: nil
+        ))
         persistCache()
         do {
             _ = try await client.sendCommand(
@@ -326,6 +369,7 @@ final class CompanionStore: ObservableObject {
             return runID
         } catch {
             state.runs.removeAll { $0.run.id == runID }
+            state.chatPages.removeAll { $0.chatId == runID }
             if let previousStatus, let decisionIndex = state.decisions.firstIndex(where: { $0.id == decision.id }) {
                 state.decisions[decisionIndex].status = previousStatus
             }
@@ -506,12 +550,14 @@ final class CompanionStore: ObservableObject {
                 nextState.morningBriefings = snapshot.morningBriefings ?? []
                 nextState.workAssistantMessages = snapshot.workAssistantMessages
                 nextState.runs = snapshot.runs
+                nextState.chatPages = snapshot.chatPages ?? []
                 nextState.attachments = Dictionary(
                     uniqueKeysWithValues: (snapshot.attachments ?? []).compactMap { attachment in
                         attachment.artifactId.map { ($0, attachment) }
                     }
                 )
                 state = nextState
+                reconcileChatPages()
             case .projectCreated, .projectUpdated:
                 upsert(try event.payload.decode(Project.self), in: &state.projects)
             case .goalCreated, .goalUpdated:
@@ -520,19 +566,32 @@ final class CompanionStore: ObservableObject {
                 upsert(try event.payload.decode(Decision.self), in: &state.decisions)
             case .morningBriefingUpdated:
                 upsert(try event.payload.decode(MorningBriefing.self), in: &state.morningBriefings)
+                rebuildAssistantChatPage()
             case .workAssistantMessageCreated, .workAssistantMessageUpdated:
                 upsert(try event.payload.decode(WorkAssistantMessage.self), in: &state.workAssistantMessages)
+                rebuildAssistantChatPage()
             case .agentRunCreated, .agentRunUpdated:
                 let run = try event.payload.decode(AgentRun.self)
                 if let index = state.runs.firstIndex(where: { $0.run.id == run.id }) { state.runs[index].run = run }
-                else { state.runs.append(RunDetail(run: run, messages: [], artifacts: [])) }
+                else {
+                    state.runs.append(RunDetail(run: run, messages: [], artifacts: []))
+                    state.chatPages.append(CompanionChatPage(
+                        chatId: run.id,
+                        chatKind: "agent",
+                        records: [],
+                        hasMore: false,
+                        nextBefore: nil
+                    ))
+                }
             case .modelLabelsUpdated:
                 state.modelLabels = try event.payload.decode(AgentModelLabels.self)
             case .agentRunArchived:
                 state.runs.removeAll { $0.run.id == event.entityId }
+                state.chatPages.removeAll { $0.chatId == event.entityId }
             case .agentMessageCreated:
                 let message = try event.payload.decode(AgentMessage.self)
                 upsertAgentMessage(message, in: &state.runs)
+                rebuildAgentChatPage(runID: message.runId)
             case .artifactUpdated:
                 if let enriched = try? event.payload.decode(ArtifactEventPayload.self) {
                     upsertArtifact(enriched.artifact)
@@ -550,6 +609,27 @@ final class CompanionStore: ObservableObject {
     }
 
     private func applyCommandResult(_ command: CommandResult) -> String? {
+        if command.type == .chatLoadHistory {
+            if command.status == "completed" {
+                guard let result = command.result,
+                      let olderPage = try? result.decode(CompanionChatPage.self) else {
+                    if let chatID = historyRequestChatIDs.removeValue(forKey: command.commandId) {
+                        loadingOlderChatIDs.remove(chatID)
+                    }
+                    return "Mac 返回的聊天历史格式无效。"
+                }
+                mergeOlderChatPage(olderPage)
+                loadingOlderChatIDs.remove(olderPage.chatId)
+                historyRequestChatIDs[command.commandId] = nil
+                persistCache()
+            } else if command.status == "failed" {
+                if let chatID = historyRequestChatIDs.removeValue(forKey: command.commandId) {
+                    loadingOlderChatIDs.remove(chatID)
+                }
+                return command.error ?? "加载更早聊天记录失败。"
+            }
+            return nil
+        }
         if command.type == .artifactRequestUpload {
             if command.status == "failed" {
                 commandErrors[command.commandId] = command.error ?? "Mac 上传附件失败。"
@@ -586,12 +666,123 @@ final class CompanionStore: ObservableObject {
             detail.messages.contains(where: { $0.id == messageID && $0.eventType == "pending" })
         }) else { return }
         state.runs[runIndex].messages.removeAll { $0.id == messageID && $0.eventType == "pending" }
+        rebuildAgentChatPage(runID: state.runs[runIndex].run.id)
         persistCache()
     }
 
     private func markPendingAgentMessageAcknowledged(_ messageID: String) {
         guard acknowledgePendingAgentMessage(messageID, in: &state.runs) else { return }
+        if let runID = state.runs.first(where: { detail in
+            detail.messages.contains(where: { $0.id == messageID })
+        })?.run.id {
+            rebuildAgentChatPage(runID: runID)
+        }
         persistCache()
+    }
+
+    private func reconcileChatPages() {
+        if state.chatPages.isEmpty {
+            state.chatPages.append(companionChatPage(
+                chatId: workAssistantChatId,
+                chatKind: "assistant",
+                records: buildWorkAssistantChatRecords(
+                    messages: state.workAssistantMessages,
+                    briefings: state.morningBriefings
+                )
+            ))
+        }
+        if !state.chatPages.contains(where: { $0.chatId == workAssistantChatId }) {
+            state.chatPages.append(CompanionChatPage(
+                chatId: workAssistantChatId,
+                chatKind: "assistant",
+                records: [],
+                hasMore: false,
+                nextBefore: nil
+            ))
+        }
+        for detail in state.runs where !state.chatPages.contains(where: { $0.chatId == detail.run.id }) {
+            state.chatPages.append(companionChatPage(
+                chatId: detail.run.id,
+                chatKind: "agent",
+                records: buildAgentChatRecords(runID: detail.run.id, messages: detail.messages)
+            ))
+        }
+    }
+
+    private func rebuildAssistantChatPage() {
+        let records = buildWorkAssistantChatRecords(
+            messages: state.workAssistantMessages,
+            briefings: state.morningBriefings
+        )
+        replaceLiveChatPage(chatID: workAssistantChatId, chatKind: "assistant", records: records)
+        if let page = chatPage(chatID: workAssistantChatId) {
+            state.workAssistantMessages = page.records.compactMap(\.assistantMessage)
+            state.morningBriefings = page.records.compactMap(\.morningBriefing)
+        }
+    }
+
+    private func rebuildAgentChatPage(runID: String) {
+        guard let detail = state.runs.first(where: { $0.run.id == runID }) else { return }
+        replaceLiveChatPage(
+            chatID: runID,
+            chatKind: "agent",
+            records: buildAgentChatRecords(runID: runID, messages: detail.messages)
+        )
+        if let page = chatPage(chatID: runID),
+           let runIndex = state.runs.firstIndex(where: { $0.run.id == runID }) {
+            state.runs[runIndex].messages = flattenAgentChatRecords(page.records)
+        }
+    }
+
+    private func replaceLiveChatPage(
+        chatID: String,
+        chatKind: String,
+        records: [CompanionChatRecord]
+    ) {
+        if let index = state.chatPages.firstIndex(where: { $0.chatId == chatID }) {
+            let existing = state.chatPages[index]
+            let shouldRetainLoadedHistory = existing.records.count > companionInitialChatBlockLimit
+            let visibleRecords = shouldRetainLoadedHistory
+                ? records
+                : Array(records.suffix(companionInitialChatBlockLimit))
+            let trimmed = visibleRecords.count < records.count
+            state.chatPages[index] = CompanionChatPage(
+                chatId: chatID,
+                chatKind: chatKind,
+                records: visibleRecords,
+                hasMore: existing.hasMore || trimmed,
+                nextBefore: (existing.hasMore || trimmed) ? visibleRecords.first?.id : nil
+            )
+        } else {
+            state.chatPages.append(companionChatPage(
+                chatId: chatID,
+                chatKind: chatKind,
+                records: records
+            ))
+        }
+    }
+
+    private func mergeOlderChatPage(_ olderPage: CompanionChatPage) {
+        guard let index = state.chatPages.firstIndex(where: { $0.chatId == olderPage.chatId }) else {
+            state.chatPages.append(olderPage)
+            updateLegacyChatCollections(from: olderPage)
+            return
+        }
+        let merged = mergeOlderCompanionChatPage(olderPage, into: state.chatPages[index])
+        state.chatPages[index] = merged
+        updateLegacyChatCollections(from: merged)
+    }
+
+    private func updateLegacyChatCollections(from page: CompanionChatPage) {
+        if page.chatKind == "assistant" {
+            for record in page.records {
+                if let message = record.assistantMessage { upsert(message, in: &state.workAssistantMessages) }
+                if let briefing = record.morningBriefing { upsert(briefing, in: &state.morningBriefings) }
+            }
+            return
+        }
+        guard let runIndex = state.runs.firstIndex(where: { $0.run.id == page.chatId }) else { return }
+        state.runs[runIndex].messages = flattenAgentChatRecords(page.records)
     }
 
     private func upload(_ attachments: [PendingAttachment], using client: RelayClient) async throws -> [AttachmentDescriptor] {
@@ -605,6 +796,7 @@ final class CompanionStore: ObservableObject {
     private func loadCache() {
         guard let data = try? Data(contentsOf: cacheURL), let saved = try? JSONDecoder().decode(CachedState.self, from: data) else { return }
         state = saved
+        reconcileChatPages()
     }
 
     private func persistCache() {

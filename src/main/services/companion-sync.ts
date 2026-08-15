@@ -20,7 +20,11 @@ import type {
   CompanionSyncEventInput,
   CompanionOutboxEvent,
   CompanionAttachmentDescriptor,
-  CompanionSnapshotPayload
+  CompanionSnapshotPayload,
+  CompanionChatKind,
+  CompanionChatPage,
+  CompanionRelayChatPage,
+  CompanionRelayWorkAssistantMessage
 } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
@@ -456,7 +460,10 @@ export class CompanionSyncService {
         })),
         workAssistantMessages: await Promise.all(
           (snapshot.workAssistantMessages ?? []).map((message) => this.prepareWorkAssistantMessage(message as BriefingMessage))
-        )
+        ),
+        chatPages: snapshot.chatPages
+          ? await Promise.all(snapshot.chatPages.map((page) => this.prepareChatPage(page)))
+          : undefined
       }
     }
     if (event.type === 'agent-message.created') {
@@ -573,7 +580,19 @@ export class CompanionSyncService {
     return existsSync(filePath) ? filePath : null
   }
 
-  private async prepareWorkAssistantMessage(message: BriefingMessage): Promise<unknown> {
+  private async prepareChatPage(page: CompanionChatPage): Promise<CompanionRelayChatPage> {
+    return {
+      ...page,
+      records: await Promise.all(page.records.map(async (record) => ({
+        ...record,
+        assistantMessage: record.assistantMessage
+          ? await this.prepareWorkAssistantMessage(record.assistantMessage)
+          : null
+      })))
+    }
+  }
+
+  private async prepareWorkAssistantMessage(message: BriefingMessage): Promise<CompanionRelayWorkAssistantMessage> {
     const attachments: CompanionAttachmentDescriptor[] = []
     for (const image of message.attachments) {
       const marker = ';base64,'
@@ -783,6 +802,19 @@ export class CompanionSyncService {
         const runId = this.requiredString(payload, 'runId')
         this.database.archiveAgentRun(runId)
         return { runId, archived: true }
+      }
+      case 'chat.load-history': {
+        const chatKind = this.requiredString(payload, 'chatKind')
+        if (chatKind !== 'assistant' && chatKind !== 'agent') throw new Error('聊天类型无效。')
+        const limit = Number(payload.limit)
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('聊天历史分页大小无效。')
+        const page = this.database.getCompanionChatPage(
+          chatKind as CompanionChatKind,
+          this.requiredString(payload, 'chatId'),
+          typeof payload.before === 'string' ? payload.before : null,
+          limit
+        )
+        return await this.prepareChatPage(page)
       }
       case 'artifact.request-upload': {
         const artifactId = this.requiredString(payload, 'artifactId')

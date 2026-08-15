@@ -2,8 +2,8 @@
 import Foundation
 
 let companionMinimumProtocolVersion = 2
-let companionProtocolVersion = 2
-let companionContractFingerprint = "4b3ea223dc9f349305850b56"
+let companionProtocolVersion = 3
+let companionContractFingerprint = "86fc02f1453d9e975f937cd9"
 
 func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
     version >= companionMinimumProtocolVersion && version <= companionProtocolVersion
@@ -101,6 +101,7 @@ enum CompanionCommandType: Hashable, Codable {
     case agentRenameSession
     case agentUpdateDraftPrompt
     case agentArchiveSession
+    case chatLoadHistory
     case artifactRequestUpload
     case decisionUpdateStatus
     case decisionHandle
@@ -116,6 +117,7 @@ enum CompanionCommandType: Hashable, Codable {
         case .agentRenameSession: "agent.rename-session"
         case .agentUpdateDraftPrompt: "agent.update-draft-prompt"
         case .agentArchiveSession: "agent.archive-session"
+        case .chatLoadHistory: "chat.load-history"
         case .artifactRequestUpload: "artifact.request-upload"
         case .decisionUpdateStatus: "decision.update-status"
         case .decisionHandle: "decision.handle"
@@ -134,6 +136,7 @@ enum CompanionCommandType: Hashable, Codable {
         case "agent.rename-session": self = .agentRenameSession
         case "agent.update-draft-prompt": self = .agentUpdateDraftPrompt
         case "agent.archive-session": self = .agentArchiveSession
+        case "chat.load-history": self = .chatLoadHistory
         case "artifact.request-upload": self = .artifactRequestUpload
         case "decision.update-status": self = .decisionUpdateStatus
         case "decision.handle": self = .decisionHandle
@@ -184,6 +187,13 @@ struct AgentArchiveSessionPayload: Codable {
     let runId: String
 }
 
+struct ChatLoadHistoryPayload: Codable {
+    let chatKind: String
+    let chatId: String
+    let before: String?
+    let limit: Int
+}
+
 struct ArtifactRequestUploadPayload: Codable {
     let artifactId: String
 }
@@ -212,6 +222,7 @@ struct SnapshotPayload: Codable {
     let workAssistantMessages: [WorkAssistantMessage]
     let attachments: [AttachmentDescriptor]?
     let runs: [RunDetail]
+    let chatPages: [CompanionChatPage]?
 }
 
 struct ArtifactEventPayload: Codable {

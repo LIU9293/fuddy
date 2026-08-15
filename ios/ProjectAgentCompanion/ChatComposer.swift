@@ -210,6 +210,7 @@ private func dismissCompanionKeyboard() {
 }
 
 struct CompanionChatComposer: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Binding var text: String
     @Binding var attachments: [PendingAttachment]
     let placeholder: String
@@ -231,6 +232,10 @@ struct CompanionChatComposer: View {
 
     private var canStop: Bool {
         active && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty && !sending && onStop != nil
+    }
+
+    private var enabledSendColor: Color {
+        colorScheme == .dark ? .white : .black
     }
 
     var body: some View {
@@ -321,7 +326,7 @@ struct CompanionChatComposer: View {
 
                 Button(action: { canStop ? onStop?() : onSend() }) {
                     ZStack {
-                        Circle().fill((canSend || canStop) ? Color.primary : Color.secondary.opacity(0.18))
+                        Circle().fill((canSend || canStop) ? enabledSendColor : Color.secondary.opacity(0.18))
                         if sending {
                             ProgressView().tint(.white).controlSize(.small)
                         } else if canStop {
@@ -336,6 +341,8 @@ struct CompanionChatComposer: View {
                     }
                     .frame(width: 38, height: 38)
                 }
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
                 .buttonStyle(.plain)
                 .disabled(!canSend && !canStop)
             }

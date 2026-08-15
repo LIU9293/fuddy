@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { testProject } from '../main/test-support/project-fixtures'
 import { companionProtocolVersion } from './companion-sync'
-import { syncEventSchema } from './companion-schemas'
+import { commandSchema, syncEventSchema } from './companion-schemas'
 
 function projectEvent(payload: unknown): Record<string, unknown> {
   return {
@@ -39,5 +39,29 @@ describe('Companion wire schemas', () => {
     }))
 
     expect(parsed.payload).not.toHaveProperty('accidentalSecret')
+  })
+
+  it('bounds chat history commands to one 100-block page', () => {
+    const command = {
+      commandId: 'history-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'chat.load-history',
+      createdAt: '2026-08-14T15:00:00.000Z',
+      payload: {
+        chatKind: 'agent',
+        chatId: 'run-1',
+        before: 'agent-message-message-100',
+        limit: 100
+      }
+    }
+    expect(commandSchema.safeParse(command).success).toBe(true)
+    expect(commandSchema.safeParse({
+      ...command,
+      payload: { ...command.payload, limit: 101 }
+    }).success).toBe(false)
+    expect(commandSchema.safeParse({
+      ...command,
+      payload: { ...command.payload, chatKind: 'unknown' }
+    }).success).toBe(false)
   })
 })

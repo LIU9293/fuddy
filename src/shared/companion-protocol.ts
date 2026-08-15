@@ -1,6 +1,6 @@
 export const companionProtocol = {
   minimumVersion: 2,
-  currentVersion: 2
+  currentVersion: 3
 } as const
 
 export const companionEventDefinitions = {
@@ -32,6 +32,7 @@ export const companionCommandTypes = [
   'agent.rename-session',
   'agent.update-draft-prompt',
   'agent.archive-session',
+  'chat.load-history',
   'artifact.request-upload',
   'decision.update-status',
   'decision.handle',
@@ -45,6 +46,7 @@ export type CompanionCommandType = (typeof companionCommandTypes)[number]
 type CompanionCommandPayloadFieldType =
   | 'string'
   | 'optional-string'
+  | 'int'
   | 'attachments'
   | 'optional-attachments'
   | 'decision-status'
@@ -84,6 +86,10 @@ export const companionCommandPayloadDefinitions = {
     fields: { runId: 'string', draftPrompt: 'string' }
   },
   'agent.archive-session': { swiftName: 'AgentArchiveSessionPayload', fields: { runId: 'string' } },
+  'chat.load-history': {
+    swiftName: 'ChatLoadHistoryPayload',
+    fields: { chatKind: 'string', chatId: 'string', before: 'optional-string', limit: 'int' }
+  },
   'artifact.request-upload': {
     swiftName: 'ArtifactRequestUploadPayload',
     fields: { artifactId: 'string' }
@@ -131,7 +137,8 @@ export const companionSwiftWireDefinitions = {
       morningBriefings: 'optional-array:MorningBriefing',
       workAssistantMessages: 'array:WorkAssistantMessage',
       attachments: 'optional-array:AttachmentDescriptor',
-      runs: 'array:RunDetail'
+      runs: 'array:RunDetail',
+      chatPages: 'optional-array:CompanionChatPage'
     }
   },
   artifactEvent: {

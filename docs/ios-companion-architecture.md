@@ -44,6 +44,8 @@ The WebSocket is a wake-up hint, not the source of truth. A committed batch emit
 
 Mac keeps complete Agent tool output only in its authoritative local database. Snapshot and incremental Relay payloads retain the tool name and terminal status, normalize whitespace, remove native metadata/arguments, and cap the displayed summary at 600 characters. User messages, assistant answers, and provider-supported reasoning summaries continue to replay normally; raw private chain-of-thought is never part of the protocol.
 
+Every phone chat is projected into the same stable `CompanionChatRecord` block stream. A pairing snapshot includes only the newest 100 display blocks for Work Assistant and for each Agent Run, ordered oldest-to-newest so the shared timeline can open at the latest message. Reaching the top sends the constrained `chat.load-history` command with a stable `before` record cursor; Mac returns at most 100 complete earlier blocks through the encrypted command result. A process block is never split between pages, even when it contains several reasoning/tool events. iOS merges the page by record ID and preserves the visible scroll target while Mac remains authoritative for the full history.
+
 Each event page and WebSocket presence frame also carries current Durable Object presence. The iPhone updates presence directly from `sync.ready` and `presence.updated`, and distinguishes “Relay unreachable” from “Relay connected but Mac offline”; commands may still be queued in the second state and will execute when the Mac reconnects. The Mac settings UI reports HTTP replay and realtime WebSocket health separately so a successful replay cannot hide a stale socket.
 
 ## Pairing and authentication
@@ -96,8 +98,9 @@ The local path remains visible only as descriptive metadata. R2 objects are not 
 - `CompanionStore`: main-actor state, event reducer, command methods, polling, and atomic offline cache.
 - `RelayClient`: pairing, authenticated REST calls, WebSocket wake-ups, push-token registration, and attachment downloads.
 - `KeychainStore`: device credentials.
-- `WorkAssistantView`: the cross-project assistant timeline and constrained remote message command.
-- `RunsListView` / `RunDetailView`: persistent Session list and native chat UI; active runs show a spinner; tool calls use collapsed `DisclosureGroup` rows; Session metadata and artifacts live in the top-right “信息与文件” Modal instead of the message timeline.
+- `CompanionChatTimeline`: shared bounded history, upward pagination, latest-message anchoring, scroll restoration, and new-message following for every chat.
+- `WorkAssistantView`: thin Work Assistant configuration over the shared timeline and constrained remote message command.
+- `RunsListView` / `RunDetailView`: persistent Session list and Agent-specific configuration over the same timeline; active runs show a spinner; tool calls use collapsed `DisclosureGroup` rows; Session metadata and artifacts live in the top-right “信息与文件” Modal instead of the message timeline.
 - `DecisionListView`: inbox and constrained status commands.
 - `ProjectDetailView`: project status, goals, progress, and milestones from the same Mac snapshot/event log.
 - `ArtifactRow`: authenticated download and `QLPreviewController` presentation.

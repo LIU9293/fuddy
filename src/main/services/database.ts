@@ -45,6 +45,15 @@ import type {
 import type { ConnectorCatalogItem } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import { companionEventDefinitions, companionProtocolVersion } from '../../shared/companion-sync'
+import type { CompanionChatKind, CompanionChatPage } from '../../shared/companion-sync'
+import {
+  buildAgentChatRecords,
+  buildWorkAssistantChatRecords,
+  flattenAgentChatRecords,
+  paginateCompanionChatRecords,
+  workAssistantChatId,
+  workAssistantPageCollections
+} from '../../shared/companion-chat'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { databaseSchemaVersion, runDatabaseMigrations, type DatabaseMigration } from './database-migrations'
 import { ensureCurrentDatabaseSchema } from './database-schema'
@@ -585,18 +594,63 @@ export class AppDatabase {
   }
 
   enqueueCompanionSnapshot(modelLabels: AgentModelLabels = emptyAgentModelLabels): CompanionOutboxEvent {
+    const assistantPage = this.getCompanionChatPage('assistant', workAssistantChatId)
+    const assistantCollections = workAssistantPageCollections(assistantPage)
+    const runDetails = this.listRuns().map((run) => {
+      const detail = this.getAgentRunDetail(run.id)
+      const page = paginateCompanionChatRecords(
+        run.id,
+        'agent',
+        buildAgentChatRecords(run.id, detail.messages)
+      )
+      return {
+        detail: { ...detail, messages: flattenAgentChatRecords(page.records) },
+        page
+      }
+    })
     const snapshot: CompanionSnapshotPayload = {
       generatedAt: new Date().toISOString(),
       modelLabels,
       projects: this.listProjects(),
       goals: this.listGoals(),
       decisions: this.listDecisions(),
-      morningBriefings: this.listMorningBriefings(),
-      workAssistantMessages: this.listBriefingMessages(),
+      morningBriefings: assistantCollections.briefings,
+      workAssistantMessages: assistantCollections.messages,
       attachments: [],
-      runs: this.listRuns().map((run) => this.getAgentRunDetail(run.id))
+      runs: runDetails.map(({ detail }) => detail),
+      chatPages: [assistantPage, ...runDetails.map(({ page }) => page)]
     }
     return this.enqueueCompanionEvent('snapshot.created', 'snapshot', 'current', snapshot)
+  }
+
+  getCompanionChatPage(
+    chatKind: CompanionChatKind,
+    chatId: string,
+    before?: string | null,
+    limit?: number
+  ): CompanionChatPage {
+    if (chatKind === 'assistant') {
+      if (chatId !== workAssistantChatId) throw new Error('工作助理聊天 ID 无效。')
+      return paginateCompanionChatRecords(
+        chatId,
+        chatKind,
+        buildWorkAssistantChatRecords(
+          this.briefings.listAllMessages(),
+          this.briefings.listAllMorning()
+        ),
+        { before, limit }
+      )
+    }
+    if (!this.listRuns().some((run) => run.id === chatId)) {
+      throw new Error('没有找到这个 Agent Run。')
+    }
+    const detail = this.getAgentRunDetail(chatId)
+    return paginateCompanionChatRecords(
+      chatId,
+      chatKind,
+      buildAgentChatRecords(chatId, detail.messages),
+      { before, limit }
+    )
   }
 
   enqueueAgentTurnSettled(payload: AgentTurnSettledPayload): CompanionOutboxEvent {

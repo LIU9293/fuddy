@@ -458,6 +458,26 @@ struct RunDetail: Codable, Identifiable {
     var id: String { run.id }
 }
 
+struct CompanionChatRecord: Codable, Identifiable, Hashable {
+    let id: String
+    let chatId: String
+    let chatKind: String
+    let kind: String
+    let createdAt: String
+    let completedAt: String?
+    let assistantMessage: WorkAssistantMessage?
+    let agentMessages: [AgentMessage]
+    let morningBriefing: MorningBriefing?
+}
+
+struct CompanionChatPage: Codable, Hashable {
+    let chatId: String
+    let chatKind: String
+    var records: [CompanionChatRecord]
+    var hasMore: Bool
+    var nextBefore: String?
+}
+
 struct AgentModelLabels: Codable, Equatable {
     var workAssistant: String
     var providers: [String: String]
@@ -518,6 +538,7 @@ struct CachedState: Codable {
     var morningBriefings: [MorningBriefing] = []
     var workAssistantMessages: [WorkAssistantMessage] = []
     var runs: [RunDetail] = []
+    var chatPages: [CompanionChatPage] = []
     var attachments: [String: AttachmentDescriptor] = [:]
     var lastSequence = 0
 
@@ -532,6 +553,7 @@ struct CachedState: Codable {
         morningBriefings = try container.decodeIfPresent([MorningBriefing].self, forKey: .morningBriefings) ?? []
         workAssistantMessages = try container.decodeIfPresent([WorkAssistantMessage].self, forKey: .workAssistantMessages) ?? []
         runs = try container.decodeIfPresent([RunDetail].self, forKey: .runs) ?? []
+        chatPages = try container.decodeIfPresent([CompanionChatPage].self, forKey: .chatPages) ?? []
         attachments = try container.decodeIfPresent([String: AttachmentDescriptor].self, forKey: .attachments) ?? [:]
         lastSequence = try container.decodeIfPresent(Int.self, forKey: .lastSequence) ?? 0
     }

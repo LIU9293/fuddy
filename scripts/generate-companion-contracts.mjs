@@ -24,6 +24,7 @@ const contractDeclarations = {
   ],
   'src/shared/companion-sync.ts': [
     'CompanionAttachmentDescriptor', 'CompanionSnapshotPayload', 'CompanionArtifactEventPayload',
+    'CompanionChatRecord', 'CompanionChatPage',
   ],
   'src/shared/model-display.ts': ['AgentModelLabels']
 }

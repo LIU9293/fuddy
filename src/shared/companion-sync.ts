@@ -252,6 +252,35 @@ export interface CompanionSnapshotPayload {
     messages: AgentRunMessage[]
     artifacts: AgentRunArtifact[]
   }>
+  /** Protocol v3: one bounded, presentation-ready history window per chat. */
+  chatPages?: CompanionChatPage[]
+}
+
+export type CompanionChatKind = 'assistant' | 'agent'
+export type CompanionChatRecordKind = 'message' | 'process' | 'briefing'
+
+/**
+ * A stable presentation block shared by every Companion chat surface.
+ * Exactly one payload family is populated for each kind/chat combination.
+ */
+export interface CompanionChatRecord<TAssistantMessage = BriefingMessage> {
+  id: string
+  chatId: string
+  chatKind: CompanionChatKind
+  kind: CompanionChatRecordKind
+  createdAt: string
+  completedAt: string | null
+  assistantMessage: TAssistantMessage | null
+  agentMessages: AgentRunMessage[]
+  morningBriefing: MorningBriefing | null
+}
+
+export interface CompanionChatPage<TAssistantMessage = BriefingMessage> {
+  chatId: string
+  chatKind: CompanionChatKind
+  records: Array<CompanionChatRecord<TAssistantMessage>>
+  hasMore: boolean
+  nextBefore: string | null
 }
 
 export interface CompanionArtifactEventPayload {
@@ -263,8 +292,11 @@ export type CompanionRelayWorkAssistantMessage = Omit<BriefingMessage, 'attachme
   attachments: CompanionAttachmentDescriptor[]
 }
 
-export type CompanionRelaySnapshotPayload = Omit<CompanionSnapshotPayload, 'workAssistantMessages'> & {
+export type CompanionRelayChatPage = CompanionChatPage<CompanionRelayWorkAssistantMessage>
+
+export type CompanionRelaySnapshotPayload = Omit<CompanionSnapshotPayload, 'workAssistantMessages' | 'chatPages'> & {
   workAssistantMessages: CompanionRelayWorkAssistantMessage[]
+  chatPages?: CompanionRelayChatPage[]
 }
 
 export interface CompanionCommandRecord {
@@ -322,6 +354,7 @@ export type CompanionOutboxEvent<TType extends CompanionEventType = CompanionEve
 type CompanionCommandPayloadFieldValue = {
   string: string
   'optional-string': string
+  int: number
   attachments: CompanionAttachmentDescriptor[]
   'optional-attachments': CompanionAttachmentDescriptor[]
   'decision-status': DecisionStatus

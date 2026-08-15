@@ -552,10 +552,14 @@ struct WorkAssistantView: View {
     @State private var isAtLatestMessage = true
     @State private var scrollToLatestRequest = 0
 
-    private var timeline: [AssistantTimelineItem] {
-        let messages = store.workAssistantMessages.map(AssistantTimelineItem.message)
-        let briefings = store.morningBriefings.filter { $0.status == "completed" }.map(AssistantTimelineItem.briefing)
-        return (messages + briefings).sorted { $0.createdAt < $1.createdAt }
+    private var page: CompanionChatPage {
+        store.chatPage(chatID: workAssistantChatId) ?? CompanionChatPage(
+            chatId: workAssistantChatId,
+            chatKind: "assistant",
+            records: [],
+            hasMore: false,
+            nextBefore: nil
+        )
     }
 
     var body: some View {
@@ -564,49 +568,22 @@ struct WorkAssistantView: View {
             isAtLatestMessage: isAtLatestMessage,
             onScrollToLatest: { scrollToLatestRequest += 1 }
         ) { viewportSize, topInset, bottomInset in
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: companionChatItemSpacing) {
-                        ForEach(timeline) { item in
-                            switch item {
-                            case .message(let message): AssistantMessageView(message: message)
-                            case .briefing(let briefing): MorningBriefingCard(briefing: briefing)
-                            }
-                        }
-                        Color.clear
-                            .frame(height: bottomInset)
-                            .id(latestAnchorID)
-                            .background {
-                                GeometryReader { anchor in
-                                    Color.clear.preference(
-                                        key: CompanionChatBottomPositionKey.self,
-                                        value: anchor.frame(in: .named(scrollCoordinateSpace)).minY
-                                    )
-                                }
-                            }
-                    }
-                    .padding(.horizontal, companionChatHorizontalPadding)
-                    .padding(.top, topInset)
+            CompanionChatTimeline(
+                page: page,
+                viewportSize: viewportSize,
+                topInset: topInset,
+                bottomInset: bottomInset,
+                isAtLatestMessage: $isAtLatestMessage,
+                scrollToLatestRequest: scrollToLatestRequest,
+                latestContentRevision: page.records.last.map { "\($0.id)-\($0.hashValue)" } ?? "empty"
+            ) { record, _ in
+                if let message = record.assistantMessage {
+                    AssistantMessageView(message: message)
+                } else if let briefing = record.morningBriefing {
+                    MorningBriefingCard(briefing: briefing)
                 }
-                .defaultScrollAnchor(.bottom)
-                .coordinateSpace(name: scrollCoordinateSpace)
-                .onPreferenceChange(CompanionChatBottomPositionKey.self) { bottomY in
-                    guard bottomY.isFinite else { return }
-                    isAtLatestMessage = companionDistanceFromLatest(
-                        bottomY: bottomY,
-                        viewportHeight: viewportSize.height,
-                        bottomInset: bottomInset
-                    ) <= companionChatLatestDistanceThreshold
-                }
-                .onChange(of: scrollToLatestRequest) { _, _ in
-                    withAnimation(.easeOut(duration: 0.24)) {
-                        proxy.scrollTo(latestAnchorID, anchor: .bottom)
-                    }
-                }
-                .onChange(of: timeline) { _, _ in
-                    guard isAtLatestMessage else { return }
-                    proxy.scrollTo(latestAnchorID, anchor: .bottom)
-                }
+            } tail: {
+                EmptyView()
             }
         } composer: {
             VStack(spacing: 0) {
@@ -621,17 +598,13 @@ struct WorkAssistantView: View {
                 )
             }
         }
-        .refreshable { await store.sync() }
         .toolbarBackground(.hidden, for: .navigationBar)
         .overlay {
-            if timeline.isEmpty {
+            if page.records.isEmpty {
                 ContentUnavailableView("开始和工作助理对话", systemImage: "sparkles", description: Text("每日总结也会出现在这里"))
             }
         }
     }
-
-    private var latestAnchorID: String { "assistant-latest" }
-    private var scrollCoordinateSpace: String { "assistant-scroll" }
 
     private func send() async {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -643,25 +616,6 @@ struct WorkAssistantView: View {
             await store.sync()
         } catch { self.error = error.localizedDescription }
         sending = false
-    }
-}
-
-private enum AssistantTimelineItem: Identifiable, Equatable {
-    case message(WorkAssistantMessage)
-    case briefing(MorningBriefing)
-
-    var id: String {
-        switch self {
-        case .message(let value): "message-\(value.id)"
-        case .briefing(let value): "briefing-\(value.id)"
-        }
-    }
-
-    var createdAt: String {
-        switch self {
-        case .message(let value): value.createdAt
-        case .briefing(let value): value.generatedAt
-        }
     }
 }
 
@@ -1113,50 +1067,6 @@ struct RunsListView: View {
     }
 }
 
-enum RunTimelineBlock: Identifiable {
-    case message(AgentMessage)
-    case activity([AgentMessage])
-    case process([AgentMessage], completedAt: String)
-
-    var id: String {
-        switch self {
-        case .message(let message): return message.id
-        case .activity(let messages), .process(let messages, _):
-            return "process-\(messages.first?.id ?? "unknown")"
-        }
-    }
-}
-
-func groupRunMessages(_ messages: [AgentMessage]) -> [RunTimelineBlock] {
-    var result: [RunTimelineBlock] = []
-    var processMessages: [AgentMessage] = []
-
-    for message in messages {
-        let isProcessMessage = message.eventType == "reasoning" || message.role == "tool"
-        if isProcessMessage {
-            processMessages.append(message)
-            continue
-        }
-
-        if !processMessages.isEmpty {
-            if message.role == "assistant" {
-                result.append(.process(processMessages, completedAt: message.createdAt))
-            } else {
-                appendOpenRunProcess(processMessages, to: &result)
-            }
-            processMessages.removeAll(keepingCapacity: true)
-        }
-        result.append(.message(message))
-    }
-    appendOpenRunProcess(processMessages, to: &result)
-    return result
-}
-
-private func appendOpenRunProcess(_ messages: [AgentMessage], to result: inout [RunTimelineBlock]) {
-    guard !messages.isEmpty else { return }
-    result.append(.activity(messages))
-}
-
 struct RunActivityStage: Identifiable {
     let id: String
     let reasoning: AgentMessage?
@@ -1203,6 +1113,130 @@ func companionDistanceFromLatest(
     bottomY - max(0, viewportHeight - bottomInset)
 }
 
+private struct CompanionChatTimeline<RecordContent: View, TailContent: View>: View {
+    @EnvironmentObject private var store: CompanionStore
+    let page: CompanionChatPage
+    let viewportSize: CGSize
+    let topInset: CGFloat
+    let bottomInset: CGFloat
+    @Binding var isAtLatestMessage: Bool
+    let scrollToLatestRequest: Int
+    let latestContentRevision: String
+    @ViewBuilder let recordContent: (CompanionChatRecord, String?) -> RecordContent
+    @ViewBuilder let tail: () -> TailContent
+
+    @State private var scrollPosition: String?
+    @State private var didRestoreScrollPosition = false
+
+    private var latestAnchorID: String { "chat-latest-\(page.chatId)" }
+    private var historyLoaderID: String { "chat-history-loader-\(page.chatId)" }
+    private var scrollCoordinateSpace: String { "chat-scroll-\(page.chatId)" }
+    private var lastRecordID: String? { page.records.last?.id }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: companionChatItemSpacing) {
+                    if page.hasMore {
+                        historyLoader
+                            .id(historyLoaderID)
+                            .task(id: page.nextBefore) {
+                                await store.loadOlderChatRecords(chatID: page.chatId)
+                            }
+                    }
+                    ForEach(page.records) { record in
+                        recordContent(record, lastRecordID)
+                            .id(record.id)
+                    }
+                    tail()
+                    Color.clear
+                        .frame(height: bottomInset)
+                        .id(latestAnchorID)
+                        .background {
+                            GeometryReader { anchor in
+                                Color.clear.preference(
+                                    key: CompanionChatBottomPositionKey.self,
+                                    value: anchor.frame(in: .named(scrollCoordinateSpace)).minY
+                                )
+                            }
+                        }
+                }
+                .scrollTargetLayout()
+                .frame(
+                    width: max(0, viewportSize.width - companionChatHorizontalPadding * 2),
+                    alignment: .leading
+                )
+                .padding(.horizontal, companionChatHorizontalPadding)
+                .padding(.top, topInset)
+            }
+            .defaultScrollAnchor(.bottom)
+            .coordinateSpace(name: scrollCoordinateSpace)
+            .scrollPosition(id: $scrollPosition, anchor: .center)
+            .refreshable { await store.sync() }
+            .onPreferenceChange(CompanionChatBottomPositionKey.self) { bottomY in
+                guard bottomY.isFinite else { return }
+                isAtLatestMessage = companionDistanceFromLatest(
+                    bottomY: bottomY,
+                    viewportHeight: viewportSize.height,
+                    bottomInset: bottomInset
+                ) <= companionChatLatestDistanceThreshold
+            }
+            .onAppear {
+                guard !didRestoreScrollPosition else { return }
+                didRestoreScrollPosition = true
+                let recordIDs = Set(page.records.map(\.id))
+                let savedPosition = store.savedChatScrollPosition(chatID: page.chatId)
+                let destination = savedPosition.flatMap { recordIDs.contains($0) ? $0 : nil }
+                    ?? latestAnchorID
+                DispatchQueue.main.async {
+                    proxy.scrollTo(destination, anchor: destination == latestAnchorID ? .bottom : .center)
+                }
+            }
+            .onDisappear {
+                if isAtLatestMessage {
+                    store.saveChatScrollPosition(nil, chatID: page.chatId)
+                } else if let scrollPosition,
+                          scrollPosition != latestAnchorID,
+                          scrollPosition != historyLoaderID {
+                    store.saveChatScrollPosition(scrollPosition, chatID: page.chatId)
+                }
+            }
+            .onChange(of: latestContentRevision) { oldRevision, newRevision in
+                guard oldRevision != newRevision, isAtLatestMessage else { return }
+                proxy.scrollTo(latestAnchorID, anchor: .bottom)
+            }
+            .onChange(of: scrollToLatestRequest) { _, _ in
+                withAnimation(.easeOut(duration: 0.24)) {
+                    proxy.scrollTo(latestAnchorID, anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    private var historyLoader: some View {
+        Button {
+            Task { await store.loadOlderChatRecords(chatID: page.chatId) }
+        } label: {
+            HStack(spacing: 8) {
+                if store.loadingOlderChatIDs.contains(page.chatId) {
+                    ProgressView().controlSize(.small)
+                    Text("正在加载更早记录")
+                } else {
+                    Image(systemName: "clock.arrow.circlepath")
+                    Text("加载更早记录")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+        .buttonStyle(.plain)
+        .disabled(store.loadingOlderChatIDs.contains(page.chatId))
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct RunDetailView: View {
     @EnvironmentObject private var store: CompanionStore
     @Environment(\.dismiss) private var dismiss
@@ -1214,11 +1248,7 @@ struct RunDetailView: View {
     @State private var showSessionInfo = false
     @State private var renamedTitle = ""
     @State private var error: String?
-    @State private var scrollPosition: String?
     @State private var isAtLatestMessage = true
-    @State private var didRestoreScrollPosition = false
-    @State private var bottomRefreshArmed = true
-    @State private var refreshingAtBottom = false
     @State private var scrollToLatestRequest = 0
 
     init(runID: String, prefilledPrompt: String = "") {
@@ -1227,6 +1257,15 @@ struct RunDetailView: View {
     }
 
     private var detail: RunDetail? { store.state.runs.first { $0.run.id == runID } }
+    private var page: CompanionChatPage {
+        store.chatPage(chatID: runID) ?? CompanionChatPage(
+            chatId: runID,
+            chatKind: "agent",
+            records: [],
+            hasMore: false,
+            nextBefore: nil
+        )
+    }
 
     var body: some View {
         Group {
@@ -1237,100 +1276,29 @@ struct RunDetailView: View {
                         scrollToLatestRequest += 1
                     }
                 ) { viewportSize, topInset, bottomInset in
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: companionChatItemSpacing) {
-                                let blocks = groupRunMessages(detail.messages)
-                                let lastBlockID = blocks.last?.id
-                                ForEach(blocks) { block in
-                                    let active = block.id == lastBlockID && ["running", "queued"].contains(detail.run.status)
-                                    Group {
-                                        switch block {
-                                        case .message(let message): MessageView(message: message, active: active)
-                                        case .activity(let messages):
-                                            RunActivityStagesView(messages: messages, active: active)
-                                        case .process(let messages, let completedAt):
-                                            RunProcessDisclosureView(messages: messages, completedAt: completedAt)
-                                        }
-                                    }
-                                    .id(block.id)
-                                }
-                                if ["running", "queued"].contains(detail.run.status),
-                                   detail.messages.last?.role == "user" {
-                                    HStack(spacing: 8) {
-                                        ProgressView().controlSize(.small)
-                                        Text("\(detail.run.provider) 正在处理")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                Color.clear
-                                    .frame(height: bottomInset)
-                                    .id(latestAnchorID)
-                                    .background {
-                                        GeometryReader { anchor in
-                                            Color.clear.preference(
-                                                key: CompanionChatBottomPositionKey.self,
-                                                value: anchor.frame(in: .named(scrollCoordinateSpace)).minY
-                                            )
-                                        }
-                                    }
+                    CompanionChatTimeline(
+                        page: page,
+                        viewportSize: viewportSize,
+                        topInset: topInset,
+                        bottomInset: bottomInset,
+                        isAtLatestMessage: $isAtLatestMessage,
+                        scrollToLatestRequest: scrollToLatestRequest,
+                        latestContentRevision: "\(page.records.last?.hashValue ?? 0)-\(detail.run.status)"
+                    ) { record, lastRecordID in
+                        runRecordView(
+                            record,
+                            active: record.id == lastRecordID && ["running", "queued"].contains(detail.run.status)
+                        )
+                    } tail: {
+                        if ["running", "queued"].contains(detail.run.status),
+                           page.records.last?.agentMessages.last?.role == "user" {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("\(detail.run.provider) 正在处理")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
-                            .scrollTargetLayout()
-                            .frame(
-                                width: max(0, viewportSize.width - companionChatHorizontalPadding * 2),
-                                alignment: .leading
-                            )
-                            .padding(.horizontal, companionChatHorizontalPadding)
-                            .padding(.top, topInset)
-                        }
-                        .defaultScrollAnchor(.bottom)
-                        .coordinateSpace(name: scrollCoordinateSpace)
-                        .scrollPosition(id: $scrollPosition, anchor: .center)
-                        .onPreferenceChange(CompanionChatBottomPositionKey.self) { bottomY in
-                            guard bottomY.isFinite else { return }
-                            let distanceFromBottom = companionDistanceFromLatest(
-                                bottomY: bottomY,
-                                viewportHeight: viewportSize.height,
-                                bottomInset: bottomInset
-                            )
-                            isAtLatestMessage = distanceFromBottom <= companionChatLatestDistanceThreshold
-                            if distanceFromBottom > 220 {
-                                bottomRefreshArmed = true
-                            } else if distanceFromBottom <= 80, bottomRefreshArmed {
-                                bottomRefreshArmed = false
-                                refreshMessagesAtBottom()
-                            }
-                        }
-                        .onAppear {
-                            guard !didRestoreScrollPosition else { return }
-                            didRestoreScrollPosition = true
-                            let blockIDs = Set(groupRunMessages(detail.messages).map(\.id))
-                            let savedPosition = store.savedRunScrollPosition(runID: runID)
-                            let destination = savedPosition.flatMap { blockIDs.contains($0) || $0 == latestAnchorID ? $0 : nil }
-                                ?? latestAnchorID
-                            DispatchQueue.main.async {
-                                proxy.scrollTo(destination, anchor: destination == latestAnchorID ? .bottom : .center)
-                            }
-                        }
-                        .onDisappear {
-                            if let scrollPosition {
-                                store.saveRunScrollPosition(scrollPosition, runID: runID)
-                            }
-                        }
-                        .onChange(of: detail.messages) { _, _ in
-                            guard isAtLatestMessage else { return }
-                            proxy.scrollTo(latestAnchorID, anchor: .bottom)
-                        }
-                        .onChange(of: detail.run.status) { _, _ in
-                            guard isAtLatestMessage else { return }
-                            proxy.scrollTo(latestAnchorID, anchor: .bottom)
-                        }
-                        .onChange(of: scrollToLatestRequest) { _, _ in
-                            withAnimation(.easeOut(duration: 0.24)) {
-                                proxy.scrollTo(latestAnchorID, anchor: .bottom)
-                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                 } composer: {
@@ -1394,15 +1362,16 @@ struct RunDetailView: View {
         }
     }
 
-    private var latestAnchorID: String { "agent-run-latest-\(runID)" }
-    private var scrollCoordinateSpace: String { "agent-run-scroll-\(runID)" }
-
-    private func refreshMessagesAtBottom() {
-        guard !refreshingAtBottom else { return }
-        refreshingAtBottom = true
-        Task {
-            await store.sync()
-            refreshingAtBottom = false
+    @ViewBuilder
+    private func runRecordView(_ record: CompanionChatRecord, active: Bool) -> some View {
+        if record.kind == "process" {
+            if let completedAt = record.completedAt {
+                RunProcessDisclosureView(messages: record.agentMessages, completedAt: completedAt)
+            } else {
+                RunActivityStagesView(messages: record.agentMessages, active: active)
+            }
+        } else if let message = record.agentMessages.first {
+            MessageView(message: message, active: active)
         }
     }
 
