@@ -49,6 +49,8 @@ import type { CompanionChatKind, CompanionChatPage } from '../../shared/companio
 import {
   buildAgentChatRecords,
   buildWorkAssistantChatRecords,
+  companionInitialChatBlockLimit,
+  companionMaximumChatPageLimit,
   flattenAgentChatRecords,
   paginateCompanionChatRecords,
   workAssistantChatId,
@@ -180,6 +182,11 @@ export class AppDatabase {
       {
         version: 4,
         name: 'add-agent-run-execution-settings',
+        apply: () => ensureCurrentDatabaseSchema(this.database)
+      },
+      {
+        version: 5,
+        name: 'add-companion-chat-page-indexes',
         apply: () => ensureCurrentDatabaseSchema(this.database)
       }
     ]
@@ -635,15 +642,19 @@ export class AppDatabase {
   ): CompanionChatPage {
     if (chatKind === 'assistant') {
       if (chatId !== workAssistantChatId) throw new Error('工作助理聊天 ID 无效。')
-      return paginateCompanionChatRecords(
+      const pageLimit = Math.min(
+        companionMaximumChatPageLimit,
+        Math.max(1, Math.trunc(limit ?? companionInitialChatBlockLimit))
+      )
+      const window = this.briefings.listChatWindow(before ?? null, pageLimit)
+      const records = buildWorkAssistantChatRecords(window.messages, window.briefings)
+      return {
         chatId,
         chatKind,
-        buildWorkAssistantChatRecords(
-          this.briefings.listAllMessages(),
-          this.briefings.listAllMorning()
-        ),
-        { before, limit }
-      )
+        records,
+        hasMore: window.hasMore,
+        nextBefore: window.hasMore ? records[0]?.id ?? null : null
+      }
     }
     if (!this.listRuns().some((run) => run.id === chatId)) {
       throw new Error('没有找到这个 Agent Run。')

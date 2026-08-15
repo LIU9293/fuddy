@@ -27,12 +27,12 @@ describe('AppDatabase lifecycle', () => {
     new AppDatabase(path).close()
 
     const database = new DatabaseSync(path)
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
     database.close()
 
     new AppDatabase(path).close()
     const reopened = new DatabaseSync(path)
-    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
+    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
     reopened.close()
   })
 
@@ -52,7 +52,7 @@ describe('AppDatabase lifecycle', () => {
     const upgraded = new DatabaseSync(path)
     const columns = upgraded.prepare('PRAGMA table_info(agent_runs)').all() as Array<{ name: string }>
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['model', 'reasoning_effort']))
-    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
     upgraded.close()
   })
 

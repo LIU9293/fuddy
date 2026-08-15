@@ -110,6 +110,18 @@ describe('companion sync persistence', () => {
     expect(page.records.at(-1)?.assistantMessage?.id).toBe('message-219')
     expect(page.hasMore).toBe(true)
 
+    const olderPage = database.getCompanionChatPage('assistant', 'work-assistant', page.nextBefore)
+    expect(olderPage.records).toHaveLength(100)
+    expect(olderPage.records[0]?.assistantMessage?.id).toBe('message-20')
+    expect(olderPage.records.at(-1)?.assistantMessage?.id).toBe('message-119')
+    expect(olderPage.hasMore).toBe(true)
+
+    const oldestPage = database.getCompanionChatPage('assistant', 'work-assistant', olderPage.nextBefore)
+    expect(oldestPage.records).toHaveLength(20)
+    expect(oldestPage.records[0]?.assistantMessage?.id).toBe('message-0')
+    expect(oldestPage.records.at(-1)?.assistantMessage?.id).toBe('message-19')
+    expect(oldestPage.hasMore).toBe(false)
+
     const snapshot = database.enqueueCompanionSnapshot().payload as CompanionSnapshotPayload
     expect(snapshot.workAssistantMessages).toHaveLength(100)
     expect(snapshot.chatPages?.find((item) => item.chatId === 'work-assistant')).toEqual(page)

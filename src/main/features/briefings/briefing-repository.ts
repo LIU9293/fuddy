@@ -8,6 +8,16 @@ import type {
 } from '../../../shared/contracts'
 
 type SqlRow = Record<string, string | number | null>
+const workAssistantHistoryCte = `
+  WITH history(record_id, kind, entity_id, created_at) AS (
+    SELECT 'assistant-message-' || id, 'message', id, created_at
+    FROM work_assistant_messages
+    UNION ALL
+    SELECT 'morning-briefing-' || id, 'briefing', id, generated_at
+    FROM morning_briefings
+    WHERE status = 'completed'
+  )
+`
 type BriefingEvent =
   | {
       type: 'morning-briefing.updated'
@@ -92,14 +102,6 @@ export class BriefingRepository {
     ).map((row) => this.mapMorning(row))
   }
 
-  listAllMorning(): MorningBriefing[] {
-    return (
-      this.database
-        .prepare('SELECT * FROM morning_briefings ORDER BY generated_at ASC, rowid ASC')
-        .all() as SqlRow[]
-    ).map((row) => this.mapMorning(row))
-  }
-
   getMorning(reportDate: string): MorningBriefing | null {
     const row = this.database.prepare('SELECT * FROM morning_briefings WHERE report_date = ?').get(reportDate) as
       SqlRow | undefined
@@ -173,11 +175,50 @@ export class BriefingRepository {
     return rows.map((row) => this.mapMessage(row))
   }
 
-  listAllMessages(): BriefingMessage[] {
-    const rows = this.database
-      .prepare('SELECT * FROM work_assistant_messages ORDER BY created_at ASC, rowid ASC')
-      .all() as SqlRow[]
-    return rows.map((row) => this.mapMessage(row))
+  listChatWindow(beforeRecordId: string | null, limit: number): {
+    messages: BriefingMessage[]
+    briefings: MorningBriefing[]
+    hasMore: boolean
+  } {
+    const cursor = beforeRecordId?.startsWith('assistant-message-')
+      ? this.database.prepare(`
+          SELECT created_at FROM work_assistant_messages WHERE id = ?
+        `).get(beforeRecordId.slice('assistant-message-'.length)) as SqlRow | undefined
+      : beforeRecordId?.startsWith('morning-briefing-')
+        ? this.database.prepare(`
+            SELECT generated_at AS created_at FROM morning_briefings WHERE id = ? AND status = 'completed'
+          `).get(beforeRecordId.slice('morning-briefing-'.length)) as SqlRow | undefined
+        : undefined
+    if (beforeRecordId && !cursor) throw new Error('聊天历史游标已失效，请刷新后重试。')
+    const cursorCreatedAt = cursor ? String(cursor.created_at) : null
+    const rows = this.database.prepare(`${workAssistantHistoryCte}
+        SELECT record_id, kind, entity_id, created_at
+        FROM history
+        WHERE ? IS NULL
+          OR created_at < ?
+          OR (created_at = ? AND record_id < ?)
+        ORDER BY created_at DESC, record_id DESC
+        LIMIT ?
+      `).all(
+        cursorCreatedAt,
+        cursorCreatedAt,
+        cursorCreatedAt,
+        beforeRecordId,
+        limit + 1
+      ) as SqlRow[]
+    const selected = rows.slice(0, limit).reverse()
+    const messages: BriefingMessage[] = []
+    const briefings: MorningBriefing[] = []
+    for (const row of selected) {
+      if (row.kind === 'message') {
+        const message = this.getMessage(String(row.entity_id))
+        if (message) messages.push(message)
+      } else {
+        const briefing = this.getMorningById(String(row.entity_id))
+        if (briefing?.status === 'completed') briefings.push(briefing)
+      }
+    }
+    return { messages, briefings, hasMore: rows.length > limit }
   }
 
   getMessage(id: string): BriefingMessage | null {
