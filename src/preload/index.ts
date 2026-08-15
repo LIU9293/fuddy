@@ -4,6 +4,7 @@ import type {
   AgentRunStreamEnvelope,
   AgentRunStreamUpdate,
   AgentSessionUpdate,
+  AppBootstrapDataKey,
   AgentStreamEnvelope,
   ConfigureAgentProviderInput,
   ConfigureAsrProviderInput,
@@ -48,6 +49,7 @@ ipcRenderer.on('navigation:open-agent-run', (_event, runId: unknown) => {
 
 const api: DesktopApi = {
   getBootstrap: () => ipcRenderer.invoke('app:get-bootstrap'),
+  getBootstrapPatch: (keys: AppBootstrapDataKey[]) => ipcRenderer.invoke('app:get-bootstrap-patch', keys),
   requestComputerUsePermissions: () => ipcRenderer.invoke('capability:request-computer-permissions'),
   requestMicrophoneAccess: () => ipcRenderer.invoke('capability:request-microphone-access'),
   openMicrophoneSettings: () => ipcRenderer.invoke('capability:open-microphone-settings'),

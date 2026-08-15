@@ -44,6 +44,8 @@ The WebSocket is a wake-up hint, not the source of truth. A committed batch emit
 
 Mac keeps complete Agent tool output only in its authoritative local database. Snapshot and incremental Relay payloads retain the tool name and terminal status, normalize whitespace, remove native metadata/arguments, and cap the displayed summary at 600 characters. User messages, assistant answers, and provider-supported reasoning summaries continue to replay normally; raw private chain-of-thought is never part of the protocol.
 
+Every phone chat is projected into the same stable `CompanionChatRecord` block stream. A pairing snapshot includes only the newest 100 display blocks for Work Assistant and for each Agent Run, ordered oldest-to-newest so the shared timeline can open at the latest message. Reaching the top sends the constrained `chat.load-history` command with a stable `before` record cursor; Mac returns at most 100 complete earlier blocks through the encrypted command result. A process block is never split between pages, even when it contains several reasoning/tool events. iOS merges the page by record ID and preserves the visible scroll target while Mac remains authoritative for the full history.
+
 Each event page and WebSocket presence frame also carries current Durable Object presence. The iPhone updates presence directly from `sync.ready` and `presence.updated`, and distinguishes “Relay unreachable” from “Relay connected but Mac offline”; commands may still be queued in the second state and will execute when the Mac reconnects. The Mac settings UI reports HTTP replay and realtime WebSocket health separately so a successful replay cannot hide a stale socket.
 
 ## Pairing and authentication
@@ -51,6 +53,7 @@ Each event page and WebSocket presence frame also carries current Durable Object
 - Mac requests an account ID, a one-time pairing secret, and a Mac bearer token.
 - The pairing secret expires after ten minutes and can be claimed once.
 - Mac renders the complete pairing payload as a QR code. iOS scans it with VisionKit's native `DataScannerViewController`, validates an HTTPS Relay origin, and claims it without retyping secrets; Universal Clipboard paste remains the fallback.
+- The pairing payload carries a generated contract fingerprint. iOS rejects a different fingerprint before claiming the pairing, so TypeScript/Swift DTO drift fails visibly instead of corrupting the local cache. Payloads from pre-fingerprint Mac builds remain accepted during the compatibility window.
 - iOS stores its bearer token in Keychain with `AfterFirstUnlockThisDeviceOnly`; Mac stores its token in the existing encrypted credential vault/macOS Keychain path.
 - Durable Object storage contains only SHA-256 token hashes. Tokens and pairing secrets are never logged or stored in SQLite on the Mac.
 - Every account/device operation requires account ID, device ID, and bearer token. Role checks ensure only Mac can append authoritative events or complete commands, while only iOS can create commands.
@@ -95,8 +98,9 @@ The local path remains visible only as descriptive metadata. R2 objects are not 
 - `CompanionStore`: main-actor state, event reducer, command methods, polling, and atomic offline cache.
 - `RelayClient`: pairing, authenticated REST calls, WebSocket wake-ups, push-token registration, and attachment downloads.
 - `KeychainStore`: device credentials.
-- `WorkAssistantView`: the cross-project assistant timeline and constrained remote message command.
-- `RunsListView` / `RunDetailView`: persistent Session list and native chat UI; active runs show a spinner; tool calls use collapsed `DisclosureGroup` rows; Session metadata and artifacts live in the top-right “信息与文件” Modal instead of the message timeline.
+- `CompanionChatTimeline`: shared bounded history, upward pagination, latest-message anchoring, scroll restoration, and new-message following for every chat.
+- `WorkAssistantView`: thin Work Assistant configuration over the shared timeline and constrained remote message command.
+- `RunsListView` / `RunDetailView`: persistent Session list and Agent-specific configuration over the same timeline; active runs show a spinner; tool calls use collapsed `DisclosureGroup` rows; Session metadata and artifacts live in the top-right “信息与文件” Modal instead of the message timeline.
 - `DecisionListView`: inbox and constrained status commands.
 - `ProjectDetailView`: project status, goals, progress, and milestones from the same Mac snapshot/event log.
 - `ArtifactRow`: authenticated download and `QLPreviewController` presentation.
@@ -108,7 +112,7 @@ The deployment target is iOS 17. The project is generated with XcodeGen from `io
 
 | Area | Reuse |
 | --- | --- |
-| Domain meaning and wire protocol | Shared conceptually; TypeScript and Swift have matching versioned Codable contracts |
+| Domain meaning and wire protocol | Shared versioned contract manifest; Swift event/command enums, command payloads, Snapshot and non-entity event payloads are generated, while complete nested Zod schemas validate Relay writes and a generated fingerprint guards core DTO declarations |
 | Cloud relay API | Fully shared by both clients |
 | SQLite schema and Electron services | Mac only; iOS has a deliberately smaller JSON read cache |
 | React components and CSS | Not reused |
@@ -116,7 +120,7 @@ The deployment target is iOS 17. The project is generated with XcodeGen from `io
 | Product terminology, information hierarchy, visual behavior | Reimplemented natively in SwiftUI |
 | Attachments | Shared object metadata and R2 bytes; Mac uploads, iOS caches/previews |
 
-Generating Swift models from a language-neutral JSON Schema is the next maintainability improvement. Runtime code should not be shared merely to avoid duplicating small models; execution authority must remain visibly separated.
+Snapshot and non-entity event DTOs are generated alongside command payloads. Entity events deliberately reuse their domain models, while the TypeScript contract distinguishes local outbox messages from Relay wire messages—for example, local Work Assistant image data becomes authenticated attachment descriptors before transport. Remaining handwritten Swift domain presentation models may migrate incrementally, but runtime code should not be shared merely to avoid small models and execution authority must remain visibly separated.
 
 ## Build and verification
 
@@ -129,6 +133,10 @@ npm --prefix cloud/relay run smoke
 # Regenerate iOS project
 brew install xcodegen
 npm run ios:generate
+
+# Regenerate and verify shared Companion wire contracts/fingerprint
+npm run generate:companion-contracts
+npm run check:companion-contracts
 
 # Swift 6 typecheck for the app and XCTest sources; this works before accepting
 # the local Xcode license because it invokes the installed toolchain directly.

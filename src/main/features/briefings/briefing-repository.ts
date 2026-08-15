@@ -8,6 +8,16 @@ import type {
 } from '../../../shared/contracts'
 
 type SqlRow = Record<string, string | number | null>
+const workAssistantHistoryCte = `
+  WITH history(record_id, kind, entity_id, created_at) AS (
+    SELECT 'assistant-message-' || id, 'message', id, created_at
+    FROM work_assistant_messages
+    UNION ALL
+    SELECT 'morning-briefing-' || id, 'briefing', id, generated_at
+    FROM morning_briefings
+    WHERE status = 'completed'
+  )
+`
 type BriefingEvent =
   | {
       type: 'morning-briefing.updated'
@@ -153,9 +163,72 @@ export class BriefingRepository {
           .prepare('SELECT * FROM work_assistant_messages WHERE source_briefing_id = ? ORDER BY created_at ASC')
           .all(briefingId) as SqlRow[])
       : (this.database
-          .prepare('SELECT * FROM work_assistant_messages ORDER BY created_at ASC LIMIT 200')
+          .prepare(`
+            SELECT * FROM (
+              SELECT *, rowid AS sort_rowid
+              FROM work_assistant_messages
+              ORDER BY created_at DESC, rowid DESC
+              LIMIT 200
+            ) ORDER BY created_at ASC, sort_rowid ASC
+          `)
           .all() as SqlRow[])
-    return rows.map((row) => ({
+    return rows.map((row) => this.mapMessage(row))
+  }
+
+  listChatWindow(beforeRecordId: string | null, limit: number): {
+    messages: BriefingMessage[]
+    briefings: MorningBriefing[]
+    hasMore: boolean
+  } {
+    const cursor = beforeRecordId?.startsWith('assistant-message-')
+      ? this.database.prepare(`
+          SELECT created_at FROM work_assistant_messages WHERE id = ?
+        `).get(beforeRecordId.slice('assistant-message-'.length)) as SqlRow | undefined
+      : beforeRecordId?.startsWith('morning-briefing-')
+        ? this.database.prepare(`
+            SELECT generated_at AS created_at FROM morning_briefings WHERE id = ? AND status = 'completed'
+          `).get(beforeRecordId.slice('morning-briefing-'.length)) as SqlRow | undefined
+        : undefined
+    if (beforeRecordId && !cursor) throw new Error('聊天历史游标已失效，请刷新后重试。')
+    const cursorCreatedAt = cursor ? String(cursor.created_at) : null
+    const rows = this.database.prepare(`${workAssistantHistoryCte}
+        SELECT record_id, kind, entity_id, created_at
+        FROM history
+        WHERE ? IS NULL
+          OR created_at < ?
+          OR (created_at = ? AND record_id < ?)
+        ORDER BY created_at DESC, record_id DESC
+        LIMIT ?
+      `).all(
+        cursorCreatedAt,
+        cursorCreatedAt,
+        cursorCreatedAt,
+        beforeRecordId,
+        limit + 1
+      ) as SqlRow[]
+    const selected = rows.slice(0, limit).reverse()
+    const messages: BriefingMessage[] = []
+    const briefings: MorningBriefing[] = []
+    for (const row of selected) {
+      if (row.kind === 'message') {
+        const message = this.getMessage(String(row.entity_id))
+        if (message) messages.push(message)
+      } else {
+        const briefing = this.getMorningById(String(row.entity_id))
+        if (briefing?.status === 'completed') briefings.push(briefing)
+      }
+    }
+    return { messages, briefings, hasMore: rows.length > limit }
+  }
+
+  getMessage(id: string): BriefingMessage | null {
+    const row = this.database.prepare('SELECT * FROM work_assistant_messages WHERE id = ?').get(id) as
+      SqlRow | undefined
+    return row ? this.mapMessage(row) : null
+  }
+
+  private mapMessage(row: SqlRow): BriefingMessage {
+    return {
       id: String(row.id),
       briefingId: row.source_briefing_id ? String(row.source_briefing_id) : null,
       role: row.role as BriefingMessage['role'],
@@ -171,7 +244,7 @@ export class BriefingRepository {
       linkedRunId: row.linked_run_id ? String(row.linked_run_id) : null,
       actions: parseJson<WorkAssistantActionProposal[]>(row.actions_json ? String(row.actions_json) : null, []),
       createdAt: String(row.created_at)
-    }))
+    }
   }
 
   createMessage(message: BriefingMessage): BriefingMessage {
@@ -219,7 +292,7 @@ export class BriefingRepository {
         )
         .run(JSON.stringify(actions), linkedRunId ?? null, messageId)
       if (Number(result.changes) === 0) throw new Error('没有找到这条工作助理消息。')
-      const message = this.listMessages().find((item) => item.id === messageId)
+      const message = this.getMessage(messageId)
       if (!message) throw new Error('没有找到这条工作助理消息。')
       this.publish({
         type: 'work-assistant-message.updated',

@@ -3,6 +3,31 @@ import XCTest
 @testable import ProjectAgentCompanion
 
 final class SyncModelTests: XCTestCase {
+    func testCompanionContractFingerprintRejectsMixedClientBuilds() {
+        XCTAssertTrue(companionContractFingerprintIsSupported(companionContractFingerprint))
+        XCTAssertTrue(companionContractFingerprintIsSupported(nil))
+        XCTAssertFalse(companionContractFingerprintIsSupported("different-contract"))
+    }
+
+    func testGeneratedSnapshotPayloadKeepsLegacyOptionalCollectionsCompatible() throws {
+        let payload = """
+        {
+          "generatedAt": "2026-08-14T15:00:00.000Z",
+          "projects": [],
+          "goals": [],
+          "decisions": [],
+          "workAssistantMessages": [],
+          "runs": []
+        }
+        """.data(using: .utf8)!
+
+        let snapshot = try JSONDecoder().decode(SnapshotPayload.self, from: payload)
+        XCTAssertNil(snapshot.modelLabels)
+        XCTAssertNil(snapshot.morningBriefings)
+        XCTAssertNil(snapshot.attachments)
+        XCTAssertNil(snapshot.chatPages)
+    }
+
     func testNotificationRunIDAcceptsOnlyNonEmptyRunIdentifiers() {
         XCTAssertEqual(companionNotificationRunID(["runId": "run-1"]), "run-1")
         XCTAssertNil(companionNotificationRunID(["runId": "   "]))
@@ -162,14 +187,11 @@ final class SyncModelTests: XCTestCase {
             AgentMessage(id: "result", runId: "run", role: "assistant", content: "结果", eventType: nil, toolName: nil, createdAt: "2026-08-09T00:01:05.000Z")
         ]
 
-        let blocks = groupRunMessages(messages)
+        let blocks = buildAgentChatRecords(runID: "run", messages: messages)
         XCTAssertEqual(blocks.count, 3)
-        if case .process(let processMessages, let completedAt) = blocks[1] {
-            XCTAssertEqual(processMessages.map(\.id), ["thinking", "tool"])
-            XCTAssertEqual(completedAt, messages[3].createdAt)
-        } else {
-            XCTFail("Expected a collapsed process block")
-        }
+        XCTAssertEqual(blocks[1].kind, "process")
+        XCTAssertEqual(blocks[1].agentMessages.map(\.id), ["thinking", "tool"])
+        XCTAssertEqual(blocks[1].completedAt, messages[3].createdAt)
         XCTAssertEqual(
             formatRunProcessDuration(startedAt: messages[1].createdAt, completedAt: messages[3].createdAt),
             "耗时 1 分 4 秒"
@@ -182,12 +204,11 @@ final class SyncModelTests: XCTestCase {
             AgentMessage(id: "tool", runId: "run", role: "tool", content: "读取", eventType: "tool", toolName: "Read", createdAt: "2")
         ]
 
-        XCTAssertEqual(groupRunMessages(messages).count, 1)
-        if case .activity(let activityMessages) = groupRunMessages(messages)[0] {
-            XCTAssertEqual(activityMessages.map(\.id), ["thinking", "tool"])
-        } else {
-            XCTFail("Expected visible activity")
-        }
+        let records = buildAgentChatRecords(runID: "run", messages: messages)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].kind, "process")
+        XCTAssertNil(records[0].completedAt)
+        XCTAssertEqual(records[0].agentMessages.map(\.id), ["thinking", "tool"])
     }
 
     func testRunProcessKeepsItsScrollIdentityWhenItCompletes() {
@@ -195,8 +216,8 @@ final class SyncModelTests: XCTestCase {
             AgentMessage(id: "thinking", runId: "run", role: "assistant", content: "先检查", eventType: "reasoning", toolName: nil, createdAt: "1"),
             AgentMessage(id: "tool", runId: "run", role: "tool", content: "读取", eventType: "tool", toolName: "Read", createdAt: "2")
         ]
-        let activeID = groupRunMessages(processMessages)[0].id
-        let completedID = groupRunMessages(processMessages + [
+        let activeID = buildAgentChatRecords(runID: "run", messages: processMessages)[0].id
+        let completedID = buildAgentChatRecords(runID: "run", messages: processMessages + [
             AgentMessage(id: "result", runId: "run", role: "assistant", content: "完成", eventType: nil, toolName: nil, createdAt: "3")
         ])[0].id
 
@@ -495,5 +516,59 @@ final class SyncModelTests: XCTestCase {
             companionDistanceFromLatest(bottomY: 12, viewportHeight: 100, bottomInset: 120),
             12
         )
+    }
+
+    func testCompanionChatPageKeepsNewestHundredBlocks() {
+        let messages = (0..<125).map { index in
+            WorkAssistantMessage(
+                id: "message-\(index)",
+                role: index.isMultiple(of: 2) ? "user" : "assistant",
+                content: "Message \(index)",
+                createdAt: String(format: "2026-01-01T00:00:00.%03dZ", index)
+            )
+        }
+        let page = companionChatPage(
+            chatId: workAssistantChatId,
+            chatKind: "assistant",
+            records: buildWorkAssistantChatRecords(messages: messages, briefings: [])
+        )
+
+        XCTAssertEqual(page.records.count, companionInitialChatBlockLimit)
+        XCTAssertEqual(page.records.first?.assistantMessage?.id, "message-25")
+        XCTAssertEqual(page.records.last?.assistantMessage?.id, "message-124")
+        XCTAssertTrue(page.hasMore)
+        XCTAssertEqual(page.nextBefore, "assistant-message-message-25")
+    }
+
+    func testAgentChatRecordsKeepProcessEventsInOneBlock() {
+        let messages = [
+            AgentMessage(id: "user", runId: "run", role: "user", content: "Go", eventType: nil, toolName: nil, createdAt: "2026-01-01T00:00:00.000Z"),
+            AgentMessage(id: "reasoning", runId: "run", role: "assistant", content: "Think", eventType: "reasoning", toolName: nil, createdAt: "2026-01-01T00:00:01.000Z"),
+            AgentMessage(id: "tool", runId: "run", role: "tool", content: "Read", eventType: "tool", toolName: "Read", createdAt: "2026-01-01T00:00:02.000Z"),
+            AgentMessage(id: "answer", runId: "run", role: "assistant", content: "Done", eventType: nil, toolName: nil, createdAt: "2026-01-01T00:00:03.000Z")
+        ]
+        let records = buildAgentChatRecords(runID: "run", messages: messages)
+
+        XCTAssertEqual(records.map(\.id), ["agent-message-user", "process-reasoning", "agent-message-answer"])
+        XCTAssertEqual(records[1].agentMessages.map(\.id), ["reasoning", "tool"])
+        XCTAssertEqual(records[1].completedAt, "2026-01-01T00:00:03.000Z")
+    }
+
+    func testMergingOlderChatPagePreservesCurrentRecordsAndCursor() {
+        let oldRecord = buildWorkAssistantChatRecords(
+            messages: [WorkAssistantMessage(id: "old", role: "assistant", content: "Old", createdAt: "2026-01-01T00:00:00.000Z")],
+            briefings: []
+        )[0]
+        let currentRecord = buildWorkAssistantChatRecords(
+            messages: [WorkAssistantMessage(id: "current", role: "assistant", content: "Current", createdAt: "2026-01-01T00:01:00.000Z")],
+            briefings: []
+        )[0]
+        let current = CompanionChatPage(chatId: workAssistantChatId, chatKind: "assistant", records: [currentRecord], hasMore: true, nextBefore: currentRecord.id)
+        let older = CompanionChatPage(chatId: workAssistantChatId, chatKind: "assistant", records: [oldRecord], hasMore: false, nextBefore: nil)
+
+        let merged = mergeOlderCompanionChatPage(older, into: current)
+        XCTAssertEqual(merged.records.map(\.id), [oldRecord.id, currentRecord.id])
+        XCTAssertFalse(merged.hasMore)
+        XCTAssertNil(merged.nextBefore)
     }
 }

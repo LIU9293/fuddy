@@ -5,7 +5,7 @@ import type {
   CompanionCommand,
   CompanionCommandStatus,
   CompanionEntityType,
-  CompanionEventPayloadMap,
+  CompanionOutboxPayloadMap,
   CompanionEventType,
   CompanionOutboxEvent
 } from '../../../shared/companion-sync'
@@ -44,7 +44,7 @@ export class CompanionRepository {
     type: TType,
     entityType: (typeof companionEventDefinitions)[TType],
     entityId: string,
-    payload: CompanionEventPayloadMap[TType]
+    payload: CompanionOutboxPayloadMap[TType]
   ): CompanionOutboxEvent<TType> {
     const event = {
       eventId: randomUUID(),

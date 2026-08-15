@@ -123,6 +123,50 @@ describe('WorkspaceAgentActions native tools', () => {
     database.close()
   })
 
+  it('executes an action from a message older than the 200-message display window', async () => {
+    const { database, actions } = setup()
+    const state = actions.createTurnState()
+    await callTool(actions, state, 'ask_user', {
+      title: '保留的历史 Action',
+      description: '这条 Action 位于分页历史中。',
+      options: [{ id: 'cancel', label: '取消', style: 'quiet', capability: 'assistant.dismiss', payload: {} }]
+    })
+    const base = Date.UTC(2026, 0, 1)
+    const historical = database.createBriefingMessage({
+      id: 'historical-action-message',
+      briefingId: null,
+      role: 'assistant',
+      content: '历史确认。',
+      attachments: [],
+      taskContext: null,
+      actions: state.proposals,
+      createdAt: new Date(base).toISOString()
+    })
+    for (let index = 0; index < 201; index += 1) {
+      database.createBriefingMessage({
+        id: `newer-message-${index}`,
+        briefingId: null,
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: `newer ${index}`,
+        attachments: [],
+        taskContext: null,
+        createdAt: new Date(base + (index + 1) * 1_000).toISOString()
+      })
+    }
+    expect(database.listBriefingMessages().some((message) => message.id === historical.id)).toBe(false)
+
+    const result = await actions.executeProposal({
+      messageId: historical.id,
+      proposalId: state.proposals[0].id,
+      optionId: 'cancel'
+    })
+
+    expect(result.notice).toBe('已取消。')
+    expect(result.message.actions?.[0]).toMatchObject({ status: 'dismissed', acceptedOptionId: 'cancel' })
+    expect(database.getBriefingMessage(historical.id)?.actions?.[0].status).toBe('dismissed')
+    database.close()
+  })
+
   it('executes briefing.generate only after the user presses its button', async () => {
     const { database, actions } = setup()
     const recordAudit = vi.spyOn(database, 'recordPermissionEvaluation')

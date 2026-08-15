@@ -12,6 +12,7 @@ func parseCompanionDate(_ value: String) -> Date? {
 struct PairingPayload: Codable {
     let minimumProtocolVersion: Int?
     let protocolVersion: Int
+    let contractFingerprint: String?
     let relayUrl: String
     let accountId: String
     let pairingSecret: String
@@ -162,34 +163,6 @@ struct EncryptedCommandResult: Codable {
     let error: String?
     let createdAt: String
     let updatedAt: String
-}
-
-struct CommandResult: Codable {
-    let commandId: String
-    let type: CompanionCommandType?
-    let status: String
-    let result: JSONValue?
-    let error: String?
-}
-
-struct AgentSendMessagePayload: Codable {
-    let runId: String
-    let prompt: String
-    let attachments: [AttachmentDescriptor]
-    let clientMessageId: String
-}
-struct AssistantSendMessagePayload: Codable { let prompt: String; let attachments: [AttachmentDescriptor] }
-struct AssistantExecuteActionPayload: Codable { let messageId: String; let proposalId: String; let optionId: String }
-struct AgentRenamePayload: Codable { let runId: String; let title: String }
-struct AgentDraftPromptPayload: Codable { let runId: String; let draftPrompt: String }
-struct AgentArchivePayload: Codable { let runId: String }
-struct DecisionStatusPayload: Codable { let decisionId: String; let status: String }
-struct DecisionHandlePayload: Codable { let decisionId: String; let runId: String }
-struct ProjectUpdatePayload: Codable { let project: Project }
-struct ArtifactUploadRequestPayload: Codable { let artifactId: String }
-struct ArtifactUploadResult: Codable {
-    let artifactId: String
-    let attachment: AttachmentDescriptor
 }
 
 struct ProjectWorkspaceRoot: Codable, Identifiable, Hashable {
@@ -485,6 +458,26 @@ struct RunDetail: Codable, Identifiable {
     var id: String { run.id }
 }
 
+struct CompanionChatRecord: Codable, Identifiable, Hashable {
+    let id: String
+    let chatId: String
+    let chatKind: String
+    let kind: String
+    let createdAt: String
+    let completedAt: String?
+    let assistantMessage: WorkAssistantMessage?
+    let agentMessages: [AgentMessage]
+    let morningBriefing: MorningBriefing?
+}
+
+struct CompanionChatPage: Codable, Hashable {
+    let chatId: String
+    let chatKind: String
+    var records: [CompanionChatRecord]
+    var hasMore: Bool
+    var nextBefore: String?
+}
+
 struct AgentModelLabels: Codable, Equatable {
     var workAssistant: String
     var providers: [String: String]
@@ -537,23 +530,6 @@ func acknowledgePendingAgentMessage(_ messageID: String, in runs: inout [RunDeta
     return true
 }
 
-struct SnapshotPayload: Codable {
-    let generatedAt: String
-    let modelLabels: AgentModelLabels?
-    let projects: [Project]
-    let goals: [ProjectGoal]
-    let decisions: [Decision]
-    let morningBriefings: [MorningBriefing]?
-    let workAssistantMessages: [WorkAssistantMessage]
-    let attachments: [AttachmentDescriptor]?
-    let runs: [RunDetail]
-}
-
-struct ArtifactEventPayload: Codable {
-    let artifact: AgentArtifact
-    let attachment: AttachmentDescriptor?
-}
-
 struct CachedState: Codable {
     var modelLabels = AgentModelLabels.fallback
     var projects: [Project] = []
@@ -562,6 +538,7 @@ struct CachedState: Codable {
     var morningBriefings: [MorningBriefing] = []
     var workAssistantMessages: [WorkAssistantMessage] = []
     var runs: [RunDetail] = []
+    var chatPages: [CompanionChatPage] = []
     var attachments: [String: AttachmentDescriptor] = [:]
     var lastSequence = 0
 
@@ -576,6 +553,7 @@ struct CachedState: Codable {
         morningBriefings = try container.decodeIfPresent([MorningBriefing].self, forKey: .morningBriefings) ?? []
         workAssistantMessages = try container.decodeIfPresent([WorkAssistantMessage].self, forKey: .workAssistantMessages) ?? []
         runs = try container.decodeIfPresent([RunDetail].self, forKey: .runs) ?? []
+        chatPages = try container.decodeIfPresent([CompanionChatPage].self, forKey: .chatPages) ?? []
         attachments = try container.decodeIfPresent([String: AttachmentDescriptor].self, forKey: .attachments) ?? [:]
         lastSequence = try container.decodeIfPresent(Int.self, forKey: .lastSequence) ?? 0
     }

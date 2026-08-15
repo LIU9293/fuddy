@@ -1,6 +1,6 @@
 export const companionProtocol = {
   minimumVersion: 2,
-  currentVersion: 2
+  currentVersion: 3
 } as const
 
 export const companionEventDefinitions = {
@@ -32,6 +32,7 @@ export const companionCommandTypes = [
   'agent.rename-session',
   'agent.update-draft-prompt',
   'agent.archive-session',
+  'chat.load-history',
   'artifact.request-upload',
   'decision.update-status',
   'decision.handle',
@@ -41,6 +42,139 @@ export const companionCommandTypes = [
 export type CompanionEventType = keyof typeof companionEventDefinitions
 export type CompanionEntityType = (typeof companionEventDefinitions)[CompanionEventType] | 'command'
 export type CompanionCommandType = (typeof companionCommandTypes)[number]
+
+type CompanionCommandPayloadFieldType =
+  | 'string'
+  | 'optional-string'
+  | 'int'
+  | 'attachments'
+  | 'optional-attachments'
+  | 'decision-status'
+  | 'project'
+
+interface CompanionCommandPayloadDefinition {
+  swiftName: string
+  fields: Record<string, CompanionCommandPayloadFieldType>
+}
+
+/** Language-neutral command payload shapes consumed by the Swift generator. */
+export const companionCommandPayloadDefinitions = {
+  'assistant.send-message': {
+    swiftName: 'AssistantSendMessagePayload',
+    fields: { prompt: 'string', attachments: 'optional-attachments' }
+  },
+  'assistant.execute-action': {
+    swiftName: 'AssistantExecuteActionPayload',
+    fields: { messageId: 'string', proposalId: 'string', optionId: 'string' }
+  },
+  'agent.send-message': {
+    swiftName: 'AgentSendMessagePayload',
+    fields: {
+      runId: 'string',
+      prompt: 'string',
+      attachments: 'optional-attachments',
+      clientMessageId: 'optional-string'
+    }
+  },
+  'agent.stop-message': { swiftName: 'AgentStopMessagePayload', fields: { runId: 'string' } },
+  'agent.rename-session': {
+    swiftName: 'AgentRenameSessionPayload',
+    fields: { runId: 'string', title: 'string' }
+  },
+  'agent.update-draft-prompt': {
+    swiftName: 'AgentUpdateDraftPromptPayload',
+    fields: { runId: 'string', draftPrompt: 'string' }
+  },
+  'agent.archive-session': { swiftName: 'AgentArchiveSessionPayload', fields: { runId: 'string' } },
+  'chat.load-history': {
+    swiftName: 'ChatLoadHistoryPayload',
+    fields: { chatKind: 'string', chatId: 'string', before: 'optional-string', limit: 'int' }
+  },
+  'artifact.request-upload': {
+    swiftName: 'ArtifactRequestUploadPayload',
+    fields: { artifactId: 'string' }
+  },
+  'decision.update-status': {
+    swiftName: 'DecisionUpdateStatusPayload',
+    fields: { decisionId: 'string', status: 'decision-status' }
+  },
+  'decision.handle': {
+    swiftName: 'DecisionHandlePayload',
+    fields: { decisionId: 'string', runId: 'string' }
+  },
+  'project.update': { swiftName: 'ProjectUpdatePayload', fields: { project: 'project' } }
+} as const satisfies Record<CompanionCommandType, CompanionCommandPayloadDefinition>
+
+type CompanionSwiftWireFieldType =
+  | 'string'
+  | 'optional-string'
+  | 'int'
+  | 'int64'
+  | 'optional-json'
+  | `ref:${string}`
+  | `optional-ref:${string}`
+  | `array:${string}`
+  | `optional-array:${string}`
+
+interface CompanionSwiftWireDefinition {
+  swiftName: string
+  fields: Record<string, CompanionSwiftWireFieldType>
+}
+
+/**
+ * Snapshot and non-entity event payloads generated for Swift. Entity events
+ * intentionally reuse the domain models they carry.
+ */
+export const companionSwiftWireDefinitions = {
+  snapshot: {
+    swiftName: 'SnapshotPayload',
+    fields: {
+      generatedAt: 'string',
+      modelLabels: 'optional-ref:AgentModelLabels',
+      projects: 'array:Project',
+      goals: 'array:ProjectGoal',
+      decisions: 'array:Decision',
+      morningBriefings: 'optional-array:MorningBriefing',
+      workAssistantMessages: 'array:WorkAssistantMessage',
+      attachments: 'optional-array:AttachmentDescriptor',
+      runs: 'array:RunDetail',
+      chatPages: 'optional-array:CompanionChatPage'
+    }
+  },
+  artifactEvent: {
+    swiftName: 'ArtifactEventPayload',
+    fields: { artifact: 'ref:AgentArtifact', attachment: 'optional-ref:AttachmentDescriptor' }
+  },
+  archivedRunEvent: {
+    swiftName: 'AgentRunArchivedPayload',
+    fields: { id: 'string', archivedAt: 'string' }
+  },
+  settledTurnEvent: {
+    swiftName: 'AgentTurnSettledPayload',
+    fields: {
+      runId: 'string',
+      turnId: 'string',
+      title: 'string',
+      outcome: 'string',
+      summary: 'string',
+      settledAt: 'string'
+    }
+  },
+  commandEvent: {
+    swiftName: 'CommandResult',
+    fields: {
+      commandId: 'string',
+      type: 'optional-ref:CompanionCommandType',
+      status: 'string',
+      result: 'optional-json',
+      error: 'optional-string'
+    }
+  },
+  artifactUploadResult: {
+    swiftName: 'ArtifactUploadResult',
+    fields: { artifactId: 'string', attachment: 'ref:AttachmentDescriptor' }
+  }
+} as const satisfies Record<string, CompanionSwiftWireDefinition>
 
 export function companionProtocolVersionIsSupported(version: number): boolean {
   return Number.isSafeInteger(version)

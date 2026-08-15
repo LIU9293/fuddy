@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
-import type { CompanionCommand, CompanionEncryptedCommand, CompanionMacConfiguration, CompanionMacStatus, CompanionSyncEventInput } from '../../shared/companion-sync'
+import type { CompanionChatPage, CompanionCommand, CompanionEncryptedCommand, CompanionMacConfiguration, CompanionMacStatus, CompanionSyncEventInput } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
+import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import {
   companionAccountKeyId,
   companionAttachmentAssociatedData,
@@ -17,6 +18,7 @@ import {
 import type { AgentRunMessage } from '../../shared/contracts'
 import {
   companionAgentMessageForRelay,
+  companionChatPageForRelay,
   companionAttachmentStorageId,
   companionCommandUpdateForRelay,
   companionCommandRecovery,
@@ -133,6 +135,7 @@ describe('Companion sync transport policy', () => {
     expect(JSON.parse(pairing.pairingPayload)).toMatchObject({
       accountId: 'new-account',
       pairingSecret: 'new-secret',
+      contractFingerprint: companionContractFingerprint,
       encryptionKey: expect.any(String),
       encryptionKeyId: expect.any(String)
     })
@@ -253,6 +256,48 @@ describe('Companion sync transport policy', () => {
     expect(relayMessage.toolKind).toBe('command')
     expect(relayMessage.toolSummary).toBe('private command')
     expect(message.content.length).toBeGreaterThan(relayMessage.content.length)
+  })
+
+  it('sanitizes Agent tool messages inside unified chat pages', async () => {
+    const toolMessage: AgentRunMessage = {
+      id: 'page-tool-1',
+      runId: 'run-1',
+      role: 'tool',
+      content: `private output ${'/Users/example/private.txt '.repeat(80)}`,
+      eventType: 'tool',
+      toolName: 'Read',
+      metadata: { status: 'completed', arguments: { path: '/Users/example/private.txt' } },
+      createdAt: new Date().toISOString()
+    }
+    const page: CompanionChatPage = {
+      chatId: 'run-1',
+      chatKind: 'agent',
+      records: [{
+        id: 'process-page-tool-1',
+        chatId: 'run-1',
+        chatKind: 'agent',
+        kind: 'process',
+        createdAt: toolMessage.createdAt,
+        completedAt: toolMessage.createdAt,
+        assistantMessage: null,
+        agentMessages: [toolMessage],
+        morningBriefing: null
+      }],
+      hasMore: false,
+      nextBefore: null
+    }
+
+    const relayPage = await companionChatPageForRelay(page, async () => {
+      throw new Error('Agent pages must not prepare Work Assistant messages.')
+    })
+
+    expect(relayPage.records[0]?.agentMessages[0]).toMatchObject({
+      metadata: null,
+      toolKind: 'read',
+      toolStatus: 'completed'
+    })
+    expect(relayPage.records[0]?.agentMessages[0]?.content.length)
+      .toBeLessThanOrEqual(companionToolSummaryMaximumCharacters + 1)
   })
 
   it('backs WebSocket reconnects off to one minute', () => {
@@ -391,6 +436,148 @@ describe('Companion sync transport policy', () => {
     await vi.waitFor(() => {
       expect(database.getCompanionCommand(command.commandId)?.status).toBe('completed')
     })
+    service.stop()
+    database.close()
+  })
+
+  it('uploads a snapshot Work Assistant image once when it also appears in the chat page', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-snapshot-image-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    const configuration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', configuration)
+    database.createBriefingMessage({
+      id: 'assistant-image-message',
+      briefingId: null,
+      role: 'assistant',
+      content: 'Snapshot image',
+      attachments: [{
+        id: 'snapshot-image',
+        name: 'pixel.png',
+        mimeType: 'image/png',
+        dataUrl: 'data:image/png;base64,cGl4ZWw='
+      }],
+      taskContext: null,
+      createdAt: now
+    })
+    database.enqueueCompanionPairingSnapshot()
+    let uploadCount = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/attachments/snapshot-image' && method === 'PUT') {
+        uploadCount += 1
+        return jsonResponse({ uploaded: true }, 201)
+      }
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') {
+        return jsonResponse({ commands: [] })
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const status = await service.syncNow()
+
+    expect(status.state).toBe('connected')
+    expect(uploadCount).toBe(1)
+    expect(database.countPendingCompanionEvents()).toBe(0)
+    service.stop()
+    database.close()
+  })
+
+  it('reuses an uploaded history image when retrying after a later upload fails', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-history-image-retry-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    const configuration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', configuration)
+    database.createBriefingMessage({
+      id: 'assistant-retry-images',
+      briefingId: null,
+      role: 'assistant',
+      content: 'Retry images',
+      attachments: [
+        { id: 'retry-image-1', name: 'one.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,b25l' },
+        { id: 'retry-image-2', name: 'two.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,dHdv' }
+      ],
+      taskContext: null,
+      createdAt: now
+    })
+    database.enqueueCompanionPairingSnapshot()
+    let firstImageUploadCount = 0
+    let secondImageUploadCount = 0
+    let firstImageSealed: Uint8Array | null = null
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/attachments/retry-image-1' && method === 'PUT') {
+        firstImageUploadCount += 1
+        if (firstImageUploadCount === 1) {
+          firstImageSealed = new Uint8Array(init.body as Uint8Array)
+          return jsonResponse({ uploaded: true }, 201)
+        }
+        return jsonResponse({ error: 'Attachment IDs are immutable and already in use.' }, 409)
+      }
+      if (url.pathname === '/v1/attachments/retry-image-1' && method === 'GET') {
+        if (!firstImageSealed) throw new Error('Expected the first encrypted upload to be retained.')
+        const responseBody = new Uint8Array(firstImageSealed)
+        return new Response(responseBody.buffer, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } })
+      }
+      if (url.pathname === '/v1/attachments/retry-image-2' && method === 'PUT') {
+        secondImageUploadCount += 1
+        return secondImageUploadCount === 1
+          ? jsonResponse({ error: 'Temporary attachment failure.' }, 500)
+          : jsonResponse({ uploaded: true }, 201)
+      }
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') return jsonResponse({ commands: [] })
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    expect((await service.syncNow()).state).toBe('error')
+    expect(database.countPendingCompanionEvents()).toBe(1)
+    expect((await service.syncNow()).state).toBe('connected')
+    expect(firstImageUploadCount).toBe(2)
+    expect(secondImageUploadCount).toBe(2)
+    expect(database.countPendingCompanionEvents()).toBe(0)
     service.stop()
     database.close()
   })

@@ -9,6 +9,8 @@ import type {
   AgentRunArtifact,
   AgentRunDetail,
   AgentRunMessage,
+  AppBootstrapDataKey,
+  AppBootstrapPatch,
   AppBootstrap,
   AuditEntry,
   BriefingMessage,
@@ -43,6 +45,16 @@ import type {
 import type { ConnectorCatalogItem } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import { companionEventDefinitions, companionProtocolVersion } from '../../shared/companion-sync'
+import type { CompanionChatKind, CompanionChatPage } from '../../shared/companion-sync'
+import {
+  buildAgentChatRecords,
+  buildWorkAssistantChatRecords,
+  companionInitialChatBlockLimit,
+  companionMaximumChatPageLimit,
+  flattenAgentChatRecords,
+  workAssistantChatId,
+  workAssistantPageCollections
+} from '../../shared/companion-chat'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { databaseSchemaVersion, runDatabaseMigrations, type DatabaseMigration } from './database-migrations'
 import { ensureCurrentDatabaseSchema } from './database-schema'
@@ -69,7 +81,7 @@ import type {
   CompanionCommand,
   CompanionCommandStatus,
   CompanionEntityType,
-  CompanionEventPayloadMap,
+  CompanionOutboxPayloadMap,
   CompanionEventType,
   CompanionOutboxEvent,
   CompanionSnapshotPayload
@@ -170,6 +182,11 @@ export class AppDatabase {
         version: 4,
         name: 'add-agent-run-execution-settings',
         apply: () => ensureCurrentDatabaseSchema(this.database)
+      },
+      {
+        version: 5,
+        name: 'add-companion-chat-page-indexes',
+        apply: () => ensureCurrentDatabaseSchema(this.database)
       }
     ]
     const currentVersion = databaseSchemaVersion(this.database)
@@ -223,6 +240,40 @@ export class AppDatabase {
       credentialStorage,
       permissionMode: 'full-access'
     }
+  }
+
+  getBootstrapPatch(
+    keys: readonly AppBootstrapDataKey[],
+    capabilities: Capability[],
+    connectorCatalog: ConnectorCatalogItem[],
+    analyticsProfiles: ProjectAnalyticsProfileSummary[],
+    credentialStorage: CredentialStorageStatus,
+    providerSettings: ProviderSettings
+  ): AppBootstrapPatch {
+    const patch: AppBootstrapPatch = {}
+    for (const key of keys) {
+      switch (key) {
+        case 'projects': patch.projects = this.listProjects(); break
+        case 'goals': patch.goals = this.listGoals(); break
+        case 'decisions': patch.decisions = this.listDecisions(); break
+        case 'decisionRemediations': patch.decisionRemediations = this.listDecisionRemediations(); break
+        case 'runs': patch.runs = this.listRuns(); break
+        case 'connectors': patch.connectors = this.listConnectors(); break
+        case 'connectorRuns': patch.connectorRuns = this.listConnectorRuns(); break
+        case 'dailyBriefings': patch.dailyBriefings = this.listDailyBriefings(); break
+        case 'morningBriefings': patch.morningBriefings = this.listMorningBriefings(); break
+        case 'briefingMessages': patch.briefingMessages = this.listBriefingMessages(); break
+        case 'automations': patch.automations = this.listAutomations(); break
+        case 'automationRuns': patch.automationRuns = this.listAutomationRuns(); break
+        case 'providerSettings': patch.providerSettings = providerSettings; break
+        case 'connectorCatalog': patch.connectorCatalog = connectorCatalog; break
+        case 'analyticsProfiles': patch.analyticsProfiles = analyticsProfiles; break
+        case 'capabilities': patch.capabilities = capabilities; break
+        case 'credentialStorage': patch.credentialStorage = credentialStorage; break
+        case 'permissionMode': patch.permissionMode = 'full-access'; break
+      }
+    }
+    return patch
   }
 
   listProjects(): Project[] {
@@ -384,6 +435,10 @@ export class AppDatabase {
 
   listBriefingMessages(briefingId?: string): BriefingMessage[] {
     return this.briefings.listMessages(briefingId)
+  }
+
+  getBriefingMessage(id: string): BriefingMessage | null {
+    return this.briefings.getMessage(id)
   }
 
   createBriefingMessage(message: BriefingMessage): BriefingMessage {
@@ -549,18 +604,76 @@ export class AppDatabase {
   }
 
   enqueueCompanionSnapshot(modelLabels: AgentModelLabels = emptyAgentModelLabels): CompanionOutboxEvent {
+    const assistantPage = this.getCompanionChatPage('assistant', workAssistantChatId)
+    const assistantCollections = workAssistantPageCollections(assistantPage)
+    const runDetails = this.listRuns().map((run) => {
+      const page = this.getCompanionChatPage('agent', run.id)
+      return {
+        detail: {
+          run,
+          messages: flattenAgentChatRecords(page.records),
+          artifacts: this.listAgentRunArtifacts(run.id)
+        },
+        page
+      }
+    })
     const snapshot: CompanionSnapshotPayload = {
       generatedAt: new Date().toISOString(),
       modelLabels,
       projects: this.listProjects(),
       goals: this.listGoals(),
       decisions: this.listDecisions(),
-      morningBriefings: this.listMorningBriefings(),
-      workAssistantMessages: this.listBriefingMessages(),
+      morningBriefings: assistantCollections.briefings,
+      workAssistantMessages: assistantCollections.messages,
       attachments: [],
-      runs: this.listRuns().map((run) => this.getAgentRunDetail(run.id))
+      runs: runDetails.map(({ detail }) => detail),
+      chatPages: [assistantPage, ...runDetails.map(({ page }) => page)]
     }
     return this.enqueueCompanionEvent('snapshot.created', 'snapshot', 'current', snapshot)
+  }
+
+  getCompanionChatPage(
+    chatKind: CompanionChatKind,
+    chatId: string,
+    before?: string | null,
+    limit?: number
+  ): CompanionChatPage {
+    if (chatKind === 'assistant') {
+      if (chatId !== workAssistantChatId) throw new Error('工作助理聊天 ID 无效。')
+      const pageLimit = Math.min(
+        companionMaximumChatPageLimit,
+        Math.max(1, Math.trunc(limit ?? companionInitialChatBlockLimit))
+      )
+      const window = this.briefings.listChatWindow(before ?? null, pageLimit)
+      const records = buildWorkAssistantChatRecords(window.messages, window.briefings)
+      return {
+        chatId,
+        chatKind,
+        records,
+        hasMore: window.hasMore,
+        nextBefore: window.hasMore ? records[0]?.id ?? null : null
+      }
+    }
+    if (!this.listRuns().some((run) => run.id === chatId)) {
+      throw new Error('没有找到这个 Agent Run。')
+    }
+    const pageLimit = Math.min(
+      companionMaximumChatPageLimit,
+      Math.max(1, Math.trunc(limit ?? companionInitialChatBlockLimit))
+    )
+    const window = this.runs.listChatWindow(chatId, before ?? null, pageLimit)
+    const records = buildAgentChatRecords(chatId, window.messages)
+    const trailingRecord = records.at(-1)
+    if (trailingRecord?.kind === 'process' && window.trailingProcessCompletedAt) {
+      trailingRecord.completedAt = window.trailingProcessCompletedAt
+    }
+    return {
+      chatId,
+      chatKind,
+      records,
+      hasMore: window.hasMore,
+      nextBefore: window.hasMore ? records[0]?.id ?? null : null
+    }
   }
 
   enqueueAgentTurnSettled(payload: AgentTurnSettledPayload): CompanionOutboxEvent {
@@ -646,7 +759,7 @@ export class AppDatabase {
     type: TType,
     entityType: (typeof companionEventDefinitions)[TType],
     entityId: string,
-    payload: CompanionEventPayloadMap[TType]
+    payload: CompanionOutboxPayloadMap[TType]
   ): CompanionOutboxEvent<TType> {
     return this.companion.enqueue(type, entityType, entityId, payload)
   }

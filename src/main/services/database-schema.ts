@@ -370,6 +370,13 @@ export function ensureCurrentDatabaseSchema(database: DatabaseSync): void {
       CREATE INDEX IF NOT EXISTS work_assistant_messages_created_idx
       ON work_assistant_messages(created_at ASC);
 
+      CREATE INDEX IF NOT EXISTS work_assistant_messages_chat_page_idx
+      ON work_assistant_messages(created_at DESC, id DESC);
+
+      CREATE INDEX IF NOT EXISTS morning_briefings_chat_page_idx
+      ON morning_briefings(generated_at DESC, id DESC)
+      WHERE status = 'completed';
+
       CREATE INDEX IF NOT EXISTS automation_jobs_schedule_idx
       ON automation_jobs(enabled, next_run_at);
 

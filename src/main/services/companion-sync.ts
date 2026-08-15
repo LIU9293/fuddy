@@ -20,9 +20,14 @@ import type {
   CompanionSyncEventInput,
   CompanionOutboxEvent,
   CompanionAttachmentDescriptor,
-  CompanionSnapshotPayload
+  CompanionSnapshotPayload,
+  CompanionChatKind,
+  CompanionChatPage,
+  CompanionRelayChatPage,
+  CompanionRelayWorkAssistantMessage
 } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
+import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
@@ -108,6 +113,22 @@ export function companionAgentMessageForRelay(message: AgentRunMessage): AgentRu
     toolStatus: failed ? 'failed' : 'completed',
     toolKind: presentation.kind,
     toolSummary: presentation.summary
+  }
+}
+
+export async function companionChatPageForRelay(
+  page: CompanionChatPage,
+  prepareWorkAssistantMessage: (message: BriefingMessage) => Promise<CompanionRelayWorkAssistantMessage>
+): Promise<CompanionRelayChatPage> {
+  return {
+    ...page,
+    records: await Promise.all(page.records.map(async (record) => ({
+      ...record,
+      assistantMessage: record.assistantMessage
+        ? await prepareWorkAssistantMessage(record.assistantMessage)
+        : null,
+      agentMessages: record.agentMessages.map(companionAgentMessageForRelay)
+    })))
   }
 }
 
@@ -298,6 +319,7 @@ export class CompanionSyncService {
     return {
       pairingPayload: JSON.stringify({
         ...(JSON.parse(pairing.pairingPayload) as Record<string, unknown>),
+        contractFingerprint: companionContractFingerprint,
         encryptionKey,
         encryptionKeyId
       }),
@@ -440,6 +462,14 @@ export class CompanionSyncService {
   private async prepareEventPayload(event: CompanionOutboxEvent): Promise<unknown> {
     if (event.type === 'snapshot.created') {
       const snapshot = event.payload as CompanionSnapshotPayload
+      const preparedWorkAssistantMessages = new Map<string, Promise<CompanionRelayWorkAssistantMessage>>()
+      const prepareWorkAssistantMessage = (message: BriefingMessage): Promise<CompanionRelayWorkAssistantMessage> => {
+        const existing = preparedWorkAssistantMessages.get(message.id)
+        if (existing) return existing
+        const prepared = this.prepareWorkAssistantMessage(message)
+        preparedWorkAssistantMessages.set(message.id, prepared)
+        return prepared
+      }
       const attachments = (await Promise.all(
         snapshot.runs.flatMap((detail) => detail.artifacts.map((artifact) =>
           this.prepareArtifact(artifact as AgentRunArtifact)
@@ -453,14 +483,17 @@ export class CompanionSyncService {
           messages: detail.messages.map((message) => companionAgentMessageForRelay(message as AgentRunMessage))
         })),
         workAssistantMessages: await Promise.all(
-          (snapshot.workAssistantMessages ?? []).map((message) => this.prepareWorkAssistantMessage(message as BriefingMessage))
-        )
+          (snapshot.workAssistantMessages ?? []).map((message) => prepareWorkAssistantMessage(message as BriefingMessage))
+        ),
+        chatPages: snapshot.chatPages
+          ? await Promise.all(snapshot.chatPages.map((page) => companionChatPageForRelay(page, prepareWorkAssistantMessage)))
+          : undefined
       }
     }
     if (event.type === 'agent-message.created') {
       return companionAgentMessageForRelay(event.payload as AgentRunMessage)
     }
-    if (event.type === 'work-assistant-message.created') {
+    if (event.type === 'work-assistant-message.created' || event.type === 'work-assistant-message.updated') {
       return await this.prepareWorkAssistantMessage(event.payload as BriefingMessage)
     }
     if (event.type !== 'artifact.updated') return event.payload
@@ -571,7 +604,7 @@ export class CompanionSyncService {
     return existsSync(filePath) ? filePath : null
   }
 
-  private async prepareWorkAssistantMessage(message: BriefingMessage): Promise<unknown> {
+  private async prepareWorkAssistantMessage(message: BriefingMessage): Promise<CompanionRelayWorkAssistantMessage> {
     const attachments: CompanionAttachmentDescriptor[] = []
     for (const image of message.attachments) {
       const marker = ';base64,'
@@ -626,7 +659,14 @@ export class CompanionSyncService {
       },
       companionAttachmentRequestTimeoutMs
     )
-    await responseJson(response)
+    if (response.status !== 409 || !await this.existingAttachmentMatches(
+      context,
+      attachmentId,
+      bytes.byteLength,
+      sha256
+    )) {
+      await responseJson(response)
+    }
   }
 
   private async hashFile(path: string): Promise<string> {
@@ -781,6 +821,19 @@ export class CompanionSyncService {
         const runId = this.requiredString(payload, 'runId')
         this.database.archiveAgentRun(runId)
         return { runId, archived: true }
+      }
+      case 'chat.load-history': {
+        const chatKind = this.requiredString(payload, 'chatKind')
+        if (chatKind !== 'assistant' && chatKind !== 'agent') throw new Error('聊天类型无效。')
+        const limit = Number(payload.limit)
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('聊天历史分页大小无效。')
+        const page = this.database.getCompanionChatPage(
+          chatKind as CompanionChatKind,
+          this.requiredString(payload, 'chatId'),
+          typeof payload.before === 'string' ? payload.before : null,
+          limit
+        )
+        return await companionChatPageForRelay(page, (message) => this.prepareWorkAssistantMessage(message))
       }
       case 'artifact.request-upload': {
         const artifactId = this.requiredString(payload, 'artifactId')

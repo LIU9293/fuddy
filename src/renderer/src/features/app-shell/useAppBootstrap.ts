@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppBootstrap } from '../../../../shared/contracts'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
+import type { AppBootstrap, AppBootstrapDataKey } from '../../../../shared/contracts'
 import { agentRunUpdateStore } from '../agent-runs/agent-run-update-store'
+import {
+  agentRunStatusBootstrapKeys,
+  automationBootstrapKeys,
+  companionBootstrapKeys,
+  mergeBootstrapKeys,
+  morningBriefingBootstrapKeys
+} from './app-bootstrap-state'
+import { AppDataStore } from './app-data-store'
 
 interface UseAppBootstrapOptions {
   onOpenAgentRun: (runId: string) => void
@@ -8,31 +16,79 @@ interface UseAppBootstrapOptions {
 }
 
 export interface AppBootstrapController {
-  bootstrap: AppBootstrap | null
+  ready: boolean
+  store: AppDataStore
   setBootstrap: React.Dispatch<React.SetStateAction<AppBootstrap | null>>
   refresh: () => Promise<void>
+  refreshDomains: (keys: readonly AppBootstrapDataKey[]) => Promise<void>
 }
 
 export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapController {
-  const [bootstrap, setBootstrap] = useState<AppBootstrap | null>(null)
+  const storeRef = useRef<AppDataStore | null>(null)
+  if (!storeRef.current) storeRef.current = new AppDataStore()
+  const store = storeRef.current
+  const ready = useSyncExternalStore(store.subscribeReady, store.getReadySnapshot, store.getReadySnapshot)
+  const setBootstrap = useCallback<React.Dispatch<React.SetStateAction<AppBootstrap | null>>>(
+    (action) => store.update(action),
+    [store]
+  )
   const callbacks = useRef(options)
+  const mounted = useRef(true)
+  const refreshQueue = useRef<Promise<void>>(Promise.resolve())
+  const pendingPatchKeys = useRef<Set<AppBootstrapDataKey>>(new Set())
+  const patchScheduled = useRef(false)
   callbacks.current = options
 
-  const refresh = useCallback(async (): Promise<void> => {
-    setBootstrap(await window.projectAgent.getBootstrap())
+  const enqueueRefresh = useCallback((operation: () => Promise<void>): Promise<void> => {
+    const next = refreshQueue.current.then(operation, operation)
+    refreshQueue.current = next.catch(() => undefined)
+    return next
   }, [])
 
+  const refresh = useCallback(async (): Promise<void> => {
+    await enqueueRefresh(async () => {
+      const nextBootstrap = await window.projectAgent.getBootstrap()
+      if (mounted.current) store.replace(nextBootstrap)
+    })
+  }, [enqueueRefresh, store])
+
+  const refreshDomains = useCallback(async (keys: readonly AppBootstrapDataKey[]): Promise<void> => {
+    if (keys.length === 0) return
+    await enqueueRefresh(async () => {
+      const patch = await window.projectAgent.getBootstrapPatch([...new Set(keys)])
+      if (mounted.current) store.patch(patch)
+    })
+  }, [enqueueRefresh, store])
+
+  const refreshPatch = useCallback((keys: readonly AppBootstrapDataKey[]): void => {
+    mergeBootstrapKeys(pendingPatchKeys.current, keys)
+    if (patchScheduled.current) return
+    patchScheduled.current = true
+    queueMicrotask(() => {
+      patchScheduled.current = false
+      const requestedKeys = [...pendingPatchKeys.current]
+      pendingPatchKeys.current.clear()
+      if (requestedKeys.length === 0) return
+      void refreshDomains(requestedKeys).catch((error: unknown) => {
+        if (!mounted.current) return
+        callbacks.current.onError(error instanceof Error ? error.message : '应用数据刷新失败。')
+      })
+    })
+  }, [refreshDomains])
+
   useEffect(() => {
+    mounted.current = true
     let active = true
     let retryTimer: number | null = null
     let consecutiveFailures = 0
     const refreshFromMain = (): void => {
-      void window.projectAgent.getBootstrap()
-        .then((nextBootstrap) => {
-          if (!active) return
+      void enqueueRefresh(async () => {
+        const nextBootstrap = await window.projectAgent.getBootstrap()
+        if (active) {
           consecutiveFailures = 0
-          setBootstrap(nextBootstrap)
-        })
+          store.replace(nextBootstrap)
+        }
+      })
         .catch((error: unknown) => {
           if (!active) return
           consecutiveFailures += 1
@@ -44,18 +100,20 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
         })
     }
     refreshFromMain()
-    const stopBriefings = window.projectAgent.onMorningBriefingReady(refreshFromMain)
-    const stopAutomations = window.projectAgent.onAutomationsChanged(refreshFromMain)
-    const stopCompanionData = window.projectAgent.onCompanionDataChanged(refreshFromMain)
+    const stopBriefings = window.projectAgent.onMorningBriefingReady(() => refreshPatch(morningBriefingBootstrapKeys))
+    const stopAutomations = window.projectAgent.onAutomationsChanged(() => refreshPatch(automationBootstrapKeys))
+    const stopCompanionData = window.projectAgent.onCompanionDataChanged(() => refreshPatch(companionBootstrapKeys))
     const stopOpenAgentRun = window.projectAgent.onOpenAgentRun((runId) => {
-      refreshFromMain()
+      refreshPatch(['runs'])
       callbacks.current.onOpenAgentRun(runId)
     })
     const stopAgentRuns = window.projectAgent.onAgentRunUpdate((envelope) => {
       agentRunUpdateStore.publish(envelope)
-      if (envelope.update.type === 'created' || envelope.update.type === 'status') refreshFromMain()
+      if (envelope.update.type === 'created') refreshPatch(['runs'])
+      if (envelope.update.type === 'status') refreshPatch(agentRunStatusBootstrapKeys)
     })
     return () => {
+      mounted.current = false
       active = false
       if (retryTimer !== null) window.clearTimeout(retryTimer)
       stopBriefings()
@@ -64,7 +122,7 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
       stopOpenAgentRun()
       stopAgentRuns()
     }
-  }, [])
+  }, [enqueueRefresh, refreshPatch, store])
 
-  return { bootstrap, setBootstrap, refresh }
+  return { ready, store, setBootstrap, refresh, refreshDomains }
 }

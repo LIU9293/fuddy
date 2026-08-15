@@ -2,7 +2,8 @@
 import Foundation
 
 let companionMinimumProtocolVersion = 2
-let companionProtocolVersion = 2
+let companionProtocolVersion = 3
+let companionContractFingerprint = "86fc02f1453d9e975f937cd9"
 
 func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
     version >= companionMinimumProtocolVersion && version <= companionProtocolVersion
@@ -10,6 +11,10 @@ func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
 
 func companionProtocolRangeSupportsLocalVersion(minimumVersion: Int, currentVersion: Int) -> Bool {
     companionProtocolVersion >= minimumVersion && companionProtocolVersion <= currentVersion
+}
+
+func companionContractFingerprintIsSupported(_ fingerprint: String?) -> Bool {
+    fingerprint == nil || fingerprint == companionContractFingerprint
 }
 
 enum CompanionEventType: Hashable, Codable {
@@ -96,6 +101,7 @@ enum CompanionCommandType: Hashable, Codable {
     case agentRenameSession
     case agentUpdateDraftPrompt
     case agentArchiveSession
+    case chatLoadHistory
     case artifactRequestUpload
     case decisionUpdateStatus
     case decisionHandle
@@ -111,6 +117,7 @@ enum CompanionCommandType: Hashable, Codable {
         case .agentRenameSession: "agent.rename-session"
         case .agentUpdateDraftPrompt: "agent.update-draft-prompt"
         case .agentArchiveSession: "agent.archive-session"
+        case .chatLoadHistory: "chat.load-history"
         case .artifactRequestUpload: "artifact.request-upload"
         case .decisionUpdateStatus: "decision.update-status"
         case .decisionHandle: "decision.handle"
@@ -129,6 +136,7 @@ enum CompanionCommandType: Hashable, Codable {
         case "agent.rename-session": self = .agentRenameSession
         case "agent.update-draft-prompt": self = .agentUpdateDraftPrompt
         case "agent.archive-session": self = .agentArchiveSession
+        case "chat.load-history": self = .chatLoadHistory
         case "artifact.request-upload": self = .artifactRequestUpload
         case "decision.update-status": self = .decisionUpdateStatus
         case "decision.handle": self = .decisionHandle
@@ -141,4 +149,110 @@ enum CompanionCommandType: Hashable, Codable {
         var container = encoder.singleValueContainer()
         try container.encode(rawValue)
     }
+}
+
+struct AssistantSendMessagePayload: Codable {
+    let prompt: String
+    let attachments: [AttachmentDescriptor]?
+}
+
+struct AssistantExecuteActionPayload: Codable {
+    let messageId: String
+    let proposalId: String
+    let optionId: String
+}
+
+struct AgentSendMessagePayload: Codable {
+    let runId: String
+    let prompt: String
+    let attachments: [AttachmentDescriptor]?
+    let clientMessageId: String?
+}
+
+struct AgentStopMessagePayload: Codable {
+    let runId: String
+}
+
+struct AgentRenameSessionPayload: Codable {
+    let runId: String
+    let title: String
+}
+
+struct AgentUpdateDraftPromptPayload: Codable {
+    let runId: String
+    let draftPrompt: String
+}
+
+struct AgentArchiveSessionPayload: Codable {
+    let runId: String
+}
+
+struct ChatLoadHistoryPayload: Codable {
+    let chatKind: String
+    let chatId: String
+    let before: String?
+    let limit: Int
+}
+
+struct ArtifactRequestUploadPayload: Codable {
+    let artifactId: String
+}
+
+struct DecisionUpdateStatusPayload: Codable {
+    let decisionId: String
+    let status: String
+}
+
+struct DecisionHandlePayload: Codable {
+    let decisionId: String
+    let runId: String
+}
+
+struct ProjectUpdatePayload: Codable {
+    let project: Project
+}
+
+struct SnapshotPayload: Codable {
+    let generatedAt: String
+    let modelLabels: AgentModelLabels?
+    let projects: [Project]
+    let goals: [ProjectGoal]
+    let decisions: [Decision]
+    let morningBriefings: [MorningBriefing]?
+    let workAssistantMessages: [WorkAssistantMessage]
+    let attachments: [AttachmentDescriptor]?
+    let runs: [RunDetail]
+    let chatPages: [CompanionChatPage]?
+}
+
+struct ArtifactEventPayload: Codable {
+    let artifact: AgentArtifact
+    let attachment: AttachmentDescriptor?
+}
+
+struct AgentRunArchivedPayload: Codable {
+    let id: String
+    let archivedAt: String
+}
+
+struct AgentTurnSettledPayload: Codable {
+    let runId: String
+    let turnId: String
+    let title: String
+    let outcome: String
+    let summary: String
+    let settledAt: String
+}
+
+struct CommandResult: Codable {
+    let commandId: String
+    let type: CompanionCommandType?
+    let status: String
+    let result: JSONValue?
+    let error: String?
+}
+
+struct ArtifactUploadResult: Codable {
+    let artifactId: String
+    let attachment: AttachmentDescriptor
 }
