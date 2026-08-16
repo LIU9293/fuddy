@@ -2475,7 +2475,7 @@
   gap: 10px;
 }
 
-.agent-run-conversation .chat-turn.is-pending .agent-run-live {
+.agent-run-chat-main > .conversation-shell .chat-turn.is-pending .agent-run-live {
   margin-top: 10px;
 }
 

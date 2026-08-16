@@ -1353,7 +1353,6 @@ export function AgentRunsView({
         </div>
       </header>
       <ConversationShell
-        className="agent-run-conversation"
         ariaLabel={`${detail.run.title} 对话`}
         resetKey={selectedRunId}
         composerTopContent={queuedMessages.length > 0 ? (

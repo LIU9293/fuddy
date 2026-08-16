@@ -581,7 +581,6 @@ export function WorkAssistantView({
 
   return (
     <ConversationShell
-      className="briefing-conversation"
       ariaLabel="与工作助理的对话"
       composer={(
         <ChatComposer

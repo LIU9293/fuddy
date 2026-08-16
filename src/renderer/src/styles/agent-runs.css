@@ -918,29 +918,29 @@
 .agent-run-live-message .chat-markdown > :first-child { margin-top: 0; }
 .agent-run-live-message .chat-markdown > :last-child { margin-bottom: 0; }
 
-.agent-run-conversation .chat-turn-content > .chat-markdown {
+.agent-run-chat-main > .conversation-shell .chat-turn-content > .chat-markdown {
   width: 100%;
   color: #42423d;
   font-size: 13px;
   line-height: 1.68;
 }
 
-.agent-run-conversation .chat-bubble .chat-markdown {
+.agent-run-chat-main > .conversation-shell .chat-bubble .chat-markdown {
   color: inherit;
 }
 
-.agent-run-conversation .chat-bubble .chat-markdown > :first-child,
-.agent-run-conversation .chat-markdown > :first-child { margin-top: 0; }
-.agent-run-conversation .chat-bubble .chat-markdown > :last-child,
-.agent-run-conversation .chat-markdown > :last-child { margin-bottom: 0; }
+.agent-run-chat-main > .conversation-shell .chat-bubble .chat-markdown > :first-child,
+.agent-run-chat-main > .conversation-shell .chat-markdown > :first-child { margin-top: 0; }
+.agent-run-chat-main > .conversation-shell .chat-bubble .chat-markdown > :last-child,
+.agent-run-chat-main > .conversation-shell .chat-markdown > :last-child { margin-bottom: 0; }
 
-.agent-run-conversation .chat-turn.is-assistant,
-.agent-run-conversation .chat-turn.is-assistant > .chat-turn-content,
-.agent-run-conversation .chat-turn.is-assistant .agent-run-live,
-.agent-run-conversation .agent-process-disclosure,
-.agent-run-conversation .agent-tool-call,
-.agent-run-conversation .agent-tool-call-group,
-.agent-run-conversation .agent-thinking-marker {
+.agent-run-chat-main > .conversation-shell .chat-turn.is-assistant,
+.agent-run-chat-main > .conversation-shell .chat-turn.is-assistant > .chat-turn-content,
+.agent-run-chat-main > .conversation-shell .chat-turn.is-assistant .agent-run-live,
+.agent-run-chat-main > .conversation-shell .agent-process-disclosure,
+.agent-run-chat-main > .conversation-shell .agent-tool-call,
+.agent-run-chat-main > .conversation-shell .agent-tool-call-group,
+.agent-run-chat-main > .conversation-shell .agent-thinking-marker {
   width: 100%;
   max-width: none;
 }
@@ -960,11 +960,11 @@
 
 .agent-run-system-message > svg { flex: 0 0 auto; margin-top: 2px; }
 
-.agent-run-conversation .agent-run-artifacts {
+.agent-run-chat-main > .conversation-shell .agent-run-artifacts {
   margin: 8px 0 26px;
 }
 
-.agent-run-conversation .agent-run-artifacts button {
+.agent-run-chat-main > .conversation-shell .agent-run-artifacts button {
   width: min(520px, 100%);
 }
 
