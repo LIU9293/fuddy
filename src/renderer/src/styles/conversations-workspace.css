@@ -1,5 +1,5 @@
 /* ChatComposer owns the same width and visual shell on every conversation page. */
-.briefing-composer-dock > .composer {
+.conversation-composer-dock > .composer {
   width: min(var(--content-area-width), calc(100% - var(--content-area-gutter)));
   margin: 0 auto;
   box-shadow: none;
@@ -2475,7 +2475,7 @@
   gap: 10px;
 }
 
-.agent-run-thread .chat-turn.is-pending .agent-run-live {
+.agent-run-chat-main > .conversation-shell .chat-turn.is-pending .agent-run-live {
   margin-top: 10px;
 }
 
@@ -4695,7 +4695,7 @@
     background: transparent;
   }
 
-  .briefing-composer-dock {
+  .conversation-composer-dock {
     background: linear-gradient(to bottom, transparent 17px, #171816 17px);
   }
 

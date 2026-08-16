@@ -880,19 +880,6 @@
   cursor: pointer;
 }
 
-.agent-run-thread {
-  min-height: 0;
-  flex: 1;
-  overflow-y: auto;
-}
-
-.agent-run-thread-inner {
-  width: min(var(--content-area-width), calc(100% - var(--content-area-gutter)));
-  min-height: 100%;
-  margin: 0 auto;
-  padding: 34px 0 44px;
-}
-
 .agent-run-draft-empty {
   display: flex;
   min-height: calc(100% - 78px);
@@ -931,29 +918,29 @@
 .agent-run-live-message .chat-markdown > :first-child { margin-top: 0; }
 .agent-run-live-message .chat-markdown > :last-child { margin-bottom: 0; }
 
-.agent-run-thread .chat-turn-content > .chat-markdown {
+.agent-run-chat-main > .conversation-shell .chat-turn-content > .chat-markdown {
   width: 100%;
   color: #42423d;
   font-size: 13px;
   line-height: 1.68;
 }
 
-.agent-run-thread .chat-bubble .chat-markdown {
+.agent-run-chat-main > .conversation-shell .chat-bubble .chat-markdown {
   color: inherit;
 }
 
-.agent-run-thread .chat-bubble .chat-markdown > :first-child,
-.agent-run-thread .chat-markdown > :first-child { margin-top: 0; }
-.agent-run-thread .chat-bubble .chat-markdown > :last-child,
-.agent-run-thread .chat-markdown > :last-child { margin-bottom: 0; }
+.agent-run-chat-main > .conversation-shell .chat-bubble .chat-markdown > :first-child,
+.agent-run-chat-main > .conversation-shell .chat-markdown > :first-child { margin-top: 0; }
+.agent-run-chat-main > .conversation-shell .chat-bubble .chat-markdown > :last-child,
+.agent-run-chat-main > .conversation-shell .chat-markdown > :last-child { margin-bottom: 0; }
 
-.agent-run-thread .chat-turn.is-assistant,
-.agent-run-thread .chat-turn.is-assistant > .chat-turn-content,
-.agent-run-thread .chat-turn.is-assistant .agent-run-live,
-.agent-run-thread .agent-process-disclosure,
-.agent-run-thread .agent-tool-call,
-.agent-run-thread .agent-tool-call-group,
-.agent-run-thread .agent-thinking-marker {
+.agent-run-chat-main > .conversation-shell .chat-turn.is-assistant,
+.agent-run-chat-main > .conversation-shell .chat-turn.is-assistant > .chat-turn-content,
+.agent-run-chat-main > .conversation-shell .chat-turn.is-assistant .agent-run-live,
+.agent-run-chat-main > .conversation-shell .agent-process-disclosure,
+.agent-run-chat-main > .conversation-shell .agent-tool-call,
+.agent-run-chat-main > .conversation-shell .agent-tool-call-group,
+.agent-run-chat-main > .conversation-shell .agent-thinking-marker {
   width: 100%;
   max-width: none;
 }
@@ -973,25 +960,12 @@
 
 .agent-run-system-message > svg { flex: 0 0 auto; margin-top: 2px; }
 
-.agent-run-thread .agent-run-artifacts {
+.agent-run-chat-main > .conversation-shell .agent-run-artifacts {
   margin: 8px 0 26px;
 }
 
-.agent-run-thread .agent-run-artifacts button {
+.agent-run-chat-main > .conversation-shell .agent-run-artifacts button {
   width: min(520px, 100%);
-}
-
-.agent-run-composer-dock {
-  position: relative;
-  z-index: 2;
-  flex: 0 0 auto;
-  padding: 12px 0 18px;
-  background: transparent;
-}
-
-.agent-run-composer-dock > .composer {
-  width: min(var(--content-area-width), calc(100% - var(--content-area-gutter)));
-  margin: 0 auto;
 }
 
 .agent-run-message-queue {

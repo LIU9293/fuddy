@@ -15,13 +15,16 @@ describe('renderer CSS architecture', () => {
       './styles/tokens.css',
       './styles/base.css',
       './styles/page-layout.css',
-      './styles/conversations-workspace.css',
       './styles/shell-settings-inbox.css',
+      './styles/conversations-workspace.css',
       './styles/agent-runs.css',
       './styles/conversation-typography.css',
+      './styles/settings-inbox-current.css',
       './styles/settings-current.css'
     ])
     expect(imports.indexOf('./styles/shell-settings-inbox.css'))
+      .toBeLessThan(imports.indexOf('./styles/conversations-workspace.css'))
+    expect(imports.indexOf('./styles/settings-inbox-current.css'))
       .toBeGreaterThan(imports.indexOf('./styles/conversations-workspace.css'))
     expect(entrypoint).not.toContain('final-overrides')
   })
@@ -34,11 +37,28 @@ describe('renderer CSS architecture', () => {
       'conversations-workspace.css',
       'agent-runs.css',
       'conversation-typography.css',
+      'settings-inbox-current.css',
       'settings-current.css'
     ]
 
     for (const file of featureFiles) {
       expect(readFileSync(join(stylesDirectory, file), 'utf8'), file).not.toMatch(/(^|\n)\s*:root\s*\{/)
     }
+  })
+
+  it('keeps Work Assistant and Agent Run on the same conversation shell', () => {
+    const workAssistant = readFileSync(join(rendererDirectory, 'views/WorkAssistantView.tsx'), 'utf8')
+    const agentRuns = readFileSync(join(rendererDirectory, 'components/AgentRunsView.tsx'), 'utf8')
+    const sharedStyles = readFileSync(join(stylesDirectory, 'shell-settings-inbox.css'), 'utf8')
+    const agentRunStyles = readFileSync(join(stylesDirectory, 'agent-runs.css'), 'utf8')
+
+    expect(workAssistant).toContain('<ConversationShell')
+    expect(agentRuns).toContain('<ConversationShell')
+    expect(workAssistant).not.toContain('briefing-composer-dock')
+    expect(agentRuns).not.toContain('agent-run-composer-dock')
+    expect(agentRuns).not.toContain('className="agent-run-conversation"')
+    expect(sharedStyles).toContain('.conversation-composer-dock')
+    expect(agentRunStyles).toContain('.agent-run-chat-main > .conversation-shell')
+    expect(agentRunStyles).not.toMatch(/composer-dock\s*\{[^}]*padding/s)
   })
 })

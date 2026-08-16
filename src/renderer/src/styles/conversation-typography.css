@@ -1,11 +1,9 @@
 /* Conversation typography is intentionally one step larger than the dense app chrome. */
-.briefing-conversation .chat-turn-meta strong,
-.agent-run-thread .chat-turn-meta strong {
+.conversation-shell .chat-turn-meta strong {
   font-size: 12px;
 }
 
-.briefing-conversation .chat-turn-meta time,
-.agent-run-thread .chat-turn-meta time {
+.conversation-shell .chat-turn-meta time {
   font-size: 12px;
 }
 
@@ -15,10 +13,9 @@
   font-size: 13px;
 }
 
-.briefing-conversation .chat-bubble,
-.briefing-conversation .chat-markdown,
-.agent-run-thread .chat-bubble,
-.agent-run-thread .chat-turn-content > .chat-markdown {
+.conversation-shell .chat-bubble,
+.conversation-shell .chat-markdown,
+.conversation-shell .chat-turn-content > .chat-markdown {
   font-size: 14px;
 }
 
@@ -160,8 +157,7 @@
   .agent-run-image-preview { border-color: rgba(255, 255, 248, .08); background: rgba(255, 255, 248, .035); }
   .agent-run-text-preview { color: #c4c4bf; }
   .agent-run-file-preview-state > button { color: #c7c7c2; background: rgba(255, 255, 248, .075); }
-  .agent-run-thread .chat-turn-content > .chat-markdown { color: #d9d9d5; }
-  .agent-run-composer-dock { background: transparent; }
+  .agent-run-chat-main > .conversation-shell .chat-turn-content > .chat-markdown { color: #d9d9d5; }
   .chat-scroll-to-latest {
     border-color: rgba(255, 255, 248, .12);
     color: #d0d0cb;
@@ -175,7 +171,7 @@
     color: #d0d0cb;
   }
   .agent-run-system-message { border-color: rgba(220, 102, 94, .2); color: #e08b84; background: rgba(190, 76, 70, .1); }
-  .agent-run-thread .chat-markdown hr { border-top-color: rgba(255, 255, 248, .12); }
+  .agent-run-chat-main > .conversation-shell .chat-markdown hr { border-top-color: rgba(255, 255, 248, .12); }
   .chat-turn-hover-actions { color: #8f8f89; }
   .chat-turn-hover-actions button:hover { color: #deded9; background: rgba(255, 255, 248, .07); }
   .agent-thinking-marker { color: #aaaeb9; }
