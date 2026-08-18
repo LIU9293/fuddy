@@ -1048,7 +1048,9 @@ struct RunsListView: View {
     @EnvironmentObject private var router: CompanionRouter
     @Environment(\.companionTopSafeAreaInset) private var screenTopSafeAreaInset
     @State private var archivingRunIDs: Set<String> = []
-    @State private var archiveError: String?
+    @State private var renamingRun: AgentRun?
+    @State private var renamedTitle = ""
+    @State private var operationError: String?
     let topContentInset: CGFloat
 
     init(topContentInset: CGFloat = 0) {
@@ -1061,17 +1063,35 @@ struct RunsListView: View {
                 Section {
                     ForEach(group.runs) { detail in
                         let active = detail.run.status == "running" || detail.run.status == "queued"
-                        NavigationLink(value: CompanionRoute.run(id: detail.run.id, prefill: "")) {
-                            HStack(alignment: .center, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(detail.run.title).font(.headline).lineLimit(2)
-                                    Text(runMetadata(detail.run)).font(.caption).foregroundStyle(.secondary)
-                                    if !detail.run.summary.isEmpty { Text(detail.run.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
+                        HStack(spacing: 4) {
+                            NavigationLink(value: CompanionRoute.run(id: detail.run.id, prefill: "")) {
+                                HStack(alignment: .center, spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(detail.run.title).font(.headline).lineLimit(2)
+                                        Text(runMetadata(detail.run)).font(.caption).foregroundStyle(.secondary)
+                                        if !detail.run.summary.isEmpty { Text(detail.run.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
+                                    }
+                                    Spacer(minLength: 8)
+                                    if active { ProgressView().controlSize(.small) }
                                 }
-                                Spacer(minLength: 8)
-                                if active { ProgressView().controlSize(.small) }
+                                .padding(.vertical, 3)
                             }
-                            .padding(.vertical, 3)
+                            Menu {
+                                Button("重命名", systemImage: "pencil") {
+                                    renamedTitle = detail.run.title
+                                    renamingRun = detail.run
+                                }
+                                Button("归档", systemImage: "archivebox", role: .destructive) {
+                                    Task { await archive(detail.run) }
+                                }
+                                .disabled(active || archivingRunIDs.contains(detail.run.id))
+                            } label: {
+                                Image(systemName: "ellipsis")
+                                    .frame(width: 36, height: 36)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("\(detail.run.title)更多操作")
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if !active {
@@ -1106,13 +1126,28 @@ struct RunsListView: View {
         .contentMargins(.top, screenTopSafeAreaInset + topContentInset, for: .scrollContent)
         .refreshable { await store.sync() }
         .overlay { if store.runs.isEmpty { ContentUnavailableView("暂无 Agent Run", systemImage: "bubble.left.and.bubble.right") } }
-        .alert("归档失败", isPresented: Binding(
-            get: { archiveError != nil },
-            set: { if !$0 { archiveError = nil } }
+        .alert(renamingRun == nil ? "操作失败" : "重命名 Session", isPresented: Binding(
+            get: { renamingRun != nil || operationError != nil },
+            set: {
+                if !$0 {
+                    renamingRun = nil
+                    operationError = nil
+                }
+            }
         )) {
-            Button("好", role: .cancel) { archiveError = nil }
+            if renamingRun != nil {
+                TextField("Session 标题", text: $renamedTitle)
+                Button("取消", role: .cancel) { renamingRun = nil }
+                Button("保存") {
+                    guard let run = renamingRun else { return }
+                    renamingRun = nil
+                    Task { await rename(run) }
+                }
+            } else {
+                Button("好", role: .cancel) { operationError = nil }
+            }
         } message: {
-            Text(archiveError ?? "无法归档这个 Agent Run。")
+            if let operationError { Text(operationError) }
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -1138,7 +1173,16 @@ struct RunsListView: View {
             try await store.archive(runID: run.id)
             await store.sync()
         } catch {
-            archiveError = error.localizedDescription
+            operationError = error.localizedDescription
+        }
+    }
+
+    private func rename(_ run: AgentRun) async {
+        do {
+            try await store.rename(runID: run.id, title: renamedTitle)
+            await store.sync()
+        } catch {
+            operationError = error.localizedDescription
         }
     }
 }
