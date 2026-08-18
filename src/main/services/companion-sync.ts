@@ -1008,7 +1008,8 @@ export class CompanionSyncService {
         return this.dispatcher.createDraft({
           id: this.requiredString(payload, 'runId'),
           projectId,
-          title: this.requiredString(payload, 'title')
+          title: this.requiredString(payload, 'title'),
+          ...(projectId ? {} : { provider: this.defaultCodingAgent() })
         })
       }
       case 'agent.rename-session':

@@ -877,6 +877,72 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('uses the global default Agent for a shared Run created from iPhone', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-create-shared-run-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    const createDraft = vi.fn(() => ({ run: { id: 'shared-phone-run' }, messages: [], artifacts: [] }))
+    const command: CompanionCommand = {
+      commandId: 'create-shared-run-command',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent.create-session',
+      payload: { runId: 'shared-phone-run', title: 'Shared iPhone Run' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    const wireCommand = await encryptedCommand(command)
+    let served = false
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') {
+        if (served) return jsonResponse({ commands: [] })
+        served = true
+        return jsonResponse({ commands: [wireCommand] })
+      }
+      if (url.pathname.startsWith('/v1/commands/') && method === 'PATCH') return jsonResponse({ ok: true })
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      { createDraft } as unknown as TaskDispatcher,
+      async () => ({ accepted: true }),
+      directory,
+      () => 'claude'
+    )
+
+    await service.syncNow()
+    await vi.waitFor(() => expect(createDraft).toHaveBeenCalledWith({
+      id: 'shared-phone-run',
+      projectId: null,
+      provider: 'claude',
+      title: 'Shared iPhone Run'
+    }))
+
+    service.stop()
+    database.close()
+  })
+
   it('finishes a queued Run creation before executing dependent Run commands', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-create-order-'))
     directories.push(directory)
