@@ -201,6 +201,11 @@ export class AppDatabase {
         version: 7,
         name: 'upgrade-companion-outbox-protocol-v4',
         apply: () => this.migrateCompanionOutboxProtocolV4()
+      },
+      {
+        version: 8,
+        name: 'upgrade-companion-remote-commands-protocol-v4',
+        apply: () => this.migrateCompanionRemoteCommandsProtocolV4()
       }
     ]
     const currentVersion = databaseSchemaVersion(this.database)
@@ -855,6 +860,14 @@ export class AppDatabase {
       }
       update.run(companionProtocolVersion, JSON.stringify(payload), row.event_id)
     }
+  }
+
+  private migrateCompanionRemoteCommandsProtocolV4(): void {
+    this.database.prepare(`
+      UPDATE companion_remote_commands
+      SET protocol_version = ?
+      WHERE protocol_version < ?
+    `).run(companionProtocolVersion, companionProtocolVersion)
   }
 
   private companionTransaction<T>(operation: () => T): T {

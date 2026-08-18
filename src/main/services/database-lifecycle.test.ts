@@ -27,12 +27,12 @@ describe('AppDatabase lifecycle', () => {
     new AppDatabase(path).close()
 
     const database = new DatabaseSync(path)
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
     database.close()
 
     new AppDatabase(path).close()
     const reopened = new DatabaseSync(path)
-    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
+    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
     reopened.close()
   })
 
@@ -52,7 +52,7 @@ describe('AppDatabase lifecycle', () => {
     const upgraded = new DatabaseSync(path)
     const columns = upgraded.prepare('PRAGMA table_info(agent_runs)').all() as Array<{ name: string }>
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['model', 'reasoning_effort']))
-    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
     upgraded.close()
   })
 
@@ -90,6 +90,12 @@ describe('AppDatabase lifecycle', () => {
         payload_json, occurred_at, published_at, attempts, last_error
       ) VALUES (?, 3, 'project.updated', 'project', ?, 2, ?, ?, NULL, 7, 'Network error.')
     `).run('legacy-project-event', 'legacy-project', JSON.stringify({ id: 'legacy-project' }), now)
+    legacy.prepare(`
+      INSERT INTO companion_remote_commands (
+        command_id, protocol_version, type, payload_json, source_device_id,
+        status, result_json, error, created_at, updated_at
+      ) VALUES (?, 3, 'agent.send-message', ?, 'ios-1', 'executing', NULL, NULL, ?, ?)
+    `).run('legacy-executing-command', JSON.stringify({ runId: 'run-1', prompt: 'continue' }), now, now)
     legacy.close()
 
     new AppDatabase(path).close()
@@ -104,6 +110,10 @@ describe('AppDatabase lifecycle', () => {
       SELECT protocol_version, payload_json, attempts, last_error
       FROM companion_sync_outbox WHERE event_id = 'legacy-project-event'
     `).get() as { protocol_version: number; payload_json: string; attempts: number; last_error: string | null }
+    const upgradedRemoteCommand = upgraded.prepare(`
+      SELECT protocol_version, status
+      FROM companion_remote_commands WHERE command_id = 'legacy-executing-command'
+    `).get() as { protocol_version: number; status: string }
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
       'dead_lettered_at',
       'dead_letter_reason'
@@ -116,7 +126,8 @@ describe('AppDatabase lifecycle', () => {
     expect(repaired).toMatchObject({ protocol_version: 4, attempts: 0, last_error: null })
     expect(JSON.parse(upgradedProjectEvent.payload_json)).toEqual({ id: 'legacy-project' })
     expect(upgradedProjectEvent).toMatchObject({ protocol_version: 4, attempts: 0, last_error: null })
-    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
+    expect(upgradedRemoteCommand).toEqual({ protocol_version: 4, status: 'executing' })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
     upgraded.close()
   })
 

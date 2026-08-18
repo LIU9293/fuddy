@@ -264,6 +264,7 @@ export class CompanionRepository {
         status, result_json, error, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(command_id) DO UPDATE SET
+        protocol_version = excluded.protocol_version,
         status = excluded.status, result_json = excluded.result_json,
         error = excluded.error, updated_at = excluded.updated_at
     `
