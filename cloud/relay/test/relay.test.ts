@@ -1,4 +1,4 @@
-import { SELF, env, runDurableObjectAlarm } from 'cloudflare:test'
+import { SELF, env, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { describe, expect, it, vi } from 'vitest'
 import type {
   CompanionEncryptedCommand,
@@ -319,6 +319,57 @@ describe('companion relay', () => {
     expect(completed.result).toBeNull()
 
     expect(JSON.stringify(completed)).not.toContain('accepted')
+  })
+
+  it('purges retained pre-v4 events and commands when the protocol-v4 migration has not run', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    const now = new Date().toISOString()
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO events (
+          event_id, protocol_version, type, entity_type, entity_id, revision,
+          payload_json, source_device_id, occurred_at
+        ) VALUES (?, 3, 'agent-run.updated', 'agent-run', ?, 1, ?, ?, ?)`,
+        'legacy-event',
+        'legacy-run',
+        JSON.stringify(encryptedPayload),
+        pairing.macDeviceId,
+        now
+      )
+      state.storage.sql.exec(
+        `INSERT INTO commands (
+          command_id, protocol_version, type, payload_json, source_device_id,
+          status, result_json, error, created_at, updated_at
+        ) VALUES (?, 3, 'agent.send-message', ?, ?, 'queued', NULL, NULL, ?, ?)`,
+        'legacy-command',
+        JSON.stringify(encryptedPayload),
+        phone.device.id,
+        now,
+        now
+      )
+      state.storage.sql.exec('DELETE FROM _sql_schema_migrations WHERE id = 5')
+    })
+    await evictDurableObject(stub)
+
+    const pendingResponse = await SELF.fetch(authenticatedUrl(
+      '/v1/commands/pending', pairing.accountId, pairing.macDeviceId
+    ), {
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
+    })
+    expect(pendingResponse.status).toBe(200)
+    expect(await pendingResponse.json<{ commands: CompanionEncryptedCommand[] }>()).toEqual({ commands: [] })
+
+    const pageResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    expect(pageResponse.status).toBe(200)
+    expect((await pageResponse.json<CompanionEncryptedEventPage>()).events).toEqual([])
+    expect(await runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ id: number }>(
+        'SELECT id FROM _sql_schema_migrations WHERE id = 5'
+      ).one().id
+    ))).toBe(5)
   })
 
   it('rejects plaintext command outcomes and persists status only', async () => {

@@ -27,12 +27,12 @@ describe('AppDatabase lifecycle', () => {
     new AppDatabase(path).close()
 
     const database = new DatabaseSync(path)
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
     database.close()
 
     new AppDatabase(path).close()
     const reopened = new DatabaseSync(path)
-    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
     reopened.close()
   })
 
@@ -52,11 +52,11 @@ describe('AppDatabase lifecycle', () => {
     const upgraded = new DatabaseSync(path)
     const columns = upgraded.prepare('PRAGMA table_info(agent_runs)').all() as Array<{ name: string }>
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['model', 'reasoning_effort']))
-    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
     upgraded.close()
   })
 
-  it('repairs pending legacy command events while adding outbox isolation columns', () => {
+  it('repairs and upgrades pending legacy events while adding outbox isolation columns', () => {
     const path = temporaryDatabasePath()
     new AppDatabase(path).close()
     const legacy = new DatabaseSync(path)
@@ -84,6 +84,12 @@ describe('AppDatabase lifecycle', () => {
       createdAt: now,
       updatedAt: now
     }), now)
+    legacy.prepare(`
+      INSERT INTO companion_sync_outbox (
+        event_id, protocol_version, type, entity_type, entity_id, revision,
+        payload_json, occurred_at, published_at, attempts, last_error
+      ) VALUES (?, 3, 'project.updated', 'project', ?, 2, ?, ?, NULL, 7, 'Network error.')
+    `).run('legacy-project-event', 'legacy-project', JSON.stringify({ id: 'legacy-project' }), now)
     legacy.close()
 
     new AppDatabase(path).close()
@@ -91,15 +97,26 @@ describe('AppDatabase lifecycle', () => {
     const upgraded = new DatabaseSync(path)
     const columns = upgraded.prepare('PRAGMA table_info(companion_sync_outbox)').all() as Array<{ name: string }>
     const repaired = upgraded.prepare(`
-      SELECT payload_json, attempts, last_error FROM companion_sync_outbox WHERE event_id = 'legacy-poison'
-    `).get() as { payload_json: string; attempts: number; last_error: string | null }
+      SELECT protocol_version, payload_json, attempts, last_error
+      FROM companion_sync_outbox WHERE event_id = 'legacy-poison'
+    `).get() as { protocol_version: number; payload_json: string; attempts: number; last_error: string | null }
+    const upgradedProjectEvent = upgraded.prepare(`
+      SELECT protocol_version, payload_json, attempts, last_error
+      FROM companion_sync_outbox WHERE event_id = 'legacy-project-event'
+    `).get() as { protocol_version: number; payload_json: string; attempts: number; last_error: string | null }
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
       'dead_lettered_at',
       'dead_letter_reason'
     ]))
-    expect(JSON.parse(repaired.payload_json)).toMatchObject({ payload: {}, result: null })
-    expect(repaired).toMatchObject({ attempts: 0, last_error: null })
-    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+    expect(JSON.parse(repaired.payload_json)).toMatchObject({
+      protocolVersion: 4,
+      payload: {},
+      result: null
+    })
+    expect(repaired).toMatchObject({ protocol_version: 4, attempts: 0, last_error: null })
+    expect(JSON.parse(upgradedProjectEvent.payload_json)).toEqual({ id: 'legacy-project' })
+    expect(upgradedProjectEvent).toMatchObject({ protocol_version: 4, attempts: 0, last_error: null })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 7 })
     upgraded.close()
   })
 

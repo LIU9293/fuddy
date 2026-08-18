@@ -196,6 +196,11 @@ export class AppDatabase {
         version: 6,
         name: 'repair-companion-outbox-delivery',
         apply: () => this.migrateCompanionOutboxDelivery()
+      },
+      {
+        version: 7,
+        name: 'upgrade-companion-outbox-protocol-v4',
+        apply: () => this.migrateCompanionOutboxProtocolV4()
       }
     ]
     const currentVersion = databaseSchemaVersion(this.database)
@@ -821,6 +826,34 @@ export class AppDatabase {
     for (const row of rows) {
       const payload = parseJson<unknown>(row.payload_json, null)
       update.run(JSON.stringify(compactPersistedCompanionCommandEvent(payload)), row.event_id)
+    }
+  }
+
+  private migrateCompanionOutboxProtocolV4(): void {
+    const rows = this.database.prepare(`
+      SELECT event_id, type, payload_json FROM companion_sync_outbox
+      WHERE published_at IS NULL
+        AND dead_lettered_at IS NULL
+        AND protocol_version < ?
+    `).all(companionProtocolVersion) as Array<{
+      event_id: string
+      type: CompanionEventType
+      payload_json: string
+    }>
+    const update = this.database.prepare(`
+      UPDATE companion_sync_outbox
+      SET protocol_version = ?, payload_json = ?, attempts = 0, last_error = NULL
+      WHERE event_id = ?
+    `)
+    for (const row of rows) {
+      let payload = parseJson<unknown>(row.payload_json, null)
+      if (row.type === 'command.updated') {
+        payload = compactPersistedCompanionCommandEvent(payload)
+        if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+          payload = { ...payload, protocolVersion: companionProtocolVersion }
+        }
+      }
+      update.run(companionProtocolVersion, JSON.stringify(payload), row.event_id)
     }
   }
 
