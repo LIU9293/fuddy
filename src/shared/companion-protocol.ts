@@ -29,6 +29,7 @@ export const companionCommandTypes = [
   'assistant.execute-action',
   'agent.send-message',
   'agent.stop-message',
+  'agent.create-session',
   'agent.rename-session',
   'agent.update-draft-prompt',
   'agent.archive-session',
@@ -77,6 +78,10 @@ export const companionCommandPayloadDefinitions = {
     }
   },
   'agent.stop-message': { swiftName: 'AgentStopMessagePayload', fields: { runId: 'string' } },
+  'agent.create-session': {
+    swiftName: 'AgentCreateSessionPayload',
+    fields: { runId: 'string', projectId: 'optional-string', title: 'string' }
+  },
   'agent.rename-session': {
     swiftName: 'AgentRenameSessionPayload',
     fields: { runId: 'string', title: 'string' }

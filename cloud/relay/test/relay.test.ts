@@ -9,7 +9,7 @@ import type {
   CompanionPairingStartResult,
 } from '../../../src/shared/companion-sync'
 import { companionProtocolVersion } from '../../../src/shared/companion-sync'
-import { enforceRateLimit } from '../src/index'
+import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/index'
 
 async function pairedDevices(): Promise<{
   pairing: CompanionPairingStartResult
@@ -71,7 +71,7 @@ describe('companion relay', () => {
       status: 'ok',
       minimumProtocolVersion: 2,
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-13.1'
+      build: '2026-08-18.1'
     })
   })
 
@@ -188,6 +188,47 @@ describe('companion relay', () => {
       .filter((message) => message.type === 'sync.available')
     expect(replayHints).toEqual([{ type: 'sync.available', lastSequence: 3 }])
     socket!.close()
+  })
+
+  it('rejects oversized encrypted event values before Durable Object persistence', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const oversizedEvent = {
+      eventId: crypto.randomUUID(),
+      protocolVersion: companionProtocolVersion,
+      type: 'agent-message.created',
+      entityType: 'agent-message' as const,
+      entityId: 'oversized-message',
+      revision: 1,
+      payload: {
+        ...encryptedPayload,
+        ciphertext: 'x'.repeat(maximumEncryptedEventPayloadBytes)
+      },
+      occurredAt: new Date().toISOString()
+    }
+    const headers = {
+      Authorization: `Bearer ${pairing.macToken}`,
+      'Content-Type': 'application/json'
+    }
+
+    const single = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(oversizedEvent)
+    })
+    expect(single.status).toBe(413)
+    expect(await single.json()).toMatchObject({ error: expect.stringContaining('1900000 byte Relay limit') })
+
+    const batch = await SELF.fetch(authenticatedUrl('/v1/events/batch', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ events: [oversizedEvent] })
+    })
+    expect(batch.status).toBe(413)
+
+    const pageResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    expect((await pageResponse.json<CompanionEncryptedEventPage>()).events).toEqual([])
   })
 
   it('compacts only events behind an acknowledged snapshot and preserves reset replay', async () => {

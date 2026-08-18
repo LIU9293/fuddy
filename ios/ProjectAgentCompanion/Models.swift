@@ -540,6 +540,7 @@ struct CachedState: Codable {
     var runs: [RunDetail] = []
     var chatPages: [CompanionChatPage] = []
     var attachments: [String: AttachmentDescriptor] = [:]
+    var pendingCreatedRunIDs: [String: String] = [:]
     var lastSequence = 0
 
     init() {}
@@ -555,6 +556,7 @@ struct CachedState: Codable {
         runs = try container.decodeIfPresent([RunDetail].self, forKey: .runs) ?? []
         chatPages = try container.decodeIfPresent([CompanionChatPage].self, forKey: .chatPages) ?? []
         attachments = try container.decodeIfPresent([String: AttachmentDescriptor].self, forKey: .attachments) ?? [:]
+        pendingCreatedRunIDs = try container.decodeIfPresent([String: String].self, forKey: .pendingCreatedRunIDs) ?? [:]
         lastSequence = try container.decodeIfPresent(Int.self, forKey: .lastSequence) ?? 0
     }
 }

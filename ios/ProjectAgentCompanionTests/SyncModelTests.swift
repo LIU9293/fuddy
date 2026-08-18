@@ -9,6 +9,17 @@ final class SyncModelTests: XCTestCase {
         XCTAssertFalse(companionContractFingerprintIsSupported("different-contract"))
     }
 
+    func testPendingCreatedRunCorrelationSurvivesCacheRoundTrip() throws {
+        var state = CachedState()
+        state.pendingCreatedRunIDs["command-1"] = "run-1"
+
+        let restored = try JSONDecoder().decode(CachedState.self, from: JSONEncoder().encode(state))
+        let legacy = try JSONDecoder().decode(CachedState.self, from: Data(#"{"lastSequence":4}"#.utf8))
+
+        XCTAssertEqual(restored.pendingCreatedRunIDs, ["command-1": "run-1"])
+        XCTAssertEqual(legacy.pendingCreatedRunIDs, [:])
+    }
+
     func testGeneratedSnapshotPayloadKeepsLegacyOptionalCollectionsCompatible() throws {
         let payload = """
         {
@@ -160,6 +171,40 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(projectIconImageData(icon), bytes)
         XCTAssertNil(projectIconImageData("🚀"))
         XCTAssertNil(projectIconImageData("data:image/svg+xml;base64,PHN2Zz4="))
+    }
+
+    func testRunListGroupsByProjectAndKeepsSharedRunsSeparate() {
+        let projects = [
+            Project(id: "project-b", name: "Project B", summary: "", focus: "", status: "active", accent: "blue"),
+            Project(id: "project-a", name: "Project A", summary: "", focus: "", status: "active", accent: "purple")
+        ]
+        func detail(_ id: String, _ projectID: String?) -> RunDetail {
+            RunDetail(
+                run: AgentRun(
+                    id: id,
+                    projectId: projectID,
+                    provider: "codex",
+                    title: id,
+                    status: "draft",
+                    workingDirectory: nil,
+                    summary: "",
+                    createdAt: "1",
+                    updatedAt: "1"
+                ),
+                messages: [],
+                artifacts: []
+            )
+        }
+
+        let groups = groupRunDetailsByProject([
+            detail("a-1", "project-a"),
+            detail("shared-1", nil),
+            detail("b-1", "project-b"),
+            detail("orphaned-1", "removed-project")
+        ], projects: projects)
+
+        XCTAssertEqual(groups.map(\.title), ["Project B", "Project A", "共享任务"])
+        XCTAssertEqual(groups.map { $0.runs.map(\.id) }, [["b-1"], ["a-1"], ["shared-1", "orphaned-1"]])
     }
 
     func testToolCallsAreGroupedIntoTheSameStagesAsMac() {

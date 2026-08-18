@@ -220,6 +220,40 @@ describe('companion sync persistence', () => {
       status: 'completed',
       result: { renamed: true }
     })
+    const updated = database.getCompanionCommand(command.commandId)
+    if (!updated) throw new Error('Expected persisted command.')
+    database.enqueueCompanionCommandUpdate(updated)
+    expect(database.listPendingCompanionEvents()).toEqual([
+      expect.objectContaining({
+        type: 'command.updated',
+        payload: expect.objectContaining({ payload: {}, result: null })
+      })
+    ])
+    database.close()
+  })
+
+  it('keeps iOS-consumed history results in command update events', () => {
+    const database = createDatabase()
+    const now = new Date().toISOString()
+    const command: CompanionCommand<'chat.load-history'> = {
+      commandId: 'history-command',
+      protocolVersion: 3,
+      type: 'chat.load-history',
+      payload: { chatKind: 'agent', chatId: 'run-1', limit: 20 },
+      sourceDeviceId: 'ios-1',
+      status: 'completed',
+      result: { chatId: 'run-1', chatKind: 'agent', records: [], hasMore: false, nextBefore: null },
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }
+
+    database.enqueueCompanionCommandUpdate(command)
+
+    expect(database.listPendingCompanionEvents()[0]?.payload).toMatchObject({
+      payload: {},
+      result: { chatId: 'run-1', records: [] }
+    })
     database.close()
   })
 

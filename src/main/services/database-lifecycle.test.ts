@@ -27,12 +27,12 @@ describe('AppDatabase lifecycle', () => {
     new AppDatabase(path).close()
 
     const database = new DatabaseSync(path)
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
     database.close()
 
     new AppDatabase(path).close()
     const reopened = new DatabaseSync(path)
-    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
+    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
     reopened.close()
   })
 
@@ -52,7 +52,54 @@ describe('AppDatabase lifecycle', () => {
     const upgraded = new DatabaseSync(path)
     const columns = upgraded.prepare('PRAGMA table_info(agent_runs)').all() as Array<{ name: string }>
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['model', 'reasoning_effort']))
-    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
+    upgraded.close()
+  })
+
+  it('repairs pending legacy command events while adding outbox isolation columns', () => {
+    const path = temporaryDatabasePath()
+    new AppDatabase(path).close()
+    const legacy = new DatabaseSync(path)
+    legacy.exec(`
+      DROP INDEX companion_sync_outbox_pending_idx;
+      ALTER TABLE companion_sync_outbox DROP COLUMN dead_lettered_at;
+      ALTER TABLE companion_sync_outbox DROP COLUMN dead_letter_reason;
+      PRAGMA user_version = 5;
+    `)
+    const now = new Date().toISOString()
+    legacy.prepare(`
+      INSERT INTO companion_sync_outbox (
+        event_id, protocol_version, type, entity_type, entity_id, revision,
+        payload_json, occurred_at, published_at, attempts, last_error
+      ) VALUES (?, 3, 'command.updated', 'command', ?, 1, ?, ?, NULL, 42, 'Internal relay error.')
+    `).run('legacy-poison', 'legacy-command', JSON.stringify({
+      commandId: 'legacy-command',
+      protocolVersion: 3,
+      type: 'agent.send-message',
+      payload: { runId: 'run-1', prompt: 'continue' },
+      sourceDeviceId: 'ios-1',
+      status: 'completed',
+      result: { detail: 'x'.repeat(600_000) },
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }), now)
+    legacy.close()
+
+    new AppDatabase(path).close()
+
+    const upgraded = new DatabaseSync(path)
+    const columns = upgraded.prepare('PRAGMA table_info(companion_sync_outbox)').all() as Array<{ name: string }>
+    const repaired = upgraded.prepare(`
+      SELECT payload_json, attempts, last_error FROM companion_sync_outbox WHERE event_id = 'legacy-poison'
+    `).get() as { payload_json: string; attempts: number; last_error: string | null }
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'dead_lettered_at',
+      'dead_letter_reason'
+    ]))
+    expect(JSON.parse(repaired.payload_json)).toMatchObject({ payload: {}, result: null })
+    expect(repaired).toMatchObject({ attempts: 0, last_error: null })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
     upgraded.close()
   })
 

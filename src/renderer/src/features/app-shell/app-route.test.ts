@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   appRouteReducer,
+  creatingRunProjectForRoute,
   creatingRunForRoute,
   initialAppRoute,
   navigationForRoute,
@@ -52,5 +53,15 @@ describe('app route state machine', () => {
 
     expect(selectedRunForRoute(creating)).toBeNull()
     expect(creatingRunForRoute(creating)).toBe(true)
+    expect(creatingRunProjectForRoute(creating)).toBeUndefined()
+  })
+
+  it('keeps the project chosen from a grouped Run list while creating', () => {
+    const creating = appRouteReducer(initialAppRoute, {
+      type: 'open-main',
+      route: { kind: 'runs', runId: null, creating: true, createProjectId: 'project-1' }
+    })
+
+    expect(creatingRunProjectForRoute(creating)).toBe('project-1')
   })
 })

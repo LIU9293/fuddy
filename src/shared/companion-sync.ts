@@ -230,6 +230,7 @@ export interface CompanionMacStatus {
   lastSyncedAt: string | null
   lastError: string | null
   pendingEvents: number
+  isolatedEvents: number
 }
 
 export interface CompanionPairingSession {

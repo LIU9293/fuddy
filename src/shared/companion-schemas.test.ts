@@ -64,4 +64,20 @@ describe('Companion wire schemas', () => {
       payload: { ...command.payload, chatKind: 'unknown' }
     }).success).toBe(false)
   })
+
+  it('accepts a bounded project-scoped Agent Run draft command', () => {
+    const command = {
+      commandId: 'create-run-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent.create-session',
+      createdAt: '2026-08-14T15:00:00.000Z',
+      payload: { runId: 'run-1', projectId: 'project-1', title: '检查同步状态' }
+    }
+
+    expect(commandSchema.safeParse(command).success).toBe(true)
+    expect(commandSchema.safeParse({
+      ...command,
+      payload: { ...command.payload, title: '' }
+    }).success).toBe(false)
+  })
 })

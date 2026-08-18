@@ -34,10 +34,15 @@ import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model
 import { agentToolPresentation } from '../../shared/agent-activity'
 import { updateProjectSchema } from '../../shared/project-validation'
 import { companionCommandSchema, companionEncryptedCommandSchema, syncEventSchema } from '../../shared/companion-schemas'
+import { ZodError } from 'zod'
 import { AppDatabase } from './database'
 import { CredentialVault } from './credential-vault'
 import { TaskDispatcher } from './task-dispatcher'
 import type { WorkspaceFilesService } from './workspace-files'
+import {
+  compactPersistedCompanionCommandEvent,
+  companionCommandResultRequiredOnIos
+} from '../features/companion/companion-repository'
 import {
   companionAccountKeyId,
   companionAttachmentAssociatedData,
@@ -152,6 +157,12 @@ export function partitionCompanionEventBatches<T extends CompanionSyncEventInput
   return batches
 }
 
+export function companionEventFitsTransportLimit(
+  event: CompanionSyncEventInput | CompanionEncryptedSyncEventInput
+): boolean {
+  return Buffer.byteLength(JSON.stringify({ events: [event] }), 'utf8') <= companionEventBatchMaximumBytes
+}
+
 export function companionSocketHeartbeatShouldReconnect(awaitingPong: boolean): boolean {
   return awaitingPong
 }
@@ -238,7 +249,8 @@ export class CompanionSyncService {
       lastConnectedAt: this.lastConnectedAt,
       lastSyncedAt: this.lastSyncedAt,
       lastError: this.lastError,
-      pendingEvents: this.database.countPendingCompanionEvents()
+      pendingEvents: this.database.countPendingCompanionEvents(),
+      isolatedEvents: this.database.countDeadLetterCompanionEvents()
     }
   }
 
@@ -376,7 +388,10 @@ export class CompanionSyncService {
       await this.processPendingCommands()
       this.state = 'connected'
       this.lastSyncedAt = new Date().toISOString()
-      this.lastError = null
+      const isolatedEvents = this.database.countDeadLetterCompanionEvents()
+      this.lastError = isolatedEvents > 0
+        ? `已隔离 ${isolatedEvents} 条无法安全发送的 Companion 事件；其余事件已继续同步。`
+        : null
     } catch (error) {
       this.state = 'error'
       this.lastError = error instanceof Error ? error.message : 'Companion 同步失败。'
@@ -398,24 +413,69 @@ export class CompanionSyncService {
       if (pending.length === 0) return
       const prepared: CompanionEncryptedSyncEventInput[] = []
       for (const event of pending) {
-        const plaintext = syncEventSchema.parse({
-          eventId: event.eventId,
-          protocolVersion: event.protocolVersion,
-          type: event.type,
-          entityType: event.entityType,
-          entityId: event.entityId,
-          revision: event.revision,
-          payload: await this.prepareEventPayload(event),
-          occurredAt: event.occurredAt
-        })
-        prepared.push({
+        const payload = await this.prepareEventPayload(event)
+        let plaintext: CompanionSyncEventInput
+        try {
+          plaintext = syncEventSchema.parse({
+            eventId: event.eventId,
+            protocolVersion: event.protocolVersion,
+            type: event.type,
+            entityType: event.entityType,
+            entityId: event.entityId,
+            revision: event.revision,
+            payload,
+            occurredAt: event.occurredAt
+          })
+        } catch (error) {
+          if (!(error instanceof ZodError)) throw error
+          this.database.markCompanionEventDeadLettered(
+            event.eventId,
+            `Companion 事件契约无效，已隔离：${error.issues[0]?.message ?? '未知格式错误'}`
+          )
+          continue
+        }
+        let encrypted = {
           ...plaintext,
           payload: await sealCompanionJson(
             context.encryptionKey,
             plaintext.payload,
             companionEventAssociatedData(plaintext)
           )
-        } as CompanionEncryptedSyncEventInput)
+        } as CompanionEncryptedSyncEventInput
+        if (!companionEventFitsTransportLimit(encrypted) && event.type === 'command.updated') {
+          const compact = compactPersistedCompanionCommandEvent(event.payload) as Record<string, unknown>
+          const type = compact.type as CompanionCommandType
+          const compactStatus = compact.status === 'completed' && companionCommandResultRequiredOnIos(type)
+            ? 'failed'
+            : compact.status
+          const fallbackPlaintext = syncEventSchema.parse({
+            ...plaintext,
+            payload: {
+              ...compact,
+              status: compactStatus,
+              result: null,
+              error: companionCommandResultRequiredOnIos(type)
+                ? 'Mac 返回的命令结果过大，无法安全同步到 iPhone。请缩小请求范围后重试。'
+                : compact.error
+            }
+          })
+          encrypted = {
+            ...fallbackPlaintext,
+            payload: await sealCompanionJson(
+              context.encryptionKey,
+              fallbackPlaintext.payload,
+              companionEventAssociatedData(fallbackPlaintext)
+            )
+          } as CompanionEncryptedSyncEventInput
+        }
+        if (!companionEventFitsTransportLimit(encrypted)) {
+          this.database.markCompanionEventDeadLettered(
+            event.eventId,
+            `Companion ${event.type} 事件超过 ${companionEventBatchMaximumBytes} 字节传输上限，已隔离以继续同步后续事件。`
+          )
+          continue
+        }
+        prepared.push(encrypted)
       }
       for (const batch of partitionCompanionEventBatches(prepared)) {
         try {
@@ -807,6 +867,19 @@ export class CompanionSyncService {
       }
       case 'agent.stop-message':
         return await this.dispatcher.stopMessage(this.requiredString(payload, 'runId'))
+      case 'agent.create-session': {
+        const projectId = typeof payload.projectId === 'string' && payload.projectId.trim()
+          ? payload.projectId.trim()
+          : null
+        if (projectId && !this.database.listProjects().some((project) => project.id === projectId)) {
+          throw new Error('没有找到所选项目。')
+        }
+        return this.dispatcher.createDraft({
+          id: this.requiredString(payload, 'runId'),
+          projectId,
+          title: this.requiredString(payload, 'title')
+        })
+      }
       case 'agent.rename-session':
         return this.database.renameAgentRun(
           this.requiredString(payload, 'runId'),

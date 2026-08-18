@@ -420,6 +420,11 @@ const commandPayloadSchemas = {
   'assistant.execute-action': z.object({ messageId: identifier, proposalId: identifier, optionId: identifier }),
   'agent.send-message': z.object({ runId: identifier, prompt: z.string().trim().min(1).max(20_000), attachments: z.array(attachment).max(4).optional(), clientMessageId: identifier.optional() }),
   'agent.stop-message': z.object({ runId: identifier }),
+  'agent.create-session': z.object({
+    runId: identifier,
+    projectId: identifier.optional(),
+    title: z.string().trim().min(1).max(200)
+  }),
   'agent.rename-session': z.object({ runId: identifier, title: z.string().trim().min(1).max(200) }),
   'agent.update-draft-prompt': z.object({ runId: identifier, draftPrompt: z.string().max(20_000) }),
   'agent.archive-session': z.object({ runId: identifier }),

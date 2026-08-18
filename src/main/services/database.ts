@@ -64,7 +64,11 @@ import { RunRepository } from '../features/runs/run-repository'
 import { ConnectorRepository } from '../features/connectors/connector-repository'
 import { BriefingRepository } from '../features/briefings/briefing-repository'
 import { AutomationRepository } from '../features/automations/automation-repository'
-import { CompanionRepository } from '../features/companion/companion-repository'
+import {
+  CompanionRepository,
+  compactPersistedCompanionCommandEvent,
+  companionCommandForOutbox
+} from '../features/companion/companion-repository'
 import {
   DecisionRepository,
   type DecisionInspectionInput,
@@ -187,6 +191,11 @@ export class AppDatabase {
         version: 5,
         name: 'add-companion-chat-page-indexes',
         apply: () => ensureCurrentDatabaseSchema(this.database)
+      },
+      {
+        version: 6,
+        name: 'repair-companion-outbox-delivery',
+        apply: () => this.migrateCompanionOutboxDelivery()
       }
     ]
     const currentVersion = databaseSchemaVersion(this.database)
@@ -699,6 +708,10 @@ export class AppDatabase {
     return this.companion.countPending()
   }
 
+  countDeadLetterCompanionEvents(): number {
+    return this.companion.countDeadLetters()
+  }
+
   markCompanionEventPublished(eventId: string, publishedAt: string): void {
     this.companion.markPublished(eventId, publishedAt)
   }
@@ -709,6 +722,10 @@ export class AppDatabase {
 
   markCompanionEventFailed(eventId: string, error: string): void {
     this.companion.markFailed(eventId, error)
+  }
+
+  markCompanionEventDeadLettered(eventId: string, reason: string): void {
+    this.companion.markDeadLettered(eventId, reason)
   }
 
   getCompanionCommand(commandId: string): CompanionCommand | null {
@@ -729,18 +746,42 @@ export class AppDatabase {
   }
 
   enqueueCompanionCommandUpdate(command: CompanionCommand): CompanionOutboxEvent<'command.updated'> {
-    return this.enqueueCompanionEvent('command.updated', 'command', command.commandId, {
-      commandId: command.commandId,
-      protocolVersion: command.protocolVersion,
-      type: command.type,
-      payload: command.payload,
-      sourceDeviceId: command.sourceDeviceId,
-      status: command.status,
-      result: command.result,
-      error: command.error,
-      createdAt: command.createdAt,
-      updatedAt: command.updatedAt
-    })
+    return this.enqueueCompanionEvent(
+      'command.updated',
+      'command',
+      command.commandId,
+      companionCommandForOutbox(command)
+    )
+  }
+
+  private migrateCompanionOutboxDelivery(): void {
+    const columns = this.database.prepare('PRAGMA table_info(companion_sync_outbox)').all() as Array<{ name: string }>
+    const columnNames = new Set(columns.map((column) => column.name))
+    if (!columnNames.has('dead_lettered_at')) {
+      this.database.exec('ALTER TABLE companion_sync_outbox ADD COLUMN dead_lettered_at TEXT')
+    }
+    if (!columnNames.has('dead_letter_reason')) {
+      this.database.exec('ALTER TABLE companion_sync_outbox ADD COLUMN dead_letter_reason TEXT')
+    }
+    this.database.exec(`
+      DROP INDEX IF EXISTS companion_sync_outbox_pending_idx;
+      CREATE INDEX companion_sync_outbox_pending_idx
+      ON companion_sync_outbox(published_at, dead_lettered_at, occurred_at);
+    `)
+
+    const rows = this.database.prepare(`
+      SELECT event_id, payload_json FROM companion_sync_outbox
+      WHERE published_at IS NULL AND dead_lettered_at IS NULL AND type = 'command.updated'
+    `).all() as Array<{ event_id: string; payload_json: string }>
+    const update = this.database.prepare(`
+      UPDATE companion_sync_outbox
+      SET payload_json = ?, attempts = 0, last_error = NULL
+      WHERE event_id = ?
+    `)
+    for (const row of rows) {
+      const payload = parseJson<unknown>(row.payload_json, null)
+      update.run(JSON.stringify(compactPersistedCompanionCommandEvent(payload)), row.event_id)
+    }
   }
 
   private companionTransaction<T>(operation: () => T): T {

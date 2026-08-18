@@ -298,6 +298,57 @@ final class CompanionStore: ObservableObject {
         )
     }
 
+    func createRun(projectID: String?, title: String) async throws -> String {
+        guard let client else { throw RelayError.invalidResponse }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { throw RelayError.invalidResponse }
+        let project = projectID.flatMap { id in state.projects.first(where: { $0.id == id }) }
+        if projectID != nil && project == nil { throw RelayError.invalidResponse }
+
+        let commandID = UUID().uuidString
+        let runID = UUID().uuidString
+        let now = ISO8601DateFormatter().string(from: Date())
+        state.pendingCreatedRunIDs[commandID] = runID
+        state.runs.append(RunDetail(
+            run: AgentRun(
+                id: runID,
+                projectId: projectID,
+                provider: project?.profile.defaultAgent ?? "pi",
+                title: trimmedTitle,
+                status: "draft",
+                workingDirectory: nil,
+                summary: "等待首次消息",
+                createdAt: now,
+                updatedAt: now
+            ),
+            messages: [],
+            artifacts: []
+        ))
+        state.chatPages.append(CompanionChatPage(
+            chatId: runID,
+            chatKind: "agent",
+            records: [],
+            hasMore: false,
+            nextBefore: nil
+        ))
+        persistCache()
+
+        do {
+            _ = try await client.sendCommand(
+                commandID: commandID,
+                type: .agentCreateSession,
+                payload: AgentCreateSessionPayload(runId: runID, projectId: projectID, title: trimmedTitle)
+            )
+            return runID
+        } catch {
+            state.pendingCreatedRunIDs[commandID] = nil
+            state.runs.removeAll { $0.run.id == runID }
+            state.chatPages.removeAll { $0.chatId == runID }
+            persistCache()
+            throw error
+        }
+    }
+
     func sendWorkAssistantMessage(_ prompt: String, attachments: [PendingAttachment] = []) async throws {
         guard let client else { throw RelayError.invalidResponse }
         let uploaded = try await upload(attachments, using: client)
@@ -609,6 +660,21 @@ final class CompanionStore: ObservableObject {
     }
 
     private func applyCommandResult(_ command: CommandResult) -> String? {
+        if command.type == .agentCreateSession {
+            guard let runID = state.pendingCreatedRunIDs[command.commandId] else { return nil }
+            if command.status == "failed" {
+                state.pendingCreatedRunIDs[command.commandId] = nil
+                state.runs.removeAll { $0.run.id == runID }
+                state.chatPages.removeAll { $0.chatId == runID }
+                persistCache()
+                return command.error ?? "Mac 创建 Agent Run 失败。"
+            }
+            if command.status == "completed" {
+                state.pendingCreatedRunIDs[command.commandId] = nil
+                persistCache()
+            }
+            return nil
+        }
         if command.type == .chatLoadHistory {
             if command.status == "completed" {
                 guard let result = command.result,
