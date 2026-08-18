@@ -8,7 +8,7 @@ import type {
   CompanionPairingClaimResult,
   CompanionPairingStartResult,
 } from '../../../src/shared/companion-sync'
-import { companionProtocolVersion } from '../../../src/shared/companion-sync'
+import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
 import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/index'
 
 async function pairedDevices(): Promise<{
@@ -69,7 +69,7 @@ describe('companion relay', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
       status: 'ok',
-      minimumProtocolVersion: 2,
+      minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
       build: '2026-08-18.1'
     })
@@ -77,9 +77,9 @@ describe('companion relay', () => {
 
   it('pairs devices and rejects a second claim', async () => {
     const { pairing, phone } = await pairedDevices()
-    expect(pairing.minimumProtocolVersion).toBe(2)
-    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({ minimumProtocolVersion: 2 })
-    expect(phone.minimumProtocolVersion).toBe(2)
+    expect(pairing.minimumProtocolVersion).toBe(companionMinimumProtocolVersion)
+    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({ minimumProtocolVersion: companionMinimumProtocolVersion })
+    expect(phone.minimumProtocolVersion).toBe(companionMinimumProtocolVersion)
     expect(phone.accountId).toBe(pairing.accountId)
     expect(phone.device.role).toBe('ios')
     expect(phone.deviceToken.length).toBeGreaterThan(20)
@@ -129,7 +129,7 @@ describe('companion relay', () => {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
     const page = await pageResponse.json<CompanionEncryptedEventPage>()
-    expect(page).toMatchObject({ minimumProtocolVersion: 2, protocolVersion: companionProtocolVersion })
+    expect(page).toMatchObject({ minimumProtocolVersion: companionMinimumProtocolVersion, protocolVersion: companionProtocolVersion })
     expect(page.events).toHaveLength(1)
     expect(page.events[0]).toMatchObject(input)
     expect(page.presence).toMatchObject({ macOnline: false, iosDevicesOnline: 0 })

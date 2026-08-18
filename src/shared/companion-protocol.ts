@@ -1,5 +1,5 @@
 export const companionProtocol = {
-  minimumVersion: 2,
+  minimumVersion: 4,
   currentVersion: 4
 } as const
 
