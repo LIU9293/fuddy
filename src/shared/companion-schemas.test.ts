@@ -65,6 +65,41 @@ describe('Companion wire schemas', () => {
     }).success).toBe(false)
   })
 
+  it('accepts an empty lazy chat page for a compact pairing snapshot', () => {
+    const parsed = syncEventSchema.safeParse({
+      eventId: 'snapshot-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'snapshot.created',
+      entityType: 'snapshot',
+      entityId: 'current',
+      revision: 1,
+      occurredAt: '2026-08-14T15:00:00.000Z',
+      payload: {
+        generatedAt: '2026-08-14T15:00:00.000Z',
+        modelLabels: {
+          workAssistant: 'Default',
+          providers: { pi: 'Pi', codex: 'Codex', claude: 'Claude', opencode: 'OpenCode' }
+        },
+        projects: [],
+        goals: [],
+        decisions: [],
+        morningBriefings: [],
+        workAssistantMessages: [],
+        attachments: [],
+        runs: [],
+        chatPages: [{
+          chatId: 'work-assistant',
+          chatKind: 'assistant',
+          records: [],
+          hasMore: true,
+          nextBefore: null
+        }]
+      }
+    })
+
+    expect(parsed.success).toBe(true)
+  })
+
   it('accepts a bounded project-scoped Agent Run draft command', () => {
     const command = {
       commandId: 'create-run-1',

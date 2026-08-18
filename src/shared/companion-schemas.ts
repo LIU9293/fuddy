@@ -286,9 +286,6 @@ const chatPage = z.object({
   hasMore: z.boolean(),
   nextBefore: chatRecordIdentifier.nullable()
 }).superRefine((page, context) => {
-  if (page.hasMore && page.records.length === 0) {
-    context.addIssue({ code: 'custom', path: ['records'], message: 'A paged chat window cannot be empty.' })
-  }
   if (page.records.some((record) => record.chatId !== page.chatId || record.chatKind !== page.chatKind)) {
     context.addIssue({ code: 'custom', path: ['records'], message: 'Chat records must match their page.' })
   }

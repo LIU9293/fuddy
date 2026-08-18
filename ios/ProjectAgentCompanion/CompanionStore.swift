@@ -90,7 +90,6 @@ final class CompanionStore: ObservableObject {
               !loadingOlderChatIDs.contains(chatID),
               let page = chatPage(chatID: chatID),
               page.hasMore,
-              let before = page.nextBefore,
               let client else { return }
         let commandID = UUID().uuidString
         loadingOlderChatIDs.insert(chatID)
@@ -102,7 +101,7 @@ final class CompanionStore: ObservableObject {
                 payload: ChatLoadHistoryPayload(
                     chatKind: page.chatKind,
                     chatId: page.chatId,
-                    before: before,
+                    before: page.nextBefore,
                     limit: companionInitialChatBlockLimit
                 )
             )

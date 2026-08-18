@@ -24,6 +24,7 @@ import type {
   CompanionChatKind,
   CompanionChatPage,
   CompanionRelayChatPage,
+  CompanionRelaySnapshotPayload,
   CompanionRelayWorkAssistantMessage
 } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
@@ -62,6 +63,11 @@ export const companionRequestTimeoutMs = 30_000
 export const companionSocketHeartbeatIntervalMs = 20_000
 export const companionEventBatchMaximumCount = 100
 export const companionEventBatchMaximumBytes = 512 * 1024
+// Pairing snapshots are already bounded to one presentation-ready page per chat,
+// but an established workspace can legitimately exceed the normal batch target.
+// Keep the single baseline below the Relay's encrypted-payload ceiling instead
+// of dead-lettering it and leaving a newly paired phone without canonical state.
+export const companionSnapshotEventMaximumBytes = 1_900_000
 export const companionToolSummaryMaximumCharacters = 600
 const companionAttachmentRequestTimeoutMs = 120_000
 const companionEventSyncDebounceMs = 500
@@ -158,9 +164,27 @@ export function partitionCompanionEventBatches<T extends CompanionSyncEventInput
 }
 
 export function companionEventFitsTransportLimit(
-  event: CompanionSyncEventInput | CompanionEncryptedSyncEventInput
+  event: CompanionSyncEventInput | CompanionEncryptedSyncEventInput,
+  maximumBytes = companionEventBatchMaximumBytes
 ): boolean {
-  return Buffer.byteLength(JSON.stringify({ events: [event] }), 'utf8') <= companionEventBatchMaximumBytes
+  return Buffer.byteLength(JSON.stringify({ events: [event] }), 'utf8') <= maximumBytes
+}
+
+export function compactCompanionPairingSnapshot(
+  snapshot: CompanionRelaySnapshotPayload
+): CompanionRelaySnapshotPayload {
+  return {
+    ...snapshot,
+    morningBriefings: [],
+    workAssistantMessages: [],
+    runs: snapshot.runs.map((detail) => ({ ...detail, messages: [] })),
+    chatPages: snapshot.chatPages?.map((page) => ({
+      ...page,
+      records: [],
+      hasMore: page.hasMore || page.records.length > 0,
+      nextBefore: null
+    }))
+  }
 }
 
 export function companionSocketHeartbeatShouldReconnect(awaitingPong: boolean): boolean {
@@ -221,6 +245,7 @@ export class CompanionSyncService {
   private reconnectAttempt = 0
   private activeSync: Promise<CompanionMacStatus> | null = null
   private readonly activeCommands = new Map<string, Promise<void>>()
+  private readonly activeRunCreations = new Map<string, Promise<void>>()
   private syncRequested = false
   private stopped = false
   private readonly listeners = new Set<(status: CompanionMacStatus) => void>()
@@ -442,6 +467,21 @@ export class CompanionSyncService {
             companionEventAssociatedData(plaintext)
           )
         } as CompanionEncryptedSyncEventInput
+        if (!companionEventFitsTransportLimit(encrypted, companionSnapshotEventMaximumBytes)
+          && event.type === 'snapshot.created') {
+          const compactPlaintext = syncEventSchema.parse({
+            ...plaintext,
+            payload: compactCompanionPairingSnapshot(plaintext.payload as CompanionRelaySnapshotPayload)
+          })
+          encrypted = {
+            ...compactPlaintext,
+            payload: await sealCompanionJson(
+              context.encryptionKey,
+              compactPlaintext.payload,
+              companionEventAssociatedData(compactPlaintext)
+            )
+          } as CompanionEncryptedSyncEventInput
+        }
         if (!companionEventFitsTransportLimit(encrypted) && event.type === 'command.updated') {
           const compact = compactPersistedCompanionCommandEvent(event.payload) as Record<string, unknown>
           const type = compact.type as CompanionCommandType
@@ -468,10 +508,13 @@ export class CompanionSyncService {
             )
           } as CompanionEncryptedSyncEventInput
         }
-        if (!companionEventFitsTransportLimit(encrypted)) {
+        const maximumEventBytes = event.type === 'snapshot.created'
+          ? companionSnapshotEventMaximumBytes
+          : companionEventBatchMaximumBytes
+        if (!companionEventFitsTransportLimit(encrypted, maximumEventBytes)) {
           this.database.markCompanionEventDeadLettered(
             event.eventId,
-            `Companion ${event.type} 事件超过 ${companionEventBatchMaximumBytes} 字节传输上限，已隔离以继续同步后续事件。`
+            `Companion ${event.type} 事件超过 ${maximumEventBytes} 字节传输上限，已隔离以继续同步后续事件。`
           )
           continue
         }
@@ -766,12 +809,24 @@ export class CompanionSyncService {
       )
       return companionCommandSchema.parse({ ...encrypted, payload })
     }))
-    for (const remoteCommand of commands) this.scheduleCommand(remoteCommand)
+    const createCommands = commands.filter((command) => command.type === 'agent.create-session')
+    await Promise.all(createCommands.map((command) => this.scheduleCommand(command)))
+    for (const remoteCommand of commands) {
+      if (remoteCommand.type === 'agent.create-session') continue
+      const runId = this.commandRunId(remoteCommand)
+      const activeCreation = runId ? this.activeRunCreations.get(runId) : null
+      if (activeCreation) await activeCreation
+      this.scheduleCommand(remoteCommand)
+    }
     if (commands.length >= 100) this.scheduleEventSync()
   }
 
-  private scheduleCommand(remoteCommand: CompanionCommand): void {
-    if (this.activeCommands.has(remoteCommand.commandId)) return
+  private scheduleCommand(remoteCommand: CompanionCommand): Promise<void> {
+    const active = this.activeCommands.get(remoteCommand.commandId)
+    if (active) return active
+    const createdRunId = remoteCommand.type === 'agent.create-session'
+      ? this.commandRunId(remoteCommand)
+      : null
     const operation = this.executeCommand(remoteCommand)
       .catch((error) => {
         this.lastError = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
@@ -779,9 +834,14 @@ export class CompanionSyncService {
       })
       .finally(() => {
         this.activeCommands.delete(remoteCommand.commandId)
+        if (createdRunId && this.activeRunCreations.get(createdRunId) === operation) {
+          this.activeRunCreations.delete(createdRunId)
+        }
         this.scheduleEventSync()
       })
     this.activeCommands.set(remoteCommand.commandId, operation)
+    if (createdRunId) this.activeRunCreations.set(createdRunId, operation)
+    return operation
   }
 
   private async executeCommand(remoteCommand: CompanionCommand): Promise<void> {
@@ -796,6 +856,24 @@ export class CompanionSyncService {
       return
     }
     if (recovery === 'fail-interrupted') {
+      if (remoteCommand.type === 'agent.create-session') {
+        const runId = this.commandRunId(remoteCommand)
+        const canonicalRun = runId ? this.database.listRuns().find((run) => run.id === runId) : null
+        if (canonicalRun) {
+          const updated = this.database.updateCompanionCommand(
+            remoteCommand.commandId,
+            'completed',
+            this.database.getAgentRunDetail(canonicalRun.id)
+          )
+          this.database.enqueueCompanionCommandUpdate(updated)
+          this.emitDataChanged()
+          await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, {
+            status: 'completed',
+            result: updated.result
+          })
+          return
+        }
+      }
       const error = 'Mac 在执行远程操作期间中断；为避免重复执行，请确认结果后重新操作。'
       const updated = this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, error)
       this.database.enqueueCompanionCommandUpdate(updated)
@@ -823,6 +901,12 @@ export class CompanionSyncService {
     this.emitDataChanged()
     await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'completed', result })
     this.scheduleEventSync()
+  }
+
+  private commandRunId(command: CompanionCommand): string | null {
+    if (!command.payload || typeof command.payload !== 'object') return null
+    const runId = (command.payload as Record<string, unknown>).runId
+    return typeof runId === 'string' && runId.trim() ? runId.trim() : null
   }
 
   private async performCommand(remoteCommand: CompanionCommand): Promise<unknown> {
