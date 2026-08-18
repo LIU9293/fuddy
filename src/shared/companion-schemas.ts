@@ -14,7 +14,6 @@ import type {
   CompanionRelayEventPayloadMap,
   CompanionSyncEventInput
 } from './companion-sync'
-import { companionLatestChatCursor } from './companion-chat'
 
 const identifier = z.string().trim().min(1).max(200)
 const chatRecordIdentifier = z.string().trim().min(1).max(260)
@@ -290,11 +289,17 @@ const chatPage = z.object({
   if (page.records.some((record) => record.chatId !== page.chatId || record.chatKind !== page.chatKind)) {
     context.addIssue({ code: 'custom', path: ['records'], message: 'Chat records must match their page.' })
   }
-  const expectedCursor = page.hasMore
-    ? page.records[0]?.id ?? companionLatestChatCursor
+  const expectedCursor = page.hasMore && page.records.length > 0
+    ? page.records[0]?.id
     : null
-  if (page.nextBefore !== expectedCursor) {
-    context.addIssue({ code: 'custom', path: ['nextBefore'], message: 'Chat history cursor must reference the first record.' })
+  if ((!page.hasMore && page.nextBefore !== null)
+    || (page.hasMore && page.nextBefore === null)
+    || (expectedCursor && page.nextBefore !== expectedCursor)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['nextBefore'],
+      message: 'Chat history cursor must reference the first record or an explicit resume position.'
+    })
   }
 })
 const modelLabels = z.object({

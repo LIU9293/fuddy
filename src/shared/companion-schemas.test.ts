@@ -104,6 +104,19 @@ describe('Companion wire schemas', () => {
     })
 
     expect(parsed.success).toBe(true)
+    expect(syncEventSchema.safeParse({
+      ...parsed.data,
+      payload: {
+        ...parsed.data?.payload,
+        chatPages: [{
+          chatId: 'work-assistant',
+          chatKind: 'assistant',
+          records: [],
+          hasMore: true,
+          nextBefore: 'assistant-message-oversized'
+        }]
+      }
+    }).success).toBe(true)
   })
 
   it('accepts a retained encrypted v3 command only through the pending-command drain schema', () => {

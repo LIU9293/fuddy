@@ -276,7 +276,7 @@ describe('Companion sync transport policy', () => {
     expect(compact.runs[0]).toMatchObject({ messages: [], artifacts: [{ id: 'artifact-1' }] })
     expect(compact.attachments).toEqual([{ id: 'attachment-1' }])
     expect(compact.chatPages).toEqual([expect.objectContaining({
-      chatId: 'run-1', records: [], hasMore: true, nextBefore: companionLatestChatCursor
+      chatId: 'run-1', records: [], hasMore: true, nextBefore: 'record-1'
     })])
   })
 
@@ -301,6 +301,26 @@ describe('Companion sync transport policy', () => {
     })
     expect(Buffer.byteLength(JSON.stringify(compact), 'utf8'))
       .toBeLessThanOrEqual(companionCommandChatPageMaximumBytes)
+  })
+
+  it('advances past a single chat record that cannot fit the command-page budget', () => {
+    const compact = compactCompanionChatPage({
+      chatId: 'run-1',
+      chatKind: 'agent',
+      records: [{
+        id: 'agent-message-oversized-record',
+        content: 'x'.repeat(companionCommandChatPageMaximumBytes)
+      }] as never[],
+      hasMore: true,
+      nextBefore: 'older-record'
+    }, companionCommandChatPageMaximumBytes)
+
+    expect(compact).toMatchObject({
+      records: [],
+      hasMore: true,
+      nextBefore: 'agent-message-oversized-record'
+    })
+    expect(compact.nextBefore).not.toBe(companionLatestChatCursor)
   })
 
   it('isolates an oversized event and continues draining later events', async () => {
@@ -477,7 +497,7 @@ describe('Companion sync transport policy', () => {
     expect(publishedPage).toMatchObject({
       records: [],
       hasMore: true,
-      nextBefore: companionLatestChatCursor
+      nextBefore: 'assistant-message-relay-ceiling-message'
     })
     expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 0 })
     service.stop()

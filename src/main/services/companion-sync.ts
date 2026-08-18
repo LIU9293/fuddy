@@ -205,7 +205,9 @@ export function compactCompanionChatPage(
     ...page,
     records: [],
     hasMore: page.hasMore || page.records.length > 0,
-    nextBefore: page.hasMore || page.records.length > 0 ? companionLatestChatCursor : null
+    nextBefore: page.hasMore || page.records.length > 0
+      ? page.records[page.records.length - 1]?.id ?? page.nextBefore ?? companionLatestChatCursor
+      : null
   }
 }
 
