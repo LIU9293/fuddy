@@ -34,7 +34,7 @@ import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../s
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { agentToolPresentation } from '../../shared/agent-activity'
 import { updateProjectSchema } from '../../shared/project-validation'
-import { companionCommandSchema, companionEncryptedCommandSchema, syncEventSchema } from '../../shared/companion-schemas'
+import { companionCommandSchema, companionPendingEncryptedCommandSchema, syncEventSchema } from '../../shared/companion-schemas'
 import { ZodError } from 'zod'
 import { AppDatabase } from './database'
 import { CredentialVault } from './credential-vault'
@@ -55,6 +55,7 @@ import {
   sealCompanionAttachment,
   sealCompanionJson
 } from '../../shared/companion-crypto'
+import { companionLatestChatCursor } from '../../shared/companion-chat'
 
 const configurationKey = 'companion.mac-configuration'
 export const companionFallbackSyncIntervalMs = 60_000
@@ -68,6 +69,8 @@ export const companionEventBatchMaximumBytes = 512 * 1024
 // Keep the single baseline below the Relay's encrypted-payload ceiling instead
 // of dead-lettering it and leaving a newly paired phone without canonical state.
 export const companionSnapshotEventMaximumBytes = 1_900_000
+export const companionSnapshotChatPageMaximumBytes = 1_300_000
+export const companionCommandChatPageMaximumBytes = 320 * 1024
 export const companionToolSummaryMaximumCharacters = 600
 const companionAttachmentRequestTimeoutMs = 120_000
 const companionEventSyncDebounceMs = 500
@@ -178,21 +181,31 @@ export function compactCompanionPairingSnapshot(
     morningBriefings: [],
     workAssistantMessages: [],
     runs: snapshot.runs.map((detail) => ({ ...detail, messages: [] })),
-    chatPages: snapshot.chatPages?.map((page) => ({
-      ...page,
-      records: [],
-      hasMore: page.hasMore || page.records.length > 0,
-      nextBefore: null
-    }))
+    chatPages: snapshot.chatPages?.map((page) => compactCompanionChatPage(page))
   }
 }
 
-export function compactCompanionChatPage(page: CompanionRelayChatPage): CompanionRelayChatPage {
+export function compactCompanionChatPage(
+  page: CompanionRelayChatPage,
+  maximumBytes = companionSnapshotChatPageMaximumBytes
+): CompanionRelayChatPage {
+  let records = page.records
+  while (records.length > 0) {
+    const hasMore = page.hasMore || records.length < page.records.length
+    const candidate = {
+      ...page,
+      records,
+      hasMore,
+      nextBefore: hasMore ? records[0]?.id ?? companionLatestChatCursor : null
+    }
+    if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') <= maximumBytes) return candidate
+    records = records.slice(Math.max(1, Math.ceil(records.length / 2)))
+  }
   return {
     ...page,
     records: [],
     hasMore: page.hasMore || page.records.length > 0,
-    nextBefore: null
+    nextBefore: page.hasMore || page.records.length > 0 ? companionLatestChatCursor : null
   }
 }
 
@@ -831,13 +844,17 @@ export class CompanionSyncService {
     })
     const body = await responseJson<{ commands: unknown[] }>(response)
     const commands = await Promise.all(body.commands.map(async (value) => {
-      const encrypted = companionEncryptedCommandSchema.parse(value)
+      const encrypted = companionPendingEncryptedCommandSchema.parse(value)
       const payload = await openCompanionJson(
         context.encryptionKey,
         encrypted.payload,
         companionCommandAssociatedData(encrypted)
       )
-      return companionCommandSchema.parse({ ...encrypted, payload })
+      return companionCommandSchema.parse({
+        ...encrypted,
+        protocolVersion: companionProtocolVersion,
+        payload
+      })
     }))
     const createCommands = commands.filter((command) => command.type === 'agent.create-session')
     await Promise.all(createCommands.map((command) => this.scheduleCommand(command)))
@@ -1014,13 +1031,18 @@ export class CompanionSyncService {
         if (chatKind !== 'assistant' && chatKind !== 'agent') throw new Error('聊天类型无效。')
         const limit = Number(payload.limit)
         if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('聊天历史分页大小无效。')
+        const before = typeof payload.before === 'string' ? payload.before : null
         const page = this.database.getCompanionChatPage(
           chatKind as CompanionChatKind,
           this.requiredString(payload, 'chatId'),
-          typeof payload.before === 'string' ? payload.before : null,
-          limit
+          before === companionLatestChatCursor ? null : before,
+          before === companionLatestChatCursor ? Math.min(limit, 20) : limit
         )
-        return await companionChatPageForRelay(page, (message) => this.prepareWorkAssistantMessage(message))
+        const prepared = await companionChatPageForRelay(
+          page,
+          (message) => this.prepareWorkAssistantMessage(message)
+        )
+        return compactCompanionChatPage(prepared, companionCommandChatPageMaximumBytes)
       }
       case 'artifact.request-upload': {
         const artifactId = this.requiredString(payload, 'artifactId')

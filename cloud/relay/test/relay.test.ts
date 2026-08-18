@@ -321,7 +321,7 @@ describe('companion relay', () => {
     expect(JSON.stringify(completed)).not.toContain('accepted')
   })
 
-  it('purges retained pre-v4 events and commands when the protocol-v4 migration has not run', async () => {
+  it('preserves retained encrypted events and commands across the protocol-v4 migration', async () => {
     const { pairing, phone } = await pairedDevices()
     const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
     const now = new Date().toISOString()
@@ -358,13 +358,17 @@ describe('companion relay', () => {
       headers: { Authorization: `Bearer ${pairing.macToken}` }
     })
     expect(pendingResponse.status).toBe(200)
-    expect(await pendingResponse.json<{ commands: CompanionEncryptedCommand[] }>()).toEqual({ commands: [] })
+    expect(await pendingResponse.json<{ commands: CompanionEncryptedCommand[] }>()).toMatchObject({
+      commands: [{ commandId: 'legacy-command', protocolVersion: 3, status: 'queued' }]
+    })
 
     const pageResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
     expect(pageResponse.status).toBe(200)
-    expect((await pageResponse.json<CompanionEncryptedEventPage>()).events).toEqual([])
+    expect((await pageResponse.json<CompanionEncryptedEventPage>()).events).toEqual([
+      expect.objectContaining({ eventId: 'legacy-event', protocolVersion: 3 })
+    ])
     expect(await runInDurableObject(stub, (_instance, state) => (
       state.storage.sql.exec<{ id: number }>(
         'SELECT id FROM _sql_schema_migrations WHERE id = 5'

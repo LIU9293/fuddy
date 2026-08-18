@@ -22,6 +22,7 @@ import {
   companionAgentMessageForRelay,
   companionChatPageForRelay,
   companionAttachmentStorageId,
+  compactCompanionChatPage,
   compactCompanionPairingSnapshot,
   companionCommandUpdateForRelay,
   companionCommandRecovery,
@@ -33,6 +34,8 @@ import {
   companionFallbackSyncIntervalMs,
   companionReconnectDelayMs,
   companionSnapshotEventMaximumBytes,
+  companionSnapshotChatPageMaximumBytes,
+  companionCommandChatPageMaximumBytes,
   companionRequestTimeoutMs,
   companionSocketHeartbeatIntervalMs,
   companionSocketHeartbeatShouldReconnect,
@@ -42,6 +45,7 @@ import {
   partitionCompanionEventBatches,
   CompanionSyncService
 } from './companion-sync'
+import { companionLatestChatCursor } from '../../shared/companion-chat'
 import type { CredentialVault } from './credential-vault'
 import { AppDatabase } from './database'
 import { createTestDatabase } from '../test-support/project-fixtures'
@@ -261,7 +265,7 @@ describe('Companion sync transport policy', () => {
       chatPages: [{
         chatId: 'run-1',
         chatKind: 'agent',
-        records: [{ id: 'record-1' }] as never[],
+        records: [{ id: 'record-1', content: 'x'.repeat(companionSnapshotChatPageMaximumBytes) }] as never[],
         hasMore: false,
         nextBefore: null
       }]
@@ -272,8 +276,31 @@ describe('Companion sync transport policy', () => {
     expect(compact.runs[0]).toMatchObject({ messages: [], artifacts: [{ id: 'artifact-1' }] })
     expect(compact.attachments).toEqual([{ id: 'attachment-1' }])
     expect(compact.chatPages).toEqual([expect.objectContaining({
-      chatId: 'run-1', records: [], hasMore: true, nextBefore: null
+      chatId: 'run-1', records: [], hasMore: true, nextBefore: companionLatestChatCursor
     })])
+  })
+
+  it('keeps the newest bounded chat records and a usable cursor when compacting a page', () => {
+    const records = Array.from({ length: 12 }, (_, index) => ({
+      id: `record-${index}`,
+      content: 'x'.repeat(60_000)
+    })) as never[]
+    const compact = compactCompanionChatPage({
+      chatId: 'run-1',
+      chatKind: 'agent',
+      records,
+      hasMore: false,
+      nextBefore: null
+    }, companionCommandChatPageMaximumBytes)
+
+    expect(compact.records.length).toBeGreaterThan(0)
+    expect(compact.records.length).toBeLessThan(records.length)
+    expect(compact).toMatchObject({
+      hasMore: true,
+      nextBefore: compact.records[0]?.id
+    })
+    expect(Buffer.byteLength(JSON.stringify(compact), 'utf8'))
+      .toBeLessThanOrEqual(companionCommandChatPageMaximumBytes)
   })
 
   it('isolates an oversized event and continues draining later events', async () => {
@@ -447,7 +474,11 @@ describe('Companion sync transport policy', () => {
 
     const status = await service.syncNow()
 
-    expect(publishedPage).toMatchObject({ records: [], hasMore: true, nextBefore: null })
+    expect(publishedPage).toMatchObject({
+      records: [],
+      hasMore: true,
+      nextBefore: companionLatestChatCursor
+    })
     expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 0 })
     service.stop()
     database.close()
@@ -714,6 +745,67 @@ describe('Companion sync transport policy', () => {
     await vi.waitFor(() => {
       expect(database.getCompanionCommand(command.commandId)?.status).toBe('completed')
     })
+    service.stop()
+    database.close()
+  })
+
+  it('drains a retained encrypted v3 command and reports its result with protocol v4', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-legacy-command-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    const legacyCommand: CompanionCommand = {
+      commandId: 'legacy-v3-send',
+      protocolVersion: 3,
+      type: 'agent.send-message',
+      payload: { runId: 'legacy-run', prompt: 'Preserve this action' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    const wireCommand = await encryptedCommand(legacyCommand)
+    const sendMessage = vi.fn(async () => ({ accepted: true }))
+    let served = false
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') {
+        if (served) return jsonResponse({ commands: [] })
+        served = true
+        return jsonResponse({ commands: [wireCommand] })
+      }
+      if (url.pathname.startsWith('/v1/commands/') && method === 'PATCH') return jsonResponse({ ok: true })
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      { sendMessage } as unknown as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await service.syncNow()
+    await vi.waitFor(() => expect(database.getCompanionCommand(legacyCommand.commandId)?.status).toBe('completed'))
+
+    expect(sendMessage).toHaveBeenCalledWith('legacy-run', 'Preserve this action', expect.any(Function), undefined)
+    expect(database.getCompanionCommand(legacyCommand.commandId)?.protocolVersion).toBe(companionProtocolVersion)
     service.stop()
     database.close()
   })

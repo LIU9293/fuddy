@@ -14,6 +14,7 @@ import type {
   CompanionRelayEventPayloadMap,
   CompanionSyncEventInput
 } from './companion-sync'
+import { companionLatestChatCursor } from './companion-chat'
 
 const identifier = z.string().trim().min(1).max(200)
 const chatRecordIdentifier = z.string().trim().min(1).max(260)
@@ -289,7 +290,9 @@ const chatPage = z.object({
   if (page.records.some((record) => record.chatId !== page.chatId || record.chatKind !== page.chatKind)) {
     context.addIssue({ code: 'custom', path: ['records'], message: 'Chat records must match their page.' })
   }
-  const expectedCursor = page.hasMore ? page.records[0]?.id ?? null : null
+  const expectedCursor = page.hasMore
+    ? page.records[0]?.id ?? companionLatestChatCursor
+    : null
   if (page.nextBefore !== expectedCursor) {
     context.addIssue({ code: 'custom', path: ['nextBefore'], message: 'Chat history cursor must reference the first record.' })
   }
@@ -481,6 +484,29 @@ export const encryptedCommandSchema = z.object({
 
 export const companionEncryptedCommandSchema = z.object({
   ...commandBase,
+  type: z.enum(companionCommandTypes),
+  payload: companionEncryptedEnvelopeSchema,
+  sourceDeviceId: identifier,
+  status: z.enum(['queued', 'delivered', 'executing', 'completed', 'failed']),
+  result: z.null(),
+  error: z.null(),
+  updatedAt: isoDate
+}).transform((command) => command as CompanionEncryptedCommand)
+
+const retainedEncryptedCommandProtocolVersion = z.union([
+  z.literal(2),
+  z.literal(3),
+  protocolVersion
+])
+
+/**
+ * Pending Relay commands may predate a protocol-minimum bump. Their payload is
+ * still authenticated with the original version, so Mac must parse and open
+ * that envelope before normalizing the command to the current internal model.
+ */
+export const companionPendingEncryptedCommandSchema = z.object({
+  ...commandBase,
+  protocolVersion: retainedEncryptedCommandProtocolVersion,
   type: z.enum(companionCommandTypes),
   payload: companionEncryptedEnvelopeSchema,
   sourceDeviceId: identifier,

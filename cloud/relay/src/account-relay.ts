@@ -241,16 +241,9 @@ export class AccountRelay extends DurableObject<Env> {
       'SELECT id FROM _sql_schema_migrations WHERE id = 5'
     ).toArray()[0]
     if (!protocolV4Migration) {
-      // Migration 4 may already have run while v2/v3 were still supported.
-      // Purge retained encrypted rows that the now-v4-only clients cannot parse.
-      this.ctx.storage.sql.exec(
-        'DELETE FROM events WHERE protocol_version < ?',
-        companionMinimumProtocolVersion
-      )
-      this.ctx.storage.sql.exec(
-        'DELETE FROM commands WHERE protocol_version < ?',
-        companionMinimumProtocolVersion
-      )
+      // Retained encrypted v2/v3 events remain replayable by the v4 iOS client,
+      // and the v4 Mac explicitly drains retained encrypted commands. Do not
+      // discard acknowledged Mac mutations or queued user actions here.
       this.ctx.storage.sql.exec(
         `INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (5, datetime('now'))`
       )
