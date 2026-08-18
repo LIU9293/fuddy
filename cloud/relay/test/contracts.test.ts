@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
 import { commandSchema, syncEventSchema } from '../src/schemas'
 
 const occurredAt = '2026-08-12T05:00:00.000Z'
@@ -13,7 +14,7 @@ describe('companion protocol contracts', () => {
   it('binds each event type to its entity type and requires an encrypted payload', () => {
     const valid = {
       eventId: 'event-1',
-      protocolVersion: 2,
+      protocolVersion: companionProtocolVersion,
       type: 'agent-message.created',
       entityType: 'agent-message',
       entityId: 'message-1',
@@ -29,7 +30,7 @@ describe('companion protocol contracts', () => {
   it('rejects unsupported protocol versions', () => {
     expect(syncEventSchema.safeParse({
       eventId: 'event-1',
-      protocolVersion: 1,
+      protocolVersion: companionMinimumProtocolVersion - 1,
       type: 'agent-run.archived',
       entityType: 'agent-run',
       entityId: 'run-1',
@@ -40,7 +41,7 @@ describe('companion protocol contracts', () => {
   })
 
   it('accepts only encrypted command payloads', () => {
-    const base = { commandId: 'command-1', protocolVersion: 2, createdAt: occurredAt }
+    const base = { commandId: 'command-1', protocolVersion: companionProtocolVersion, createdAt: occurredAt }
     expect(commandSchema.safeParse({
       ...base,
       type: 'agent.rename-session',
@@ -56,7 +57,7 @@ describe('companion protocol contracts', () => {
   it('preserves an opaque encrypted payload without inspecting business data', () => {
     const parsed = commandSchema.parse({
       commandId: 'command-1',
-      protocolVersion: 2,
+      protocolVersion: companionProtocolVersion,
       createdAt: occurredAt,
       type: 'agent.rename-session',
       payload: encryptedPayload
@@ -67,7 +68,7 @@ describe('companion protocol contracts', () => {
 
   it('rejects malformed nonces and key identifiers', () => {
     expect(commandSchema.safeParse({
-      commandId: 'command-attachment', protocolVersion: 2, createdAt: occurredAt,
+      commandId: 'command-attachment', protocolVersion: companionProtocolVersion, createdAt: occurredAt,
       type: 'assistant.send-message', payload: { ...encryptedPayload, nonce: 'short' }
     }).success).toBe(false)
   })
