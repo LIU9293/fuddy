@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { companionEventDefinitions, companionProtocolVersion } from '../../../shared/companion-sync'
 import type {
   CompanionCommand,
+  CompanionCommandRecord,
   CompanionCommandStatus,
   CompanionEntityType,
   CompanionOutboxPayloadMap,
@@ -12,6 +13,15 @@ import type {
 
 type SqlRow = Record<string, string | number | null>
 const pruneIntervalMs = 24 * 60 * 60 * 1_000
+const companionCommandResultEventTypes = new Set<CompanionCommand['type']>([
+  'chat.load-history',
+  'artifact.request-upload'
+])
+const companionCommandErrorMaximumCharacters = 2_000
+
+export function companionCommandResultRequiredOnIos(type: CompanionCommand['type']): boolean {
+  return companionCommandResultEventTypes.has(type)
+}
 
 function parseJson<T>(value: string | null, fallback: T): T {
   if (!value) return fallback
@@ -19,6 +29,45 @@ function parseJson<T>(value: string | null, fallback: T): T {
     return JSON.parse(value) as T
   } catch {
     return fallback
+  }
+}
+
+export function companionCommandForOutbox(command: CompanionCommand): CompanionCommandRecord {
+  return {
+    commandId: command.commandId,
+    protocolVersion: command.protocolVersion,
+    type: command.type,
+    // iOS correlates command updates by commandId and does not read the original
+    // command input from this event. Avoid echoing prompts or project payloads.
+    payload: {},
+    sourceDeviceId: command.sourceDeviceId,
+    status: command.status,
+    result: companionCommandResultRequiredOnIos(command.type) ? command.result : null,
+    error: command.error?.slice(0, companionCommandErrorMaximumCharacters) ?? null,
+    createdAt: command.createdAt,
+    updatedAt: command.updatedAt
+  }
+}
+
+export function compactPersistedCompanionCommandEvent(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object') return payload
+  const record = payload as Partial<CompanionCommandRecord>
+  if (typeof record.type !== 'string') return payload
+  return {
+    commandId: record.commandId,
+    protocolVersion: record.protocolVersion,
+    type: record.type,
+    payload: {},
+    sourceDeviceId: record.sourceDeviceId,
+    status: record.status,
+    result: companionCommandResultRequiredOnIos(record.type as CompanionCommand['type'])
+      ? record.result ?? null
+      : null,
+    error: typeof record.error === 'string'
+      ? record.error.slice(0, companionCommandErrorMaximumCharacters)
+      : null,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
   }
 }
 
@@ -63,8 +112,9 @@ export class CompanionRepository {
         `
       INSERT INTO companion_sync_outbox (
         event_id, protocol_version, type, entity_type, entity_id, revision,
-        payload_json, occurred_at, published_at, attempts, last_error
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL)
+        payload_json, occurred_at, published_at, attempts, last_error,
+        dead_lettered_at, dead_letter_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, NULL)
     `
       )
       .run(
@@ -88,7 +138,9 @@ export class CompanionRepository {
       this.database
         .prepare(
           `
-      SELECT * FROM companion_sync_outbox WHERE published_at IS NULL ORDER BY rowid ASC LIMIT ?
+      SELECT * FROM companion_sync_outbox
+      WHERE published_at IS NULL AND dead_lettered_at IS NULL
+      ORDER BY rowid ASC LIMIT ?
     `
         )
         .all(limit) as SqlRow[]
@@ -113,7 +165,20 @@ export class CompanionRepository {
     return Number(
       (
         this.database
-          .prepare('SELECT COUNT(*) AS count FROM companion_sync_outbox WHERE published_at IS NULL')
+          .prepare(`
+            SELECT COUNT(*) AS count FROM companion_sync_outbox
+            WHERE published_at IS NULL AND dead_lettered_at IS NULL
+          `)
+          .get() as SqlRow
+      ).count
+    )
+  }
+
+  countDeadLetters(): number {
+    return Number(
+      (
+        this.database
+          .prepare('SELECT COUNT(*) AS count FROM companion_sync_outbox WHERE dead_lettered_at IS NOT NULL')
           .get() as SqlRow
       ).count
     )
@@ -159,6 +224,19 @@ export class CompanionRepository {
       .run(error.slice(0, 2_000), eventId)
   }
 
+  markDeadLettered(eventId: string, reason: string): void {
+    const normalizedReason = reason.slice(0, 2_000)
+    this.database
+      .prepare(
+        `
+      UPDATE companion_sync_outbox
+      SET dead_lettered_at = ?, dead_letter_reason = ?, attempts = attempts + 1, last_error = ?
+      WHERE event_id = ? AND published_at IS NULL AND dead_lettered_at IS NULL
+    `
+      )
+      .run(new Date().toISOString(), normalizedReason, normalizedReason, eventId)
+  }
+
   getCommand(commandId: string): CompanionCommand | null {
     const row = this.database.prepare('SELECT * FROM companion_remote_commands WHERE command_id = ?').get(commandId) as
       SqlRow | undefined
@@ -186,6 +264,7 @@ export class CompanionRepository {
         status, result_json, error, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(command_id) DO UPDATE SET
+        protocol_version = excluded.protocol_version,
         status = excluded.status, result_json = excluded.result_json,
         error = excluded.error, updated_at = excluded.updated_at
     `

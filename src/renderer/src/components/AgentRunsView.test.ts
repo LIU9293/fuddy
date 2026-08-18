@@ -71,6 +71,19 @@ describe('Agent Run live activity timeline', () => {
     expect(markup).not.toContain('正在思考…')
   })
 
+  it('renders the initial thinking state as a compact progress row', () => {
+    const markup = renderToStaticMarkup(createElement(RunLiveActivity, {
+      activities: [],
+      streamingText: '',
+      approval: null,
+      onApproval: async () => undefined
+    }))
+
+    expect(markup).toContain('agent-run-live-idle')
+    expect(markup).toContain('spin')
+    expect(markup).toContain('<span>正在思考…</span>')
+  })
+
   it('turns commentary into an activity when the final answer starts streaming', () => {
     const commentary = applyAgentLiveUpdateForRun({}, 'run-1', {
       type: 'message_delta',

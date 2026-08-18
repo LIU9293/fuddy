@@ -237,6 +237,17 @@ export class AccountRelay extends DurableObject<Env> {
         `INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (4, datetime('now'))`
       )
     }
+    const protocolV4Migration = this.ctx.storage.sql.exec<{ id: number }>(
+      'SELECT id FROM _sql_schema_migrations WHERE id = 5'
+    ).toArray()[0]
+    if (!protocolV4Migration) {
+      // Retained encrypted v2/v3 events remain replayable by the v4 iOS client,
+      // and the v4 Mac explicitly drains retained encrypted commands. Do not
+      // discard acknowledged Mac mutations or queued user actions here.
+      this.ctx.storage.sql.exec(
+        `INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (5, datetime('now'))`
+      )
+    }
   }
 
   async initializePairing(input: {

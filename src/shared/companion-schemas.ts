@@ -286,15 +286,20 @@ const chatPage = z.object({
   hasMore: z.boolean(),
   nextBefore: chatRecordIdentifier.nullable()
 }).superRefine((page, context) => {
-  if (page.hasMore && page.records.length === 0) {
-    context.addIssue({ code: 'custom', path: ['records'], message: 'A paged chat window cannot be empty.' })
-  }
   if (page.records.some((record) => record.chatId !== page.chatId || record.chatKind !== page.chatKind)) {
     context.addIssue({ code: 'custom', path: ['records'], message: 'Chat records must match their page.' })
   }
-  const expectedCursor = page.hasMore ? page.records[0]?.id ?? null : null
-  if (page.nextBefore !== expectedCursor) {
-    context.addIssue({ code: 'custom', path: ['nextBefore'], message: 'Chat history cursor must reference the first record.' })
+  const expectedCursor = page.hasMore && page.records.length > 0
+    ? page.records[0]?.id
+    : null
+  if ((!page.hasMore && page.nextBefore !== null)
+    || (page.hasMore && page.nextBefore === null)
+    || (expectedCursor && page.nextBefore !== expectedCursor)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['nextBefore'],
+      message: 'Chat history cursor must reference the first record or an explicit resume position.'
+    })
   }
 })
 const modelLabels = z.object({
@@ -315,6 +320,7 @@ const payloadSchemas = {
     runs: z.array(z.object({ run: agentRun, messages: z.array(agentMessage), artifacts: z.array(artifact) })),
     chatPages: z.array(chatPage).optional()
   }),
+  'chat-page.updated': chatPage,
   'project.created': project,
   'project.updated': project,
   'goal.created': goal,
@@ -420,6 +426,11 @@ const commandPayloadSchemas = {
   'assistant.execute-action': z.object({ messageId: identifier, proposalId: identifier, optionId: identifier }),
   'agent.send-message': z.object({ runId: identifier, prompt: z.string().trim().min(1).max(20_000), attachments: z.array(attachment).max(4).optional(), clientMessageId: identifier.optional() }),
   'agent.stop-message': z.object({ runId: identifier }),
+  'agent.create-session': z.object({
+    runId: identifier,
+    projectId: identifier.optional(),
+    title: z.string().trim().min(1).max(200)
+  }),
   'agent.rename-session': z.object({ runId: identifier, title: z.string().trim().min(1).max(200) }),
   'agent.update-draft-prompt': z.object({ runId: identifier, draftPrompt: z.string().max(20_000) }),
   'agent.archive-session': z.object({ runId: identifier }),
@@ -478,6 +489,29 @@ export const encryptedCommandSchema = z.object({
 
 export const companionEncryptedCommandSchema = z.object({
   ...commandBase,
+  type: z.enum(companionCommandTypes),
+  payload: companionEncryptedEnvelopeSchema,
+  sourceDeviceId: identifier,
+  status: z.enum(['queued', 'delivered', 'executing', 'completed', 'failed']),
+  result: z.null(),
+  error: z.null(),
+  updatedAt: isoDate
+}).transform((command) => command as CompanionEncryptedCommand)
+
+const retainedEncryptedCommandProtocolVersion = z.union([
+  z.literal(2),
+  z.literal(3),
+  protocolVersion
+])
+
+/**
+ * Pending Relay commands may predate a protocol-minimum bump. Their payload is
+ * still authenticated with the original version, so Mac must parse and open
+ * that envelope before normalizing the command to the current internal model.
+ */
+export const companionPendingEncryptedCommandSchema = z.object({
+  ...commandBase,
+  protocolVersion: retainedEncryptedCommandProtocolVersion,
   type: z.enum(companionCommandTypes),
   payload: companionEncryptedEnvelopeSchema,
   sourceDeviceId: identifier,

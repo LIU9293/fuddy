@@ -220,6 +220,40 @@ describe('companion sync persistence', () => {
       status: 'completed',
       result: { renamed: true }
     })
+    const updated = database.getCompanionCommand(command.commandId)
+    if (!updated) throw new Error('Expected persisted command.')
+    database.enqueueCompanionCommandUpdate(updated)
+    expect(database.listPendingCompanionEvents()).toEqual([
+      expect.objectContaining({
+        type: 'command.updated',
+        payload: expect.objectContaining({ payload: {}, result: null })
+      })
+    ])
+    database.close()
+  })
+
+  it('keeps iOS-consumed history results in command update events', () => {
+    const database = createDatabase()
+    const now = new Date().toISOString()
+    const command: CompanionCommand<'chat.load-history'> = {
+      commandId: 'history-command',
+      protocolVersion: 3,
+      type: 'chat.load-history',
+      payload: { chatKind: 'agent', chatId: 'run-1', limit: 20 },
+      sourceDeviceId: 'ios-1',
+      status: 'completed',
+      result: { chatId: 'run-1', chatKind: 'agent', records: [], hasMore: false, nextBefore: null },
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }
+
+    database.enqueueCompanionCommandUpdate(command)
+
+    expect(database.listPendingCompanionEvents()[0]?.payload).toMatchObject({
+      payload: {},
+      result: { chatId: 'run-1', records: [] }
+    })
     database.close()
   })
 
@@ -245,16 +279,51 @@ describe('companion sync persistence', () => {
     database.close()
   })
 
-  it('replaces unsent history with one authoritative pairing snapshot', () => {
+  it('replaces unsent history with an ordered split pairing baseline', () => {
     const database = createDatabase()
     const project = database.listProjects()[0]
+    const now = new Date().toISOString()
+    database.createAgentRun({
+      id: 'pairing-run',
+      projectId: project.id,
+      provider: 'codex',
+      title: 'Pairing run',
+      status: 'draft',
+      sessionId: null,
+      workingDirectory: project.profile.repoPath,
+      startedAt: null,
+      completedAt: null,
+      summary: '等待首次消息',
+      draftPrompt: null,
+      createdAt: now,
+      updatedAt: now
+    })
+    database.upsertAgentRunArtifact({
+      id: 'pairing-artifact',
+      runId: 'pairing-run',
+      projectId: project.id,
+      relativePath: 'notes/result.md',
+      label: 'result.md',
+      mimeType: 'text/markdown',
+      createdAt: now
+    })
     database.updateProject({ ...project, focus: 'Pending before pairing' })
-    expect(database.countPendingCompanionEvents()).toBe(1)
+    expect(database.countPendingCompanionEvents()).toBeGreaterThan(1)
 
     const snapshot = database.enqueueCompanionPairingSnapshot()
     const pending = database.listPendingCompanionEvents()
-    expect(pending).toHaveLength(1)
     expect(pending[0]).toMatchObject({ eventId: snapshot.eventId, type: 'snapshot.created' })
+    expect(pending.map((event) => event.type)).toEqual(expect.arrayContaining([
+      'snapshot.created',
+      'project.created',
+      'agent-run.created',
+      'artifact.updated',
+      'chat-page.updated'
+    ]))
+    expect(pending).not.toContainEqual(expect.objectContaining({
+      type: 'project.updated',
+      payload: expect.objectContaining({ focus: 'Pending before pairing' })
+    }))
     database.close()
   })
 })

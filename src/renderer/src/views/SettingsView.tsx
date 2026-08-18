@@ -1023,7 +1023,11 @@ export function SettingsView({
                   <div className="settings-row-copy">
                     <strong>同步状态</strong>
                     <p>
-                      {companionStatus.pendingEvents > 0 ? `${companionStatus.pendingEvents} 条待同步` : '已同步'}
+                      {companionStatus.pendingEvents > 0
+                        ? `${companionStatus.pendingEvents} 条待同步`
+                        : companionStatus.isolatedEvents > 0
+                          ? `${companionStatus.isolatedEvents} 条已隔离`
+                          : '已同步'}
                       {companionStatus.lastSyncedAt
                         ? ` · 最近同步 ${formatRelativeTime(companionStatus.lastSyncedAt)}`
                         : ''}
@@ -1091,7 +1095,9 @@ export function SettingsView({
                   <div className="settings-row-copy">
                     <strong>部分事件暂未同步</strong>
                     <p>
-                      {companionStatus?.pendingEvents
+                      {companionStatus?.isolatedEvents
+                        ? `有 ${companionStatus.isolatedEvents} 条异常事件已隔离，其他事件不会被阻塞。`
+                        : companionStatus?.pendingEvents
                         ? `有 ${companionStatus.pendingEvents} 条事件仍在等待发送，修复后会继续同步。`
                         : '同步服务遇到问题，请重试。'}
                     </p>

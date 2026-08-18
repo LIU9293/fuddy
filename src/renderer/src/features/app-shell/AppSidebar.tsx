@@ -41,7 +41,7 @@ export interface AppSidebarProps {
   onFiles: () => void
   onProjects: () => void
   onAutomations: () => void
-  onCreateRun: () => void
+  onCreateRun: (projectId?: string | null) => void
   onOpenRun: (runId: string) => void
   onRenameRun: (run: AgentRun) => void
   onArchiveRun: (run: AgentRun) => void
@@ -67,7 +67,28 @@ export function AppSidebarData(props: AppSidebarDataProps): React.JSX.Element {
   )
 }
 
+export interface SidebarRunGroup {
+  id: string
+  title: string
+  projectId: string | null
+  runs: AgentRun[]
+}
+
+export function groupSidebarRuns(runs: AgentRun[], projects: Project[]): SidebarRunGroup[] {
+  const knownProjectIds = new Set(projects.map((project) => project.id))
+  const groups: SidebarRunGroup[] = projects.flatMap((project) => {
+    const projectRuns = runs.filter((run) => run.projectId === project.id)
+    return projectRuns.length > 0
+      ? [{ id: project.id, title: project.name, projectId: project.id, runs: projectRuns }]
+      : []
+  })
+  const sharedRuns = runs.filter((run) => !run.projectId || !knownProjectIds.has(run.projectId))
+  if (sharedRuns.length > 0) groups.push({ id: 'shared', title: '共享任务', projectId: null, runs: sharedRuns })
+  return groups
+}
+
 export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
+  const runGroups = groupSidebarRuns(props.runs, props.projects)
   return (
     <aside className="sidebar">
       <div className="window-drag-region" />
@@ -129,41 +150,55 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
             <div className="sidebar-runs-heading">
               <span>Agent Runs</span>
               <small>{props.runs.length}</small>
-              <button type="button" onClick={props.onCreateRun} aria-label="新建 Agent Run">
+              <button type="button" onClick={() => props.onCreateRun()} aria-label="新建 Agent Run">
                 <Plus size={14} />
               </button>
             </div>
             <nav className="sidebar-run-list" aria-label="Agent Run 列表">
-              {props.runs.map((run) => {
-                const project = props.projects.find((item) => item.id === run.projectId)
-                const active = run.status === 'running' || run.status === 'queued'
-                return (
-                  <div
-                    className={`sidebar-run-row ${props.selectedRunId === run.id && props.navigation === 'runs' ? 'is-active' : ''}`}
-                    key={run.id}
-                  >
-                    <button type="button" className="sidebar-run-open" onClick={() => props.onOpenRun(run.id)}>
-                      <span>
-                        <strong>{run.title}</strong>
-                        <small>{project?.name ?? '共享'} · {formatAgentProviderName(run.provider)}</small>
-                      </span>
-                      {active && <LoaderCircle size={14} className="spin" />}
+              {runGroups.map((group) => (
+                <section className="sidebar-run-group" key={group.id} aria-labelledby={`sidebar-run-group-${group.id}`}>
+                  <div className="sidebar-run-group-heading">
+                    <span id={`sidebar-run-group-${group.id}`}>{group.title}</span>
+                    <small>{group.runs.length}</small>
+                    <button
+                      type="button"
+                      onClick={() => props.onCreateRun(group.projectId)}
+                      aria-label={`在${group.title}中新建 Agent Run`}
+                    >
+                      <Plus size={12} />
                     </button>
-                    <ActionMenu
-                      className="sidebar-run-actions"
-                      ariaLabel={`${run.title} 操作`}
-                      trigger={<MoreHorizontal size={14} />}
-                      options={[
-                        { value: 'rename', label: '重命名', icon: <Pencil size={13} /> },
-                        ...(!active
-                          ? [{ value: 'archive' as const, label: '归档', icon: <ArchiveX size={13} />, danger: true }]
-                          : [])
-                      ]}
-                      onSelect={(action) => action === 'rename' ? props.onRenameRun(run) : props.onArchiveRun(run)}
-                    />
                   </div>
-                )
-              })}
+                  {group.runs.map((run) => {
+                    const active = run.status === 'running' || run.status === 'queued'
+                    return (
+                      <div
+                        className={`sidebar-run-row ${props.selectedRunId === run.id && props.navigation === 'runs' ? 'is-active' : ''}`}
+                        key={run.id}
+                      >
+                        <button type="button" className="sidebar-run-open" onClick={() => props.onOpenRun(run.id)}>
+                          <span>
+                            <strong>{run.title}</strong>
+                            <small>{formatAgentProviderName(run.provider)}</small>
+                          </span>
+                          {active && <LoaderCircle size={14} className="spin" />}
+                        </button>
+                        <ActionMenu
+                          className="sidebar-run-actions"
+                          ariaLabel={`${run.title} 操作`}
+                          trigger={<MoreHorizontal size={14} />}
+                          options={[
+                            { value: 'rename', label: '重命名', icon: <Pencil size={13} /> },
+                            ...(!active
+                              ? [{ value: 'archive' as const, label: '归档', icon: <ArchiveX size={13} />, danger: true }]
+                              : [])
+                          ]}
+                          onSelect={(action) => action === 'rename' ? props.onRenameRun(run) : props.onArchiveRun(run)}
+                        />
+                      </div>
+                    )
+                  })}
+                </section>
+              ))}
               {props.runs.length === 0 && <p>还没有 Agent Run</p>}
             </nav>
           </section>

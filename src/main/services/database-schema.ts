@@ -207,11 +207,13 @@ export function ensureCurrentDatabaseSchema(database: DatabaseSync): void {
         occurred_at TEXT NOT NULL,
         published_at TEXT,
         attempts INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT
+        last_error TEXT,
+        dead_lettered_at TEXT,
+        dead_letter_reason TEXT
       );
 
       CREATE INDEX IF NOT EXISTS companion_sync_outbox_pending_idx
-      ON companion_sync_outbox(published_at, occurred_at);
+      ON companion_sync_outbox(published_at, dead_lettered_at, occurred_at);
 
       CREATE TABLE IF NOT EXISTS companion_remote_commands (
         command_id TEXT PRIMARY KEY,

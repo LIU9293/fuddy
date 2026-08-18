@@ -4,14 +4,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
-import type { CompanionChatPage, CompanionCommand, CompanionEncryptedCommand, CompanionMacConfiguration, CompanionMacStatus, CompanionSyncEventInput } from '../../shared/companion-sync'
+import type { CompanionChatPage, CompanionCommand, CompanionEncryptedCommand, CompanionEncryptedSyncEventInput, CompanionMacConfiguration, CompanionMacStatus, CompanionSyncEventInput } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import {
   companionAccountKeyId,
   companionAttachmentAssociatedData,
   companionCommandAssociatedData,
+  companionEventAssociatedData,
   generateCompanionAccountKey,
+  openCompanionJson,
   sealCompanionAttachment,
   sealCompanionJson
 } from '../../shared/companion-crypto'
@@ -20,14 +22,20 @@ import {
   companionAgentMessageForRelay,
   companionChatPageForRelay,
   companionAttachmentStorageId,
+  compactCompanionChatPage,
+  compactCompanionPairingSnapshot,
   companionCommandUpdateForRelay,
   companionCommandRecovery,
   companionConnectedFallbackSyncIntervalMs,
   companionEventBatchMaximumBytes,
   companionEventBatchMaximumCount,
+  companionEventFitsTransportLimit,
   companionFallbackSyncIntervalForState,
   companionFallbackSyncIntervalMs,
   companionReconnectDelayMs,
+  companionSnapshotEventMaximumBytes,
+  companionSnapshotChatPageMaximumBytes,
+  companionCommandChatPageMaximumBytes,
   companionRequestTimeoutMs,
   companionSocketHeartbeatIntervalMs,
   companionSocketHeartbeatShouldReconnect,
@@ -37,6 +45,7 @@ import {
   partitionCompanionEventBatches,
   CompanionSyncService
 } from './companion-sync'
+import { companionLatestChatCursor } from '../../shared/companion-chat'
 import type { CredentialVault } from './credential-vault'
 import { AppDatabase } from './database'
 import { createTestDatabase } from '../test-support/project-fixtures'
@@ -235,6 +244,326 @@ describe('Companion sync transport policy', () => {
       event(2, 'b'.repeat(companionEventBatchMaximumBytes / 2))
     ])
     expect(byBytes).toHaveLength(2)
+    expect(companionEventFitsTransportLimit(event(3, 'c'.repeat(companionEventBatchMaximumBytes)))).toBe(false)
+  })
+
+  it('keeps canonical snapshot entities while making oversized chat windows lazy-loadable', () => {
+    const compact = compactCompanionPairingSnapshot({
+      generatedAt: '2026-08-18T00:00:00.000Z',
+      modelLabels: { workAssistant: 'Default', providers: { pi: 'Pi', codex: 'Codex', claude: 'Claude', opencode: 'OpenCode' } },
+      projects: [],
+      goals: [],
+      decisions: [],
+      morningBriefings: [{ id: 'briefing-1' }] as never[],
+      workAssistantMessages: [{ id: 'message-1' }] as never[],
+      attachments: [{ id: 'attachment-1' }] as never[],
+      runs: [{
+        run: { id: 'run-1' },
+        messages: [{ id: 'agent-message-1' }],
+        artifacts: [{ id: 'artifact-1' }]
+      }] as never[],
+      chatPages: [{
+        chatId: 'run-1',
+        chatKind: 'agent',
+        records: [{ id: 'record-1', content: 'x'.repeat(companionSnapshotChatPageMaximumBytes) }] as never[],
+        hasMore: false,
+        nextBefore: null
+      }]
+    })
+
+    expect(compact.morningBriefings).toEqual([])
+    expect(compact.workAssistantMessages).toEqual([])
+    expect(compact.runs[0]).toMatchObject({ messages: [], artifacts: [{ id: 'artifact-1' }] })
+    expect(compact.attachments).toEqual([{ id: 'attachment-1' }])
+    expect(compact.chatPages).toEqual([expect.objectContaining({
+      chatId: 'run-1', records: [], hasMore: true, nextBefore: 'record-1'
+    })])
+  })
+
+  it('keeps the newest bounded chat records and a usable cursor when compacting a page', () => {
+    const records = Array.from({ length: 12 }, (_, index) => ({
+      id: `record-${index}`,
+      content: 'x'.repeat(60_000)
+    })) as never[]
+    const compact = compactCompanionChatPage({
+      chatId: 'run-1',
+      chatKind: 'agent',
+      records,
+      hasMore: false,
+      nextBefore: null
+    }, companionCommandChatPageMaximumBytes)
+
+    expect(compact.records.length).toBeGreaterThan(0)
+    expect(compact.records.length).toBeLessThan(records.length)
+    expect(compact).toMatchObject({
+      hasMore: true,
+      nextBefore: compact.records[0]?.id
+    })
+    expect(Buffer.byteLength(JSON.stringify(compact), 'utf8'))
+      .toBeLessThanOrEqual(companionCommandChatPageMaximumBytes)
+  })
+
+  it('advances past a single chat record that cannot fit the command-page budget', () => {
+    const compact = compactCompanionChatPage({
+      chatId: 'run-1',
+      chatKind: 'agent',
+      records: [{
+        id: 'agent-message-oversized-record',
+        content: 'x'.repeat(companionCommandChatPageMaximumBytes)
+      }] as never[],
+      hasMore: true,
+      nextBefore: 'older-record'
+    }, companionCommandChatPageMaximumBytes)
+
+    expect(compact).toMatchObject({
+      records: [],
+      hasMore: true,
+      nextBefore: 'agent-message-oversized-record'
+    })
+    expect(compact.nextBefore).not.toBe(companionLatestChatCursor)
+  })
+
+  it('isolates an oversized event and continues draining later events', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-isolation-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    const configuration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', configuration)
+    database.createBriefingMessage({
+      id: 'oversized-message',
+      briefingId: null,
+      role: 'assistant',
+      content: 'x'.repeat(companionEventBatchMaximumBytes),
+      attachments: [],
+      taskContext: null,
+      createdAt: now
+    })
+    database.createBriefingMessage({
+      id: 'later-message',
+      briefingId: null,
+      role: 'assistant',
+      content: 'This event must still arrive.',
+      attachments: [],
+      taskContext: null,
+      createdAt: now
+    })
+    const publishedEntityIds: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string; entityId: string }> }
+        publishedEntityIds.push(...body.events.map((event) => event.entityId))
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') return jsonResponse({ commands: [] })
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const status = await service.syncNow()
+
+    expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 1 })
+    expect(status.lastError).toContain('已隔离 1 条')
+    expect(publishedEntityIds).toEqual(['later-message'])
+    service.stop()
+    database.close()
+  })
+
+  it('publishes split pairing baseline chat pages above the normal batch target', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-large-snapshot-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    database.createBriefingMessage({
+      id: 'large-snapshot-message',
+      briefingId: null,
+      role: 'assistant',
+      content: 'x'.repeat(companionEventBatchMaximumBytes),
+      attachments: [],
+      taskContext: null,
+      createdAt: now
+    })
+    database.enqueueCompanionPairingSnapshot()
+    let publishedBytes = 0
+    const publishedTypes: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        publishedBytes = Math.max(publishedBytes, Buffer.byteLength(String(init.body), 'utf8'))
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string; type: string }> }
+        publishedTypes.push(...body.events.map((event) => event.type))
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') return jsonResponse({ commands: [] })
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const status = await service.syncNow()
+
+    expect(publishedBytes).toBeGreaterThan(companionEventBatchMaximumBytes)
+    expect(publishedBytes).toBeLessThanOrEqual(companionSnapshotEventMaximumBytes)
+    expect(publishedTypes).toEqual(expect.arrayContaining(['snapshot.created', 'chat-page.updated']))
+    expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 0 })
+    service.stop()
+    database.close()
+  })
+
+  it('compacts an oversized split baseline chat page instead of isolating it', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-compact-snapshot-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    database.createBriefingMessage({
+      id: 'relay-ceiling-message',
+      briefingId: null,
+      role: 'assistant',
+      content: 'x'.repeat(companionSnapshotEventMaximumBytes),
+      attachments: [],
+      taskContext: null,
+      createdAt: now
+    })
+    database.enqueueCompanionPairingSnapshot()
+    let publishedPage: Record<string, unknown> | null = null
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: CompanionEncryptedSyncEventInput[] }
+        for (const event of body.events) {
+          if (event.type !== 'chat-page.updated') continue
+          publishedPage = await openCompanionJson<Record<string, unknown>>(
+            testEncryptionKey,
+            event.payload,
+            companionEventAssociatedData(event)
+          )
+        }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') return jsonResponse({ commands: [] })
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const status = await service.syncNow()
+
+    expect(publishedPage).toMatchObject({
+      records: [],
+      hasMore: true,
+      nextBefore: 'assistant-message-relay-ceiling-message'
+    })
+    expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 0 })
+    service.stop()
+    database.close()
+  })
+
+  it('degrades an oversized iOS-consumed command result into a recoverable failure', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-command-fallback-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    const configuration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', configuration)
+    database.enqueueCompanionCommandUpdate({
+      commandId: 'oversized-history',
+      protocolVersion: companionProtocolVersion,
+      type: 'chat.load-history',
+      payload: { chatKind: 'agent', chatId: 'run-1', limit: 100 },
+      sourceDeviceId: 'test-phone',
+      status: 'completed',
+      result: { detail: 'x'.repeat(companionEventBatchMaximumBytes) },
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    })
+    let publishedCommand: Record<string, unknown> | null = null
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: CompanionEncryptedSyncEventInput[] }
+        const event = body.events[0]
+        publishedCommand = await openCompanionJson<Record<string, unknown>>(
+          testEncryptionKey,
+          event.payload,
+          companionEventAssociatedData(event)
+        )
+        return jsonResponse({ accepted: [{ eventId: event.eventId, sequence: 1 }], lastSequence: 1 }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') return jsonResponse({ commands: [] })
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const status = await service.syncNow()
+
+    expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 0 })
+    expect(publishedCommand).toMatchObject({
+      type: 'chat.load-history',
+      status: 'failed',
+      result: null,
+      error: expect.stringContaining('结果过大')
+    })
+    service.stop()
+    database.close()
   })
 
   it('keeps full tool output local and sends only a bounded relay summary', () => {
@@ -440,6 +769,367 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('drains a retained encrypted v3 command and reports its result with protocol v4', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-legacy-command-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    const legacyCommand: CompanionCommand = {
+      commandId: 'legacy-v3-send',
+      protocolVersion: 3,
+      type: 'agent.send-message',
+      payload: { runId: 'legacy-run', prompt: 'Preserve this action' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    const wireCommand = await encryptedCommand(legacyCommand)
+    const sendMessage = vi.fn(async () => ({ accepted: true }))
+    let served = false
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') {
+        if (served) return jsonResponse({ commands: [] })
+        served = true
+        return jsonResponse({ commands: [wireCommand] })
+      }
+      if (url.pathname.startsWith('/v1/commands/') && method === 'PATCH') return jsonResponse({ ok: true })
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      { sendMessage } as unknown as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await service.syncNow()
+    await vi.waitFor(() => expect(database.getCompanionCommand(legacyCommand.commandId)?.status).toBe('completed'))
+
+    expect(sendMessage).toHaveBeenCalledWith('legacy-run', 'Preserve this action', expect.any(Function), undefined)
+    expect(database.getCompanionCommand(legacyCommand.commandId)?.protocolVersion).toBe(companionProtocolVersion)
+    service.stop()
+    database.close()
+  })
+
+  it('creates a project-scoped draft from the constrained iPhone command', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-create-run-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    const createDraft = vi.fn(() => ({ run: { id: 'phone-created-run' }, messages: [], artifacts: [] }))
+    const dispatcher = { createDraft } as unknown as TaskDispatcher
+    const command: CompanionCommand = {
+      commandId: 'create-run-command',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent.create-session',
+      payload: { runId: 'phone-created-run', projectId: 'vows', title: '检查 iPhone 同步' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    const wireCommand = await encryptedCommand(command)
+    let remoteStatus: CompanionCommand['status'] = 'queued'
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') {
+        return jsonResponse({ commands: remoteStatus === 'queued' ? [wireCommand] : [] })
+      }
+      if (url.pathname === `/v1/commands/${command.commandId}` && method === 'PATCH') {
+        const update = JSON.parse(String(init.body)) as { status: CompanionCommand['status'] }
+        remoteStatus = update.status
+        return jsonResponse({ command: { ...command, status: remoteStatus } })
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      dispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await service.syncNow()
+    await vi.waitFor(() => expect(createDraft).toHaveBeenCalledWith({
+      id: 'phone-created-run',
+      projectId: 'vows',
+      title: '检查 iPhone 同步'
+    }))
+    await vi.waitFor(() => expect(database.getCompanionCommand(command.commandId)?.status).toBe('completed'))
+
+    service.stop()
+    database.close()
+  })
+
+  it('uses the global default Agent for a shared Run created from iPhone', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-create-shared-run-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    const createDraft = vi.fn(() => ({ run: { id: 'shared-phone-run' }, messages: [], artifacts: [] }))
+    const command: CompanionCommand = {
+      commandId: 'create-shared-run-command',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent.create-session',
+      payload: { runId: 'shared-phone-run', title: 'Shared iPhone Run' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    const wireCommand = await encryptedCommand(command)
+    let served = false
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') {
+        if (served) return jsonResponse({ commands: [] })
+        served = true
+        return jsonResponse({ commands: [wireCommand] })
+      }
+      if (url.pathname.startsWith('/v1/commands/') && method === 'PATCH') return jsonResponse({ ok: true })
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      { createDraft } as unknown as TaskDispatcher,
+      async () => ({ accepted: true }),
+      directory,
+      () => 'claude'
+    )
+
+    await service.syncNow()
+    await vi.waitFor(() => expect(createDraft).toHaveBeenCalledWith({
+      id: 'shared-phone-run',
+      projectId: null,
+      provider: 'claude',
+      title: 'Shared iPhone Run'
+    }))
+
+    service.stop()
+    database.close()
+  })
+
+  it('finishes a queued Run creation before executing dependent Run commands', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-create-order-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    let creationFinished = false
+    const createDraft = vi.fn(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10))
+      creationFinished = true
+      return { run: { id: 'ordered-run' }, messages: [], artifacts: [] }
+    })
+    const sendMessage = vi.fn(async () => {
+      expect(creationFinished).toBe(true)
+      return { run: { id: 'ordered-run' }, messages: [], artifacts: [] }
+    })
+    const dispatcher = { createDraft, sendMessage } as unknown as TaskDispatcher
+    const createCommand: CompanionCommand = {
+      commandId: 'ordered-create',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent.create-session',
+      payload: { runId: 'ordered-run', title: 'Ordered run' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    const sendCommand: CompanionCommand = {
+      commandId: 'ordered-send',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent.send-message',
+      payload: { runId: 'ordered-run', prompt: 'First message' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    const wireCommands = await Promise.all([encryptedCommand(createCommand), encryptedCommand(sendCommand)])
+    let served = false
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') {
+        if (served) return jsonResponse({ commands: [] })
+        served = true
+        return jsonResponse({ commands: wireCommands })
+      }
+      if (url.pathname.startsWith('/v1/commands/') && method === 'PATCH') return jsonResponse({ ok: true })
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      dispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await service.syncNow()
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1))
+
+    expect(createDraft).toHaveBeenCalledTimes(1)
+    expect(database.getCompanionCommand(createCommand.commandId)?.status).toBe('completed')
+    expect(database.getCompanionCommand(sendCommand.commandId)?.status).toBe('completed')
+    service.stop()
+    database.close()
+  })
+
+  it('recovers an interrupted create command as completed when the canonical Run exists', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-create-recovery-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'test-account',
+      macDeviceId: 'test-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    database.createAgentRun({
+      id: 'recovered-created-run',
+      projectId: null,
+      provider: 'pi',
+      title: 'Recovered creation',
+      status: 'draft',
+      sessionId: null,
+      workingDirectory: directory,
+      startedAt: null,
+      completedAt: null,
+      summary: '等待首次消息',
+      draftPrompt: null,
+      createdAt: now,
+      updatedAt: now
+    })
+    const remoteCommand: CompanionCommand = {
+      commandId: 'interrupted-create',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent.create-session',
+      payload: { runId: 'recovered-created-run', title: 'Recovered creation' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now
+    }
+    database.upsertCompanionCommand(remoteCommand)
+    database.updateCompanionCommand(remoteCommand.commandId, 'executing')
+    const wireCommand = await encryptedCommand(remoteCommand)
+    let served = false
+    const remoteUpdates: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') {
+        if (served) return jsonResponse({ commands: [] })
+        served = true
+        return jsonResponse({ commands: [wireCommand] })
+      }
+      if (url.pathname === `/v1/commands/${remoteCommand.commandId}` && method === 'PATCH') {
+        remoteUpdates.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return jsonResponse({ ok: true })
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const createDraft = vi.fn()
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      { createDraft } as unknown as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await service.syncNow()
+
+    expect(createDraft).not.toHaveBeenCalled()
+    expect(database.getCompanionCommand(remoteCommand.commandId)?.status).toBe('completed')
+    expect(database.getAgentRun('recovered-created-run').title).toBe('Recovered creation')
+    expect(remoteUpdates.at(-1)).toMatchObject({ status: 'completed' })
+    service.stop()
+    database.close()
+  })
+
   it('uploads a snapshot Work Assistant image once when it also appears in the chat page', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-snapshot-image-'))
     directories.push(directory)
@@ -573,7 +1263,10 @@ describe('Companion sync transport policy', () => {
     )
 
     expect((await service.syncNow()).state).toBe('error')
-    expect(database.countPendingCompanionEvents()).toBe(1)
+    expect(database.listPendingCompanionEvents().map((event) => event.type)).toEqual(expect.arrayContaining([
+      'snapshot.created',
+      'chat-page.updated'
+    ]))
     expect((await service.syncNow()).state).toBe('connected')
     expect(firstImageUploadCount).toBe(2)
     expect(secondImageUploadCount).toBe(2)

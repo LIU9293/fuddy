@@ -4,6 +4,7 @@ import type { CompanionChatPage, CompanionChatRecord } from './companion-sync'
 export const companionInitialChatBlockLimit = 100
 export const companionMaximumChatPageLimit = 100
 export const workAssistantChatId = 'work-assistant'
+export const companionLatestChatCursor = 'companion-latest'
 
 function compareChronologically(
   left: { createdAt: string; id: string },

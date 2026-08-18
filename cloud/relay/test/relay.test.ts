@@ -1,4 +1,4 @@
-import { SELF, env, runDurableObjectAlarm } from 'cloudflare:test'
+import { SELF, env, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { describe, expect, it, vi } from 'vitest'
 import type {
   CompanionEncryptedCommand,
@@ -8,8 +8,8 @@ import type {
   CompanionPairingClaimResult,
   CompanionPairingStartResult,
 } from '../../../src/shared/companion-sync'
-import { companionProtocolVersion } from '../../../src/shared/companion-sync'
-import { enforceRateLimit } from '../src/index'
+import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
+import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/index'
 
 async function pairedDevices(): Promise<{
   pairing: CompanionPairingStartResult
@@ -69,17 +69,17 @@ describe('companion relay', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
       status: 'ok',
-      minimumProtocolVersion: 2,
+      minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-13.1'
+      build: '2026-08-18.1'
     })
   })
 
   it('pairs devices and rejects a second claim', async () => {
     const { pairing, phone } = await pairedDevices()
-    expect(pairing.minimumProtocolVersion).toBe(2)
-    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({ minimumProtocolVersion: 2 })
-    expect(phone.minimumProtocolVersion).toBe(2)
+    expect(pairing.minimumProtocolVersion).toBe(companionMinimumProtocolVersion)
+    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({ minimumProtocolVersion: companionMinimumProtocolVersion })
+    expect(phone.minimumProtocolVersion).toBe(companionMinimumProtocolVersion)
     expect(phone.accountId).toBe(pairing.accountId)
     expect(phone.device.role).toBe('ios')
     expect(phone.deviceToken.length).toBeGreaterThan(20)
@@ -129,7 +129,7 @@ describe('companion relay', () => {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
     const page = await pageResponse.json<CompanionEncryptedEventPage>()
-    expect(page).toMatchObject({ minimumProtocolVersion: 2, protocolVersion: companionProtocolVersion })
+    expect(page).toMatchObject({ minimumProtocolVersion: companionMinimumProtocolVersion, protocolVersion: companionProtocolVersion })
     expect(page.events).toHaveLength(1)
     expect(page.events[0]).toMatchObject(input)
     expect(page.presence).toMatchObject({ macOnline: false, iosDevicesOnline: 0 })
@@ -188,6 +188,47 @@ describe('companion relay', () => {
       .filter((message) => message.type === 'sync.available')
     expect(replayHints).toEqual([{ type: 'sync.available', lastSequence: 3 }])
     socket!.close()
+  })
+
+  it('rejects oversized encrypted event values before Durable Object persistence', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const oversizedEvent = {
+      eventId: crypto.randomUUID(),
+      protocolVersion: companionProtocolVersion,
+      type: 'agent-message.created',
+      entityType: 'agent-message' as const,
+      entityId: 'oversized-message',
+      revision: 1,
+      payload: {
+        ...encryptedPayload,
+        ciphertext: 'x'.repeat(maximumEncryptedEventPayloadBytes)
+      },
+      occurredAt: new Date().toISOString()
+    }
+    const headers = {
+      Authorization: `Bearer ${pairing.macToken}`,
+      'Content-Type': 'application/json'
+    }
+
+    const single = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(oversizedEvent)
+    })
+    expect(single.status).toBe(413)
+    expect(await single.json()).toMatchObject({ error: expect.stringContaining('1900000 byte Relay limit') })
+
+    const batch = await SELF.fetch(authenticatedUrl('/v1/events/batch', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ events: [oversizedEvent] })
+    })
+    expect(batch.status).toBe(413)
+
+    const pageResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    expect((await pageResponse.json<CompanionEncryptedEventPage>()).events).toEqual([])
   })
 
   it('compacts only events behind an acknowledged snapshot and preserves reset replay', async () => {
@@ -278,6 +319,61 @@ describe('companion relay', () => {
     expect(completed.result).toBeNull()
 
     expect(JSON.stringify(completed)).not.toContain('accepted')
+  })
+
+  it('preserves retained encrypted events and commands across the protocol-v4 migration', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    const now = new Date().toISOString()
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO events (
+          event_id, protocol_version, type, entity_type, entity_id, revision,
+          payload_json, source_device_id, occurred_at
+        ) VALUES (?, 3, 'agent-run.updated', 'agent-run', ?, 1, ?, ?, ?)`,
+        'legacy-event',
+        'legacy-run',
+        JSON.stringify(encryptedPayload),
+        pairing.macDeviceId,
+        now
+      )
+      state.storage.sql.exec(
+        `INSERT INTO commands (
+          command_id, protocol_version, type, payload_json, source_device_id,
+          status, result_json, error, created_at, updated_at
+        ) VALUES (?, 3, 'agent.send-message', ?, ?, 'queued', NULL, NULL, ?, ?)`,
+        'legacy-command',
+        JSON.stringify(encryptedPayload),
+        phone.device.id,
+        now,
+        now
+      )
+      state.storage.sql.exec('DELETE FROM _sql_schema_migrations WHERE id = 5')
+    })
+    await evictDurableObject(stub)
+
+    const pendingResponse = await SELF.fetch(authenticatedUrl(
+      '/v1/commands/pending', pairing.accountId, pairing.macDeviceId
+    ), {
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
+    })
+    expect(pendingResponse.status).toBe(200)
+    expect(await pendingResponse.json<{ commands: CompanionEncryptedCommand[] }>()).toMatchObject({
+      commands: [{ commandId: 'legacy-command', protocolVersion: 3, status: 'queued' }]
+    })
+
+    const pageResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    expect(pageResponse.status).toBe(200)
+    expect((await pageResponse.json<CompanionEncryptedEventPage>()).events).toEqual([
+      expect.objectContaining({ eventId: 'legacy-event', protocolVersion: 3 })
+    ])
+    expect(await runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ id: number }>(
+        'SELECT id FROM _sql_schema_migrations WHERE id = 5'
+      ).one().id
+    ))).toBe(5)
   })
 
   it('rejects plaintext command outcomes and persists status only', async () => {

@@ -1,5 +1,6 @@
 import type {
   CompanionDevice,
+  CompanionEncryptedSyncEventInput,
   CompanionEventBatchResult,
   CompanionEncryptedEventPage,
   CompanionPairingStartResult,
@@ -21,7 +22,8 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 const maximumAttachmentBytes = 100 * 1024 * 1024 + 32
-const relayBuild = '2026-08-13.1'
+export const maximumEncryptedEventPayloadBytes = 1_900_000
+const relayBuild = '2026-08-18.1'
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -63,6 +65,18 @@ function requiredSearchParam(url: URL, name: string): string {
   const value = url.searchParams.get(name)?.trim()
   if (!value) throw new HttpError(400, `Missing ${name}.`)
   return value
+}
+
+export function assertEncryptedEventPayloadSizes(inputs: CompanionEncryptedSyncEventInput[]): void {
+  for (const input of inputs) {
+    const payloadBytes = new TextEncoder().encode(JSON.stringify(input.payload)).byteLength
+    if (payloadBytes > maximumEncryptedEventPayloadBytes) {
+      throw new HttpError(
+        413,
+        `Encrypted event payload exceeds the ${maximumEncryptedEventPayloadBytes} byte Relay limit.`
+      )
+    }
+  }
 }
 
 function relay(env: Env, accountId: string): DurableObjectStub<AccountRelay> {
@@ -173,6 +187,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (request.method === 'POST' && url.pathname === '/v1/events') {
     const context = relayRequestContext(request, env, url)
     const input = syncEventSchema.parse(await readJson(request))
+    assertEncryptedEventPayloadSizes([input])
     const event = await context.stub.appendEvent(
       context.deviceId,
       context.token,
@@ -185,6 +200,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (request.method === 'POST' && url.pathname === '/v1/events/batch') {
     const context = relayRequestContext(request, env, url)
     const input = syncEventBatchSchema.parse(await readJson(request))
+    assertEncryptedEventPayloadSizes(input.events)
     const result = await context.stub.appendEvents(
       context.deviceId,
       context.token,
