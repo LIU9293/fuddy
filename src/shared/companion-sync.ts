@@ -315,6 +315,7 @@ export interface CompanionCommandRecord {
 
 export interface CompanionOutboxPayloadMap {
   'snapshot.created': CompanionSnapshotPayload
+  'chat-page.updated': CompanionChatPage
   'project.created': Project
   'project.updated': Project
   'goal.created': ProjectGoal
@@ -335,8 +336,9 @@ export interface CompanionOutboxPayloadMap {
 }
 
 export interface CompanionRelayEventPayloadMap extends Omit<CompanionOutboxPayloadMap,
-  'snapshot.created' | 'artifact.updated' | 'work-assistant-message.created' | 'work-assistant-message.updated'> {
+  'snapshot.created' | 'chat-page.updated' | 'artifact.updated' | 'work-assistant-message.created' | 'work-assistant-message.updated'> {
   'snapshot.created': CompanionRelaySnapshotPayload
+  'chat-page.updated': CompanionRelayChatPage
   'artifact.updated': AgentRunArtifact | CompanionArtifactEventPayload
   'work-assistant-message.created': CompanionRelayWorkAssistantMessage
   'work-assistant-message.updated': CompanionRelayWorkAssistantMessage

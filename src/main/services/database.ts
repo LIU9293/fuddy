@@ -613,6 +613,15 @@ export class AppDatabase {
   }
 
   enqueueCompanionSnapshot(modelLabels: AgentModelLabels = emptyAgentModelLabels): CompanionOutboxEvent {
+    return this.enqueueCompanionEvent(
+      'snapshot.created',
+      'snapshot',
+      'current',
+      this.companionSnapshotPayload(modelLabels)
+    )
+  }
+
+  private companionSnapshotPayload(modelLabels: AgentModelLabels): CompanionSnapshotPayload {
     const assistantPage = this.getCompanionChatPage('assistant', workAssistantChatId)
     const assistantCollections = workAssistantPageCollections(assistantPage)
     const runDetails = this.listRuns().map((run) => {
@@ -638,7 +647,7 @@ export class AppDatabase {
       runs: runDetails.map(({ detail }) => detail),
       chatPages: [assistantPage, ...runDetails.map(({ page }) => page)]
     }
-    return this.enqueueCompanionEvent('snapshot.created', 'snapshot', 'current', snapshot)
+    return snapshot
   }
 
   getCompanionChatPage(
@@ -696,7 +705,38 @@ export class AppDatabase {
   enqueueCompanionPairingSnapshot(modelLabels: AgentModelLabels = emptyAgentModelLabels): CompanionOutboxEvent {
     return this.companionTransaction(() => {
       this.database.prepare('DELETE FROM companion_sync_outbox WHERE published_at IS NULL').run()
-      return this.enqueueCompanionSnapshot(modelLabels)
+      const snapshot = this.companionSnapshotPayload(modelLabels)
+      const baseline = this.enqueueCompanionEvent('snapshot.created', 'snapshot', 'current', {
+        generatedAt: snapshot.generatedAt,
+        modelLabels: snapshot.modelLabels,
+        projects: [],
+        goals: [],
+        decisions: [],
+        morningBriefings: [],
+        workAssistantMessages: [],
+        attachments: [],
+        runs: [],
+        chatPages: []
+      })
+      for (const project of snapshot.projects) {
+        this.enqueueCompanionEvent('project.created', 'project', project.id, project)
+      }
+      for (const goal of snapshot.goals) {
+        this.enqueueCompanionEvent('goal.created', 'goal', goal.id, goal)
+      }
+      for (const decision of snapshot.decisions) {
+        this.enqueueCompanionEvent('decision.created', 'decision', decision.id, decision)
+      }
+      for (const detail of snapshot.runs) {
+        this.enqueueCompanionEvent('agent-run.created', 'agent-run', detail.run.id, detail.run)
+        for (const artifact of detail.artifacts) {
+          this.enqueueCompanionEvent('artifact.updated', 'artifact', artifact.id, artifact)
+        }
+      }
+      for (const page of snapshot.chatPages ?? []) {
+        this.enqueueCompanionEvent('chat-page.updated', 'chat-page', page.chatId, page)
+      }
+      return baseline
     })
   }
 

@@ -608,6 +608,14 @@ final class CompanionStore: ObservableObject {
                 )
                 state = nextState
                 reconcileChatPages()
+            case .chatPageUpdated:
+                let page = try event.payload.decode(CompanionChatPage.self)
+                if let index = state.chatPages.firstIndex(where: { $0.chatId == page.chatId }) {
+                    state.chatPages[index] = page
+                } else {
+                    state.chatPages.append(page)
+                }
+                updateLegacyChatCollections(from: page)
             case .projectCreated, .projectUpdated:
                 upsert(try event.payload.decode(Project.self), in: &state.projects)
             case .goalCreated, .goalUpdated:

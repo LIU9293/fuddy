@@ -187,6 +187,15 @@ export function compactCompanionPairingSnapshot(
   }
 }
 
+export function compactCompanionChatPage(page: CompanionRelayChatPage): CompanionRelayChatPage {
+  return {
+    ...page,
+    records: [],
+    hasMore: page.hasMore || page.records.length > 0,
+    nextBefore: null
+  }
+}
+
 export function companionSocketHeartbeatShouldReconnect(awaitingPong: boolean): boolean {
   return awaitingPong
 }
@@ -482,6 +491,21 @@ export class CompanionSyncService {
             )
           } as CompanionEncryptedSyncEventInput
         }
+        if (!companionEventFitsTransportLimit(encrypted, companionSnapshotEventMaximumBytes)
+          && event.type === 'chat-page.updated') {
+          const compactPlaintext = syncEventSchema.parse({
+            ...plaintext,
+            payload: compactCompanionChatPage(plaintext.payload as CompanionRelayChatPage)
+          })
+          encrypted = {
+            ...compactPlaintext,
+            payload: await sealCompanionJson(
+              context.encryptionKey,
+              compactPlaintext.payload,
+              companionEventAssociatedData(compactPlaintext)
+            )
+          } as CompanionEncryptedSyncEventInput
+        }
         if (!companionEventFitsTransportLimit(encrypted) && event.type === 'command.updated') {
           const compact = compactPersistedCompanionCommandEvent(event.payload) as Record<string, unknown>
           const type = compact.type as CompanionCommandType
@@ -508,7 +532,7 @@ export class CompanionSyncService {
             )
           } as CompanionEncryptedSyncEventInput
         }
-        const maximumEventBytes = event.type === 'snapshot.created'
+        const maximumEventBytes = event.type === 'snapshot.created' || event.type === 'chat-page.updated'
           ? companionSnapshotEventMaximumBytes
           : companionEventBatchMaximumBytes
         if (!companionEventFitsTransportLimit(encrypted, maximumEventBytes)) {
@@ -563,6 +587,12 @@ export class CompanionSyncService {
   }
 
   private async prepareEventPayload(event: CompanionOutboxEvent): Promise<unknown> {
+    if (event.type === 'chat-page.updated') {
+      return companionChatPageForRelay(
+        event.payload as CompanionChatPage,
+        (message) => this.prepareWorkAssistantMessage(message)
+      )
+    }
     if (event.type === 'snapshot.created') {
       const snapshot = event.payload as CompanionSnapshotPayload
       const preparedWorkAssistantMessages = new Map<string, Promise<CompanionRelayWorkAssistantMessage>>()

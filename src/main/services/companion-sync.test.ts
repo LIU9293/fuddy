@@ -338,7 +338,7 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
-  it('publishes a bounded pairing snapshot above the normal batch target', async () => {
+  it('publishes split pairing baseline chat pages above the normal batch target', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-large-snapshot-'))
     directories.push(directory)
     const database = createTestDatabase(join(directory, 'app.sqlite'))
@@ -361,14 +361,18 @@ describe('Companion sync transport policy', () => {
     })
     database.enqueueCompanionPairingSnapshot()
     let publishedBytes = 0
+    const publishedTypes: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
       const url = new URL(String(input))
       const method = init.method ?? 'GET'
       if (url.pathname === '/v1/events/batch' && method === 'POST') {
-        publishedBytes = Buffer.byteLength(String(init.body), 'utf8')
+        publishedBytes = Math.max(publishedBytes, Buffer.byteLength(String(init.body), 'utf8'))
         const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string; type: string }> }
-        expect(body.events.map((event) => event.type)).toEqual(['snapshot.created'])
-        return jsonResponse({ accepted: [{ eventId: body.events[0].eventId, sequence: 1 }], lastSequence: 1 }, 201)
+        publishedTypes.push(...body.events.map((event) => event.type))
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
       }
       if (url.pathname === '/v1/commands/pending' && method === 'GET') return jsonResponse({ commands: [] })
       throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
@@ -384,12 +388,13 @@ describe('Companion sync transport policy', () => {
 
     expect(publishedBytes).toBeGreaterThan(companionEventBatchMaximumBytes)
     expect(publishedBytes).toBeLessThanOrEqual(companionSnapshotEventMaximumBytes)
+    expect(publishedTypes).toEqual(expect.arrayContaining(['snapshot.created', 'chat-page.updated']))
     expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 0 })
     service.stop()
     database.close()
   })
 
-  it('compacts chat history instead of isolating a pairing snapshot at the Relay ceiling', async () => {
+  it('compacts an oversized split baseline chat page instead of isolating it', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-compact-snapshot-'))
     directories.push(directory)
     const database = createTestDatabase(join(directory, 'app.sqlite'))
@@ -411,19 +416,24 @@ describe('Companion sync transport policy', () => {
       createdAt: now
     })
     database.enqueueCompanionPairingSnapshot()
-    let publishedSnapshot: Record<string, unknown> | null = null
+    let publishedPage: Record<string, unknown> | null = null
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
       const url = new URL(String(input))
       const method = init.method ?? 'GET'
       if (url.pathname === '/v1/events/batch' && method === 'POST') {
         const body = JSON.parse(String(init.body)) as { events: CompanionEncryptedSyncEventInput[] }
-        const event = body.events[0]
-        publishedSnapshot = await openCompanionJson<Record<string, unknown>>(
-          testEncryptionKey,
-          event.payload,
-          companionEventAssociatedData(event)
-        )
-        return jsonResponse({ accepted: [{ eventId: event.eventId, sequence: 1 }], lastSequence: 1 }, 201)
+        for (const event of body.events) {
+          if (event.type !== 'chat-page.updated') continue
+          publishedPage = await openCompanionJson<Record<string, unknown>>(
+            testEncryptionKey,
+            event.payload,
+            companionEventAssociatedData(event)
+          )
+        }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
       }
       if (url.pathname === '/v1/commands/pending' && method === 'GET') return jsonResponse({ commands: [] })
       throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
@@ -437,11 +447,7 @@ describe('Companion sync transport policy', () => {
 
     const status = await service.syncNow()
 
-    expect(publishedSnapshot).toMatchObject({
-      morningBriefings: [],
-      workAssistantMessages: [],
-      chatPages: [expect.objectContaining({ records: [], hasMore: true, nextBefore: null })]
-    })
+    expect(publishedPage).toMatchObject({ records: [], hasMore: true, nextBefore: null })
     expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 0 })
     service.stop()
     database.close()
@@ -1079,7 +1085,10 @@ describe('Companion sync transport policy', () => {
     )
 
     expect((await service.syncNow()).state).toBe('error')
-    expect(database.countPendingCompanionEvents()).toBe(1)
+    expect(database.listPendingCompanionEvents().map((event) => event.type)).toEqual(expect.arrayContaining([
+      'snapshot.created',
+      'chat-page.updated'
+    ]))
     expect((await service.syncNow()).state).toBe('connected')
     expect(firstImageUploadCount).toBe(2)
     expect(secondImageUploadCount).toBe(2)

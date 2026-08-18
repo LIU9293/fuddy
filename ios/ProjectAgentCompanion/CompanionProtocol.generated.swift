@@ -2,8 +2,8 @@
 import Foundation
 
 let companionMinimumProtocolVersion = 2
-let companionProtocolVersion = 3
-let companionContractFingerprint = "fcd5cb225fddd9e59b467ad2"
+let companionProtocolVersion = 4
+let companionContractFingerprint = "986c4e3c0513cb77f93c6c89"
 
 func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
     version >= companionMinimumProtocolVersion && version <= companionProtocolVersion
@@ -19,6 +19,7 @@ func companionContractFingerprintIsSupported(_ fingerprint: String?) -> Bool {
 
 enum CompanionEventType: Hashable, Codable {
     case snapshotCreated
+    case chatPageUpdated
     case projectCreated
     case projectUpdated
     case goalCreated
@@ -41,6 +42,7 @@ enum CompanionEventType: Hashable, Codable {
     var rawValue: String {
         switch self {
         case .snapshotCreated: "snapshot.created"
+        case .chatPageUpdated: "chat-page.updated"
         case .projectCreated: "project.created"
         case .projectUpdated: "project.updated"
         case .goalCreated: "goal.created"
@@ -66,6 +68,7 @@ enum CompanionEventType: Hashable, Codable {
         let value = try decoder.singleValueContainer().decode(String.self)
         switch value {
         case "snapshot.created": self = .snapshotCreated
+        case "chat-page.updated": self = .chatPageUpdated
         case "project.created": self = .projectCreated
         case "project.updated": self = .projectUpdated
         case "goal.created": self = .goalCreated

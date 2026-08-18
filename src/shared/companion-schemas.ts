@@ -312,6 +312,7 @@ const payloadSchemas = {
     runs: z.array(z.object({ run: agentRun, messages: z.array(agentMessage), artifacts: z.array(artifact) })),
     chatPages: z.array(chatPage).optional()
   }),
+  'chat-page.updated': chatPage,
   'project.created': project,
   'project.updated': project,
   'goal.created': goal,

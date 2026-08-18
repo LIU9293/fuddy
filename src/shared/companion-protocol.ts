@@ -1,10 +1,11 @@
 export const companionProtocol = {
   minimumVersion: 2,
-  currentVersion: 3
+  currentVersion: 4
 } as const
 
 export const companionEventDefinitions = {
   'snapshot.created': 'snapshot',
+  'chat-page.updated': 'chat-page',
   'project.created': 'project',
   'project.updated': 'project',
   'goal.created': 'goal',
