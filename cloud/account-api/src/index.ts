@@ -2,6 +2,7 @@ import { createRemoteJWKSet, jwtVerify } from 'jose'
 import { Webhook } from 'svix'
 import { z } from 'zod'
 import type { RelayAdministrationBinding } from '../../relay/src/administration-contract'
+import { defaultCompanionRelayUrl } from '../../../src/shared/companion-sync'
 import { addSeconds, hmac, isoNow, randomCode, randomToken, secretsEqual } from './crypto'
 import {
   completeEnrollmentSchema,
@@ -24,6 +25,13 @@ const OTP_MAX_ATTEMPTS = 5
 const OTP_RESEND_SECONDS = 60
 const MAX_JSON_BODY_BYTES = 64 * 1024
 const GOOGLE_JWKS = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'))
+
+export function relayBindingUsesManagedAuthority(relayUrl: string, environment: string): boolean {
+  if (environment !== 'production') return true
+  const url = new URL(relayUrl)
+  const pathname = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/u, '')
+  return `${url.origin}${pathname}` === defaultCompanionRelayUrl
+}
 
 class ApiError extends Error {
   constructor(
@@ -846,6 +854,9 @@ async function bindRelay(request: Request, env: Environment, spaceId: string): P
   const protocol = new URL(input.relayUrl).protocol
   if (protocol !== 'https:' && !(env.ENVIRONMENT !== 'production' && protocol === 'http:')) {
     throw new ApiError(400, 'relay_url_invalid', 'Relay 必须使用 HTTPS。')
+  }
+  if (!relayBindingUsesManagedAuthority(input.relayUrl, env.ENVIRONMENT)) {
+    throw new ApiError(400, 'relay_url_invalid', '无法使用这个同步服务，请更新 Fuddy 后重试。')
   }
   const space = await env.ACCOUNT_DB.prepare(
     `SELECT s.id, s.relay_account_id, s.relay_generation, s.relay_bound_at,

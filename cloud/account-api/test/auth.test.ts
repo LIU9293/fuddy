@@ -7,7 +7,8 @@ import {
   linkVerifiedGoogleIdentity,
   parseResendErrorDetails,
   processRelayRevocationJobs,
-  reactivateRelayAccountIfNeeded
+  reactivateRelayAccountIfNeeded,
+  relayBindingUsesManagedAuthority
 } from '../src/index'
 import type { DeviceInput } from '../src/types'
 
@@ -51,6 +52,13 @@ describe('email authentication', () => {
     const response = await SELF.fetch('https://account.test/api/account/health')
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ ok: true })
+  })
+
+  it('accepts only the administered Relay authority in production', () => {
+    expect(relayBindingUsesManagedAuthority('https://fuddy.ai/api/relay', 'production')).toBe(true)
+    expect(relayBindingUsesManagedAuthority('https://fuddy.ai/api/relay/', 'production')).toBe(true)
+    expect(relayBindingUsesManagedAuthority('https://custom-relay.example.com', 'production')).toBe(false)
+    expect(relayBindingUsesManagedAuthority('https://custom-relay.example.com', 'development')).toBe(true)
   })
 
   it('creates a user, Mac host, sync space, and reusable session', async () => {

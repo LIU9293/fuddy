@@ -85,6 +85,8 @@ describe('AccountEnrollmentCoordinator', () => {
     expect(resolveCompanionRelayUrl(undefined, 'development')).toBeNull()
     expect(resolveCompanionRelayUrl('http://127.0.0.1:8789/', 'development')).toBe('http://127.0.0.1:8789')
     expect(resolveCompanionRelayUrl(undefined, 'production')).toBe('https://fuddy.ai/api/relay')
+    expect(resolveCompanionRelayUrl('https://fuddy.ai/api/relay/', 'production')).toBe('https://fuddy.ai/api/relay')
+    expect(resolveCompanionRelayUrl('https://custom-relay.example.com', 'production')).toBeNull()
     expect(resolveCompanionRelayUrl('http://relay.example.com', 'production')).toBeNull()
   })
 

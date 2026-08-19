@@ -25,7 +25,9 @@ export function resolveCompanionRelayUrl(
     if (url.protocol !== 'https:' && !isLocalDevelopment) return null
     if (url.username || url.password || url.search || url.hash) return null
     const pathname = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/u, '')
-    return `${url.origin}${pathname}`
+    const normalized = `${url.origin}${pathname}`
+    if (runtimeChannel === 'production' && normalized !== defaultCompanionRelayUrl) return null
+    return normalized
   } catch {
     return null
   }
