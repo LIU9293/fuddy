@@ -14,6 +14,7 @@ import type {
   CompanionRelayEventPayloadMap,
   CompanionSyncEventInput
 } from './companion-sync'
+import { companionAttachmentPlaintextMaximumBytes } from './companion-sync'
 
 const identifier = z.string().trim().min(1).max(200)
 const chatRecordIdentifier = z.string().trim().min(1).max(260)
@@ -31,7 +32,7 @@ const attachment = z.object({
   artifactId: identifier.nullish().transform((value) => value ?? null),
   filename: z.string().trim().min(1).max(500),
   mimeType: z.string().trim().min(1).max(200),
-  size: z.number().int().positive().max(100 * 1024 * 1024),
+  size: z.number().int().positive().max(companionAttachmentPlaintextMaximumBytes),
   sha256: z.string().regex(/^[a-f0-9]{64}$/i),
   width: z.number().int().positive().nullish().transform((value) => value ?? null),
   height: z.number().int().positive().nullish().transform((value) => value ?? null),

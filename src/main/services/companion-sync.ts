@@ -29,7 +29,7 @@ import type {
   CompanionRelaySnapshotPayload,
   CompanionRelayWorkAssistantMessage
 } from '../../shared/companion-sync'
-import { companionProtocolVersion } from '../../shared/companion-sync'
+import { companionAttachmentPlaintextMaximumBytes, companionProtocolVersion } from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
@@ -62,12 +62,14 @@ import type { AccountRelayCredentials } from './account-device-grant'
 
 const configurationKey = 'companion.mac-configuration'
 const accountConfigurationsKey = 'companion.account-configurations'
+const retentionSnapshotsKey = 'companion.retention-snapshots'
 export const companionFallbackSyncIntervalMs = 60_000
 export const companionConnectedFallbackSyncIntervalMs = 5 * 60_000
 export const companionRequestTimeoutMs = 30_000
 export const companionSocketHeartbeatIntervalMs = 20_000
 export const companionEventBatchMaximumCount = 100
 export const companionEventBatchMaximumBytes = 512 * 1024
+export const companionRetentionSnapshotIntervalMs = 24 * 60 * 60 * 1_000
 // Pairing snapshots are already bounded to one presentation-ready page per chat,
 // but an established workspace can legitimately exceed the normal batch target.
 // Keep the single baseline below the Relay's encrypted-payload ceiling instead
@@ -96,6 +98,11 @@ type RelayRevocationTarget = Omit<AuthenticatedCompanionContext, 'encryptionKey'
 export interface AccountRelayBinding {
   relayUrl: string
   relayAccountId: string
+}
+
+export interface AccountRelayBindingProof {
+  proof: string
+  expiresAt: string
 }
 
 export function companionReconnectDelayMs(attempt: number): number {
@@ -328,6 +335,13 @@ export class CompanionSyncService {
     if (this.configuration?.ownerUserId) {
       this.accountConfigurations[this.configuration.ownerUserId] = this.configuration
     }
+    if (this.configuration) {
+      const snapshots = database.getSetting<Record<string, string>>(retentionSnapshotsKey, {})
+      if (!snapshots[this.configuration.accountId]) {
+        snapshots[this.configuration.accountId] = new Date().toISOString()
+        database.setSetting(retentionSnapshotsKey, snapshots)
+      }
+    }
     // Account-owned Relay identities restart closed. The enrollment coordinator
     // opens them only after the Account API durably accepts the Relay binding.
     this.stopped = Boolean(this.configuration?.ownerUserId)
@@ -422,7 +436,7 @@ export class CompanionSyncService {
       // Delivery markers are local to this Mac database. Rebuild an authoritative
       // baseline whenever a previously detached Relay becomes active again so it
       // catches up on mutations published while another account was selected.
-      this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
+      this.enqueueRetentionSnapshot()
     }
     this.validatedAccountRelaySignature = null
     this.state = this.configuration ? 'disconnected' : 'not-configured'
@@ -548,6 +562,18 @@ export class CompanionSyncService {
     }
   }
 
+  async createAccountBindingProof(): Promise<AccountRelayBindingProof> {
+    const context = this.authenticatedTokenContext()
+    const response = await fetchWithTimeout(
+      this.authenticatedUrl('/v1/account-binding-proofs', context.configuration),
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${context.token}` }
+      }
+    )
+    return await responseJson<AccountRelayBindingProof>(response)
+  }
+
   async revokeAccountDevice(deviceId: string, grantId?: string): Promise<void> {
     const context = this.authenticatedTokenContext()
     if (deviceId === context.configuration.macDeviceId) throw new Error('不能撤销当前 Mac Host。')
@@ -626,7 +652,7 @@ export class CompanionSyncService {
     this.credentials.set(this.encryptionKeyReference(pairing.accountId), encryptionKey)
     this.persistActiveConfiguration()
     this.validatedAccountRelaySignature = null
-    this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
+    this.enqueueRetentionSnapshot()
     this.state = ownerUserId ? 'disconnected' : 'connecting'
     this.lastError = null
     this.iosDevicesOnline = null
@@ -826,6 +852,7 @@ export class CompanionSyncService {
     if (this.state !== 'connected') this.state = 'connecting'
     this.emitStatus()
     try {
+      this.ensureRetentionSnapshot()
       await this.flushOutbox()
       if (this.stopped) return this.getStatus()
       await this.processPendingCommands()
@@ -845,6 +872,22 @@ export class CompanionSyncService {
       this.emitStatus()
     }
     return this.getStatus()
+  }
+
+  private ensureRetentionSnapshot(now = new Date()): void {
+    if (!this.configuration) return
+    const snapshots = this.database.getSetting<Record<string, string>>(retentionSnapshotsKey, {})
+    const previous = Date.parse(snapshots[this.configuration.accountId] ?? '')
+    if (Number.isFinite(previous) && now.getTime() - previous < companionRetentionSnapshotIntervalMs) return
+    this.enqueueRetentionSnapshot(now)
+  }
+
+  private enqueueRetentionSnapshot(now = new Date()): void {
+    if (!this.configuration) return
+    this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
+    const snapshots = this.database.getSetting<Record<string, string>>(retentionSnapshotsKey, {})
+    snapshots[this.configuration.accountId] = now.toISOString()
+    this.database.setSetting(retentionSnapshotsKey, snapshots)
   }
 
   stop(): void {
@@ -1077,7 +1120,7 @@ export class CompanionSyncService {
     const filePath = this.resolveArtifactPath(artifact)
     if (!filePath) return null
     const file = statSync(filePath)
-    if (!file.isFile() || file.size <= 0 || file.size > 100 * 1024 * 1024) {
+    if (!file.isFile() || file.size <= 0 || file.size > companionAttachmentPlaintextMaximumBytes) {
       return null
     }
     const sha256 = await this.hashFile(filePath)
@@ -1502,7 +1545,7 @@ export class CompanionSyncService {
         const artifact = this.database.getAgentRunArtifact(artifactId)
         if (!artifact) throw new Error('没有找到这个附件。')
         const attachment = await this.prepareArtifact(artifact)
-        if (!attachment) throw new Error('附件文件不存在、不可访问或超过 100 MiB。')
+        if (!attachment) throw new Error('附件文件不存在、不可访问或超过 20 MiB。')
         return { artifactId, attachment }
       }
       case 'decision.update-status': {
@@ -1559,7 +1602,9 @@ export class CompanionSyncService {
         thumbnailAttachmentId: null,
         createdAt: this.requiredString(value, 'createdAt')
       }
-      if (!Number.isInteger(descriptor.size) || descriptor.size <= 0 || descriptor.size > 20 * 1024 * 1024) {
+      if (!Number.isInteger(descriptor.size)
+        || descriptor.size <= 0
+        || descriptor.size > companionAttachmentPlaintextMaximumBytes) {
         throw new Error('附件大小无效或超过 20 MiB。')
       }
       const response = await fetchWithTimeout(

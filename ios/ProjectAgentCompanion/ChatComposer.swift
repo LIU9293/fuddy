@@ -399,7 +399,9 @@ struct CompanionChatComposer: View {
     }
 
     private func append(data: Data, name: String, mimeType: String) throws {
-        guard data.count <= 20 * 1024 * 1024 else {
+        // Leave 32 bytes for the PAE2 + AES-GCM envelope so the stored R2
+        // object itself never exceeds the hosted 20 MiB limit.
+        guard data.count <= 20 * 1024 * 1024 - 32 else {
             throw ComposerAttachmentError.tooLarge
         }
         attachments.append(PendingAttachment(id: UUID().uuidString, name: name, mimeType: mimeType, data: data))

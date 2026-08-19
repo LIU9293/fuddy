@@ -41,7 +41,8 @@ export default defineConfig({
       readFileSync('./migrations/0006_refresh_history.sql', 'utf8'),
       readFileSync('./migrations/0007_host_space_uniqueness.sql', 'utf8'),
       readFileSync('./migrations/0008_relay_revocation_jobs.sql', 'utf8'),
-      readFileSync('./migrations/0009_auth_concurrency.sql', 'utf8')
+      readFileSync('./migrations/0009_auth_concurrency.sql', 'utf8'),
+      readFileSync('./migrations/0010_relay_binding_authority.sql', 'utf8')
     ].join('\n'))
   }
 })

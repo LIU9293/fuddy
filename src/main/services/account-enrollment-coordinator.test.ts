@@ -39,6 +39,7 @@ describe('AccountEnrollmentCoordinator', () => {
         relayAccountId: 'relay-account'
       })),
       isAccountRelayBindingConfirmed: vi.fn(() => false),
+      createAccountBindingProof: vi.fn(async () => ({ proof: 'relay-binding-proof', expiresAt: '2030-01-01T00:00:00Z' })),
       confirmAccountRelayBinding: vi.fn(),
       start: vi.fn(),
       enrollAccountDevice: vi.fn(async () => ({
@@ -63,7 +64,8 @@ describe('AccountEnrollmentCoordinator', () => {
     expect(account.bindRelay).toHaveBeenCalledWith({
       spaceId: 'space-1',
       relayUrl: 'https://relay.example.com',
-      relayAccountId: 'relay-account'
+      relayAccountId: 'relay-account',
+      bindingProof: 'relay-binding-proof'
     })
     expect(account.bindRelay).toHaveBeenCalledBefore(companion.start as ReturnType<typeof vi.fn>)
     expect(companion.confirmAccountRelayBinding).toHaveBeenCalledWith({
@@ -137,6 +139,7 @@ describe('AccountEnrollmentCoordinator', () => {
         relayAccountId: 'relay-account'
       })),
       isAccountRelayBindingConfirmed: vi.fn(() => false),
+      createAccountBindingProof: vi.fn(async () => ({ proof: 'relay-binding-proof', expiresAt: '2030-01-01T00:00:00Z' })),
       confirmAccountRelayBinding: vi.fn(),
       start: vi.fn(),
       enrollAccountDevice: vi.fn(async () => ({
@@ -173,6 +176,7 @@ describe('AccountEnrollmentCoordinator', () => {
         relayAccountId: 'new-relay-account'
       })),
       isAccountRelayBindingConfirmed: vi.fn(() => false),
+      createAccountBindingProof: vi.fn(async () => ({ proof: 'relay-binding-proof', expiresAt: '2030-01-01T00:00:00Z' })),
       confirmAccountRelayBinding: vi.fn(),
       start: vi.fn()
     } as unknown as CompanionSyncService
@@ -207,6 +211,7 @@ describe('AccountEnrollmentCoordinator', () => {
         relayAccountId: 'confirmed-relay'
       })),
       isAccountRelayBindingConfirmed: vi.fn(() => true),
+      createAccountBindingProof: vi.fn(async () => ({ proof: 'relay-binding-proof', expiresAt: '2030-01-01T00:00:00Z' })),
       start: vi.fn(),
       disconnectAllAccountRelays: vi.fn(async () => undefined)
     } as unknown as CompanionSyncService
@@ -261,6 +266,7 @@ describe('AccountEnrollmentCoordinator', () => {
         return { relayUrl: 'https://relay.example.com', relayAccountId: 'relay-account' }
       }),
       isAccountRelayBindingConfirmed: vi.fn(() => false),
+      createAccountBindingProof: vi.fn(async () => ({ proof: 'relay-binding-proof', expiresAt: '2030-01-01T00:00:00Z' })),
       confirmAccountRelayBinding: vi.fn(),
       start: vi.fn()
     } as unknown as CompanionSyncService

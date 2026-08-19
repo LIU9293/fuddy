@@ -14,6 +14,7 @@ beforeEach(async () => {
   await env.ACCOUNT_DB.exec('PRAGMA foreign_keys = OFF')
   for (const table of [
     'auth_email_cooldowns',
+    'relay_binding_attempts',
     'relay_revocation_jobs',
     'email_suppressions',
     'resend_webhook_events',

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { RelayAdministrationBinding } from '../../relay/src/administration-contract'
 import {
   activatePendingEnrollment,
+  bindRelay,
   linkVerifiedGoogleIdentity,
   parseResendErrorDetails,
   processRelayRevocationJobs,
@@ -297,7 +298,10 @@ describe('email authentication', () => {
 
     const relayAdmin = {
       revokeDevice: vi.fn(async () => true),
-      setAccountGeneration: vi.fn(async () => undefined),
+      claimAccountBinding: vi.fn(async () => true),
+      confirmAccountBinding: vi.fn(async () => true),
+      releaseAccountBinding: vi.fn(async () => true),
+      setAccountGeneration: vi.fn(async () => true),
       revokeAccount: vi.fn()
         .mockRejectedValueOnce(new Error('temporary Relay outage'))
         .mockResolvedValue(true)
@@ -393,9 +397,12 @@ describe('email authentication', () => {
     expect(second.verify.status).toBe(200)
     const relayAdmin = {
       revokeDevice: vi.fn(async () => { throw new Error('temporary device revocation outage') }),
+      claimAccountBinding: vi.fn(async () => true),
+      confirmAccountBinding: vi.fn(async () => true),
+      releaseAccountBinding: vi.fn(async () => true),
       setAccountGeneration: vi.fn()
         .mockRejectedValueOnce(new Error('temporary Relay outage'))
-        .mockResolvedValue(undefined),
+        .mockResolvedValue(true),
       revokeAccount: vi.fn(async () => true)
     } satisfies RelayAdministrationBinding
     await expect(reactivateRelayAccountIfNeeded(env, spaceId, relayAdmin))
@@ -414,8 +421,8 @@ describe('email authentication', () => {
       relayAdmin,
       now: new Date('2030-01-01T00:00:00.000Z')
     })).resolves.toEqual({ attempted: 1, completed: 1 })
-    expect(relayAdmin.setAccountGeneration).toHaveBeenNthCalledWith(1, relayAccountId, 2)
-    expect(relayAdmin.setAccountGeneration).toHaveBeenNthCalledWith(2, relayAccountId, 2)
+    expect(relayAdmin.setAccountGeneration).toHaveBeenNthCalledWith(1, relayAccountId, spaceId, null, 2)
+    expect(relayAdmin.setAccountGeneration).toHaveBeenNthCalledWith(2, relayAccountId, spaceId, null, 2)
     await expect(env.ACCOUNT_DB.prepare(
       `SELECT status, source_generation AS sourceGeneration
        FROM relay_revocation_jobs WHERE id = ?`
@@ -451,7 +458,11 @@ describe('email authentication', () => {
     const initialBinding = await SELF.fetch(`https://account.test/v1/sync-spaces/${spaceId}/relay-binding`, {
       method: 'POST',
       headers: authorization(first.payload.session.accessToken),
-      body: JSON.stringify({ relayUrl: 'https://fuddy.ai/api/relay', relayAccountId: oldRelayAccountId })
+      body: JSON.stringify({
+        relayUrl: 'https://fuddy.ai/api/relay',
+        relayAccountId: oldRelayAccountId,
+        bindingProof: 'test-binding-proof-old-relay'
+      })
     })
     expect(initialBinding.status).toBe(200)
     expect(await env.ACCOUNT_DB.prepare(
@@ -469,7 +480,10 @@ describe('email authentication', () => {
     expect(second.verify.status).toBe(200)
     const relayAdmin = {
       revokeDevice: vi.fn(async () => true),
-      setAccountGeneration: vi.fn(async () => undefined),
+      claimAccountBinding: vi.fn(async () => true),
+      confirmAccountBinding: vi.fn(async () => true),
+      releaseAccountBinding: vi.fn(async () => true),
+      setAccountGeneration: vi.fn(async () => true),
       revokeAccount: vi.fn(async () => true)
     } satisfies RelayAdministrationBinding
     await expect(reactivateRelayAccountIfNeeded(env, spaceId, relayAdmin)).resolves.toBe(2)
@@ -484,7 +498,11 @@ describe('email authentication', () => {
     const replacement = await SELF.fetch(`https://account.test/v1/sync-spaces/${spaceId}/relay-binding`, {
       method: 'POST',
       headers: authorization(second.payload.session.accessToken),
-      body: JSON.stringify({ relayUrl: 'https://fuddy.ai/api/relay', relayAccountId: newRelayAccountId })
+      body: JSON.stringify({
+        relayUrl: 'https://fuddy.ai/api/relay',
+        relayAccountId: newRelayAccountId,
+        bindingProof: 'test-binding-proof-new-relay'
+      })
     })
     expect(replacement.status).toBe(200)
     await expect(env.ACCOUNT_DB.prepare(
@@ -503,11 +521,118 @@ describe('email authentication', () => {
       relayAdmin,
       now: new Date('2030-01-01T00:00:00.000Z')
     })).resolves.toEqual({ attempted: 1, completed: 1 })
-    expect(relayAdmin.revokeAccount).toHaveBeenCalledWith(oldRelayAccountId, 2)
-    expect(relayAdmin.revokeAccount).not.toHaveBeenCalledWith(newRelayAccountId, expect.anything())
+    expect(relayAdmin.revokeAccount).toHaveBeenCalledWith(
+      oldRelayAccountId,
+      spaceId,
+      expect.any(String),
+      2
+    )
+    expect(relayAdmin.revokeAccount).not.toHaveBeenCalledWith(
+      newRelayAccountId,
+      expect.anything(),
+      expect.anything(),
+      expect.anything()
+    )
     await expect(env.ACCOUNT_DB.prepare(
       'SELECT status FROM relay_revocation_jobs WHERE id = ?'
     ).bind(`account:${spaceId}:${oldRelayAccountId}`).first()).resolves.toEqual({ status: 'completed' })
+  })
+
+  it('claims a one-time Relay proof before finalizing the D1 binding', async () => {
+    const { payload } = await signIn('relay-proof@example.com')
+    const spaceId = payload.device.syncSpaceId as string
+    const relayAccountId = 'relay-account-with-proof'
+    const relayAdmin = {
+      revokeDevice: vi.fn(async () => true),
+      claimAccountBinding: vi.fn(async () => true),
+      confirmAccountBinding: vi.fn(async () => true),
+      releaseAccountBinding: vi.fn(async () => true),
+      setAccountGeneration: vi.fn(async () => true),
+      revokeAccount: vi.fn(async () => true)
+    } satisfies RelayAdministrationBinding
+    const request = new Request(`https://account.test/v1/sync-spaces/${spaceId}/relay-binding`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${payload.session.accessToken}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        relayUrl: 'https://fuddy.ai/api/relay',
+        relayAccountId,
+        bindingProof: 'one-time-relay-binding-proof'
+      })
+    })
+
+    const response = await bindRelay(request, env, spaceId, relayAdmin)
+    expect(response.status).toBe(200)
+    const binding = await env.ACCOUNT_DB.prepare(
+      `SELECT relay_account_id AS relayAccountId, relay_binding_id AS relayBindingId
+       FROM sync_spaces WHERE id = ?`
+    ).bind(spaceId).first<{ relayAccountId: string; relayBindingId: string }>()
+    expect(binding).toEqual({ relayAccountId, relayBindingId: expect.any(String) })
+    expect(relayAdmin.claimAccountBinding).toHaveBeenCalledWith(
+      relayAccountId,
+      spaceId,
+      binding!.relayBindingId,
+      1,
+      'one-time-relay-binding-proof'
+    )
+    expect(relayAdmin.confirmAccountBinding).toHaveBeenCalledWith(
+      relayAccountId,
+      spaceId,
+      binding!.relayBindingId
+    )
+    expect(relayAdmin.releaseAccountBinding).not.toHaveBeenCalled()
+  })
+
+  it('does not enqueue an old-account revocation when the binding CAS loses a race', async () => {
+    const { payload } = await signIn('relay-binding-race@example.com')
+    const spaceId = payload.device.syncSpaceId as string
+    const oldRelayAccountId = 'relay-before-binding-race'
+    const authorization = `Bearer ${payload.session.accessToken}`
+    const initial = await SELF.fetch(`https://account.test/v1/sync-spaces/${spaceId}/relay-binding`, {
+      method: 'POST',
+      headers: { authorization, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        relayUrl: 'https://fuddy.ai/api/relay',
+        relayAccountId: oldRelayAccountId,
+        bindingProof: 'initial-binding-proof-for-race'
+      })
+    })
+    expect(initial.status).toBe(200)
+    const relayAdmin = {
+      revokeDevice: vi.fn(async () => true),
+      claimAccountBinding: vi.fn(async () => {
+        await env.ACCOUNT_DB.prepare(
+          'UPDATE sync_spaces SET relay_generation = relay_generation + 1 WHERE id = ?'
+        ).bind(spaceId).run()
+        return true
+      }),
+      confirmAccountBinding: vi.fn(async () => true),
+      releaseAccountBinding: vi.fn(async () => true),
+      setAccountGeneration: vi.fn(async () => true),
+      revokeAccount: vi.fn(async () => true)
+    } satisfies RelayAdministrationBinding
+    const racedRequest = new Request(`https://account.test/v1/sync-spaces/${spaceId}/relay-binding`, {
+      method: 'POST',
+      headers: { authorization, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        relayUrl: 'https://fuddy.ai/api/relay',
+        relayAccountId: 'relay-after-binding-race',
+        bindingProof: 'replacement-binding-proof-for-race'
+      })
+    })
+
+    await expect(bindRelay(racedRequest, env, spaceId, relayAdmin)).rejects.toMatchObject({
+      status: 409,
+      code: 'relay_binding_changed'
+    })
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT COUNT(*) AS count FROM relay_revocation_jobs
+       WHERE source_id = ? AND relay_account_id = ?`
+    ).bind(spaceId, oldRelayAccountId).first()).resolves.toEqual({ count: 0 })
+    expect(relayAdmin.releaseAccountBinding).toHaveBeenCalledOnce()
+    expect(relayAdmin.confirmAccountBinding).not.toHaveBeenCalled()
   })
 
   it('lists the current device separately from other signed-in devices', async () => {
@@ -616,7 +741,11 @@ describe('email authentication', () => {
     const binding = await SELF.fetch(`https://account.test/v1/sync-spaces/${syncSpaceId}/relay-binding`, {
       method: 'POST',
       headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ relayUrl: 'https://fuddy.ai/api/relay/', relayAccountId: 'relay-account-1' })
+      body: JSON.stringify({
+        relayUrl: 'https://fuddy.ai/api/relay/',
+        relayAccountId: 'relay-account-1',
+        bindingProof: 'test-binding-proof-enrollment'
+      })
     })
     expect(binding.status).toBe(200)
     await expect(binding.json()).resolves.toMatchObject({
@@ -715,7 +844,10 @@ describe('email authentication', () => {
     expect(revoked.status).toBe(204)
     const relayAdmin = {
       revokeDevice: vi.fn(async () => true),
-      setAccountGeneration: vi.fn(async () => undefined),
+      claimAccountBinding: vi.fn(async () => true),
+      confirmAccountBinding: vi.fn(async () => true),
+      releaseAccountBinding: vi.fn(async () => true),
+      setAccountGeneration: vi.fn(async () => true),
       revokeAccount: vi.fn(async () => true)
     } satisfies RelayAdministrationBinding
     await expect(processRelayRevocationJobs(env, {
@@ -776,7 +908,11 @@ describe('email authentication', () => {
     const binding = await SELF.fetch(`https://account.test/v1/sync-spaces/${syncSpaceId}/relay-binding`, {
       method: 'POST',
       headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ relayUrl: 'https://fuddy.ai/api/relay', relayAccountId })
+      body: JSON.stringify({
+        relayUrl: 'https://fuddy.ai/api/relay',
+        relayAccountId,
+        bindingProof: 'test-binding-proof-reenrollment'
+      })
     })
     expect(binding.status).toBe(200)
     await env.ACCOUNT_DB.prepare(
@@ -825,7 +961,10 @@ describe('email authentication', () => {
 
     const relayAdmin = {
       revokeDevice: vi.fn(async () => true),
-      setAccountGeneration: vi.fn(async () => undefined),
+      claimAccountBinding: vi.fn(async () => true),
+      confirmAccountBinding: vi.fn(async () => true),
+      releaseAccountBinding: vi.fn(async () => true),
+      setAccountGeneration: vi.fn(async () => true),
       revokeAccount: vi.fn(async () => true)
     } satisfies RelayAdministrationBinding
     await expect(processRelayRevocationJobs(env, {

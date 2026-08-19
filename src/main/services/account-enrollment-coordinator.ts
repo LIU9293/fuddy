@@ -114,7 +114,8 @@ export class AccountEnrollmentCoordinator {
     let bindingConfirmed = this.companionSync.isAccountRelayBindingConfirmed(bindingInput)
     if (bindingConfirmed) await this.companionSync.start()
     if (bindingSignature !== this.lastBindingSignature || Date.now() - this.lastBindingAt >= 5 * 60_000) {
-      await this.accountService.bindRelay({ spaceId, ...binding })
+      const bindingProof = await this.companionSync.createAccountBindingProof()
+      await this.accountService.bindRelay({ spaceId, ...binding, bindingProof: bindingProof.proof })
       this.companionSync.confirmAccountRelayBinding(bindingInput)
       bindingConfirmed = true
       this.lastBindingSignature = bindingSignature
