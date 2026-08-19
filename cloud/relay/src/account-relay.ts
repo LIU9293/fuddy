@@ -19,7 +19,8 @@ import type {
 import {
   companionAttachmentObjectMaximumBytes,
   companionMinimumProtocolVersion,
-  companionProtocolVersion
+  companionProtocolVersion,
+  companionRelayMaximumRetainedEvents
 } from '../../../src/shared/companion-sync'
 
 interface DeviceRow extends Record<string, SqlStorageValue> {
@@ -130,7 +131,7 @@ interface PushRequest {
 
 const lastSeenWriteIntervalMs = 5 * 60_000
 const attachmentUploadLeaseDurationMs = 5 * 60_000
-export const maximumRetainedEvents = 5_000
+export const maximumRetainedEvents = companionRelayMaximumRetainedEvents
 export const maximumAccountAttachmentBytes = 100 * 1024 * 1024 * 1024
 export const maximumRetainedCommands = 1_000
 const terminalCommandRetentionDays = 30

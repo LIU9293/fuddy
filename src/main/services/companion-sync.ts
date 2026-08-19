@@ -29,7 +29,11 @@ import type {
   CompanionRelaySnapshotPayload,
   CompanionRelayWorkAssistantMessage
 } from '../../shared/companion-sync'
-import { companionAttachmentPlaintextMaximumBytes, companionProtocolVersion } from '../../shared/companion-sync'
+import {
+  companionAttachmentPlaintextMaximumBytes,
+  companionProtocolVersion,
+  companionRelayMaximumRetainedEvents
+} from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
@@ -929,6 +933,13 @@ export class CompanionSyncService {
       if (this.stopped) return
       const pending = this.database.listPendingCompanionEvents(companionEventBatchMaximumCount)
       if (pending.length === 0) return
+      if (pending[0].type === 'snapshot.created'
+        && this.database.countPendingCompanionEvents() > companionRelayMaximumRetainedEvents) {
+        throw new Error(
+          `当前 Companion 基线超过免费 Relay 的 ${companionRelayMaximumRetainedEvents} 条事件上限。`
+          + '请先归档不再需要的项目或 Run，再重新同步。'
+        )
+      }
       const prepared: CompanionEncryptedSyncEventInput[] = []
       for (const event of pending) {
         if (this.stopped) return

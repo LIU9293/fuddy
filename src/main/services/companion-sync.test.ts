@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import type { CompanionChatPage, CompanionCommand, CompanionEncryptedCommand, CompanionEncryptedSyncEventInput, CompanionMacConfiguration, CompanionMacStatus, CompanionSyncEventInput } from '../../shared/companion-sync'
-import { companionProtocolVersion } from '../../shared/companion-sync'
+import { companionProtocolVersion, companionRelayMaximumRetainedEvents } from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import {
   companionAccountKeyId,
@@ -193,6 +193,59 @@ describe('Companion sync transport policy', () => {
     const recoveryTypes = publishedBatches.slice(1).flat().map((event) => event.type)
     expect(recoveryTypes[0]).toBe('snapshot.created')
     expect(recoveryTypes.at(-1)).toBe('agent-turn.settled')
+    service.stop()
+    database.close()
+  })
+
+  it('stops before replacing Relay state when a recovery baseline exceeds the hard event cap', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-oversized-recovery-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    const configuration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'oversized-capacity-account',
+      macDeviceId: 'oversized-capacity-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration
+    database.setSetting('companion.mac-configuration', configuration)
+    database.setSetting('companion.retention-snapshots', { [configuration.accountId]: now })
+    database.enqueueAgentTurnSettled({
+      runId: 'oversized-capacity-run',
+      turnId: 'oversized-capacity-turn',
+      title: '不能丢失的事件',
+      outcome: 'completed',
+      summary: '已完成。',
+      settledAt: now
+    })
+    vi.spyOn(database, 'countPendingCompanionEvents')
+      .mockReturnValue(companionRelayMaximumRetainedEvents + 1)
+    const fetchMock = vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        return jsonResponse({
+          error: '事件历史已达到上限，需要先上传新的恢复快照。',
+          code: 'snapshot-required'
+        }, 409)
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const status = await service.syncNow()
+
+    expect(status.state).toBe('error')
+    expect(status.lastError).toContain(`超过免费 Relay 的 ${companionRelayMaximumRetainedEvents} 条事件上限`)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(database.listPendingCompanionEvents()[0]?.type).toBe('snapshot.created')
     service.stop()
     database.close()
   })
