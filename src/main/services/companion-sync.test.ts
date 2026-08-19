@@ -291,16 +291,24 @@ describe('Companion sync transport policy', () => {
     expect(secrets.has('companion.mac-token:previous-relay-account')).toBe(true)
     expect(secrets.has('companion.account-key:previous-relay-account')).toBe(true)
 
+    for (const event of database.listPendingCompanionEvents()) {
+      database.markCompanionEventPublished(event.eventId, new Date().toISOString())
+    }
     await service.activateAccountRelay('previous-user', 'previous-space')
     expect(service.getStatus().configuration).toEqual({
       ...previousConfiguration,
       ownerUserId: 'previous-user'
     })
+    expect(database.listPendingCompanionEvents().map((event) => event.type)).toContain('snapshot.created')
+    for (const event of database.listPendingCompanionEvents()) {
+      database.markCompanionEventPublished(event.eventId, new Date().toISOString())
+    }
     await service.activateAccountRelay('next-user', 'next-space')
     expect(service.getStatus().configuration).toMatchObject({
       accountId: 'next-relay-account',
       ownerUserId: 'next-user'
     })
+    expect(database.listPendingCompanionEvents().map((event) => event.type)).toContain('snapshot.created')
     service.stop()
     database.close()
   })

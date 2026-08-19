@@ -77,6 +77,8 @@ export interface CompanionDeviceEnrollmentInput {
   deviceId: string
   deviceName: string
   publicKey?: string | null
+  /** Account API enrollment generation used to fence delayed revocations. */
+  grantId?: string | null
 }
 
 export type CompanionDeviceEnrollmentResult = CompanionPairingClaimResult

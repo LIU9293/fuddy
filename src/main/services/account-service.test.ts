@@ -169,6 +169,59 @@ describe('AccountService', () => {
     expect(vault.get('account.refresh-token')).toBe('new-refresh')
   })
 
+  it('coalesces validation refreshes that overlap another authorized request', async () => {
+    const database = new FakeDatabase()
+    const vault = new FakeVault()
+    database.setSetting('account.cached-state', {
+      user: { id: 'user-1', email: 'kai@example.com', displayName: null },
+      device: { id: 'device-1', platform: 'macos', name: 'Mac', hostId: 'host-1', syncSpaceId: 'space-1' },
+      refreshExpiresAt: '2099-08-19T00:00:00.000Z'
+    })
+    vault.set('account.refresh-token', 'old-refresh')
+    vault.set('account.access-token', 'old-access')
+    let identityCalls = 0
+    let refreshCalls = 0
+    let releaseRefresh = (): void => undefined
+    const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve })
+    const service = new AccountService(database as never, vault, {
+      apiUrl: 'https://account.test',
+      runtimeChannel: 'development',
+      appVersion: '0.0.3',
+      fetch: async (url, init) => {
+        if (String(url).endsWith('/v1/me')) {
+          return response({}, 401)
+        }
+        if (String(url).endsWith('/v1/auth/refresh')) {
+          refreshCalls += 1
+          await refreshGate
+          return response({ session: {
+            accessToken: 'new-access',
+            refreshToken: 'new-refresh',
+            accessExpiresAt: '2099-08-19T00:15:00.000Z',
+            refreshExpiresAt: '2099-09-18T00:00:00.000Z'
+          } })
+        }
+        identityCalls += 1
+        return new Headers(init?.headers).get('authorization') === 'Bearer old-access'
+          ? response({}, 401)
+          : response({ identities: [] })
+      }
+    })
+
+    const validation = service.getValidatedState()
+    while (refreshCalls < 1) await new Promise((resolve) => setTimeout(resolve, 0))
+    const authorized = service.listIdentities()
+    while (identityCalls < 1) await new Promise((resolve) => setTimeout(resolve, 0))
+    releaseRefresh()
+
+    await expect(Promise.all([validation, authorized])).resolves.toMatchObject([
+      { status: 'signed-in' },
+      []
+    ])
+    expect(refreshCalls).toBe(1)
+    expect(vault.get('account.refresh-token')).toBe('new-refresh')
+  })
+
   it('lists linked identities and normalizes the current-device marker', async () => {
     const database = new FakeDatabase()
     const vault = new FakeVault()

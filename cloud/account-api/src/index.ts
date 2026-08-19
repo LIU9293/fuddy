@@ -439,32 +439,31 @@ async function startEmail(request: Request, env: Environment): Promise<Response>
 async function verifyEmail(request: Request, env: Environment): Promise<Response> {
   const input = verifyEmailSchema.parse(await bodyJson(request))
   const now = new Date()
+  const timestamp = isoNow(now)
   const challenge = await env.ACCOUNT_DB.prepare(
-    'SELECT email, code_hash, expires_at, consumed_at, attempt_count FROM auth_challenges WHERE id = ?'
+    `UPDATE auth_challenges SET attempt_count = attempt_count + 1
+     WHERE id = ? AND consumed_at IS NULL AND expires_at > ? AND attempt_count < ?
+     RETURNING email, code_hash`
   )
-    .bind(input.challengeId)
+    .bind(input.challengeId, timestamp, OTP_MAX_ATTEMPTS)
     .first<{
       email: string
       code_hash: string
-      expires_at: string
-      consumed_at: string | null
-      attempt_count: number
     }>()
-  if (!challenge || challenge.consumed_at || new Date(challenge.expires_at).getTime() <= now.getTime()) {
+  if (!challenge) {
+    const unavailable = await env.ACCOUNT_DB.prepare(
+      'SELECT attempt_count FROM auth_challenges WHERE id = ? AND consumed_at IS NULL AND expires_at > ?'
+    ).bind(input.challengeId, timestamp).first<{ attempt_count: number }>()
+    if ((unavailable?.attempt_count ?? 0) >= OTP_MAX_ATTEMPTS) {
+      throw new ApiError(429, 'otp_attempts_exhausted', '验证码尝试次数过多，请重新获取。')
+    }
     throw new ApiError(400, 'otp_expired', '验证码已失效，请重新获取。')
-  }
-  if (challenge.attempt_count >= OTP_MAX_ATTEMPTS) {
-    throw new ApiError(429, 'otp_attempts_exhausted', '验证码尝试次数过多，请重新获取。')
   }
   const suppliedHash = await hmac(`${input.challengeId}:${input.code}`, env.OTP_PEPPER)
   if (!secretsEqual(suppliedHash, challenge.code_hash)) {
-    await env.ACCOUNT_DB.prepare('UPDATE auth_challenges SET attempt_count = attempt_count + 1 WHERE id = ?')
-      .bind(input.challengeId)
-      .run()
     throw new ApiError(400, 'otp_invalid', '验证码不正确。')
   }
 
-  const timestamp = isoNow(now)
   const consumed = await env.ACCOUNT_DB.prepare(
     `UPDATE auth_challenges SET consumed_at = ?
      WHERE id = ? AND consumed_at IS NULL AND expires_at > ?
@@ -1008,8 +1007,17 @@ export async function processRelayRevocationJobs(
         await relayAdmin.revokeAccount(job.relay_account_id)
       } else {
         if (!job.device_id) throw new Error('Relay device revocation is missing a device ID.')
-        // A missing Relay device is already in the desired revoked state.
-        await relayAdmin.revokeDevice(job.relay_account_id, job.device_id)
+        const currentGrant = await env.ACCOUNT_DB.prepare(
+          `SELECT g.id FROM device_grants g
+           JOIN sync_spaces s ON s.id = g.space_id
+           WHERE g.id = ? AND g.device_id = ? AND g.status = 'revoked'
+             AND g.relay_revoked_at IS NULL AND s.relay_account_id = ?`
+        ).bind(job.source_id, job.device_id, job.relay_account_id).first<{ id: string }>()
+        if (currentGrant) {
+          // Relay compares the Account enrollment ID atomically with its active
+          // device generation, so a delayed job cannot revoke a re-enrolled phone.
+          await relayAdmin.revokeDevice(job.relay_account_id, job.device_id, job.source_id)
+        }
       }
       const completedAt = new Date().toISOString()
       const statements = [

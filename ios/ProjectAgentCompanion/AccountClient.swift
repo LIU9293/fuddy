@@ -55,7 +55,64 @@ private struct EnrollmentRequestBody: Encodable {
 }
 
 @MainActor
+final class AccountRefreshCoordinator {
+    private struct ActiveRefresh {
+        let id: UUID
+        let identity: String
+        let inputRefreshToken: String
+        let task: Task<MobileAccountSession, Error>
+    }
+
+    private var active: ActiveRefresh?
+    private var lastIdentity: String?
+    private var lastInputRefreshToken: String?
+    private var lastResult: MobileAccountSession?
+
+    func refreshedSession(
+        accountSession: MobileAccountSession,
+        operation: @escaping @MainActor (MobileAccountSession) async throws -> MobileAccountSession
+    ) async throws -> MobileAccountSession {
+        let identity = "\(accountSession.user.id)\0\(accountSession.device.id)"
+        let inputRefreshToken = accountSession.session.refreshToken
+        if lastIdentity == identity,
+            lastInputRefreshToken == inputRefreshToken,
+            let lastResult
+        {
+            return lastResult
+        }
+        if let active {
+            if active.identity == identity, active.inputRefreshToken == inputRefreshToken {
+                return try await active.task.value
+            }
+            _ = try? await active.task.value
+            return try await refreshedSession(accountSession: accountSession, operation: operation)
+        }
+
+        let refreshID = UUID()
+        let task = Task { try await operation(accountSession) }
+        active = ActiveRefresh(
+            id: refreshID,
+            identity: identity,
+            inputRefreshToken: inputRefreshToken,
+            task: task
+        )
+        do {
+            let result = try await task.value
+            lastIdentity = identity
+            lastInputRefreshToken = inputRefreshToken
+            lastResult = result
+            if active?.id == refreshID { active = nil }
+            return result
+        } catch {
+            if active?.id == refreshID { active = nil }
+            throw error
+        }
+    }
+}
+
+@MainActor
 struct AccountClient {
+    private static let refreshCoordinator = AccountRefreshCoordinator()
     let baseURL: URL
     var urlSession: URLSession = .shared
 
@@ -195,7 +252,9 @@ struct AccountClient {
             accessToken: current.session.accessToken
         )
         if result.response.statusCode == 401 {
-            current = try await refresh(accountSession: current)
+            current = try await Self.refreshCoordinator.refreshedSession(accountSession: current) {
+                try await self.performRefresh(accountSession: $0)
+            }
             result = try await performAuthorized(
                 path: path,
                 method: method,
@@ -246,7 +305,7 @@ struct AccountClient {
         }
     }
 
-    private func refresh(accountSession: MobileAccountSession) async throws -> MobileAccountSession {
+    private func performRefresh(accountSession: MobileAccountSession) async throws -> MobileAccountSession {
         let refreshed: RefreshSessionResponse = try await request(
             path: "/v1/auth/refresh",
             body: ["refreshToken": accountSession.session.refreshToken]

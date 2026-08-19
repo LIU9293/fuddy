@@ -149,8 +149,7 @@ export class AccountService {
     const local = this.getState()
     if (local.status !== 'signed-in' || !this.options.apiUrl) return local
     const accessToken = this.credentialVault.get(accessTokenReference)
-    const refreshToken = this.credentialVault.get(refreshTokenReference)
-    if (!accessToken || !refreshToken) return this.signedOutState(null)
+    if (!accessToken || !this.credentialVault.get(refreshTokenReference)) return this.signedOutState(null)
     try {
       const current = await this.fetchImpl(`${this.options.apiUrl}/v1/me`, {
         headers: { authorization: `Bearer ${accessToken}` },
@@ -158,23 +157,12 @@ export class AccountService {
       })
       if (current.ok) return local
       if (current.status !== 401) return { ...local, serviceStatus: 'offline', serviceMessage: '账户服务暂时不可用。' }
-      const refreshed = await this.fetchImpl(`${this.options.apiUrl}/v1/auth/refresh`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ refreshToken }),
-        signal: AbortSignal.timeout(8_000)
-      })
-      if (refreshed.ok) {
-        const payload = await refreshed.json() as { session: SessionPayload }
-        this.persistSession(payload.session)
-        return this.getState()
-      }
-      if (refreshed.status === 401) {
-        this.clearLocalAuth()
+      await this.refreshAuthorization(accessToken)
+      return this.getState()
+    } catch {
+      if (this.getState().status === 'signed-out') {
         return this.signedOutState('登录状态已失效，请重新登录。')
       }
-      return { ...local, serviceStatus: 'offline', serviceMessage: '账户服务暂时不可用。' }
-    } catch {
       return { ...local, serviceStatus: 'offline', serviceMessage: '当前离线，仍可使用这台 Mac 上的项目。' }
     }
   }
@@ -415,7 +403,7 @@ export class AccountService {
     if (!accessToken) throw new Error('请先登录。')
     let response = await this.fetchResponse(path, init, accessToken)
     if (response.status === 401) {
-      await this.refreshAuthorization()
+      await this.refreshAuthorization(accessToken)
       accessToken = this.credentialVault.get(accessTokenReference)
       if (!accessToken) throw new Error('登录状态已失效，请重新登录。')
       response = await this.fetchResponse(path, init, accessToken)
@@ -427,7 +415,11 @@ export class AccountService {
     return this.assertResponse(response)
   }
 
-  private async refreshAuthorization(): Promise<void> {
+  private async refreshAuthorization(rejectedAccessToken?: string): Promise<void> {
+    if (
+      rejectedAccessToken
+      && this.credentialVault.get(accessTokenReference) !== rejectedAccessToken
+    ) return
     if (this.refreshInFlight) return this.refreshInFlight
     this.refreshInFlight = (async () => {
       const refreshToken = this.credentialVault.get(refreshTokenReference)

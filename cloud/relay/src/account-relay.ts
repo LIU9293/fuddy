@@ -25,6 +25,7 @@ interface DeviceRow extends Record<string, SqlStorageValue> {
   name: string
   token_hash: string
   public_key: string | null
+  grant_generation: string | null
   created_at: string
   last_seen_at: string | null
   revoked_at: string | null
@@ -175,6 +176,7 @@ export class AccountRelay extends DurableObject<Env> {
         name TEXT NOT NULL,
         token_hash TEXT NOT NULL,
         public_key TEXT,
+        grant_generation TEXT,
         created_at TEXT NOT NULL,
         last_seen_at TEXT,
         revoked_at TEXT
@@ -250,6 +252,12 @@ export class AccountRelay extends DurableObject<Env> {
         `INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (5, datetime('now'))`
       )
     }
+    if (!deviceColumns.some((column) => column.name === 'grant_generation')) {
+      this.ctx.storage.sql.exec('ALTER TABLE devices ADD COLUMN grant_generation TEXT')
+    }
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (6, datetime('now'));
+    `)
   }
 
   async initializePairing(input: {
@@ -332,15 +340,18 @@ export class AccountRelay extends DurableObject<Env> {
     const tokenHash = await secretHash(deviceToken)
     this.ctx.storage.sql.exec(
       `INSERT INTO devices (
-        id, role, platform, name, token_hash, public_key, created_at, last_seen_at, revoked_at
-      ) VALUES (?, 'ios', 'ios', ?, ?, ?, ?, NULL, NULL)
+        id, role, platform, name, token_hash, public_key, grant_generation,
+        created_at, last_seen_at, revoked_at
+      ) VALUES (?, 'ios', 'ios', ?, ?, ?, ?, ?, NULL, NULL)
       ON CONFLICT(id) DO UPDATE SET
         role = 'ios', platform = 'ios', name = excluded.name, token_hash = excluded.token_hash,
-        public_key = excluded.public_key, last_seen_at = NULL, revoked_at = NULL`,
+        public_key = excluded.public_key, grant_generation = excluded.grant_generation,
+        last_seen_at = NULL, revoked_at = NULL`,
       input.deviceId,
       input.deviceName,
       tokenHash,
       input.publicKey ?? null,
+      input.grantId ?? null,
       now
     )
     const row = this.ctx.storage.sql.exec<DeviceRow>('SELECT * FROM devices WHERE id = ?', input.deviceId).one()
@@ -353,7 +364,12 @@ export class AccountRelay extends DurableObject<Env> {
     }
   }
 
-  async revokeDevice(macDeviceId: string, macToken: string, deviceId: string): Promise<boolean> {
+  async revokeDevice(
+    macDeviceId: string,
+    macToken: string,
+    deviceId: string,
+    grantId?: string
+  ): Promise<boolean> {
     const mac = await this.authorize(macDeviceId, macToken, 'mac')
     if (!mac || deviceId === macDeviceId) return false
     const device = this.ctx.storage.sql.exec<DeviceRow>(
@@ -361,6 +377,7 @@ export class AccountRelay extends DurableObject<Env> {
       deviceId
     ).toArray()[0]
     if (!device) return true
+    if (grantId && device.grant_generation && device.grant_generation !== grantId) return true
     this.ctx.storage.sql.exec(
       'UPDATE devices SET revoked_at = ?, token_hash = ? WHERE id = ?',
       new Date().toISOString(),
@@ -390,12 +407,13 @@ export class AccountRelay extends DurableObject<Env> {
     return true
   }
 
-  async revokeDeviceByAuthority(deviceId: string): Promise<boolean> {
+  async revokeDeviceByAuthority(deviceId: string, grantId?: string): Promise<boolean> {
     const device = this.ctx.storage.sql.exec<DeviceRow>(
       `SELECT * FROM devices WHERE id = ? AND role = 'ios' AND revoked_at IS NULL`,
       deviceId
     ).toArray()[0]
     if (!device) return true
+    if (grantId && device.grant_generation && device.grant_generation !== grantId) return false
     this.ctx.storage.sql.exec(
       'UPDATE devices SET revoked_at = ?, token_hash = ? WHERE id = ?',
       new Date().toISOString(),

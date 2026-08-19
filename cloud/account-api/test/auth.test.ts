@@ -12,6 +12,7 @@ const device: DeviceInput = {
   appVersion: '0.0.3',
   protocolVersion: 1
 }
+const OTP_MAX_ATTEMPTS_FOR_TEST = 5
 
 async function post(path: string, body: unknown): Promise<Response> {
   return SELF.fetch(`https://account.test${path}`, {
@@ -59,6 +60,30 @@ describe('email authentication', () => {
     })
     expect(me.status).toBe(200)
     await expect(me.json()).resolves.toMatchObject({ user: { email: 'kai@example.com' } })
+  })
+
+  it('atomically limits parallel verification attempts for one email code', async () => {
+    const started = await post('/v1/auth/email/start', { email: 'parallel-otp@example.com' })
+    const challenge = await started.json<{ challengeId: string; debugCode: string }>()
+    const invalidCode = challenge.debugCode === '000000' ? '111111' : '000000'
+    const attempts = await Promise.all(Array.from({ length: 20 }, () => post('/v1/auth/email/verify', {
+      challengeId: challenge.challengeId,
+      code: invalidCode,
+      device
+    })))
+    const statuses = attempts.map((attempt) => attempt.status)
+    expect(statuses.filter((status) => status === 400)).toHaveLength(OTP_MAX_ATTEMPTS_FOR_TEST)
+    expect(statuses.filter((status) => status === 429)).toHaveLength(20 - OTP_MAX_ATTEMPTS_FOR_TEST)
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT attempt_count AS attemptCount FROM auth_challenges WHERE id = ?'
+    ).bind(challenge.challengeId).first()).resolves.toEqual({ attemptCount: OTP_MAX_ATTEMPTS_FOR_TEST })
+
+    const validAfterExhaustion = await post('/v1/auth/email/verify', {
+      challengeId: challenge.challengeId,
+      code: challenge.debugCode,
+      device
+    })
+    expect(validAfterExhaustion.status).toBe(429)
   })
 
   it('keeps one installation isolated when it signs in to different accounts', async () => {
@@ -193,7 +218,6 @@ describe('email authentication', () => {
   })
 
   it('revokes every phone grant when its Mac is removed', async () => {
-    await env.ACCOUNT_DB.prepare('DELETE FROM relay_revocation_jobs').run()
     const { payload } = await signIn('remove-mac@example.com')
     const iosDeviceId = crypto.randomUUID()
     const grantId = crypto.randomUUID()

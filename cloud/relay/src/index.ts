@@ -111,8 +111,8 @@ async function deleteAccountAttachments(env: Env, accountId: string): Promise<vo
 }
 
 export class RelayAdministration extends WorkerEntrypoint<Env> {
-  async revokeDevice(accountId: string, deviceId: string): Promise<boolean> {
-    return await relay(this.env, accountId).revokeDeviceByAuthority(deviceId)
+  async revokeDevice(accountId: string, deviceId: string, grantId?: string): Promise<boolean> {
+    return await relay(this.env, accountId).revokeDeviceByAuthority(deviceId, grantId)
   }
 
   async revokeAccount(accountId: string): Promise<void> {
@@ -288,7 +288,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const revoked = await context.stub.revokeDevice(
       context.deviceId,
       context.token,
-      decodeURIComponent(deviceMatch[1])
+      decodeURIComponent(deviceMatch[1]),
+      url.searchParams.get('grantId') ?? undefined
     )
     if (!revoked) throw new HttpError(409, '不能通过设备接口撤销 Mac Host。')
     return new Response(null, { status: 204 })

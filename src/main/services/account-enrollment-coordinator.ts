@@ -87,7 +87,7 @@ export class AccountEnrollmentCoordinator {
       throw new Error('账户服务与本机 Relay 绑定不一致。')
     }
     for (const revocation of page.revocations ?? []) {
-      await this.companionSync.revokeAccountDevice(revocation.deviceId)
+      await this.companionSync.revokeAccountDevice(revocation.deviceId, revocation.id)
       await this.accountService.completeRelayRevocation({
         spaceId,
         enrollmentId: revocation.id
@@ -97,7 +97,8 @@ export class AccountEnrollmentCoordinator {
       const credentials = await this.companionSync.enrollAccountDevice({
         deviceId: enrollment.deviceId,
         deviceName: enrollment.deviceName,
-        publicKey: enrollment.publicKey
+        publicKey: enrollment.publicKey,
+        grantId: enrollment.id
       })
       const wrappedSpaceKey = this.accountService.wrapEnrollmentGrant({
         enrollmentId: enrollment.id,

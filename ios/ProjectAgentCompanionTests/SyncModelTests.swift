@@ -171,6 +171,53 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(session.session.refreshToken, "refresh")
     }
 
+    @MainActor
+    func testAccountRefreshesAreCoalescedAndLateStaleCallersReuseTheRotation() async throws {
+        let coordinator = AccountRefreshCoordinator()
+        let stale = MobileAccountSession(
+            user: AccountUser(id: "user-1", email: "kai@example.com", displayName: nil),
+            device: AccountDevice(
+                id: "phone-1",
+                platform: "ios",
+                name: "iPhone",
+                hostId: nil,
+                syncSpaceId: nil
+            ),
+            session: AccountSessionTokens(
+                accessToken: "old-access",
+                refreshToken: "old-refresh",
+                accessExpiresAt: "2026-08-19T00:00:00.000Z",
+                refreshExpiresAt: "2099-08-19T00:00:00.000Z"
+            )
+        )
+        let refreshed = MobileAccountSession(
+            user: stale.user,
+            device: stale.device,
+            session: AccountSessionTokens(
+                accessToken: "new-access",
+                refreshToken: "new-refresh",
+                accessExpiresAt: "2099-08-19T00:15:00.000Z",
+                refreshExpiresAt: "2099-09-18T00:00:00.000Z"
+            )
+        )
+        var refreshCount = 0
+        let operation: @MainActor (MobileAccountSession) async throws -> MobileAccountSession = { _ in
+            refreshCount += 1
+            try await Task.sleep(for: .milliseconds(20))
+            return refreshed
+        }
+
+        async let first = coordinator.refreshedSession(accountSession: stale, operation: operation)
+        async let second = coordinator.refreshedSession(accountSession: stale, operation: operation)
+        let results = try await [first, second]
+        XCTAssertEqual(results, [refreshed, refreshed])
+        XCTAssertEqual(refreshCount, 1)
+
+        let late = try await coordinator.refreshedSession(accountSession: stale, operation: operation)
+        XCTAssertEqual(late, refreshed)
+        XCTAssertEqual(refreshCount, 1)
+    }
+
     func testCompanionContractFingerprintRejectsMixedClientBuilds() {
         XCTAssertTrue(companionContractFingerprintIsSupported(companionContractFingerprint))
         XCTAssertTrue(companionContractFingerprintIsSupported(nil))

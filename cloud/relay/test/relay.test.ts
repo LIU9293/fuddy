@@ -207,6 +207,58 @@ describe('companion relay', () => {
     expect(rejected.status).toBe(401)
   })
 
+  it('does not let a delayed grant revocation revoke a newer phone enrollment', async () => {
+    const pairingResponse = await SELF.fetch('https://relay.test/v1/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `test-${crypto.randomUUID()}` },
+      body: JSON.stringify({ macDeviceId: 'generation-mac', macDeviceName: 'Generation Mac' })
+    })
+    const pairing = await pairingResponse.json<CompanionPairingStartResult>()
+    const enroll = async (grantId: string): Promise<CompanionPairingClaimResult> => {
+      const response = await SELF.fetch(
+        authenticatedUrl('/v1/devices/enroll', pairing.accountId, pairing.macDeviceId),
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deviceId: 'generation-phone',
+            deviceName: 'Generation Phone',
+            publicKey: 'account-device-public-key',
+            grantId
+          })
+        }
+      )
+      expect(response.status).toBe(201)
+      return response.json<CompanionPairingClaimResult>()
+    }
+
+    await enroll('grant-old')
+    const replacement = await enroll('grant-new')
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await expect(stub.revokeDeviceByAuthority('generation-phone', 'grant-old')).resolves.toBe(false)
+    const staleMacRevocation = await SELF.fetch(
+      `${authenticatedUrl(
+        '/v1/devices/generation-phone',
+        pairing.accountId,
+        pairing.macDeviceId
+      )}&grantId=grant-old`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(staleMacRevocation.status).toBe(204)
+    const stillAuthorized = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, 'generation-phone'),
+      { headers: { Authorization: `Bearer ${replacement.deviceToken}` } }
+    )
+    expect(stillAuthorized.status).toBe(200)
+
+    await expect(stub.revokeDeviceByAuthority('generation-phone', 'grant-new')).resolves.toBe(true)
+    const revoked = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, 'generation-phone'),
+      { headers: { Authorization: `Bearer ${replacement.deviceToken}` } }
+    )
+    expect(revoked.status).toBe(401)
+  })
+
   it('persists ordered Mac events and replays them to iOS', async () => {
     const { pairing, phone } = await pairedDevices()
     const input = {

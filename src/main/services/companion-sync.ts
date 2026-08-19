@@ -387,6 +387,12 @@ export class CompanionSyncService {
     if (this.activeSync) await this.activeSync
     this.configuration = this.takeAccountConfiguration(ownerUserId, syncSpaceId)
     this.database.setSetting(configurationKey, this.configuration)
+    if (this.configuration) {
+      // Delivery markers are local to this Mac database. Rebuild an authoritative
+      // baseline whenever a previously detached Relay becomes active again so it
+      // catches up on mutations published while another account was selected.
+      this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
+    }
     this.validatedAccountRelaySignature = null
     this.state = this.configuration ? 'disconnected' : 'not-configured'
     this.realtimeState = 'disconnected'
@@ -476,11 +482,16 @@ export class CompanionSyncService {
     }
   }
 
-  async revokeAccountDevice(deviceId: string): Promise<void> {
+  async revokeAccountDevice(deviceId: string, grantId?: string): Promise<void> {
     const context = this.authenticatedTokenContext()
     if (deviceId === context.configuration.macDeviceId) throw new Error('不能撤销当前 Mac Host。')
+    const url = new URL(this.authenticatedUrl(
+      `/v1/devices/${encodeURIComponent(deviceId)}`,
+      context.configuration
+    ))
+    if (grantId) url.searchParams.set('grantId', grantId)
     const response = await fetchWithTimeout(
-      this.authenticatedUrl(`/v1/devices/${encodeURIComponent(deviceId)}`, context.configuration),
+      url,
       {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${context.token}` }

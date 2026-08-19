@@ -19,7 +19,7 @@ describe('AccountEnrollmentCoordinator', () => {
           relayUrl: 'https://relay.example.com',
           relayAccountId: 'relay-account'
         },
-        revocations: [],
+        revocations: [{ id: 'revoked-grant', deviceId: 'removed-phone' }],
         enrollments: [{
           id: 'grant-1',
           spaceId: 'space-1',
@@ -30,7 +30,8 @@ describe('AccountEnrollmentCoordinator', () => {
         }]
       })),
       wrapEnrollmentGrant: vi.fn(() => 'opaque-grant'),
-      completeEnrollment: vi.fn()
+      completeEnrollment: vi.fn(),
+      completeRelayRevocation: vi.fn()
     } as unknown as AccountService
     const companion = {
       ensureAccountRelay: vi.fn(async () => ({
@@ -44,7 +45,8 @@ describe('AccountEnrollmentCoordinator', () => {
         deviceToken: 'secret',
         encryptionKey: 'data-key',
         encryptionKeyId: 'key-id'
-      }))
+      })),
+      revokeAccountDevice: vi.fn()
     } as unknown as CompanionSyncService
 
     await new AccountEnrollmentCoordinator(account, companion, 'https://relay.example.com').processOnce()
@@ -60,10 +62,16 @@ describe('AccountEnrollmentCoordinator', () => {
       relayUrl: 'https://relay.example.com',
       relayAccountId: 'relay-account'
     })
+    expect(companion.revokeAccountDevice).toHaveBeenCalledWith('removed-phone', 'revoked-grant')
+    expect(account.completeRelayRevocation).toHaveBeenCalledWith({
+      spaceId: 'space-1',
+      enrollmentId: 'revoked-grant'
+    })
     expect(companion.enrollAccountDevice).toHaveBeenCalledWith({
       deviceId: 'phone-1',
       deviceName: 'Kai 的 iPhone',
-      publicKey: 'phone-public-key'
+      publicKey: 'phone-public-key',
+      grantId: 'grant-1'
     })
     expect(account.completeEnrollment).toHaveBeenCalledWith({
       spaceId: 'space-1',
