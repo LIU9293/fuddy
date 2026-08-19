@@ -415,6 +415,7 @@ export class AccountRelay extends DurableObject<Env> {
       '',
       deviceId
     )
+    this.discardPendingCommandsFromDevice(deviceId)
     for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
       try { socket.close(1000, 'Device revoked') } catch { /* Already closed. */ }
     }
@@ -431,6 +432,7 @@ export class AccountRelay extends DurableObject<Env> {
       '',
       deviceId
     )
+    this.discardPendingCommandsFromDevice(deviceId)
     for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
       try { socket.close(1000, 'Device signed out') } catch { /* Already closed. */ }
     }
@@ -451,6 +453,7 @@ export class AccountRelay extends DurableObject<Env> {
       '',
       deviceId
     )
+    this.discardPendingCommandsFromDevice(deviceId)
     for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
       try { socket.close(1000, 'Device revoked') } catch { /* Already closed. */ }
     }
@@ -472,6 +475,24 @@ export class AccountRelay extends DurableObject<Env> {
     const lastSeenAt = new Date().toISOString()
     this.ctx.storage.sql.exec('UPDATE devices SET last_seen_at = ? WHERE id = ?', lastSeenAt, deviceId)
     return { ...mapDevice(row), lastSeenAt }
+  }
+
+  async createAttachmentUploadLease(
+    deviceId: string,
+    token: string
+  ): Promise<{ accountGeneration: number | null } | null> {
+    const device = await this.authorize(deviceId, token)
+    if (!device) return null
+    return { accountGeneration: this.getAccountGeneration() }
+  }
+
+  async confirmAttachmentUploadLease(
+    deviceId: string,
+    token: string,
+    accountGeneration: number | null
+  ): Promise<boolean> {
+    const device = await this.authorize(deviceId, token)
+    return device !== null && this.getAccountGeneration() === accountGeneration
   }
 
   async appendEvent(
@@ -697,6 +718,20 @@ export class AccountRelay extends DurableObject<Env> {
     return this.ctx.storage.sql.exec<{ sequence: number | null }>(
       'SELECT MAX(sequence) AS sequence FROM events'
     ).one().sequence ?? 0
+  }
+
+  private getAccountGeneration(): number | null {
+    return this.ctx.storage.sql.exec<{ generation: number }>(
+      'SELECT generation FROM account_authority WHERE id = 1'
+    ).toArray()[0]?.generation ?? null
+  }
+
+  private discardPendingCommandsFromDevice(deviceId: string): void {
+    this.ctx.storage.sql.exec(
+      `DELETE FROM commands
+       WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
+      deviceId
+    )
   }
 
   async alarm(): Promise<void> {

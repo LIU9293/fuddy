@@ -159,6 +159,40 @@ describe('companion relay', () => {
     expect(rejected.status).toBe(401)
   })
 
+  it('discards nonterminal commands queued by a revoked device', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const commandId = crypto.randomUUID()
+    const queued = await SELF.fetch(authenticatedUrl('/v1/commands', pairing.accountId, phone.device.id), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.deviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        protocolVersion: companionProtocolVersion,
+        type: 'agent.send-message',
+        payload: encryptedPayload,
+        createdAt: new Date().toISOString()
+      })
+    })
+    expect(queued.status).toBe(201)
+
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await expect(stub.revokeDeviceByAuthority(phone.device.id)).resolves.toBe(true)
+
+    const pending = await SELF.fetch(
+      authenticatedUrl('/v1/commands/pending', pairing.accountId, pairing.macDeviceId),
+      { headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(pending.status).toBe(200)
+    await expect(pending.json<{ commands: CompanionEncryptedCommand[] }>())
+      .resolves.toEqual({ commands: [] })
+    await expect(runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM commands WHERE command_id = ?',
+        commandId
+      ).one().count
+    ))).resolves.toBe(0)
+  })
+
   it('lets an authenticated Mac enroll multiple account devices without a pairing secret', async () => {
     const pairingResponse = await SELF.fetch('https://relay.test/v1/pairings', {
       method: 'POST',
@@ -723,6 +757,44 @@ describe('companion relay', () => {
     })
     expect(refreshed.status).toBe(200)
     expect(await refreshed.text()).toBe(content)
+  })
+
+  it('does not commit an attachment upload that races account revocation', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const attachmentId = crypto.randomUUID()
+    const content = new TextEncoder().encode('attachment racing account revocation')
+    const sha256 = await crypto.subtle.digest('SHA-256', content)
+      .then((digest) => Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join(''))
+    const body = new FixedLengthStream(content.byteLength)
+    const writer = body.writable.getWriter()
+    const upload = SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      phone.device.id
+    ), {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${phone.deviceToken}`,
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(content.byteLength),
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
+      },
+      body: body.readable
+    })
+
+    const midpoint = Math.floor(content.byteLength / 2)
+    await writer.write(content.slice(0, midpoint))
+    const revoke = await SELF.fetch(
+      authenticatedUrl('/v1/account', pairing.accountId, pairing.macDeviceId),
+      { method: 'DELETE', headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(revoke.status).toBe(204)
+    await writer.write(content.slice(midpoint))
+    await writer.close()
+
+    await expect(upload).resolves.toMatchObject({ status: 401 })
+    await expect(env.ATTACHMENTS.head(`${pairing.accountId}/${attachmentId}`)).resolves.toBeNull()
   })
 
   it('rejects malformed JSON and oversized bodies without relying on Content-Length', async () => {

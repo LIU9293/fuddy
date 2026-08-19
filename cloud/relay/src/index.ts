@@ -317,6 +317,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const attachmentId = attachmentMatch[1]
     const key = `${context.accountId}/${attachmentId}`
     if (request.method === 'PUT') {
+      const uploadLease = await context.stub.createAttachmentUploadLease(context.deviceId, context.token)
+      if (!uploadLease) throw new HttpError(401, '设备认证失败。')
       if (request.headers.get('X-Companion-Encryption') !== 'A256GCM') {
         throw new HttpError(400, 'End-to-end encrypted attachment envelope is required.')
       }
@@ -347,6 +349,17 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           encryption: 'A256GCM'
         }
       })
+      try {
+        const authorized = await context.stub.confirmAttachmentUploadLease(
+          context.deviceId,
+          context.token,
+          uploadLease.accountGeneration
+        )
+        if (!authorized) throw new HttpError(401, '设备认证已失效。')
+      } catch (error) {
+        await env.ATTACHMENTS.delete(key)
+        throw error
+      }
       return Response.json({ id: attachmentId, size: contentLength }, { status: 201 })
     }
     if (request.method === 'GET' || request.method === 'HEAD') {
