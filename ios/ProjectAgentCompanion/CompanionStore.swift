@@ -1020,14 +1020,14 @@ final class CompanionStore: ObservableObject {
                 )
                 state = nextState
                 reconcileChatPages()
-        case .chatPageUpdated:
-            let page = try event.payload.decode(CompanionChatPage.self)
-            if let index = state.chatPages.firstIndex(where: { $0.chatId == page.chatId }) {
-                state.chatPages[index] = page
-            } else {
-                state.chatPages.append(page)
-            }
-            updateLegacyChatCollections(from: page)
+            case .chatPageUpdated:
+                let page = try event.payload.decode(CompanionChatPage.self)
+                if let index = state.chatPages.firstIndex(where: { $0.chatId == page.chatId }) {
+                    state.chatPages[index] = page
+                } else {
+                    state.chatPages.append(page)
+                }
+                updateLegacyChatCollections(from: page)
             case .projectCreated, .projectUpdated:
                 upsert(try event.payload.decode(Project.self), in: &state.projects)
             case .goalCreated, .goalUpdated:
@@ -1042,18 +1042,18 @@ final class CompanionStore: ObservableObject {
                 rebuildAssistantChatPage()
             case .agentRunCreated, .agentRunUpdated:
                 let run = try event.payload.decode(AgentRun.self)
-            if let index = state.runs.firstIndex(where: { $0.run.id == run.id }) {
-                state.runs[index].run = run
-            } else {
+                if let index = state.runs.firstIndex(where: { $0.run.id == run.id }) {
+                    state.runs[index].run = run
+                } else {
                     state.runs.append(RunDetail(run: run, messages: [], artifacts: []))
-                state.chatPages.append(
-                    CompanionChatPage(
-                        chatId: run.id,
-                        chatKind: "agent",
-                        records: [],
-                        hasMore: false,
-                        nextBefore: nil
-                    ))
+                    state.chatPages.append(
+                        CompanionChatPage(
+                            chatId: run.id,
+                            chatKind: "agent",
+                            records: [],
+                            hasMore: false,
+                            nextBefore: nil
+                        ))
                 }
             case .modelLabelsUpdated:
                 state.modelLabels = try event.payload.decode(AgentModelLabels.self)
@@ -1067,17 +1067,17 @@ final class CompanionStore: ObservableObject {
             case .artifactUpdated:
                 if let enriched = try? event.payload.decode(ArtifactEventPayload.self) {
                     upsertArtifact(enriched.artifact)
-                if let attachment = enriched.attachment {
-                    state.attachments[enriched.artifact.id] = attachment
-                }
+                    if let attachment = enriched.attachment {
+                        state.attachments[enriched.artifact.id] = attachment
+                    }
                 } else {
                     upsertArtifact(try event.payload.decode(AgentArtifact.self))
                 }
             case .commandUpdated:
                 let command = try event.payload.decode(CommandResult.self)
                 eventError = applyCommandResult(command)
-        case .agentTurnSettled, .unknown:
-            break
+            case .agentTurnSettled, .unknown:
+                break
         }
         return eventError
     }
