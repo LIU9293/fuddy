@@ -11,6 +11,7 @@ import type {
 import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
 import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/request-guards'
 import { maximumAccountAttachmentBytes } from '../src/account-relay'
+import { shouldDeleteUploadedAttachmentObject } from '../src/index'
 
 async function pairedDevices(): Promise<{
   pairing: CompanionPairingStartResult
@@ -911,6 +912,26 @@ describe('companion relay', () => {
         status: 'existing',
         attachment: { storageKey, size: 12 }
       })
+  })
+
+  it('keeps the R2 object referenced by an idempotent commit result', () => {
+    const attachment = {
+      storageKey: 'account/objects/attachment/object',
+      uploadedBy: 'mac-test',
+      sha256: 'd'.repeat(64),
+      size: 12
+    }
+    expect(shouldDeleteUploadedAttachmentObject(attachment.storageKey, {
+      status: 'existing',
+      attachment
+    })).toBe(false)
+    expect(shouldDeleteUploadedAttachmentObject('account/objects/attachment/orphan', {
+      status: 'existing',
+      attachment
+    })).toBe(true)
+    expect(shouldDeleteUploadedAttachmentObject(attachment.storageKey, {
+      status: 'unauthorized'
+    })).toBe(true)
   })
 
   it('does not commit an attachment upload that races account revocation', async () => {
