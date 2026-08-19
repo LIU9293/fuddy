@@ -30,6 +30,8 @@ final class CompanionStore: ObservableObject {
     private var accountEnrollmentTask: Task<Void, Never>?
     private var accountEnrollmentTaskID: UUID?
     private var accountValidationTask: Task<Void, Never>?
+    private var relayCredentialCleanupTask: Task<Void, Never>?
+    private var pendingRelayCredentialCleanup: [CompanionCredentials] = []
     private var accountSessionValidated = false
     private var activeSync: Task<Void, Never>?
     private var activeSyncID: UUID?
@@ -165,6 +167,15 @@ final class CompanionStore: ObservableObject {
                     connection = .offline
                 }
             }
+            pendingRelayCredentialCleanup = accountRelayCredentialsRequiringCleanup(
+                try KeychainStore.loadAll(),
+                activeOwnerUserID: accountSession?.user.id
+            )
+            if accountSession == nil, credentials?.ownerUserID != nil {
+                credentials = nil
+                client = nil
+                connection = .unpaired
+            }
         } catch {
             operationError = error.localizedDescription
         }
@@ -257,6 +268,7 @@ final class CompanionStore: ObservableObject {
 
     func start(validateAccountSession: Bool = false) {
         guard !previewMode, !accountHostsPreviewMode else { return }
+        beginRelayCredentialCleanupIfNeeded()
         guard isSignedIn else { return }
         if validateAccountSession { accountSessionValidated = false }
         guard accountSessionValidated else {
@@ -629,6 +641,42 @@ final class CompanionStore: ObservableObject {
         }
     }
 
+    private func beginRelayCredentialCleanupIfNeeded() {
+        guard relayCredentialCleanupTask == nil, !pendingRelayCredentialCleanup.isEmpty else {
+            return
+        }
+        let credentialsToRevoke = pendingRelayCredentialCleanup
+        pendingRelayCredentialCleanup.removeAll { credentialsToRevoke.contains($0) }
+        relayCredentialCleanupTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var remaining: [CompanionCredentials] = []
+            for credentials in credentialsToRevoke {
+                do {
+                    try await RelayClient(credentials: credentials).revokeSelf()
+                    KeychainStore.deleteIfMatching(credentials)
+                } catch RelayError.unauthorized {
+                    KeychainStore.deleteIfMatching(credentials)
+                } catch {
+                    remaining.append(credentials)
+                }
+            }
+            for credentials in remaining where !self.pendingRelayCredentialCleanup.contains(credentials) {
+                self.pendingRelayCredentialCleanup.append(credentials)
+            }
+            self.relayCredentialCleanupTask = nil
+        }
+    }
+
+    private func queueRelayCredentialCleanup(ownerUserID: String) {
+        guard let stored = try? KeychainStore.loadAll() else { return }
+        for credentials in stored where credentials.ownerUserID == ownerUserID {
+            if !pendingRelayCredentialCleanup.contains(credentials) {
+                pendingRelayCredentialCleanup.append(credentials)
+            }
+        }
+        beginRelayCredentialCleanupIfNeeded()
+    }
+
     private func validateAccountSession() async {
         guard let current = accountSession, let accountClient = AccountClient.configured() else {
             restoringAccountSession = false
@@ -661,12 +709,15 @@ final class CompanionStore: ObservableObject {
             restoringAccountSession = false
             start()
         } catch AccountClientError.authenticationRequired {
-            // The Account session and Relay grant have independent lifetimes. Keep the
-            // Relay credential in Keychain so a later sign-in can validate or revoke it;
-            // deleting it here would leave an unreachable bearer grant active remotely.
+            // Relay grants can outlive an Account session. Queue every credential
+            // owned by this user for direct Relay revocation before removing local access.
             await quiesceAccountConnections(cancelValidation: false)
+            queueRelayCredentialCleanup(ownerUserID: current.user.id)
             AccountKeychainStore.deleteSession()
             accountSession = nil
+            credentials = nil
+            client = nil
+            connection = .unpaired
             accountSessionValidated = false
             restoringAccountSession = false
             availableAccountSyncSpaces = []

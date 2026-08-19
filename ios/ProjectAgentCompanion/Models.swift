@@ -107,6 +107,16 @@ func accountCredentialsNeedEnrollment(
     return false
 }
 
+func accountRelayCredentialsRequiringCleanup(
+    _ credentials: [CompanionCredentials],
+    activeOwnerUserID: String?
+) -> [CompanionCredentials] {
+    credentials.filter { credential in
+        guard let ownerUserID = credential.ownerUserID else { return false }
+        return ownerUserID != activeOwnerUserID
+    }
+}
+
 struct AccountDeviceEnrollment: Codable, Equatable {
     let id: String
     let spaceId: String
@@ -138,7 +148,7 @@ struct CompanionDevice: Codable {
     let lastSeenAt: String?
 }
 
-struct CompanionCredentials: Codable {
+struct CompanionCredentials: Codable, Equatable {
     let relayURL: String
     let accountID: String
     let deviceID: String

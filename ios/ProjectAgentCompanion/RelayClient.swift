@@ -347,8 +347,8 @@ final class RelayClient {
     private static func validate(response: URLResponse, data: Data) throws {
         guard let response = response as? HTTPURLResponse else { throw RelayError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else {
+            if response.statusCode == 401 { throw RelayError.unauthorized }
             let message = switch response.statusCode {
-            case 401: "登录已过期，请重新登录。"
             case 403: "这台设备暂时无法访问同步内容。"
             case 404: "没有找到要同步的内容。"
             case 409: "同步状态已更新，请重试。"
@@ -375,12 +375,13 @@ final class RelayClient {
 
 private struct PushTokenRegistration: Codable { let token: String }
 enum RelayError: LocalizedError {
-    case protocolMismatch, invalidRelayURL, invalidResponse, integrity(String), server(String)
+    case protocolMismatch, invalidRelayURL, invalidResponse, unauthorized, integrity(String), server(String)
     var errorDescription: String? {
         switch self {
         case .protocolMismatch: "请更新 Mac 和 iPhone 上的 Fuddy 后重试。"
         case .invalidRelayURL: "暂时无法连接同步服务，请稍后重试。"
         case .invalidResponse: "连接没有完成，请重试。"
+        case .unauthorized: "登录已过期，请重新登录。"
         case .integrity(let message): message
         case .server(let message): message
         }

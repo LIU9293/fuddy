@@ -59,6 +59,16 @@ enum KeychainStore {
         delete(account: account(syncSpaceID: syncSpaceID))
     }
 
+    static func loadAll() throws -> [CompanionCredentials] {
+        try storedItems().map(\.credentials)
+    }
+
+    static func deleteIfMatching(_ credentials: CompanionCredentials) {
+        let storedAccount = account(syncSpaceID: credentials.syncSpaceID)
+        guard (try? load(account: storedAccount)) == credentials else { return }
+        delete(account: storedAccount)
+    }
+
     static func deleteAll() {
         SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
@@ -67,6 +77,13 @@ enum KeychainStore {
     }
 
     static func deleteAll(ownerUserID: String) {
+        guard let items = try? storedItems() else { return }
+        for item in items where item.credentials.ownerUserID == ownerUserID {
+            delete(account: item.account)
+        }
+    }
+
+    private static func storedItems() throws -> [(account: String, credentials: CompanionCredentials)] {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -75,22 +92,23 @@ enum KeychainStore {
             kSecMatchLimit as String: kSecMatchLimitAll
         ]
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return }
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess else { throw KeychainError.status(status) }
         let items: [[String: Any]]
         if let matches = result as? [[String: Any]] {
             items = matches
         } else if let match = result as? [String: Any] {
             items = [match]
         } else {
-            return
+            return []
         }
-        for item in items {
+        return items.compactMap { item in
             guard let data = item[kSecValueData as String] as? Data,
                 let account = item[kSecAttrAccount as String] as? String,
-                let credentials = try? JSONDecoder().decode(CompanionCredentials.self, from: data),
-                credentials.ownerUserID == ownerUserID
-            else { continue }
-            delete(account: account)
+                let credentials = try? JSONDecoder().decode(CompanionCredentials.self, from: data)
+            else { return nil }
+            return (account, credentials)
         }
     }
 

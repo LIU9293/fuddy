@@ -110,20 +110,63 @@ final class SyncModelTests: XCTestCase {
             syncSpaceID: "space-b",
             ownerUserID: "user-a"
         ))
-        try KeychainStore.save(CompanionCredentials(
+        let otherAccount = CompanionCredentials(
             relayURL: "https://fuddy.ai/api/relay",
             accountID: "relay-c",
             deviceID: "phone-c",
             deviceToken: "token-c",
             syncSpaceID: "space-c",
             ownerUserID: "user-c"
-        ))
+        )
+        try KeychainStore.save(otherAccount)
+
+        XCTAssertEqual(try KeychainStore.loadAll().count, 3)
 
         KeychainStore.deleteAll(ownerUserID: "user-a")
 
         XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-a"))
         XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-b"))
         XCTAssertEqual(try KeychainStore.load(syncSpaceID: "space-c")?.deviceToken, "token-c")
+
+        let replacement = CompanionCredentials(
+            relayURL: otherAccount.relayURL,
+            accountID: otherAccount.accountID,
+            deviceID: otherAccount.deviceID,
+            deviceToken: "replacement-token",
+            syncSpaceID: otherAccount.syncSpaceID,
+            ownerUserID: otherAccount.ownerUserID
+        )
+        try KeychainStore.save(replacement)
+        KeychainStore.deleteIfMatching(otherAccount)
+        XCTAssertEqual(try KeychainStore.load(syncSpaceID: "space-c"), replacement)
+        KeychainStore.deleteIfMatching(replacement)
+        XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-c"))
+    }
+
+    func testExpiredAccountCleanupTargetsOnlyOrphanedOwnedCredentials() {
+        let active = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay", accountID: "active", deviceID: "phone",
+            deviceToken: "active-token", syncSpaceID: "space-a", ownerUserID: "user-a"
+        )
+        let expired = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay", accountID: "expired", deviceID: "phone",
+            deviceToken: "expired-token", syncSpaceID: "space-b", ownerUserID: "user-b"
+        )
+        let legacy = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay", accountID: "legacy", deviceID: "phone",
+            deviceToken: "legacy-token"
+        )
+
+        XCTAssertEqual(
+            accountRelayCredentialsRequiringCleanup(
+                [active, expired, legacy], activeOwnerUserID: "user-a"),
+            [expired]
+        )
+        XCTAssertEqual(
+            accountRelayCredentialsRequiringCleanup(
+                [active, expired, legacy], activeOwnerUserID: nil),
+            [active, expired]
+        )
     }
 
     func testAccountCredentialsReenrollWhenSpaceRelayIdentityRotates() {
