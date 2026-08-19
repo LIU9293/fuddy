@@ -38,6 +38,9 @@ describe('AccountEnrollmentCoordinator', () => {
         relayUrl: 'https://relay.example.com',
         relayAccountId: 'relay-account'
       })),
+      isAccountRelayBindingConfirmed: vi.fn(() => false),
+      confirmAccountRelayBinding: vi.fn(),
+      start: vi.fn(),
       enrollAccountDevice: vi.fn(async () => ({
         relayURL: 'https://relay.example.com',
         accountID: 'relay-account',
@@ -62,6 +65,14 @@ describe('AccountEnrollmentCoordinator', () => {
       relayUrl: 'https://relay.example.com',
       relayAccountId: 'relay-account'
     })
+    expect(account.bindRelay).toHaveBeenCalledBefore(companion.start as ReturnType<typeof vi.fn>)
+    expect(companion.confirmAccountRelayBinding).toHaveBeenCalledWith({
+      ownerUserId: 'user-1',
+      syncSpaceId: 'space-1',
+      relayUrl: 'https://relay.example.com',
+      relayAccountId: 'relay-account'
+    })
+    expect(companion.start).toHaveBeenCalledOnce()
     expect(companion.revokeAccountDevice).toHaveBeenCalledWith('removed-phone', 'revoked-grant')
     expect(account.completeRelayRevocation).toHaveBeenCalledWith({
       spaceId: 'space-1',
@@ -125,6 +136,9 @@ describe('AccountEnrollmentCoordinator', () => {
         relayUrl: 'https://relay.example.com',
         relayAccountId: 'relay-account'
       })),
+      isAccountRelayBindingConfirmed: vi.fn(() => false),
+      confirmAccountRelayBinding: vi.fn(),
+      start: vi.fn(),
       enrollAccountDevice: vi.fn(async () => ({
         relayURL: 'https://relay.example.com',
         accountID: 'relay-account',
@@ -142,6 +156,33 @@ describe('AccountEnrollmentCoordinator', () => {
 
     expect(companion.enrollAccountDevice).toHaveBeenCalledWith(expect.objectContaining({ grantId: 'revoked-grant' }))
     expect(companion.revokeAccountDevice).toHaveBeenCalledWith('phone-1', 'revoked-grant')
+  })
+
+  it('does not start Relay synchronization before its account binding succeeds', async () => {
+    const account = {
+      getState: vi.fn(() => ({
+        status: 'signed-in',
+        user: { id: 'user-1' },
+        device: { syncSpaceId: 'space-1' }
+      })),
+      bindRelay: vi.fn(async () => { throw new Error('Account API unavailable') })
+    } as unknown as AccountService
+    const companion = {
+      ensureAccountRelay: vi.fn(async () => ({
+        relayUrl: 'https://relay.example.com',
+        relayAccountId: 'new-relay-account'
+      })),
+      isAccountRelayBindingConfirmed: vi.fn(() => false),
+      confirmAccountRelayBinding: vi.fn(),
+      start: vi.fn()
+    } as unknown as CompanionSyncService
+
+    await expect(
+      new AccountEnrollmentCoordinator(account, companion, 'https://relay.example.com').processOnce()
+    ).rejects.toThrow('Account API unavailable')
+
+    expect(companion.start).not.toHaveBeenCalled()
+    expect(companion.confirmAccountRelayBinding).not.toHaveBeenCalled()
   })
 
   it('does not create a Relay identity when no development Relay is configured', async () => {
@@ -183,7 +224,10 @@ describe('AccountEnrollmentCoordinator', () => {
         bindingStarted()
         await blocked
         return { relayUrl: 'https://relay.example.com', relayAccountId: 'relay-account' }
-      })
+      }),
+      isAccountRelayBindingConfirmed: vi.fn(() => false),
+      confirmAccountRelayBinding: vi.fn(),
+      start: vi.fn()
     } as unknown as CompanionSyncService
     const coordinator = new AccountEnrollmentCoordinator(account, companion, 'https://relay.example.com')
     coordinator.start()

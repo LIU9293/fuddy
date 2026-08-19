@@ -229,6 +229,8 @@ export interface CompanionMacConfiguration {
   ownerUserId?: string
   /** Account sync space that owns this Relay identity. Absent on legacy pairings. */
   syncSpaceId?: string
+  /** Set only after the Account API durably records this exact Relay identity. */
+  accountBindingConfirmedAt?: string
   /** Key material is stored in the credential vault; only its identifier is persisted here. */
   encryptionKeyId?: string
 }

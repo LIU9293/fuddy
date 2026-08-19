@@ -54,7 +54,6 @@ export function registerAccountIpc(context: IpcContext): void {
       state.user.id,
       state.device?.syncSpaceId ?? undefined
     )
-    void companionSync.start().catch(() => undefined)
     accountEnrollmentCoordinator.start()
     return state
   })
@@ -65,7 +64,6 @@ export function registerAccountIpc(context: IpcContext): void {
       state.user.id,
       state.device?.syncSpaceId ?? undefined
     )
-    void companionSync.start().catch(() => undefined)
     accountEnrollmentCoordinator.start()
     return state
   })

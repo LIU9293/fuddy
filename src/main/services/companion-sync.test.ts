@@ -267,7 +267,7 @@ describe('Companion sync transport policy', () => {
       {} as TaskDispatcher,
       async () => ({ accepted: true })
     )
-    vi.spyOn(service, 'syncNow').mockResolvedValue(service.getStatus())
+    const syncNow = vi.spyOn(service, 'syncNow').mockResolvedValue(service.getStatus())
     ;(service as unknown as { connectSocket: () => void }).connectSocket = vi.fn()
 
     await expect(service.ensureAccountRelay(
@@ -290,6 +290,23 @@ describe('Companion sync transport policy', () => {
     )
     expect(secrets.has('companion.mac-token:previous-relay-account')).toBe(true)
     expect(secrets.has('companion.account-key:previous-relay-account')).toBe(true)
+    expect(syncNow).not.toHaveBeenCalled()
+    const binding = {
+      ownerUserId: 'next-user',
+      syncSpaceId: 'next-space',
+      relayUrl: 'https://relay.example.com',
+      relayAccountId: 'next-relay-account'
+    }
+    expect(service.isAccountRelayBindingConfirmed(binding)).toBe(false)
+
+    service.confirmAccountRelayBinding(binding)
+    expect(service.isAccountRelayBindingConfirmed(binding)).toBe(true)
+    expect(database.getSetting<CompanionMacConfiguration | null>(
+      'companion.mac-configuration',
+      null
+    )?.accountBindingConfirmedAt).toEqual(expect.any(String))
+    await service.start()
+    expect(syncNow).toHaveBeenCalledOnce()
 
     for (const event of database.listPendingCompanionEvents()) {
       database.markCompanionEventPublished(event.eventId, new Date().toISOString())

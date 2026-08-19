@@ -315,6 +315,9 @@ export class CompanionSyncService {
     if (this.configuration?.ownerUserId) {
       this.accountConfigurations[this.configuration.ownerUserId] = this.configuration
     }
+    // Account-owned Relay identities restart closed. The enrollment coordinator
+    // opens them only after the Account API durably accepts the Relay binding.
+    this.stopped = Boolean(this.configuration?.ownerUserId)
     this.state = this.configuration ? 'disconnected' : 'not-configured'
     database.onCompanionEventEnqueued(() => this.scheduleEventSync())
   }
@@ -355,8 +358,9 @@ export class CompanionSyncService {
   }
 
   async start(): Promise<void> {
-    this.stopped = false
     if (!this.configuration) return
+    if (!this.stopped) return
+    this.stopped = false
     this.publishModelLabels()
     this.ensureTimer()
     await this.syncNow()
@@ -369,6 +373,9 @@ export class CompanionSyncService {
         || !syncSpaceId
         || this.configuration.syncSpaceId === syncSpaceId
       if (legacyBelongsToAccount) {
+        this.stopped = true
+        this.closeTransports()
+        if (this.activeSync) await this.activeSync
         this.configuration = {
           ...this.configuration,
           ownerUserId,
@@ -454,6 +461,41 @@ export class CompanionSyncService {
     }
   }
 
+  isAccountRelayBindingConfirmed(input: {
+    ownerUserId: string
+    syncSpaceId: string
+    relayUrl: string
+    relayAccountId: string
+  }): boolean {
+    return Boolean(
+      this.configuration?.accountBindingConfirmedAt
+      && this.configuration.ownerUserId === input.ownerUserId
+      && this.configuration.syncSpaceId === input.syncSpaceId
+      && this.configuration.relayUrl === normalizedRelayUrl(input.relayUrl)
+      && this.configuration.accountId === input.relayAccountId
+    )
+  }
+
+  confirmAccountRelayBinding(input: {
+    ownerUserId: string
+    syncSpaceId: string
+    relayUrl: string
+    relayAccountId: string
+  }): void {
+    if (!this.configuration
+      || this.configuration.ownerUserId !== input.ownerUserId
+      || this.configuration.syncSpaceId !== input.syncSpaceId
+      || this.configuration.relayUrl !== normalizedRelayUrl(input.relayUrl)
+      || this.configuration.accountId !== input.relayAccountId) {
+      throw new Error('账户服务确认的 Relay 与当前本机身份不一致。')
+    }
+    this.configuration = {
+      ...this.configuration,
+      accountBindingConfirmedAt: new Date().toISOString()
+    }
+    this.persistActiveConfiguration()
+  }
+
   async enrollAccountDevice(input: CompanionDeviceEnrollmentInput): Promise<AccountRelayCredentials> {
     const context = this.authenticatedContext()
     const response = await fetchWithTimeout(
@@ -535,6 +577,7 @@ export class CompanionSyncService {
         throw error
       }
     }
+    this.stopped = true
     this.closeTransports()
     if (previousConfiguration) {
       this.credentials.delete(this.tokenReference(previousConfiguration.accountId))
@@ -556,13 +599,11 @@ export class CompanionSyncService {
     this.persistActiveConfiguration()
     this.validatedAccountRelaySignature = null
     this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
-    this.state = 'connecting'
+    this.state = ownerUserId ? 'disconnected' : 'connecting'
     this.lastError = null
     this.iosDevicesOnline = null
     this.emitStatus()
-    this.ensureTimer()
-    this.connectSocket()
-    void this.syncNow()
+    if (!ownerUserId) void this.start()
     return {
       pairingPayload: JSON.stringify({
         ...(JSON.parse(pairing.pairingPayload) as Record<string, unknown>),
@@ -591,6 +632,7 @@ export class CompanionSyncService {
     }
     this.database.setSetting<CompanionMacConfiguration | null>(configurationKey, null)
     this.configuration = null
+    this.stopped = true
     this.validatedAccountRelaySignature = null
     this.state = 'not-configured'
     this.realtimeState = 'disconnected'

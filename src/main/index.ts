@@ -534,8 +534,7 @@ if (!hasLock) {
         void activeCompanionSync.activateAccountRelay(
           accountState.user.id,
           accountState.device?.syncSpaceId ?? undefined
-        ).then(async () => {
-          await activeCompanionSync.start()
+        ).then(() => {
           activeEnrollmentCoordinator.start()
         }).catch((error: unknown) => {
           Sentry.captureException(error, { tags: { boundary: 'account-relay-startup' } })

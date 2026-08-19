@@ -96,11 +96,20 @@ export class AccountEnrollmentCoordinator {
       ownerUserId
     )
     const bindingSignature = `${spaceId}\0${binding.relayUrl}\0${binding.relayAccountId}`
+    const bindingInput = { ownerUserId, syncSpaceId: spaceId, ...binding }
+    let bindingConfirmed = this.companionSync.isAccountRelayBindingConfirmed(bindingInput)
+    if (bindingConfirmed) await this.companionSync.start()
     if (bindingSignature !== this.lastBindingSignature || Date.now() - this.lastBindingAt >= 5 * 60_000) {
       await this.accountService.bindRelay({ spaceId, ...binding })
+      this.companionSync.confirmAccountRelayBinding(bindingInput)
+      bindingConfirmed = true
       this.lastBindingSignature = bindingSignature
       this.lastBindingAt = Date.now()
     }
+    if (!bindingConfirmed) throw new Error('账户 Relay 绑定尚未确认。')
+    // Account-owned Relay identities stay locally paused until the Account API
+    // has durably recorded the exact ID that must later be revoked.
+    await this.companionSync.start()
     const page = await this.accountService.listPendingEnrollments(spaceId)
     if (
       page.syncSpace.relayAccountId !== binding.relayAccountId
