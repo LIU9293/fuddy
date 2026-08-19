@@ -879,12 +879,12 @@ export class CompanionSyncService {
     const snapshots = this.database.getSetting<Record<string, string>>(retentionSnapshotsKey, {})
     const previous = Date.parse(snapshots[this.configuration.accountId] ?? '')
     if (Number.isFinite(previous) && now.getTime() - previous < companionRetentionSnapshotIntervalMs) return
-    this.enqueueRetentionSnapshot(now)
+    this.enqueueRetentionSnapshot(now, true)
   }
 
-  private enqueueRetentionSnapshot(now = new Date()): void {
+  private enqueueRetentionSnapshot(now = new Date(), preservePendingTransientEvents = false): void {
     if (!this.configuration) return
-    this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
+    this.database.enqueueCompanionPairingSnapshot(this.modelLabels(), { preservePendingTransientEvents })
     const snapshots = this.database.getSetting<Record<string, string>>(retentionSnapshotsKey, {})
     snapshots[this.configuration.accountId] = now.toISOString()
     this.database.setSetting(retentionSnapshotsKey, snapshots)

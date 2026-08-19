@@ -109,11 +109,24 @@ describe('Companion sync transport policy', () => {
     database.setSetting('companion.retention-snapshots', {
       [configuration.accountId]: '2030-01-01T00:00:00.000Z'
     })
+    database.enqueueAgentTurnSettled({
+      runId: 'retention-run',
+      turnId: 'retention-turn',
+      title: '离线完成的任务',
+      outcome: 'completed',
+      summary: '已完成。',
+      settledAt: '2030-01-01T12:00:00.000Z'
+    })
     const internals = service as unknown as { ensureRetentionSnapshot(now: Date): void }
 
     internals.ensureRetentionSnapshot(new Date('2030-01-02T00:00:00.000Z'))
-    const firstCount = database.listPendingCompanionEvents().filter((event) => event.type === 'snapshot.created').length
+    const pending = database.listPendingCompanionEvents()
+    const firstCount = pending.filter((event) => event.type === 'snapshot.created').length
     expect(firstCount).toBe(1)
+    expect(pending.at(-1)).toMatchObject({
+      type: 'agent-turn.settled',
+      payload: expect.objectContaining({ turnId: 'retention-turn' })
+    })
     internals.ensureRetentionSnapshot(new Date(
       Date.parse('2030-01-02T00:00:00.000Z') + companionRetentionSnapshotIntervalMs - 1
     ))

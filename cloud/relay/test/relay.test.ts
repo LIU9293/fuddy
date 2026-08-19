@@ -785,6 +785,22 @@ describe('companion relay', () => {
     expect(await refreshed.text()).toBe(content)
   })
 
+  it('does not expose untracked objects outside the quota-controlled attachment path', async () => {
+    const { pairing } = await pairedDevices()
+    const attachmentId = crypto.randomUUID()
+    await env.ATTACHMENTS.put(`${pairing.accountId}/${attachmentId}`, 'untracked object')
+
+    const response = await SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      pairing.macDeviceId
+    ), {
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
+    })
+
+    expect(response.status).toBe(404)
+  })
+
   it('rejects uploads once retained attachment metadata reaches 100 GiB', async () => {
     const { pairing } = await pairedDevices()
     const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)

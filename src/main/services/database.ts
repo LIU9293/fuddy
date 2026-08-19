@@ -712,8 +712,21 @@ export class AppDatabase {
     return this.enqueueCompanionEvent('model-labels.updated', 'settings', 'models', modelLabels)
   }
 
-  enqueueCompanionPairingSnapshot(modelLabels: AgentModelLabels = emptyAgentModelLabels): CompanionOutboxEvent {
+  enqueueCompanionPairingSnapshot(
+    modelLabels: AgentModelLabels = emptyAgentModelLabels,
+    options: { preservePendingTransientEvents?: boolean } = {}
+  ): CompanionOutboxEvent {
     return this.companionTransaction(() => {
+      const preservedTransientEvents = options.preservePendingTransientEvents
+        ? this.database.prepare(`
+            SELECT event_id, protocol_version, type, entity_type, entity_id, revision,
+                   payload_json, occurred_at, attempts, last_error
+            FROM companion_sync_outbox
+            WHERE published_at IS NULL AND dead_lettered_at IS NULL
+              AND type IN ('agent-turn.settled', 'command.updated')
+            ORDER BY rowid ASC
+          `).all() as SqlRow[]
+        : []
       this.database.prepare('DELETE FROM companion_sync_outbox WHERE published_at IS NULL').run()
       const snapshot = this.companionSnapshotPayload(modelLabels)
       const baseline = this.enqueueCompanionEvent('snapshot.created', 'snapshot', 'current', {
@@ -745,6 +758,29 @@ export class AppDatabase {
       }
       for (const page of snapshot.chatPages ?? []) {
         this.enqueueCompanionEvent('chat-page.updated', 'chat-page', page.chatId, page)
+      }
+      const restoreTransientEvent = this.database.prepare(`
+        INSERT INTO companion_sync_outbox (
+          event_id, protocol_version, type, entity_type, entity_id, revision,
+          payload_json, occurred_at, published_at, attempts, last_error,
+          dead_lettered_at, dead_letter_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL)
+      `)
+      // These transport events cannot be reconstructed from current domain state.
+      // Restore them after the snapshot so Relay compaction retains and delivers them.
+      for (const event of preservedTransientEvents) {
+        restoreTransientEvent.run(
+          event.event_id,
+          event.protocol_version,
+          event.type,
+          event.entity_type,
+          event.entity_id,
+          event.revision,
+          event.payload_json,
+          event.occurred_at,
+          event.attempts,
+          event.last_error
+        )
       }
       return baseline
     })

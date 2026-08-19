@@ -352,7 +352,6 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (attachmentMatch) {
     const context = await authenticatedContext(request, env, url)
     const attachmentId = attachmentMatch[1]
-    const legacyKey = `${context.accountId}/${attachmentId}`
     if (request.method === 'PUT') {
       if (request.headers.get('X-Companion-Encryption') !== 'A256GCM') {
         throw new HttpError(400, 'End-to-end encrypted attachment envelope is required.')
@@ -393,18 +392,6 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           context.token,
           uploadLease.leaseId
         )
-      }
-
-      // Existing deployments stored attachments directly at accountId/attachmentId.
-      // Keep those immutable objects readable while all new uploads use unique keys.
-      const legacyObject = await env.ATTACHMENTS.head(legacyKey)
-      if (legacyObject) {
-        await cancelUploadLease()
-        const identicalRetry = legacyObject.customMetadata?.uploadedBy === context.deviceId
-          && legacyObject.customMetadata?.sha256 === sha256
-          && legacyObject.size === contentLength
-        if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
-        return Response.json({ id: attachmentId, size: legacyObject.size }, { status: 200 })
       }
 
       const storageKey = `${context.accountId}/objects/${attachmentId}/${crypto.randomUUID()}`
@@ -474,8 +461,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         attachmentId
       )
       if (!resolved) throw new HttpError(401, '设备认证已失效。')
-      const key = resolved.storageKey ?? legacyKey
-      const object = await env.ATTACHMENTS.get(key)
+      if (!resolved.storageKey) throw new HttpError(404, 'Attachment not found.')
+      const object = await env.ATTACHMENTS.get(resolved.storageKey)
       if (!object) throw new HttpError(404, 'Attachment not found.')
       const headers = new Headers()
       object.writeHttpMetadata(headers)
