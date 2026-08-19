@@ -260,10 +260,9 @@ export class AccountService {
 
   async logout(): Promise<AccountState> {
     const generation = this.authGeneration
-    const accessToken = this.credentialVault.get(accessTokenReference)
-    if (accessToken && this.options.apiUrl) {
+    if (this.credentialVault.get(accessTokenReference) && this.options.apiUrl) {
       try {
-        await this.request('/v1/auth/logout', { method: 'POST' }, accessToken)
+        await this.requestAuthorized('/v1/auth/logout', { method: 'POST' })
       } catch {
         // Local sign-out must remain available while the Account API is offline.
       }

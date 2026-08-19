@@ -91,6 +91,52 @@ describe('AccountService', () => {
     expect(vault.get('account.refresh-token')).toBeNull()
   })
 
+  it('refreshes an expired access token before signing out on the server', async () => {
+    const database = new FakeDatabase()
+    const vault = new FakeVault()
+    database.setSetting('account.cached-state', {
+      user: { id: 'user-1', email: 'kai@example.com', displayName: null },
+      device: { id: 'device-1', platform: 'macos', name: 'Mac', hostId: 'host-1', syncSpaceId: 'space-1' },
+      refreshExpiresAt: '2099-08-19T00:00:00.000Z'
+    })
+    vault.set('account.refresh-token', 'valid-refresh')
+    vault.set('account.access-token', 'expired-access')
+    const observations: string[] = []
+    const service = new AccountService(database as never, vault, {
+      apiUrl: 'https://account.test',
+      runtimeChannel: 'development',
+      appVersion: '0.0.3',
+      fetch: async (url, init) => {
+        const path = new URL(String(url)).pathname
+        const authorization = new Headers(init?.headers).get('authorization') ?? ''
+        observations.push(`${path}|${authorization}`)
+        if (path === '/v1/auth/logout' && authorization === 'Bearer expired-access') {
+          return response({ error: { code: 'session_expired', message: 'expired' } }, 401)
+        }
+        if (path === '/v1/auth/refresh') {
+          return response({ session: {
+            accessToken: 'fresh-access',
+            refreshToken: 'fresh-refresh',
+            accessExpiresAt: '2099-08-19T00:15:00.000Z',
+            refreshExpiresAt: '2099-09-18T00:00:00.000Z'
+          } })
+        }
+        if (path === '/v1/auth/logout' && authorization === 'Bearer fresh-access') {
+          return new Response(null, { status: 204 })
+        }
+        return response({}, 500)
+      }
+    })
+
+    await expect(service.logout()).resolves.toMatchObject({ status: 'signed-out' })
+    expect(observations).toEqual([
+      '/v1/auth/logout|Bearer expired-access',
+      '/v1/auth/refresh|',
+      '/v1/auth/logout|Bearer fresh-access'
+    ])
+    expect(vault.get('account.refresh-token')).toBeNull()
+  })
+
   it('completes the removed phone onboarding step for upgrading accounts', () => {
     const database = new FakeDatabase()
     const vault = new FakeVault()
