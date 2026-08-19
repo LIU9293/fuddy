@@ -155,6 +155,102 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('drains an active upload without marking it delivered after sync stops', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-stop-drain-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'drain-account',
+      macDeviceId: 'drain-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    database.createBriefingMessage({
+      id: 'drain-message',
+      briefingId: null,
+      role: 'assistant',
+      content: 'Keep this pending after sign-out.',
+      attachments: [],
+      taskContext: null,
+      createdAt: now
+    })
+    let uploadStarted!: () => void
+    let finishUpload!: () => void
+    const started = new Promise<void>((resolve) => { uploadStarted = resolve })
+    const blocked = new Promise<void>((resolve) => { finishUpload = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/v1/events/batch') {
+        uploadStarted()
+        await blocked
+        return jsonResponse({ accepted: [], lastSequence: 1 }, 201)
+      }
+      throw new Error(`Unexpected relay request: ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const syncing = service.syncNow()
+    await started
+    let drained = false
+    const draining = service.stopAndDrain().then(() => { drained = true })
+    await Promise.resolve()
+    expect(drained).toBe(false)
+
+    finishUpload()
+    await Promise.all([syncing, draining])
+    expect(service.getStatus().state).toBe('disconnected')
+    expect(database.countPendingCompanionEvents()).toBe(1)
+    database.close()
+  })
+
+  it('preserves Relay credentials when remote account revocation fails', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-revoke-retry-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const configuration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'retry-account',
+      macDeviceId: 'retry-mac',
+      pairedAt: new Date().toISOString(),
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', configuration)
+    const secrets = new Map<string, string>([
+      ['companion.mac-token:retry-account', 'retry-token'],
+      ['companion.account-key:retry-account', testEncryptionKey]
+    ])
+    const credentials = {
+      get: (reference: string) => secrets.get(reference) ?? null,
+      set: (reference: string, value: string) => { secrets.set(reference, value) },
+      delete: (reference: string) => { secrets.delete(reference) }
+    } as unknown as CredentialVault
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'Relay unavailable' }, 503)))
+    const service = new CompanionSyncService(
+      database,
+      credentials,
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await expect(service.disconnect()).rejects.toThrow('Relay unavailable')
+
+    expect(service.getStatus()).toMatchObject({
+      state: 'disconnected',
+      configuration: { accountId: 'retry-account' }
+    })
+    expect(secrets.has('companion.mac-token:retry-account')).toBe(true)
+    expect(secrets.has('companion.account-key:retry-account')).toBe(true)
+    expect(database.getSetting('companion.mac-configuration', null)).toEqual(configuration)
+    database.close()
+  })
+
   it('keeps the existing pairing when a replacement Relay is incompatible', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-repair-'))
     directories.push(directory)

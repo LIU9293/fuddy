@@ -22,13 +22,14 @@ export function registerAccountIpc(context: IpcContext): void {
 
     // Validation can revoke the local account after Companion has already
     // started during bootstrap. Stop both producers immediately, publish the
-    // signed-out state, then discard the now-unauthorized Relay identity once
-    // any in-flight enrollment work has settled.
+    // signed-out state, then remove the now-unauthorized Relay identity only
+    // after in-flight work has settled and remote access is revoked. A failed
+    // revoke preserves the local credentials so a later sign-in can retry.
     accountEnrollmentCoordinator.stop()
     companionSync.stop()
     broadcastAccountState(state)
     await accountEnrollmentCoordinator.pauseAndDrain()
-    companionSync.forgetAccountRelay()
+    await companionSync.disconnect()
   }
 
   ipcMain.handle('account:get-state', () => {

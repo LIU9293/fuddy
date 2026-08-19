@@ -617,6 +617,7 @@ export class CompanionSyncService {
   }
 
   async disconnect(): Promise<void> {
+    await this.stopAndDrain()
     if (this.configuration) await this.revokeRemoteAccount()
     this.forgetAccountRelay()
   }
@@ -707,7 +708,9 @@ export class CompanionSyncService {
     this.emitStatus()
     try {
       await this.flushOutbox()
+      if (this.stopped) return this.getStatus()
       await this.processPendingCommands()
+      if (this.stopped) return this.getStatus()
       this.state = 'connected'
       this.lastSyncedAt = new Date().toISOString()
       const isolatedEvents = this.database.countDeadLetterCompanionEvents()
@@ -715,8 +718,10 @@ export class CompanionSyncService {
         ? `有 ${isolatedEvents} 条内容无法发送，其他内容已继续同步。`
         : null
     } catch (error) {
-      this.state = 'error'
-      this.lastError = error instanceof Error ? error.message : 'Companion 同步失败。'
+      if (!this.stopped) {
+        this.state = 'error'
+        this.lastError = error instanceof Error ? error.message : 'Companion 同步失败。'
+      }
     } finally {
       this.emitStatus()
     }
@@ -726,16 +731,29 @@ export class CompanionSyncService {
   stop(): void {
     this.stopped = true
     this.closeTransports()
+    this.state = this.configuration ? 'disconnected' : 'not-configured'
+    this.realtimeState = 'disconnected'
+    this.iosDevicesOnline = null
+    this.emitStatus()
+  }
+
+  async stopAndDrain(): Promise<void> {
+    this.stop()
+    await this.activeSync?.catch(() => undefined)
   }
 
   private async flushOutbox(): Promise<void> {
+    if (this.stopped) return
     const context = this.authenticatedContext()
     while (true) {
+      if (this.stopped) return
       const pending = this.database.listPendingCompanionEvents(companionEventBatchMaximumCount)
       if (pending.length === 0) return
       const prepared: CompanionEncryptedSyncEventInput[] = []
       for (const event of pending) {
+        if (this.stopped) return
         const payload = await this.prepareEventPayload(event)
+        if (this.stopped) return
         let plaintext: CompanionSyncEventInput
         try {
           plaintext = syncEventSchema.parse({
@@ -833,6 +851,7 @@ export class CompanionSyncService {
         prepared.push(encrypted)
       }
       for (const batch of partitionCompanionEventBatches(prepared)) {
+        if (this.stopped) return
         try {
           await this.publishEventBatch(batch, context)
         } catch (error) {
@@ -857,19 +876,24 @@ export class CompanionSyncService {
       headers,
       body: JSON.stringify({ events })
     })
+    if (this.stopped) return
     if (response.status === 404 || response.status === 405) {
       for (const event of events) {
+        if (this.stopped) return
         const fallback = await fetchWithTimeout(this.authenticatedUrl('/v1/events', context.configuration), {
           method: 'POST',
           headers,
           body: JSON.stringify(event)
         })
+        if (this.stopped) return
         await responseJson(fallback)
+        if (this.stopped) return
         this.database.markCompanionEventPublished(event.eventId, new Date().toISOString())
       }
       return
     }
     await responseJson<CompanionEventBatchResult>(response)
+    if (this.stopped) return
     const publishedAt = new Date().toISOString()
     for (const event of events) this.database.markCompanionEventPublished(event.eventId, publishedAt)
   }
@@ -1549,7 +1573,7 @@ export class CompanionSyncService {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${context.token}` }
     })
-    if (response.status === 204 || response.status === 401 || response.status === 404) return
+    if (response.status === 204 || response.status === 404) return
     await responseJson(response)
   }
 

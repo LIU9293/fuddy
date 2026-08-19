@@ -59,7 +59,9 @@ describe('account IPC lifecycle', () => {
     let finishDrain: (() => void) | undefined
     const pauseAndDrain = vi.fn(() => new Promise<void>((resolve) => { finishDrain = resolve }))
     const coordinator = { stop: vi.fn(), pauseAndDrain }
-    const companionSync = { stop: vi.fn(), forgetAccountRelay: vi.fn() }
+    let finishDisconnect: (() => void) | undefined
+    const disconnect = vi.fn(() => new Promise<void>((resolve) => { finishDisconnect = resolve }))
+    const companionSync = { stop: vi.fn(), disconnect }
     const send = vi.fn()
     electronMocks.windows.push({ webContents: { isDestroyed: () => false, send } })
 
@@ -80,9 +82,14 @@ describe('account IPC lifecycle', () => {
       expect(companionSync.stop).toHaveBeenCalledOnce()
       expect(send).toHaveBeenCalledWith('account:state-changed', signedOutState)
     })
-    expect(companionSync.forgetAccountRelay).not.toHaveBeenCalled()
+    expect(companionSync.disconnect).not.toHaveBeenCalled()
 
     finishDrain?.()
-    await vi.waitFor(() => expect(companionSync.forgetAccountRelay).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(companionSync.disconnect).toHaveBeenCalledOnce())
+    finishDisconnect?.()
+    await vi.waitFor(() => {
+      expect(pauseAndDrain).toHaveBeenCalledOnce()
+      expect(disconnect).toHaveBeenCalledOnce()
+    })
   })
 })
