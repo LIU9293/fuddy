@@ -1,6 +1,7 @@
 import type { EvidenceRef } from '../../shared/contracts'
 import { CredentialVault } from '../services/credential-vault'
 import type { ConnectorAdapter, ConnectorCollection, ConnectorContext, ConnectorProbe, ConnectorSignal } from './types'
+import { timeoutSignal } from '../services/cancellation'
 
 type FetchLike = typeof fetch
 type JsonRecord = Record<string, unknown>
@@ -76,7 +77,7 @@ export class ProjectAgentConnector implements ConnectorAdapter {
         Accept: 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {})
       },
-      signal: AbortSignal.timeout(20_000)
+      signal: timeoutSignal(20_000, context.cancellationSignal)
     })
     const body = await response.json() as JsonRecord
     if (!response.ok) throw new Error(String(body.error ?? body.message ?? `Fuddy 请求失败（${response.status}）。`))

@@ -410,7 +410,9 @@ if (!hasLock) {
         decisionRemediationService,
         workAssistantAgent
       )
-      workspaceAgentActions.setMorningBriefingGenerator(() => morningBriefingService.generate())
+      workspaceAgentActions.setMorningBriefingGenerator((cancellationSignal) => (
+        morningBriefingService.generate(cancellationSignal)
+      ))
       companionSync = new CompanionSyncService(
         database,
         credentialVault,
@@ -444,30 +446,30 @@ if (!hasLock) {
       })
       const ttsService = new TtsService(database, providerSettings)
       const automationRuntime = new AutomationRuntime(database, {
-        runAgentTask: async (job) => {
+        runAgentTask: async (job, cancellationSignal) => {
           const result = await dispatcher.dispatch({
             projectId: job.projectId,
             provider: job.agentProvider,
             title: `${job.name} · 自动运行`,
             prompt: job.prompt
-          })
+          }, () => undefined, cancellationSignal)
           return { summary: result.message, agentRunId: result.detail.run.id }
         },
-        runConnectors: async (projectId) => {
-          const result = await connectorRuntime.runConnectors(projectId)
-          const remediation = await decisionRemediationService.sync(projectId)
+        runConnectors: async (projectId, cancellationSignal) => {
+          const result = await connectorRuntime.runConnectors(projectId, cancellationSignal)
+          const remediation = await decisionRemediationService.sync(projectId, cancellationSignal)
           return `Connector 巡检完成：${result.succeeded} 成功，${result.failed} 失败；核验 ${remediation.remediations.length} 条修复进度。`
         },
-        checkGoals: async (projectId) => {
-          const results = await goalTrackingService.checkDueGoals(projectId ?? undefined)
+        checkGoals: async (projectId, cancellationSignal) => {
+          const results = await goalTrackingService.checkDueGoals(projectId ?? undefined, cancellationSignal)
           return results.length > 0 ? `已检查 ${results.length} 个到期目标。` : '当前没有到期目标。'
         },
-        generateBriefing: async (projectId) => {
+        generateBriefing: async (projectId, cancellationSignal) => {
           if (projectId) {
-            const result = await dailyBriefingService.generate(projectId)
+            const result = await dailyBriefingService.generate(projectId, cancellationSignal)
             return result.briefing.headline
           }
-          const result = await morningBriefingService.generate()
+          const result = await morningBriefingService.generate(cancellationSignal)
           return result.briefing.headline
         }
       })
@@ -591,10 +593,13 @@ async function shutdown(): Promise<void> {
     automationScheduler = null
     stopAutoUpdates?.()
     stopAutoUpdates = null
-    accountEnrollmentCoordinator?.stop()
+    const activeEnrollmentCoordinator = accountEnrollmentCoordinator
     accountEnrollmentCoordinator = null
-    companionSync?.stop()
+    activeEnrollmentCoordinator?.stop()
+    await activeEnrollmentCoordinator?.pauseAndDrain()
+    const activeCompanionSync = companionSync
     companionSync = null
+    await activeCompanionSync?.stopAndDrain()
     await agentToolsMcp?.stop()
     agentToolsMcp = null
     database?.close()

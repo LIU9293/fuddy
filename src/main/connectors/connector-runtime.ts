@@ -21,6 +21,7 @@ import { Ga4Connector } from './ga4-connector'
 import { normalizeProjectAgentConfig, ProjectAgentConnector } from './project-agent-connector'
 import { getProjectAnalyticsProfile, requireAnalyticsProfile } from '../analytics/project-analytics-profiles'
 import type { ConnectorAdapter, ConnectorSignal } from './types'
+import { throwIfCancelled } from '../services/cancellation'
 
 export const connectorCatalog: ConnectorCatalogItem[] = [
   {
@@ -235,7 +236,8 @@ export class ConnectorRuntime {
     return this.runConnector(id)
   }
 
-  async runConnector(id: string): Promise<ConnectorActionResult> {
+  async runConnector(id: string, cancellationSignal?: AbortSignal): Promise<ConnectorActionResult> {
+    throwIfCancelled(cancellationSignal)
     const connector = this.database.getConnector(id)
     const startedAt = new Date().toISOString()
 
@@ -277,8 +279,10 @@ export class ConnectorRuntime {
       }
       const collection = await adapter.collect({
         config: connector.config,
-        credentialRef: connector.credentialRef
+        credentialRef: connector.credentialRef,
+        cancellationSignal
       })
+      throwIfCancelled(cancellationSignal)
       const completedAt = new Date().toISOString()
       const activeInspection = collection.signal ? this.database.applyDecisionInspection({
         projectId: connector.projectId,
@@ -347,15 +351,20 @@ export class ConnectorRuntime {
       }
       this.database.createConnectorRun(run)
       const updated = this.database.completeConnector(id, 'error', completedAt, message)
+      throwIfCancelled(cancellationSignal)
       return { connector: updated, run, decision: null, message }
     }
   }
 
-  async runConnectors(projectId: string | null): Promise<RunConnectorsResult> {
+  async runConnectors(projectId: string | null, cancellationSignal?: AbortSignal): Promise<RunConnectorsResult> {
+    throwIfCancelled(cancellationSignal)
     const connectors = this.database
       .listConnectors()
       .filter((connector) => connector.enabled && (!projectId || connector.projectId === projectId))
-    const results = await Promise.all(connectors.map((connector) => this.runConnector(connector.id)))
+    const results = await Promise.all(connectors.map((connector) => (
+      this.runConnector(connector.id, cancellationSignal)
+    )))
+    throwIfCancelled(cancellationSignal)
     return {
       results,
       succeeded: results.filter((result) => result.run.status === 'completed').length,

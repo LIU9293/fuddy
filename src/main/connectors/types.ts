@@ -31,6 +31,7 @@ export interface ConnectorCollection extends ConnectorProbe {
 export interface ConnectorContext {
   config: Record<string, string | number | boolean>
   credentialRef: string | null
+  cancellationSignal?: AbortSignal
 }
 
 export interface ConnectorAdapter {

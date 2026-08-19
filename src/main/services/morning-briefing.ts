@@ -28,6 +28,7 @@ import { buildProjectPulses, type ProjectPulse } from './project-pulse'
 import type { WorkspaceAgentActions } from './workspace-agent-actions'
 import type { DecisionRemediationService } from './decision-remediation'
 import type { WorkAssistantAgentRuntime } from './work-assistant-agent'
+import { throwIfCancelled } from './cancellation'
 
 const MAX_NARRATION_CHARACTERS = 620
 const CHINESE_CHARACTERS_PER_SECOND = 4
@@ -240,26 +241,31 @@ export class MorningBriefingService {
     private readonly workAssistantAgent?: WorkAssistantAgentRuntime
   ) {}
 
-  async generate(): Promise<GenerateMorningBriefingResult> {
+  async generate(cancellationSignal?: AbortSignal): Promise<GenerateMorningBriefingResult> {
+    throwIfCancelled(cancellationSignal)
     const generatedAt = new Date().toISOString()
     const reportDate = previousCompleteShanghaiDate()
     try {
-      await this.goalTrackingService?.checkDueGoals()
+      await this.goalTrackingService?.checkDueGoals(undefined, cancellationSignal)
     } catch {
+      throwIfCancelled(cancellationSignal)
       // A goal check failure must not prevent the morning briefing from arriving.
     }
     try {
-      await this.decisionRemediationService?.sync()
+      await this.decisionRemediationService?.sync(null, cancellationSignal)
     } catch {
+      throwIfCancelled(cancellationSignal)
       // GitHub state is enrichment. Missing remote evidence must not erase the last verified state.
     }
+    throwIfCancelled(cancellationSignal)
     const projects = this.database.listProjects().filter((project) => project.status === 'active')
     const postgresProjectIds = new Set(this.database.listConnectors()
       .filter((connector) => connector.kind === 'postgres' && connector.enabled)
       .map((connector) => connector.projectId))
     const projectResults = await Promise.all(projects
       .filter((project) => postgresProjectIds.has(project.id))
-      .map((project) => this.dailyBriefingService.generate(project.id)))
+      .map((project) => this.dailyBriefingService.generate(project.id, cancellationSignal)))
+    throwIfCancelled(cancellationSignal)
     const decisions = this.database.listDecisions()
     const remediations = this.database.listDecisionRemediations()
     const goals = this.database.listGoals()
@@ -305,7 +311,7 @@ export class MorningBriefingService {
     if (this.agentRuntime.isConfigured()) {
       try {
         const generated = parseAgentBriefing(
-          await this.agentRuntime.run(buildAgentBriefingPrompt(reportDate, pulses)),
+          await this.agentRuntime.run(buildAgentBriefingPrompt(reportDate, pulses), [], cancellationSignal),
           pulses
         )
         if (generated) {
@@ -313,9 +319,11 @@ export class MorningBriefingService {
           generation = 'agent'
         }
       } catch {
+        throwIfCancelled(cancellationSignal)
         // The deterministic Project Pulse summary remains available if the model is unavailable.
       }
     }
+    throwIfCancelled(cancellationSignal)
     const briefing = this.database.upsertMorningBriefing({
       id: `morning-${reportDate}`,
       reportDate,

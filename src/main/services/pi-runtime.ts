@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentSessionUpdate, WorkAssistantImageAttachment } from '../../shared/contracts'
 import { ProviderSettingsService, type RuntimeAgentEndpoint } from './provider-settings'
+import { throwIfCancelled, timeoutSignal } from './cancellation'
 
 export interface AgentRuntime {
   isConfigured(): boolean
-  run(prompt: string, images?: WorkAssistantImageAttachment[]): Promise<string>
+  run(prompt: string, images?: WorkAssistantImageAttachment[], cancellationSignal?: AbortSignal): Promise<string>
   runStream(
     prompt: string,
     onUpdate: (update: AgentSessionUpdate) => void,
-    images?: WorkAssistantImageAttachment[]
+    images?: WorkAssistantImageAttachment[],
+    cancellationSignal?: AbortSignal
   ): Promise<string>
 }
 
@@ -213,15 +215,21 @@ export class PiAgentRuntime implements AgentRuntime {
       (configured.backupEnabled && this.endpointIsConfigured(configured.backup))
   }
 
-  run(prompt: string, images: WorkAssistantImageAttachment[] = []): Promise<string> {
-    return this.runStream(prompt, () => undefined, images)
+  run(
+    prompt: string,
+    images: WorkAssistantImageAttachment[] = [],
+    cancellationSignal?: AbortSignal
+  ): Promise<string> {
+    return this.runStream(prompt, () => undefined, images, cancellationSignal)
   }
 
   async runStream(
     prompt: string,
     onUpdate: (update: AgentSessionUpdate) => void,
-    images: WorkAssistantImageAttachment[] = []
+    images: WorkAssistantImageAttachment[] = [],
+    cancellationSignal?: AbortSignal
   ): Promise<string> {
+    throwIfCancelled(cancellationSignal)
     const configured = this.providerSettings?.getAgentRuntimeSettings()
     if (!configured) throw new Error('尚未配置模型 Provider')
 
@@ -238,8 +246,9 @@ export class PiAgentRuntime implements AgentRuntime {
             messageId,
             content: { type: 'text', text }
           })
-        })
+        }, cancellationSignal)
       } catch (error) {
+        throwIfCancelled(cancellationSignal)
         const message = error instanceof Error ? error.message : '未知错误'
         failures.push(`${index === 0 ? 'Primary' : 'Backup'}: ${message}`)
       }
@@ -256,21 +265,24 @@ export class PiAgentRuntime implements AgentRuntime {
     prompt: string,
     images: WorkAssistantImageAttachment[],
     endpoint: RuntimeAgentEndpoint,
-    onDelta: (delta: string) => void
+    onDelta: (delta: string) => void,
+    cancellationSignal?: AbortSignal
   ): Promise<string> {
+    throwIfCancelled(cancellationSignal)
     if (!endpoint.apiKey && !isLoopbackEndpoint(endpoint.baseUrl)) {
       throw new Error('尚未配置 API Key')
     }
     return endpoint.mode === 'cc-switch-codex-oauth'
-      ? this.runCcSwitchCodexOauth(prompt, images, endpoint, onDelta)
-      : this.runOpenAiCompatible(prompt, images, endpoint, onDelta)
+      ? this.runCcSwitchCodexOauth(prompt, images, endpoint, onDelta, cancellationSignal)
+      : this.runOpenAiCompatible(prompt, images, endpoint, onDelta, cancellationSignal)
   }
 
   private async runCcSwitchCodexOauth(
     prompt: string,
     images: WorkAssistantImageAttachment[],
     config: { baseUrl: string; model: string },
-    onDelta: (delta: string) => void
+    onDelta: (delta: string) => void,
+    cancellationSignal?: AbortSignal
   ): Promise<string> {
     if (!isLoopbackEndpoint(config.baseUrl)) {
       throw new Error('CC Switch Codex OAuth 仅允许连接本机代理')
@@ -300,7 +312,7 @@ export class PiAgentRuntime implements AgentRuntime {
         }],
         stream: true
       }),
-      signal: AbortSignal.timeout(60_000)
+      signal: timeoutSignal(60_000, cancellationSignal)
     })
     if (!response.ok) throw await providerError(response, config.baseUrl)
     return consumeResponse(response, 'anthropic-messages', onDelta)
@@ -310,7 +322,8 @@ export class PiAgentRuntime implements AgentRuntime {
     prompt: string,
     images: WorkAssistantImageAttachment[],
     config: { baseUrl: string; model: string; apiKey: string | null },
-    onDelta: (delta: string) => void
+    onDelta: (delta: string) => void,
+    cancellationSignal?: AbortSignal
   ): Promise<string> {
     const responses = await fetch(`${config.baseUrl}/responses`, {
       method: 'POST',
@@ -334,7 +347,7 @@ export class PiAgentRuntime implements AgentRuntime {
         store: false,
         stream: true
       }),
-      signal: AbortSignal.timeout(60_000)
+      signal: timeoutSignal(60_000, cancellationSignal)
     })
 
     if (responses.ok) return consumeResponse(responses, 'responses', onDelta)
@@ -366,7 +379,7 @@ export class PiAgentRuntime implements AgentRuntime {
         ],
         stream: true
       }),
-      signal: AbortSignal.timeout(60_000)
+      signal: timeoutSignal(60_000, cancellationSignal)
     })
     if (!chat.ok) throw await providerError(chat, config.baseUrl)
     return consumeResponse(chat, 'chat-completions', onDelta)

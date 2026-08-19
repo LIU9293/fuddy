@@ -131,7 +131,9 @@ const askUserGuidelines = `可确认 Action 的 payload：
 只使用其他工具返回的真实 ID。不要把自然语言确认伪装成按钮；需要用户选择时必须调用 ask_user。`
 
 export class WorkspaceAgentActions {
-  private generateMorningBriefing: (() => Promise<{ briefing: { reportDate: string; headline: string } }>) | null = null
+  private generateMorningBriefing: ((
+    cancellationSignal?: AbortSignal
+  ) => Promise<{ briefing: { reportDate: string; headline: string } }>) | null = null
   private automationRuntime: AutomationRuntime | null = null
 
   constructor(
@@ -143,7 +145,9 @@ export class WorkspaceAgentActions {
     private readonly webResearch?: WebResearchService
   ) {}
 
-  setMorningBriefingGenerator(generator: () => Promise<{ briefing: { reportDate: string; headline: string } }>): void {
+  setMorningBriefingGenerator(generator: (
+    cancellationSignal?: AbortSignal
+  ) => Promise<{ briefing: { reportDate: string; headline: string } }>): void {
     this.generateMorningBriefing = generator
   }
 
@@ -375,7 +379,7 @@ export class WorkspaceAgentActions {
       notice = '已取消。'
     } else if (option.capability === 'briefing.generate') {
       if (!this.generateMorningBriefing) throw new Error('工作助理的每日简报生成能力尚未初始化。')
-      const generated = await this.generateMorningBriefing()
+      const generated = await this.generateMorningBriefing(cancellationSignal)
       notice = `已生成 ${generated.briefing.reportDate} 每日简报：“${generated.briefing.headline}”。`
     } else if (option.capability === 'project.create') {
       const project = this.database.createProject(createProjectInput(payload))
@@ -459,7 +463,7 @@ export class WorkspaceAgentActions {
       linkedRunId = detail.run.id
       notice = `已把消息发送给 Agent Run“${detail.run.title}”。`
     } else if (option.capability === 'goal.manage') {
-      notice = await this.executeGoalAction(payload)
+      notice = await this.executeGoalAction(payload, cancellationSignal)
     } else if (option.capability === 'inbox.manage') {
       notice = this.executeInboxAction(payload)
     } else if (option.capability === 'automation.manage') {
@@ -469,7 +473,7 @@ export class WorkspaceAgentActions {
         const job = this.automationRuntime.setEnabled(automationId, payload.enabled === true)
         notice = `自动化“${job.name}”已${job.enabled ? '启用' : '暂停'}。`
       } else if (payload.operation === 'run_now') {
-        const result = await this.automationRuntime.runNow(automationId)
+        const result = await this.automationRuntime.runNow(automationId, cancellationSignal)
         notice = `自动化“${result.job.name}”运行${result.run.status === 'completed' ? '完成' : `结束（${result.run.status}）`}：${result.run.summary}`
       } else {
         throw new Error('不支持的自动化操作。')
@@ -478,7 +482,6 @@ export class WorkspaceAgentActions {
       throw new Error(`当前不支持执行 ${option.capability}。`)
     }
 
-    throwIfActionCancelled(cancellationSignal)
     const now = new Date().toISOString()
     const updatedActions = actions.map((item) => item.id === proposal.id ? {
       ...item,
@@ -495,7 +498,10 @@ export class WorkspaceAgentActions {
     }
   }
 
-  private async executeGoalAction(payload: Record<string, unknown>): Promise<string> {
+  private async executeGoalAction(
+    payload: Record<string, unknown>,
+    cancellationSignal?: AbortSignal
+  ): Promise<string> {
     const operation = text(payload.operation, 100)
     if (operation === 'create') {
       const projectId = text(payload.projectId, 200)
@@ -503,13 +509,17 @@ export class WorkspaceAgentActions {
       const priority = payload.priority as GoalPriority
       const status = payload.status as Extract<GoalStatus, 'planned' | 'active'>
       if (!['P0', 'P1', 'P2'].includes(priority) || !['planned', 'active'].includes(status)) throw new Error('目标优先级或状态无效。')
-      const goal = await this.goalTrackingService.createFromPrompt(projectId, text(payload.prompt, 4_000), { priority, status })
+      const goal = await this.goalTrackingService.createFromPrompt(projectId, text(payload.prompt, 4_000), {
+        priority,
+        status,
+        cancellationSignal
+      })
       return `已创建 ${goal.priority} 目标“${goal.title}”。`
     }
     const goalId = text(payload.goalId, 200)
     if (!this.database.listGoals().some((item) => item.id === goalId)) throw new Error('Agent 引用了不存在的目标。')
     if (operation === 'check') {
-      const result = await this.goalTrackingService.check(goalId)
+      const result = await this.goalTrackingService.check(goalId, cancellationSignal)
       return `已检查目标“${result.goal.title}”：${result.goal.agentSummary}`
     }
     if (operation === 'update_status') {

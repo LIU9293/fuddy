@@ -137,6 +137,40 @@ describe('PiAgentRuntime transports', () => {
     expect(fetchMock.mock.calls[0]?.[1]?.headers).not.toHaveProperty('Authorization')
   })
 
+  it('aborts the active provider request without falling through to a backup', async () => {
+    let receivedSignal: AbortSignal | undefined
+    const fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      receivedSignal = init?.signal as AbortSignal | undefined
+      return await new Promise<Response>((_resolve, reject) => {
+        receivedSignal?.addEventListener('abort', () => reject(receivedSignal?.reason), { once: true })
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const runtime = new PiAgentRuntime(settings({
+      primary: {
+        mode: 'openai-compatible',
+        baseUrl: 'https://provider.example.com/v1',
+        model: 'gpt-5.6-sol',
+        apiKey: 'test-key'
+      },
+      backup: {
+        mode: 'openai-compatible',
+        baseUrl: 'https://backup.example.com/v1',
+        model: 'gpt-5.6-sol',
+        apiKey: 'backup-key'
+      },
+      backupEnabled: true
+    }))
+    const controller = new AbortController()
+
+    const running = runtime.run('测试取消', [], controller.signal)
+    await vi.waitFor(() => expect(receivedSignal).toBeDefined())
+    controller.abort(new Error('账户连接已停止，这次手机操作未继续执行。'))
+
+    await expect(running).rejects.toThrow('账户连接已停止')
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
   it('sends image attachments as Responses API input_image content', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       output_text: '图片分析结果'

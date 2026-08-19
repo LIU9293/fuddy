@@ -1,6 +1,7 @@
 import type { EvidenceRef } from '../../shared/contracts'
 import { CredentialVault } from '../services/credential-vault'
 import type { ConnectorAdapter, ConnectorCollection, ConnectorContext, ConnectorProbe, ConnectorSignal } from './types'
+import { timeoutSignal } from '../services/cancellation'
 
 type FetchLike = typeof fetch
 type JsonRecord = Record<string, unknown>
@@ -113,10 +114,10 @@ export class Ga4Connector implements ConnectorAdapter {
         Accept: 'application/json'
       },
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(20_000)
+      signal: timeoutSignal(20_000, context.cancellationSignal)
     })
     if (response.status === 401 && credential.refreshToken && credential.clientId && credential.clientSecret) {
-      credential.accessToken = await this.refreshAccessToken(credential)
+      credential.accessToken = await this.refreshAccessToken(credential, context.cancellationSignal)
       if (context.credentialRef) this.credentials.set(context.credentialRef, JSON.stringify(credential))
       response = await this.fetchImpl(`https://analyticsdata.googleapis.com/v1beta/properties/${id}:runReport`, {
         method: 'POST',
@@ -126,7 +127,7 @@ export class Ga4Connector implements ConnectorAdapter {
           Accept: 'application/json'
         },
         body: JSON.stringify(request),
-        signal: AbortSignal.timeout(20_000)
+        signal: timeoutSignal(20_000, context.cancellationSignal)
       })
     }
     const body = await response.json() as JsonRecord
@@ -137,7 +138,7 @@ export class Ga4Connector implements ConnectorAdapter {
     return body
   }
 
-  private async refreshAccessToken(credential: Ga4Credential): Promise<string> {
+  private async refreshAccessToken(credential: Ga4Credential, cancellationSignal?: AbortSignal): Promise<string> {
     const response = await this.fetchImpl('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
@@ -147,7 +148,7 @@ export class Ga4Connector implements ConnectorAdapter {
         client_id: credential.clientId,
         client_secret: credential.clientSecret
       }),
-      signal: AbortSignal.timeout(20_000)
+      signal: timeoutSignal(20_000, cancellationSignal)
     })
     const body = await response.json() as JsonRecord
     if (!response.ok || typeof body.access_token !== 'string') {

@@ -7,6 +7,7 @@ import type {
   DecisionRemediationState
 } from '../../shared/contracts'
 import { AppDatabase } from './database'
+import { throwIfCancelled } from './cancellation'
 
 const execFileAsync = promisify(execFile)
 const GITHUB_PR_PATTERN = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g
@@ -32,7 +33,8 @@ export interface GithubPullRequestSnapshot extends GithubPullRequestReference {
 }
 
 export type GithubPullRequestInspector = (
-  reference: GithubPullRequestReference
+  reference: GithubPullRequestReference,
+  cancellationSignal?: AbortSignal
 ) => Promise<GithubPullRequestSnapshot>
 
 export interface DecisionRemediationSyncResult {
@@ -88,8 +90,10 @@ function checksState(value: unknown): GithubPullRequestSnapshot['checks'] {
 }
 
 export async function inspectGithubPullRequest(
-  reference: GithubPullRequestReference
+  reference: GithubPullRequestReference,
+  cancellationSignal?: AbortSignal
 ): Promise<GithubPullRequestSnapshot> {
+  throwIfCancelled(cancellationSignal)
   const query = `query($owner:String!,$name:String!,$number:Int!){
     repository(owner:$owner,name:$name){
       pullRequest(number:$number){
@@ -101,15 +105,16 @@ export async function inspectGithubPullRequest(
     execFileAsync('gh', [
       'pr', 'view', reference.url,
       '--json', 'title,state,isDraft,mergedAt,mergeable,mergeStateStatus,headRefOid,statusCheckRollup,baseRefName'
-    ], { encoding: 'utf8', timeout: 15_000, maxBuffer: 1_000_000 }),
+    ], { encoding: 'utf8', timeout: 15_000, maxBuffer: 1_000_000, signal: cancellationSignal }),
     execFileAsync('gh', [
       'api', 'graphql',
       '-f', `query=${query}`,
       '-f', `owner=${reference.owner}`,
       '-f', `name=${reference.repository}`,
       '-F', `number=${reference.number}`
-    ], { encoding: 'utf8', timeout: 15_000, maxBuffer: 1_000_000 })
+    ], { encoding: 'utf8', timeout: 15_000, maxBuffer: 1_000_000, signal: cancellationSignal })
   ])
+  throwIfCancelled(cancellationSignal)
   const view = object(JSON.parse(viewResult.stdout) as unknown)
   const threads = object(object(object(JSON.parse(threadsResult.stdout) as unknown).data).repository)
   const reviewThreads = object(object(threads.pullRequest).reviewThreads).nodes
@@ -257,13 +262,18 @@ export class DecisionRemediationService {
     private readonly inspectPullRequest: GithubPullRequestInspector = inspectGithubPullRequest
   ) {}
 
-  async sync(projectId: string | null = null): Promise<DecisionRemediationSyncResult> {
+  async sync(
+    projectId: string | null = null,
+    cancellationSignal?: AbortSignal
+  ): Promise<DecisionRemediationSyncResult> {
+    throwIfCancelled(cancellationSignal)
     const now = new Date().toISOString()
     const decisions = new Map(this.database.listDecisions().map((decision) => [decision.id, decision]))
     const runs = this.database.listRuns().filter((run) =>
       Boolean(run.decisionId) && (!projectId || run.projectId === projectId))
 
     for (const run of runs) {
+      throwIfCancelled(cancellationSignal)
       const decision = run.decisionId ? decisions.get(run.decisionId) : null
       if (!decision) continue
       for (const url of extractGithubPullRequestUrls(linkedRunContent(this.database, run))) {
@@ -295,10 +305,12 @@ export class DecisionRemediationService {
         return decisions.get(item.decisionId)?.projectId === projectId
       })
     for (const remediation of linked) {
+      throwIfCancelled(cancellationSignal)
       const reference = parseGithubPullRequestUrl(remediation.sourceRef)
       if (!reference) continue
       try {
-        const snapshot = await this.inspectPullRequest(reference)
+        const snapshot = await this.inspectPullRequest(reference, cancellationSignal)
+        throwIfCancelled(cancellationSignal)
         const state = remediationState(snapshot)
         const copy = stateCopy(snapshot, state)
         const verifiedRemediation: DecisionRemediation = {
@@ -325,6 +337,7 @@ export class DecisionRemediationService {
         }
         this.database.upsertDecisionRemediation(verifiedRemediation)
       } catch (error) {
+        throwIfCancelled(cancellationSignal)
         errors.push(error instanceof Error
           ? `${reference.owner}/${reference.repository}#${reference.number}: ${error.message}`
           : `${reference.owner}/${reference.repository}#${reference.number}: GitHub 状态核验失败`)
@@ -332,6 +345,7 @@ export class DecisionRemediationService {
     }
 
     for (const decisionId of new Set(linked.map((item) => item.decisionId))) {
+      throwIfCancelled(cancellationSignal)
       reconcileDecisionStatus(this.database, decisionId)
     }
 

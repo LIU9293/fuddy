@@ -7,16 +7,33 @@ import type {
 } from '../../shared/contracts'
 import { nextCronOccurrence } from './automation-cron'
 import { AppDatabase } from './database'
+import { throwIfCancelled } from './cancellation'
 
 export interface AutomationActions {
-  runAgentTask(job: AutomationJob): Promise<{ summary: string; agentRunId: string }>
-  runConnectors(projectId: string | null): Promise<string>
-  checkGoals(projectId: string | null): Promise<string>
-  generateBriefing(projectId: string | null): Promise<string>
+  runAgentTask(job: AutomationJob, cancellationSignal?: AbortSignal): Promise<{ summary: string; agentRunId: string }>
+  runConnectors(projectId: string | null, cancellationSignal?: AbortSignal): Promise<string>
+  checkGoals(projectId: string | null, cancellationSignal?: AbortSignal): Promise<string>
+  generateBriefing(projectId: string | null, cancellationSignal?: AbortSignal): Promise<string>
 }
 
-function wait(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+function wait(milliseconds: number, cancellationSignal?: AbortSignal): Promise<void> {
+  if (!cancellationSignal) return new Promise((resolve) => setTimeout(resolve, milliseconds))
+  throwIfCancelled(cancellationSignal)
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cancellationSignal.removeEventListener('abort', abort)
+      resolve()
+    }, milliseconds)
+    const abort = (): void => {
+      clearTimeout(timer)
+      cancellationSignal.removeEventListener('abort', abort)
+      reject(cancellationSignal.reason instanceof Error
+        ? cancellationSignal.reason
+        : new Error('这次操作已停止。'))
+    }
+    cancellationSignal.addEventListener('abort', abort, { once: true })
+    if (cancellationSignal.aborted) abort()
+  })
 }
 
 export class AutomationRuntime {
@@ -94,8 +111,8 @@ export class AutomationRuntime {
     return updated
   }
 
-  async runNow(id: string): Promise<RunAutomationResult> {
-    return this.execute(this.database.getAutomation(id), 'manual')
+  async runNow(id: string, cancellationSignal?: AbortSignal): Promise<RunAutomationResult> {
+    return this.execute(this.database.getAutomation(id), 'manual', undefined, cancellationSignal)
   }
 
   async approve(runId: string): Promise<RunAutomationResult> {
@@ -173,8 +190,10 @@ export class AutomationRuntime {
   private async execute(
     job: AutomationJob,
     trigger: AutomationRun['trigger'],
-    existingRun?: AutomationRun
+    existingRun?: AutomationRun,
+    cancellationSignal?: AbortSignal
   ): Promise<RunAutomationResult> {
+    throwIfCancelled(cancellationSignal)
     if (job.status === 'running') throw new Error('这个自动任务已经在运行。')
     const startedAt = existingRun?.startedAt ?? new Date().toISOString()
     let run = this.database.saveAutomationRun({
@@ -199,9 +218,10 @@ export class AutomationRuntime {
 
     let lastError: Error | null = null
     for (let attempt = 1; attempt <= job.maxRetries + 1; attempt += 1) {
+      throwIfCancelled(cancellationSignal)
       run = this.database.saveAutomationRun({ ...run, attempt, summary: attempt > 1 ? `正在进行第 ${attempt} 次尝试…` : '正在执行…' })
       try {
-        const result = await this.performAction(job)
+        const result = await this.performAction(job, cancellationSignal)
         const completedAt = new Date().toISOString()
         run = this.database.saveAutomationRun({
           ...run,
@@ -223,8 +243,9 @@ export class AutomationRuntime {
         return { job, run }
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error))
+        if (cancellationSignal?.aborted) break
         if (attempt <= job.maxRetries && job.retryDelaySeconds > 0) {
-          await wait(job.retryDelaySeconds * 1_000)
+          await wait(job.retryDelaySeconds * 1_000, cancellationSignal)
         }
       }
     }
@@ -248,13 +269,21 @@ export class AutomationRuntime {
       lastError: message
     })
     this.notifyChanged()
+    throwIfCancelled(cancellationSignal)
     return { job, run }
   }
 
-  private async performAction(job: AutomationJob): Promise<{ summary: string; agentRunId: string | null }> {
-    if (job.action === 'agent-task') return this.actions.runAgentTask(job)
-    if (job.action === 'run-connectors') return { summary: await this.actions.runConnectors(job.projectId), agentRunId: null }
-    if (job.action === 'check-goals') return { summary: await this.actions.checkGoals(job.projectId), agentRunId: null }
-    return { summary: await this.actions.generateBriefing(job.projectId), agentRunId: null }
+  private async performAction(
+    job: AutomationJob,
+    cancellationSignal?: AbortSignal
+  ): Promise<{ summary: string; agentRunId: string | null }> {
+    if (job.action === 'agent-task') return this.actions.runAgentTask(job, cancellationSignal)
+    if (job.action === 'run-connectors') {
+      return { summary: await this.actions.runConnectors(job.projectId, cancellationSignal), agentRunId: null }
+    }
+    if (job.action === 'check-goals') {
+      return { summary: await this.actions.checkGoals(job.projectId, cancellationSignal), agentRunId: null }
+    }
+    return { summary: await this.actions.generateBriefing(job.projectId, cancellationSignal), agentRunId: null }
   }
 }

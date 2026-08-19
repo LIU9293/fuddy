@@ -190,13 +190,14 @@ describe('WorkspaceAgentActions native tools', () => {
       createdAt: new Date().toISOString()
     })
 
+    const cancellationController = new AbortController()
     const result = await actions.executeProposal({
       messageId: message.id,
       proposalId: state.proposals[0].id,
       optionId: 'generate'
-    })
+    }, cancellationController.signal)
 
-    expect(generate).toHaveBeenCalledOnce()
+    expect(generate).toHaveBeenCalledWith(cancellationController.signal)
     expect(result.notice).toContain('新的每日简报')
     expect(result.message.actions?.[0]).toMatchObject({ status: 'accepted', acceptedOptionId: 'generate' })
     expect(recordAudit).toHaveBeenCalledWith(

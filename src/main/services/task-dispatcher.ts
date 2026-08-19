@@ -134,8 +134,14 @@ export class TaskDispatcher {
 
   async dispatch(
     input: DispatchTaskInput,
-    onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined
+    onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined,
+    cancellationSignal?: AbortSignal
   ): Promise<DispatchTaskResult> {
+    if (cancellationSignal?.aborted) {
+      throw cancellationSignal.reason instanceof Error
+        ? cancellationSignal.reason
+        : new Error('这次操作已停止。')
+    }
     const now = new Date().toISOString()
     const project = input.projectId
       ? this.database.listProjects().find((item) => item.id === input.projectId) ?? null
@@ -180,7 +186,7 @@ export class TaskDispatcher {
     const createdUpdate = { type: 'created', run } as const
     this.publishRunUpdate(run.id, createdUpdate)
     onUpdate(createdUpdate)
-    const detail = await this.sendMessage(run.id, input.prompt, onUpdate)
+    const detail = await this.sendMessage(run.id, input.prompt, onUpdate, undefined, [], cancellationSignal)
     return { detail, message: detail.run.summary }
   }
 

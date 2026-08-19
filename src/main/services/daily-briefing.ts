@@ -3,6 +3,7 @@ import { ConnectorRuntime } from '../connectors/connector-runtime'
 import type { AgentRuntime } from './pi-runtime'
 import { AppDatabase, type DecisionInspectionInput } from './database'
 import { previousCompleteShanghaiDate } from './daily-briefing-time'
+import { throwIfCancelled } from './cancellation'
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
@@ -114,7 +115,8 @@ export class DailyBriefingService {
     private readonly agentRuntime: AgentRuntime
   ) {}
 
-  async generate(projectId: string): Promise<GenerateDailyBriefingResult> {
+  async generate(projectId: string, cancellationSignal?: AbortSignal): Promise<GenerateDailyBriefingResult> {
+    throwIfCancelled(cancellationSignal)
     const project = this.database.listProjects().find((candidate) => candidate.id === projectId)
     if (!project) throw new Error(`项目不存在：${projectId}`)
     const connector = this.database
@@ -128,7 +130,8 @@ export class DailyBriefingService {
     const generatedAt = new Date().toISOString()
 
     try {
-      const connectorResult = await this.connectorRuntime.runConnector(`postgres-${projectId}`)
+      const connectorResult = await this.connectorRuntime.runConnector(`postgres-${projectId}`, cancellationSignal)
+      throwIfCancelled(cancellationSignal)
       if (connectorResult.run.status !== 'completed' || !connectorResult.run.data) {
         throw new Error(connectorResult.message || '生产数据聚合失败。')
       }
@@ -153,13 +156,15 @@ export class DailyBriefingService {
               resolutionSummary: item.resolutionSummary,
               lastSeenAt: item.lastSeenAt
             }))
-          body = await this.agentRuntime.run(buildAgentPrompt(project.name, data, currentInbox))
+          body = await this.agentRuntime.run(buildAgentPrompt(project.name, data, currentInbox), [], cancellationSignal)
           generation = 'agent'
         } catch {
+          throwIfCancelled(cancellationSignal)
           // A model outage must not prevent the morning briefing from being available.
         }
       }
 
+      throwIfCancelled(cancellationSignal)
       const inspections = strategy?.inspections(data, generatedAt) ?? []
       const inspected = inspections.map((item) => this.database.applyDecisionInspection(item))
       const createdSignals = inspected.flatMap((item) => (item.created && item.decision ? [item.decision] : []))
@@ -180,6 +185,7 @@ export class DailyBriefingService {
       })
       return { briefing, createdSignals }
     } catch (error) {
+      throwIfCancelled(cancellationSignal)
       const message = error instanceof Error ? error.message : '每日项目总结生成失败。'
       const briefing = this.database.upsertDailyBriefing({
         id: `daily-${projectId}-${fallbackDate}`,
