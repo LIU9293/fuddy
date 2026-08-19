@@ -326,4 +326,26 @@ describe('companion sync persistence', () => {
     }))
     database.close()
   })
+
+  it('preserves non-reconstructible pending events after a retention baseline', () => {
+    const database = createDatabase()
+    database.enqueueAgentTurnSettled({
+      runId: 'offline-run',
+      turnId: 'offline-turn',
+      title: 'Offline run',
+      outcome: 'completed',
+      summary: 'Done.',
+      settledAt: '2026-08-19T00:00:00.000Z'
+    })
+
+    database.enqueueCompanionPairingSnapshot(undefined, { preservePendingTransientEvents: true })
+
+    const pending = database.listPendingCompanionEvents()
+    expect(pending[0]?.type).toBe('snapshot.created')
+    expect(pending.at(-1)).toMatchObject({
+      type: 'agent-turn.settled',
+      payload: expect.objectContaining({ turnId: 'offline-turn' })
+    })
+    database.close()
+  })
 })

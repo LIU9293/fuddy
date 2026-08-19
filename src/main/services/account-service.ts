@@ -279,10 +279,19 @@ export class AccountService {
     return this.getState()
   }
 
-  async bindRelay(input: { spaceId: string; relayUrl: string; relayAccountId: string }): Promise<void> {
+  async bindRelay(input: {
+    spaceId: string
+    relayUrl: string
+    relayAccountId: string
+    bindingProof: string
+  }): Promise<void> {
     await this.requestAuthorized(`/v1/sync-spaces/${encodeURIComponent(input.spaceId)}/relay-binding`, {
       method: 'POST',
-      body: JSON.stringify({ relayUrl: input.relayUrl, relayAccountId: input.relayAccountId })
+      body: JSON.stringify({
+        relayUrl: input.relayUrl,
+        relayAccountId: input.relayAccountId,
+        bindingProof: input.bindingProof
+      })
     })
   }
 

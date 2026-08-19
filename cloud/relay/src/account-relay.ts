@@ -16,7 +16,11 @@ import type {
   CompanionPairingClaimResult,
   CompanionPresence,
 } from '../../../src/shared/companion-sync'
-import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
+import {
+  companionAttachmentObjectMaximumBytes,
+  companionMinimumProtocolVersion,
+  companionProtocolVersion
+} from '../../../src/shared/companion-sync'
 
 interface DeviceRow extends Record<string, SqlStorageValue> {
   id: string
@@ -80,6 +84,23 @@ type AttachmentCommitResult =
   | { status: 'unauthorized' }
   | { status: 'existing'; attachment: AttachmentRecord }
 
+type AttachmentUploadLeaseResult =
+  | {
+    status: 'ready'
+    leaseId: string
+    accountGeneration: number | null
+  }
+  | { status: 'quota-exceeded' }
+  | { status: 'upload-in-progress' }
+  | { status: 'existing'; attachment: AttachmentRecord }
+
+interface AccountAuthorityRow extends Record<string, SqlStorageValue> {
+  generation: number
+  space_id: string | null
+  binding_id: string | null
+  binding_expires_at: string | null
+}
+
 interface SocketAttachment {
   deviceId: string
   role: CompanionDeviceRole
@@ -98,7 +119,9 @@ interface PushRequest {
 }
 
 const lastSeenWriteIntervalMs = 5 * 60_000
+const attachmentUploadLeaseDurationMs = 5 * 60_000
 const maximumRetainedEvents = 50_000
+export const maximumAccountAttachmentBytes = 100 * 1024 * 1024 * 1024
 const maximumRetainedCommands = 5_000
 const terminalCommandRetentionDays = 30
 const maintenanceIntervalMs = 24 * 60 * 60 * 1_000
@@ -229,7 +252,16 @@ export class AccountRelay extends DurableObject<Env> {
       );
       CREATE TABLE IF NOT EXISTS account_authority (
         id INTEGER PRIMARY KEY CHECK (id = 1),
-        generation INTEGER NOT NULL
+        generation INTEGER NOT NULL,
+        space_id TEXT,
+        binding_id TEXT,
+        binding_expires_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS account_binding_proofs (
+        proof_hash TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS account_cleanup (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -277,6 +309,17 @@ export class AccountRelay extends DurableObject<Env> {
         account_generation INTEGER,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS attachment_upload_leases (
+        lease_id TEXT PRIMARY KEY,
+        attachment_id TEXT NOT NULL UNIQUE,
+        device_id TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        account_generation INTEGER,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS attachment_upload_leases_expiry_idx
+        ON attachment_upload_leases(expires_at);
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (1, datetime('now'));
     `)
     const deviceColumns = this.ctx.storage.sql.exec<{ name: string }>('PRAGMA table_info(devices)').toArray()
@@ -339,6 +382,42 @@ export class AccountRelay extends DurableObject<Env> {
     `)
     this.ctx.storage.sql.exec(`
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (10, datetime('now'));
+    `)
+    const authorityColumns = this.ctx.storage.sql.exec<{ name: string }>('PRAGMA table_info(account_authority)').toArray()
+    if (!authorityColumns.some((column) => column.name === 'space_id')) {
+      this.ctx.storage.sql.exec('ALTER TABLE account_authority ADD COLUMN space_id TEXT')
+    }
+    if (!authorityColumns.some((column) => column.name === 'binding_id')) {
+      this.ctx.storage.sql.exec('ALTER TABLE account_authority ADD COLUMN binding_id TEXT')
+    }
+    if (!authorityColumns.some((column) => column.name === 'binding_expires_at')) {
+      this.ctx.storage.sql.exec('ALTER TABLE account_authority ADD COLUMN binding_expires_at TEXT')
+    }
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS account_binding_proofs (
+        proof_hash TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (11, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (12, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS attachment_upload_leases (
+        lease_id TEXT PRIMARY KEY,
+        attachment_id TEXT NOT NULL UNIQUE,
+        device_id TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        account_generation INTEGER,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS attachment_upload_leases_expiry_idx
+        ON attachment_upload_leases(expires_at);
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (13, datetime('now'));
     `)
   }
 
@@ -466,6 +545,7 @@ export class AccountRelay extends DurableObject<Env> {
       '',
       deviceId
     )
+    this.ctx.storage.sql.exec('DELETE FROM attachment_upload_leases WHERE device_id = ?', deviceId)
     this.discardPendingCommandsFromDevice(deviceId)
     for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
       try { socket.close(1000, 'Device revoked') } catch { /* Already closed. */ }
@@ -483,6 +563,7 @@ export class AccountRelay extends DurableObject<Env> {
       '',
       deviceId
     )
+    this.ctx.storage.sql.exec('DELETE FROM attachment_upload_leases WHERE device_id = ?', deviceId)
     this.discardPendingCommandsFromDevice(deviceId)
     for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
       try { socket.close(1000, 'Device signed out') } catch { /* Already closed. */ }
@@ -504,6 +585,7 @@ export class AccountRelay extends DurableObject<Env> {
       '',
       deviceId
     )
+    this.ctx.storage.sql.exec('DELETE FROM attachment_upload_leases WHERE device_id = ?', deviceId)
     this.discardPendingCommandsFromDevice(deviceId)
     for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
       try { socket.close(1000, 'Device revoked') } catch { /* Already closed. */ }
@@ -531,18 +613,61 @@ export class AccountRelay extends DurableObject<Env> {
   async createAttachmentUploadLease(
     deviceId: string,
     token: string,
-    attachmentId: string
-  ): Promise<{ accountGeneration: number | null; existing: AttachmentRecord | null } | null> {
+    attachmentId: string,
+    size: number
+  ): Promise<AttachmentUploadLeaseResult | null> {
     const device = await this.authorize(deviceId, token)
     if (!device) return null
+    if (!Number.isSafeInteger(size) || size <= 0 || size > companionAttachmentObjectMaximumBytes) {
+      return { status: 'quota-exceeded' }
+    }
     const existing = this.ctx.storage.sql.exec<AttachmentRow>(
       'SELECT * FROM attachments WHERE attachment_id = ?',
       attachmentId
     ).toArray()[0]
-    return {
-      accountGeneration: this.getAccountGeneration(),
-      existing: existing ? this.mapAttachmentRecord(existing) : null
+    if (existing) return { status: 'existing', attachment: this.mapAttachmentRecord(existing) }
+    const now = new Date()
+    const timestamp = now.toISOString()
+    this.ctx.storage.sql.exec('DELETE FROM attachment_upload_leases WHERE expires_at <= ?', timestamp)
+    const active = this.ctx.storage.sql.exec<{ lease_id: string }>(
+      'SELECT lease_id FROM attachment_upload_leases WHERE attachment_id = ?',
+      attachmentId
+    ).toArray()[0]
+    if (active) return { status: 'upload-in-progress' }
+    const retainedBytes = this.ctx.storage.sql.exec<{ bytes: number | null }>(
+      'SELECT SUM(size) AS bytes FROM attachments'
+    ).one().bytes ?? 0
+    const reservedBytes = this.ctx.storage.sql.exec<{ bytes: number | null }>(
+      'SELECT SUM(size) AS bytes FROM attachment_upload_leases'
+    ).one().bytes ?? 0
+    if (retainedBytes + reservedBytes + size > maximumAccountAttachmentBytes) {
+      return { status: 'quota-exceeded' }
     }
+    const leaseId = crypto.randomUUID()
+    const accountGeneration = this.getAccountGeneration()
+    this.ctx.storage.sql.exec(
+      `INSERT INTO attachment_upload_leases (
+        lease_id, attachment_id, device_id, size, account_generation, expires_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      leaseId,
+      attachmentId,
+      deviceId,
+      size,
+      accountGeneration,
+      new Date(now.getTime() + attachmentUploadLeaseDurationMs).toISOString(),
+      timestamp
+    )
+    return { status: 'ready', leaseId, accountGeneration }
+  }
+
+  async cancelAttachmentUploadLease(deviceId: string, token: string, leaseId: string): Promise<void> {
+    const device = await this.authorize(deviceId, token)
+    if (!device) return
+    this.ctx.storage.sql.exec(
+      'DELETE FROM attachment_upload_leases WHERE lease_id = ? AND device_id = ?',
+      leaseId,
+      deviceId
+    )
   }
 
   async commitAttachmentUploadLease(
@@ -550,6 +675,7 @@ export class AccountRelay extends DurableObject<Env> {
     token: string,
     input: {
       attachmentId: string
+      leaseId: string
       storageKey: string
       sha256: string
       size: number
@@ -564,19 +690,48 @@ export class AccountRelay extends DurableObject<Env> {
       'SELECT * FROM attachments WHERE attachment_id = ?',
       input.attachmentId
     ).toArray()[0]
-    if (existing) return { status: 'existing', attachment: this.mapAttachmentRecord(existing) }
-    this.ctx.storage.sql.exec(
-      `INSERT INTO attachments (
-        attachment_id, storage_key, uploaded_by, sha256, size, account_generation, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      input.attachmentId,
-      input.storageKey,
-      deviceId,
-      input.sha256,
-      input.size,
-      input.accountGeneration,
-      new Date().toISOString()
-    )
+    if (existing) {
+      this.ctx.storage.sql.exec(
+        'DELETE FROM attachment_upload_leases WHERE lease_id = ? AND device_id = ?',
+        input.leaseId,
+        deviceId
+      )
+      return { status: 'existing', attachment: this.mapAttachmentRecord(existing) }
+    }
+    const lease = this.ctx.storage.sql.exec<{
+      attachment_id: string
+      device_id: string
+      size: number
+      account_generation: number | null
+      expires_at: string
+    }>(
+      `SELECT attachment_id, device_id, size, account_generation, expires_at
+       FROM attachment_upload_leases WHERE lease_id = ?`,
+      input.leaseId
+    ).toArray()[0]
+    if (!lease
+      || lease.attachment_id !== input.attachmentId
+      || lease.device_id !== deviceId
+      || lease.size !== input.size
+      || lease.account_generation !== input.accountGeneration
+      || lease.expires_at <= new Date().toISOString()) {
+      return { status: 'unauthorized' }
+    }
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO attachments (
+          attachment_id, storage_key, uploaded_by, sha256, size, account_generation, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        input.attachmentId,
+        input.storageKey,
+        deviceId,
+        input.sha256,
+        input.size,
+        input.accountGeneration,
+        new Date().toISOString()
+      )
+      this.ctx.storage.sql.exec('DELETE FROM attachment_upload_leases WHERE lease_id = ?', input.leaseId)
+    })
     return { status: 'committed' }
   }
 
@@ -604,6 +759,7 @@ export class AccountRelay extends DurableObject<Env> {
     this.requireEventCapacity([input])
     const { event, inserted } = this.persistEvent(input, deviceId)
     if (inserted) {
+      if (event.type === 'snapshot.created') this.compactEventsToLatestSnapshot()
       this.notifyEventsAvailable([event])
       this.ctx.waitUntil(this.ensureMaintenanceAlarm())
     }
@@ -621,6 +777,9 @@ export class AccountRelay extends DurableObject<Env> {
     const persisted = this.ctx.storage.transactionSync(() => inputs.map((input) => this.persistEvent(input, deviceId)))
     const inserted = persisted.filter((result) => result.inserted).map((result) => result.event)
     if (inserted.length > 0) {
+      if (inserted.some((event) => event.type === 'snapshot.created')) {
+        this.compactEventsToLatestSnapshot()
+      }
       this.notifyEventsAvailable(inserted)
       this.ctx.waitUntil(this.ensureMaintenanceAlarm())
     }
@@ -666,7 +825,7 @@ export class AccountRelay extends DurableObject<Env> {
         SET last_ack_sequence = MAX(last_ack_sequence, ?)
         WHERE id = ? AND role = 'ios' AND revoked_at IS NULL
       `, acknowledged, deviceId)
-      this.compactAcknowledgedEvents()
+      this.compactEventsToLatestSnapshot()
     }
     const events = this.ctx.storage.sql.exec<EventRow>(
       'SELECT * FROM events WHERE sequence > ? ORDER BY sequence ASC LIMIT ?',
@@ -840,19 +999,132 @@ export class AccountRelay extends DurableObject<Env> {
     return true
   }
 
-  setAccountGeneration(generation: number): void {
+  async createAccountBindingProof(
+    deviceId: string,
+    token: string
+  ): Promise<{ proof: string; expiresAt: string }> {
+    await this.requireAuthorization(deviceId, token, 'mac')
+    const proof = randomToken()
+    const proofHash = await secretHash(proof)
+    const now = new Date()
+    const expiresAt = new Date(now.getTime() + 5 * 60_000).toISOString()
+    this.ctx.storage.sql.exec('DELETE FROM account_binding_proofs WHERE expires_at <= ?', now.toISOString())
+    this.ctx.storage.sql.exec('DELETE FROM account_binding_proofs WHERE device_id = ?', deviceId)
+    this.ctx.storage.sql.exec(
+      `INSERT INTO account_binding_proofs (proof_hash, device_id, expires_at, created_at)
+       VALUES (?, ?, ?, ?)`,
+      proofHash,
+      deviceId,
+      expiresAt,
+      now.toISOString()
+    )
+    return { proof, expiresAt }
+  }
+
+  async claimAccountBinding(
+    spaceId: string,
+    bindingId: string,
+    generation: number,
+    proof: string
+  ): Promise<boolean> {
+    if (!spaceId.trim() || !bindingId.trim() || !Number.isSafeInteger(generation) || generation < 1) return false
+    const proofHash = await secretHash(proof)
+    const now = new Date().toISOString()
+    return this.ctx.storage.transactionSync(() => {
+      const bindingProof = this.ctx.storage.sql.exec<{ device_id: string }>(
+        `SELECT device_id FROM account_binding_proofs
+         WHERE proof_hash = ? AND expires_at > ?`,
+        proofHash,
+        now
+      ).toArray()[0]
+      if (!bindingProof) return false
+      const mac = this.ctx.storage.sql.exec<DeviceRow>(
+        `SELECT * FROM devices WHERE id = ? AND role = 'mac' AND revoked_at IS NULL`,
+        bindingProof.device_id
+      ).toArray()[0]
+      if (!mac) return false
+      let current = this.getAccountAuthority()
+      if (current?.binding_expires_at && current.binding_expires_at <= now) {
+        this.ctx.storage.sql.exec(
+          `UPDATE account_authority
+           SET space_id = NULL, binding_id = NULL, binding_expires_at = NULL
+           WHERE id = 1 AND binding_expires_at = ?`,
+          current.binding_expires_at
+        )
+        current = this.getAccountAuthority()
+      }
+      if (current?.space_id && current.space_id !== spaceId) return false
+      if (current && generation < current.generation) return false
+      this.ctx.storage.sql.exec('DELETE FROM account_binding_proofs WHERE proof_hash = ?', proofHash)
+      this.ctx.storage.sql.exec(
+        `INSERT INTO account_authority (
+          id, generation, space_id, binding_id, binding_expires_at
+        ) VALUES (1, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET generation = excluded.generation,
+           space_id = excluded.space_id, binding_id = excluded.binding_id,
+           binding_expires_at = excluded.binding_expires_at`,
+        generation,
+        spaceId,
+        bindingId,
+        new Date(Date.now() + 5 * 60_000).toISOString()
+      )
+      return true
+    })
+  }
+
+  releaseAccountBinding(spaceId: string, bindingId: string): boolean {
+    const released = this.ctx.storage.sql.exec(
+      `UPDATE account_authority
+       SET space_id = NULL, binding_id = NULL, binding_expires_at = NULL
+       WHERE id = 1 AND space_id = ? AND binding_id = ?`,
+      spaceId,
+      bindingId
+    )
+    return released.rowsWritten > 0
+  }
+
+  confirmAccountBinding(spaceId: string, bindingId: string): boolean {
+    const confirmed = this.ctx.storage.sql.exec(
+      `UPDATE account_authority SET binding_expires_at = NULL
+       WHERE id = 1 AND space_id = ? AND binding_id = ?`,
+      spaceId,
+      bindingId
+    )
+    return confirmed.rowsWritten > 0
+  }
+
+  setAccountGeneration(spaceId: string, bindingId: string | null, generation: number): boolean {
     if (!Number.isSafeInteger(generation) || generation < 1) {
       throw new Error('Relay account generation must be a positive integer.')
     }
-    this.ctx.storage.sql.exec(
-      `INSERT INTO account_authority (id, generation) VALUES (1, ?)
-       ON CONFLICT(id) DO UPDATE SET generation = excluded.generation
-       WHERE excluded.generation > account_authority.generation`,
-      generation
-    )
+    const updated = bindingId === null
+      ? this.ctx.storage.sql.exec(
+        `UPDATE account_authority SET generation = ?
+         WHERE id = 1 AND space_id IS NULL AND binding_id IS NULL AND generation <= ?`,
+        generation,
+        generation
+      )
+      : this.ctx.storage.sql.exec(
+        `UPDATE account_authority SET generation = ?, binding_expires_at = NULL
+         WHERE id = 1 AND space_id = ? AND binding_id = ? AND generation <= ?`,
+        generation,
+        spaceId,
+        bindingId,
+        generation
+      )
+    return updated.rowsWritten > 0
   }
 
-  async revokeAccountByAuthority(generation?: number): Promise<boolean> {
+  async revokeAccountByAuthority(
+    spaceId: string,
+    bindingId: string | null,
+    generation: number
+  ): Promise<boolean> {
+    const authority = this.getAccountAuthority()
+    const ownerMatches = bindingId === null
+      ? authority?.space_id === null && authority.binding_id === null
+      : authority?.space_id === spaceId && authority.binding_id === bindingId
+    if (!authority || !ownerMatches || authority.generation !== generation) return false
     return this.revokeAccountState(generation, false)
   }
 
@@ -873,6 +1145,7 @@ export class AccountRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM events')
     this.ctx.storage.sql.exec('DELETE FROM pairing')
     this.ctx.storage.sql.exec('DELETE FROM attachments')
+    this.ctx.storage.sql.exec('DELETE FROM attachment_upload_leases')
     this.ctx.storage.sql.exec('DELETE FROM devices')
     if (!preserveDirectCleanup) this.ctx.storage.sql.exec('DELETE FROM account_cleanup')
     return true
@@ -888,6 +1161,13 @@ export class AccountRelay extends DurableObject<Env> {
     return this.ctx.storage.sql.exec<{ generation: number }>(
       'SELECT generation FROM account_authority WHERE id = 1'
     ).toArray()[0]?.generation ?? null
+  }
+
+  private getAccountAuthority(): AccountAuthorityRow | null {
+    return this.ctx.storage.sql.exec<AccountAuthorityRow>(
+      `SELECT generation, space_id, binding_id, binding_expires_at
+       FROM account_authority WHERE id = 1`
+    ).toArray()[0] ?? null
   }
 
   private discardPendingCommandsFromDevice(deviceId: string): void {
@@ -924,9 +1204,10 @@ export class AccountRelay extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    this.compactAcknowledgedEvents()
+    this.compactEventsToLatestSnapshot()
     this.pruneTerminalCommands()
     this.pruneRevokedCommands()
+    this.pruneExpiredAttachmentUploadLeases()
     const activeDevices = this.ctx.storage.sql.exec<{ count: number }>(
       'SELECT COUNT(*) AS count FROM devices WHERE revoked_at IS NULL'
     ).one().count
@@ -1004,6 +1285,9 @@ export class AccountRelay extends DurableObject<Env> {
   private requireEventCapacity(inputs: CompanionEncryptedSyncEventInput[]): void {
     const uniqueIds = [...new Set(inputs.map((input) => input.eventId))]
     if (uniqueIds.length === 0) return
+    // A canonical snapshot makes every earlier event disposable. Let it enter
+    // even at the logical cap, then compact it in the same Durable Object turn.
+    if (inputs.some((input) => input.type === 'snapshot.created')) return
     const existing = uniqueIds.reduce((count, id) => count + (
       this.ctx.storage.sql.exec<{ event_id: string }>('SELECT event_id FROM events WHERE event_id = ?', id).toArray()[0]
         ? 1
@@ -1011,22 +1295,16 @@ export class AccountRelay extends DurableObject<Env> {
     ), 0)
     const retained = this.ctx.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM events').one().count
     if (retained + uniqueIds.length - existing > maximumRetainedEvents) {
-      throw new Error('账户事件存储已达到上限，请先让已配对设备完成同步。')
+      throw new Error('账户事件存储已达到上限，等待下一次状态快照后会自动释放空间。')
     }
   }
 
-  private compactAcknowledgedEvents(): void {
-    const devices = this.ctx.storage.sql.exec<{ last_ack_sequence: number }>(`
-      SELECT last_ack_sequence FROM devices WHERE role = 'ios' AND revoked_at IS NULL
-    `).toArray()
-    if (devices.length === 0) return
-    const minimumAck = Math.min(...devices.map((device) => device.last_ack_sequence))
-    if (minimumAck <= 0) return
+  private compactEventsToLatestSnapshot(): void {
     const snapshot = this.ctx.storage.sql.exec<{ sequence: number }>(`
       SELECT sequence FROM events
-      WHERE type = 'snapshot.created' AND sequence <= ?
+      WHERE type = 'snapshot.created'
       ORDER BY sequence DESC LIMIT 1
-    `, minimumAck).toArray()[0]
+    `).toArray()[0]
     if (!snapshot) return
     this.ctx.storage.sql.exec('DELETE FROM events WHERE sequence < ?', snapshot.sequence)
   }
@@ -1037,6 +1315,13 @@ export class AccountRelay extends DurableObject<Env> {
       WHERE status IN ('completed', 'failed')
         AND updated_at < datetime('now', ?)
     `, `-${terminalCommandRetentionDays} days`)
+  }
+
+  private pruneExpiredAttachmentUploadLeases(): void {
+    this.ctx.storage.sql.exec(
+      'DELETE FROM attachment_upload_leases WHERE expires_at <= ?',
+      new Date().toISOString()
+    )
   }
 
   private pruneRevokedCommands(): void {

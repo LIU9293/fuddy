@@ -10,6 +10,7 @@ import type {
 } from '../../../src/shared/companion-sync'
 import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
 import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/request-guards'
+import { maximumAccountAttachmentBytes } from '../src/account-relay'
 
 async function pairedDevices(): Promise<{
   pairing: CompanionPairingStartResult
@@ -71,7 +72,7 @@ describe('companion relay', () => {
       status: 'ok',
       minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-18.1'
+      build: '2026-08-19.1'
     })
   })
 
@@ -315,17 +316,28 @@ describe('companion relay', () => {
   it('does not let an old account revocation delete a reactivated Relay generation', async () => {
     const { pairing } = await pairedDevices()
     const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
-    await stub.setAccountGeneration(1)
-    await stub.setAccountGeneration(2)
+    const spaceId = crypto.randomUUID()
+    const bindingId = crypto.randomUUID()
+    const proofResponse = await SELF.fetch(
+      authenticatedUrl('/v1/account-binding-proofs', pairing.accountId, pairing.macDeviceId),
+      { method: 'POST', headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(proofResponse.status).toBe(201)
+    const { proof } = await proofResponse.json<{ proof: string }>()
+    await expect(stub.claimAccountBinding(spaceId, bindingId, 1, proof)).resolves.toBe(true)
+    await expect(stub.claimAccountBinding(spaceId, crypto.randomUUID(), 1, proof)).resolves.toBe(false)
+    await expect(stub.confirmAccountBinding(spaceId, crypto.randomUUID())).resolves.toBe(false)
+    await expect(stub.confirmAccountBinding(spaceId, bindingId)).resolves.toBe(true)
+    await expect(stub.setAccountGeneration(spaceId, bindingId, 2)).resolves.toBe(true)
 
-    await expect(stub.revokeAccountByAuthority(1)).resolves.toBe(false)
+    await expect(stub.revokeAccountByAuthority(spaceId, bindingId, 1)).resolves.toBe(false)
     const stillAuthorized = await SELF.fetch(
       authenticatedUrl('/v1/events?after=0', pairing.accountId, pairing.macDeviceId),
       { headers: { Authorization: `Bearer ${pairing.macToken}` } }
     )
     expect(stillAuthorized.status).toBe(200)
 
-    await expect(stub.revokeAccountByAuthority(2)).resolves.toBe(true)
+    await expect(stub.revokeAccountByAuthority(spaceId, bindingId, 2)).resolves.toBe(true)
     const revoked = await SELF.fetch(
       authenticatedUrl('/v1/events?after=0', pairing.accountId, pairing.macDeviceId),
       { headers: { Authorization: `Bearer ${pairing.macToken}` } }
@@ -467,7 +479,7 @@ describe('companion relay', () => {
     expect((await pageResponse.json<CompanionEncryptedEventPage>()).events).toEqual([])
   })
 
-  it('compacts only events behind an acknowledged snapshot and preserves reset replay', async () => {
+  it('compacts events behind the latest snapshot without waiting for an offline phone', async () => {
     const { pairing, phone } = await pairedDevices()
     const occurredAt = new Date().toISOString()
     const definitions = [
@@ -490,11 +502,6 @@ describe('companion relay', () => {
       body: JSON.stringify({ events })
     })
     expect(batch.status).toBe(201)
-
-    const acknowledge = await SELF.fetch(authenticatedUrl('/v1/events?after=4', pairing.accountId, phone.device.id), {
-      headers: { Authorization: `Bearer ${phone.deviceToken}` }
-    })
-    expect(acknowledge.status).toBe(200)
 
     const reset = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
@@ -776,6 +783,134 @@ describe('companion relay', () => {
     })
     expect(refreshed.status).toBe(200)
     expect(await refreshed.text()).toBe(content)
+  })
+
+  it('does not expose untracked objects outside the quota-controlled attachment path', async () => {
+    const { pairing } = await pairedDevices()
+    const attachmentId = crypto.randomUUID()
+    await env.ATTACHMENTS.put(`${pairing.accountId}/${attachmentId}`, 'untracked object')
+
+    const response = await SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      pairing.macDeviceId
+    ), {
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
+    })
+
+    expect(response.status).toBe(404)
+  })
+
+  it('rejects uploads once retained attachment metadata reaches 100 GiB', async () => {
+    const { pairing } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    const now = new Date().toISOString()
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO attachments (
+          attachment_id, storage_key, uploaded_by, sha256, size, account_generation, created_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?)`,
+        crypto.randomUUID(),
+        `${pairing.accountId}/retained`,
+        pairing.macDeviceId,
+        'a'.repeat(64),
+        maximumAccountAttachmentBytes - 1,
+        now
+      )
+    })
+    const content = 'quota overflow'
+    const sha256 = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content))
+      .then((digest) => Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join(''))
+    const attachmentId = crypto.randomUUID()
+    const response = await SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      pairing.macDeviceId
+    ), {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${pairing.macToken}`,
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(content.length),
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
+      },
+      body: content
+    })
+    expect(response.status).toBe(413)
+    expect(await response.json()).toEqual({ error: '账户附件总容量已达到 100 GiB 上限。' })
+    await expect(env.ATTACHMENTS.list({ prefix: `${pairing.accountId}/objects/${attachmentId}/` }))
+      .resolves.toMatchObject({ objects: [] })
+  })
+
+  it('reserves account capacity before R2 upload and releases cancelled capacity', async () => {
+    const { pairing } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO attachments (
+          attachment_id, storage_key, uploaded_by, sha256, size, account_generation, created_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?)`,
+        crypto.randomUUID(),
+        `${pairing.accountId}/retained-for-reservation`,
+        pairing.macDeviceId,
+        'b'.repeat(64),
+        maximumAccountAttachmentBytes - 20,
+        new Date().toISOString()
+      )
+    })
+    const first = await stub.createAttachmentUploadLease(
+      pairing.macDeviceId,
+      pairing.macToken,
+      crypto.randomUUID(),
+      10
+    )
+    expect(first).toMatchObject({ status: 'ready', leaseId: expect.any(String) })
+    const blocked = await stub.createAttachmentUploadLease(
+      pairing.macDeviceId,
+      pairing.macToken,
+      crypto.randomUUID(),
+      11
+    )
+    expect(blocked).toEqual({ status: 'quota-exceeded' })
+    if (!first || first.status !== 'ready') throw new Error('Expected an attachment upload lease.')
+    await stub.cancelAttachmentUploadLease(pairing.macDeviceId, pairing.macToken, first.leaseId)
+    const retried = await stub.createAttachmentUploadLease(
+      pairing.macDeviceId,
+      pairing.macToken,
+      crypto.randomUUID(),
+      11
+    )
+    expect(retried).toMatchObject({ status: 'ready' })
+  })
+
+  it('makes attachment lease commits idempotent after the lease is consumed', async () => {
+    const { pairing } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    const attachmentId = crypto.randomUUID()
+    const storageKey = `${pairing.accountId}/objects/${attachmentId}/${crypto.randomUUID()}`
+    const lease = await stub.createAttachmentUploadLease(
+      pairing.macDeviceId,
+      pairing.macToken,
+      attachmentId,
+      12
+    )
+    if (!lease || lease.status !== 'ready') throw new Error('Expected an attachment upload lease.')
+    const input = {
+      attachmentId,
+      leaseId: lease.leaseId,
+      storageKey,
+      sha256: 'c'.repeat(64),
+      size: 12,
+      accountGeneration: lease.accountGeneration
+    }
+    await expect(stub.commitAttachmentUploadLease(pairing.macDeviceId, pairing.macToken, input))
+      .resolves.toEqual({ status: 'committed' })
+    await expect(stub.commitAttachmentUploadLease(pairing.macDeviceId, pairing.macToken, input))
+      .resolves.toMatchObject({
+        status: 'existing',
+        attachment: { storageKey, size: 12 }
+      })
   })
 
   it('does not commit an attachment upload that races account revocation', async () => {

@@ -37,6 +37,7 @@ import {
   companionSnapshotChatPageMaximumBytes,
   companionCommandChatPageMaximumBytes,
   companionRequestTimeoutMs,
+  companionRetentionSnapshotIntervalMs,
   companionSocketHeartbeatIntervalMs,
   companionSocketHeartbeatShouldReconnect,
   companionSocketMessageRequestsSync,
@@ -87,6 +88,52 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 describe('Companion sync transport policy', () => {
+  it('enqueues at most one retention snapshot per Relay account every 24 hours', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-retention-snapshot-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const configuration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'retention-account',
+      macDeviceId: 'retention-mac',
+      pairedAt: '2030-01-01T00:00:00.000Z',
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration
+    database.setSetting('companion.mac-configuration', configuration)
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    database.setSetting('companion.retention-snapshots', {
+      [configuration.accountId]: '2030-01-01T00:00:00.000Z'
+    })
+    database.enqueueAgentTurnSettled({
+      runId: 'retention-run',
+      turnId: 'retention-turn',
+      title: '离线完成的任务',
+      outcome: 'completed',
+      summary: '已完成。',
+      settledAt: '2030-01-01T12:00:00.000Z'
+    })
+    const internals = service as unknown as { ensureRetentionSnapshot(now: Date): void }
+
+    internals.ensureRetentionSnapshot(new Date('2030-01-02T00:00:00.000Z'))
+    const pending = database.listPendingCompanionEvents()
+    const firstCount = pending.filter((event) => event.type === 'snapshot.created').length
+    expect(firstCount).toBe(1)
+    expect(pending.at(-1)).toMatchObject({
+      type: 'agent-turn.settled',
+      payload: expect.objectContaining({ turnId: 'retention-turn' })
+    })
+    internals.ensureRetentionSnapshot(new Date(
+      Date.parse('2030-01-02T00:00:00.000Z') + companionRetentionSnapshotIntervalMs - 1
+    ))
+    expect(database.listPendingCompanionEvents().filter((event) => event.type === 'snapshot.created')).toHaveLength(1)
+    database.close()
+  })
+
   it('closes a connecting realtime socket without an unhandled error', async () => {
     const server = createServer()
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))

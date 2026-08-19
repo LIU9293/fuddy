@@ -52,7 +52,8 @@ export const relayBindingSchema = z.object({
       const pathname = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/u, '')
       return `${url.origin}${pathname}`
     }),
-  relayAccountId: z.string().trim().min(1).max(200)
+  relayAccountId: z.string().trim().min(1).max(200),
+  bindingProof: z.string().trim().min(20).max(500)
 })
 
 export const resendWebhookSchema = z.object({

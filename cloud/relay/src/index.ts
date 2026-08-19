@@ -7,7 +7,11 @@ import type {
   CompanionPairingStartResult,
   CompanionPairingClaimResult
 } from '../../../src/shared/companion-sync'
-import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
+import {
+  companionAttachmentObjectMaximumBytes,
+  companionMinimumProtocolVersion,
+  companionProtocolVersion
+} from '../../../src/shared/companion-sync'
 import { AccountRelay } from './account-relay'
 import {
   commandSchema,
@@ -28,8 +32,8 @@ import {
 export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
-const maximumAttachmentBytes = 100 * 1024 * 1024 + 32
-const relayBuild = '2026-08-18.1'
+export const maximumAttachmentBytes = companionAttachmentObjectMaximumBytes
+const relayBuild = '2026-08-19.1'
 const canonicalRelayPathPrefix = '/api/relay'
 
 function randomToken(byteLength = 32): string {
@@ -100,12 +104,40 @@ export class RelayAdministration extends WorkerEntrypoint<Env> {
     return await relay(this.env, accountId).revokeDeviceByAuthority(deviceId, grantId)
   }
 
-  async setAccountGeneration(accountId: string, generation: number): Promise<void> {
-    await relay(this.env, accountId).setAccountGeneration(generation)
+  async claimAccountBinding(
+    accountId: string,
+    spaceId: string,
+    bindingId: string,
+    generation: number,
+    proof: string
+  ): Promise<boolean> {
+    return await relay(this.env, accountId).claimAccountBinding(spaceId, bindingId, generation, proof)
   }
 
-  async revokeAccount(accountId: string, generation?: number): Promise<boolean> {
-    const revoked = await relay(this.env, accountId).revokeAccountByAuthority(generation)
+  async releaseAccountBinding(accountId: string, spaceId: string, bindingId: string): Promise<boolean> {
+    return await relay(this.env, accountId).releaseAccountBinding(spaceId, bindingId)
+  }
+
+  async confirmAccountBinding(accountId: string, spaceId: string, bindingId: string): Promise<boolean> {
+    return await relay(this.env, accountId).confirmAccountBinding(spaceId, bindingId)
+  }
+
+  async setAccountGeneration(
+    accountId: string,
+    spaceId: string,
+    bindingId: string | null,
+    generation: number
+  ): Promise<boolean> {
+    return await relay(this.env, accountId).setAccountGeneration(spaceId, bindingId, generation)
+  }
+
+  async revokeAccount(
+    accountId: string,
+    spaceId: string,
+    bindingId: string | null,
+    generation: number
+  ): Promise<boolean> {
+    const revoked = await relay(this.env, accountId).revokeAccountByAuthority(spaceId, bindingId, generation)
     if (revoked) await deleteAccountAttachments(this.env, accountId)
     return revoked
   }
@@ -292,6 +324,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return new Response(null, { status: 204 })
   }
 
+  if (request.method === 'POST' && url.pathname === '/v1/account-binding-proofs') {
+    const context = await authenticatedContext(request, env, url, 'mac')
+    return Response.json(await context.stub.createAccountBindingProof(context.deviceId, context.token), { status: 201 })
+  }
+
   if (request.method === 'GET' && url.pathname === '/v1/commands/pending') {
     const context = relayRequestContext(request, env, url)
     const page = await context.stub.pendingCommands(context.deviceId, context.token)
@@ -315,74 +352,96 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (attachmentMatch) {
     const context = await authenticatedContext(request, env, url)
     const attachmentId = attachmentMatch[1]
-    const legacyKey = `${context.accountId}/${attachmentId}`
     if (request.method === 'PUT') {
-      const uploadLease = await context.stub.createAttachmentUploadLease(
-        context.deviceId,
-        context.token,
-        attachmentId
-      )
-      if (!uploadLease) throw new HttpError(401, '设备认证失败。')
       if (request.headers.get('X-Companion-Encryption') !== 'A256GCM') {
         throw new HttpError(400, 'End-to-end encrypted attachment envelope is required.')
       }
       const contentLength = Number.parseInt(request.headers.get('Content-Length') ?? '0', 10)
       if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > maximumAttachmentBytes) {
-        throw new HttpError(413, 'Attachment size is invalid or exceeds 100 MiB.')
+        throw new HttpError(413, 'Attachment size is invalid or exceeds 20 MiB.')
       }
       const sha256 = request.headers.get('X-Content-SHA256')?.trim().toLowerCase() ?? ''
       if (!/^[a-f0-9]{64}$/.test(sha256)) {
         throw new HttpError(400, 'Attachment SHA-256 is required.')
       }
-      if (uploadLease.existing) {
-        const existing = await env.ATTACHMENTS.head(uploadLease.existing.storageKey)
+      const uploadLease = await context.stub.createAttachmentUploadLease(
+        context.deviceId,
+        context.token,
+        attachmentId,
+        contentLength
+      )
+      if (!uploadLease) throw new HttpError(401, '设备认证失败。')
+      if (uploadLease.status === 'quota-exceeded') {
+        throw new HttpError(413, '账户附件总容量已达到 100 GiB 上限。')
+      }
+      if (uploadLease.status === 'upload-in-progress') {
+        throw new HttpError(409, 'Attachment upload is already in progress.')
+      }
+      if (uploadLease.status === 'existing') {
+        const existing = await env.ATTACHMENTS.head(uploadLease.attachment.storageKey)
         if (!existing) throw new HttpError(503, 'Attachment storage is temporarily unavailable.')
-        const identicalRetry = uploadLease.existing.uploadedBy === context.deviceId
-          && uploadLease.existing.sha256 === sha256
-          && uploadLease.existing.size === contentLength
+        const identicalRetry = uploadLease.attachment.uploadedBy === context.deviceId
+          && uploadLease.attachment.sha256 === sha256
+          && uploadLease.attachment.size === contentLength
         if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
         return Response.json({ id: attachmentId, size: existing.size }, { status: 200 })
       }
-
-      // Existing deployments stored attachments directly at accountId/attachmentId.
-      // Keep those immutable objects readable while all new uploads use unique keys.
-      const legacyObject = await env.ATTACHMENTS.head(legacyKey)
-      if (legacyObject) {
-        const identicalRetry = legacyObject.customMetadata?.uploadedBy === context.deviceId
-          && legacyObject.customMetadata?.sha256 === sha256
-          && legacyObject.size === contentLength
-        if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
-        return Response.json({ id: attachmentId, size: legacyObject.size }, { status: 200 })
+      const cancelUploadLease = async (): Promise<void> => {
+        await context.stub.cancelAttachmentUploadLease(
+          context.deviceId,
+          context.token,
+          uploadLease.leaseId
+        )
       }
 
       const storageKey = `${context.accountId}/objects/${attachmentId}/${crypto.randomUUID()}`
-      await env.ATTACHMENTS.put(storageKey, request.body, {
-        httpMetadata: {
-          contentType: request.headers.get('Content-Type') ?? 'application/octet-stream'
-        },
-        customMetadata: {
-          accountId: context.accountId,
-          uploadedBy: context.deviceId,
+      let uploaded: R2Object
+      try {
+        uploaded = await env.ATTACHMENTS.put(storageKey, request.body, {
+          httpMetadata: {
+            contentType: request.headers.get('Content-Type') ?? 'application/octet-stream'
+          },
+          customMetadata: {
+            accountId: context.accountId,
+            uploadedBy: context.deviceId,
+            sha256,
+            encryption: 'A256GCM'
+          }
+        })
+      } catch (error) {
+        await cancelUploadLease().catch(() => undefined)
+        throw error
+      }
+      if (uploaded.size !== contentLength || uploaded.size > maximumAttachmentBytes) {
+        await env.ATTACHMENTS.delete(storageKey)
+        await cancelUploadLease()
+        throw new HttpError(413, 'Attachment size is invalid or exceeds 20 MiB.')
+      }
+      const commitUpload = () => context.stub.commitAttachmentUploadLease(
+        context.deviceId,
+        context.token,
+        {
+          attachmentId,
+          leaseId: uploadLease.leaseId,
+          storageKey,
           sha256,
-          encryption: 'A256GCM'
+          size: uploaded.size,
+          accountGeneration: uploadLease.accountGeneration
         }
-      })
+      )
       let commit: Awaited<ReturnType<typeof context.stub.commitAttachmentUploadLease>>
       try {
-        commit = await context.stub.commitAttachmentUploadLease(
-          context.deviceId,
-          context.token,
-          {
-            attachmentId,
-            storageKey,
-            sha256,
-            size: contentLength,
-            accountGeneration: uploadLease.accountGeneration
-          }
-        )
-      } catch (error) {
-        await env.ATTACHMENTS.delete(storageKey)
-        throw error
+        commit = await commitUpload()
+      } catch {
+        try {
+          // A Durable Object RPC can commit successfully and still lose its response.
+          // Retrying the idempotent commit avoids deleting an object that is already referenced.
+          commit = await commitUpload()
+        } catch (error) {
+          await env.ATTACHMENTS.delete(storageKey)
+          await cancelUploadLease().catch(() => undefined)
+          throw error
+        }
       }
       if (commit.status === 'committed') {
         return Response.json({ id: attachmentId, size: contentLength }, { status: 201 })
@@ -402,8 +461,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         attachmentId
       )
       if (!resolved) throw new HttpError(401, '设备认证已失效。')
-      const key = resolved.storageKey ?? legacyKey
-      const object = await env.ATTACHMENTS.get(key)
+      if (!resolved.storageKey) throw new HttpError(404, 'Attachment not found.')
+      const object = await env.ATTACHMENTS.get(resolved.storageKey)
       if (!object) throw new HttpError(404, 'Attachment not found.')
       const headers = new Headers()
       object.writeHttpMetadata(headers)
