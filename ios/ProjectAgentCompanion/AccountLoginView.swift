@@ -197,19 +197,23 @@ struct AccountLoginView: View {
             googleError = "暂时无法打开 Google 登录。"
             return
         }
-        Task { @MainActor in
-            do {
-                let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: presenter)
-                guard let idToken = result.user.idToken?.tokenString else {
+        GIDSignIn.sharedInstance.signIn(withPresenting: presenter) { result, error in
+            let idToken = result?.user.idToken?.tokenString
+            let nsError = error as NSError?
+            let wasCancelled = nsError?.domain == kGIDSignInErrorDomain
+                && nsError?.code == GIDSignInError.canceled.rawValue
+            let errorMessage = error?.localizedDescription
+
+            Task { @MainActor in
+                if let errorMessage {
+                    if !wasCancelled { googleError = errorMessage }
+                    return
+                }
+                guard let idToken else {
                     googleError = "Google 没有返回可验证的登录凭证。"
                     return
                 }
                 await store.signInWithGoogle(idToken: idToken)
-            } catch {
-                let nsError = error as NSError
-                if nsError.domain != kGIDSignInErrorDomain || nsError.code != GIDSignInError.canceled.rawValue {
-                    googleError = error.localizedDescription
-                }
             }
         }
 #endif
