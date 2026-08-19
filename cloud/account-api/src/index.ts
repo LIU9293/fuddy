@@ -1328,10 +1328,13 @@ async function completeEnrollment(
       expires_at: string
       key_version: number
       host_device_id: string
-    }>()
+  }>()
   if (!grant) throw new ApiError(404, 'enrollment_not_found', '没有找到这次连接申请。')
   if (grant.host_device_id !== user.deviceId) throw new ApiError(403, 'host_required', '需要由对应的 Mac Host 完成授权。')
   if (grant.status !== 'pending' || new Date(grant.expires_at).getTime() <= Date.now()) {
+    if (grant.status === 'revoked') {
+      await requeueRevokedEnrollmentRelay(env, spaceId, enrollmentId)
+    }
     throw new ApiError(409, 'enrollment_not_pending', '这次连接申请已失效。')
   }
   if (input.keyVersion !== grant.key_version) throw new ApiError(409, 'key_version_mismatch', '工作空间密钥版本已变化。')
@@ -1341,8 +1344,33 @@ async function completeEnrollment(
     wrappedSpaceKey: input.wrappedSpaceKey,
     keyVersion: input.keyVersion
   })
-  if (!activated) throw new ApiError(409, 'enrollment_not_pending', '这次连接申请已失效。')
+  if (!activated) {
+    await requeueRevokedEnrollmentRelay(env, spaceId, enrollmentId)
+    throw new ApiError(409, 'enrollment_not_pending', '这次连接申请已失效。')
+  }
   return json({ enrollment: { id: enrollmentId, spaceId, deviceId: grant.device_id, status: 'active' } })
+}
+
+async function requeueRevokedEnrollmentRelay(
+  env: Environment,
+  spaceId: string,
+  enrollmentId: string
+): Promise<void> {
+  const grant = await env.ACCOUNT_DB.prepare(
+    `SELECT g.id, g.device_id AS deviceId, s.relay_account_id AS relayAccountId
+     FROM device_grants g JOIN sync_spaces s ON s.id = g.space_id
+     WHERE g.id = ? AND g.space_id = ? AND g.status = 'revoked'`
+  ).bind(enrollmentId, spaceId).first<RelayDeviceRevocationTarget>()
+  if (!grant) return
+  const timestamp = isoNow()
+  await env.ACCOUNT_DB.batch([
+    env.ACCOUNT_DB.prepare(
+      `UPDATE device_grants SET relay_revoked_at = NULL, updated_at = ?
+       WHERE id = ? AND space_id = ? AND status = 'revoked'`
+    ).bind(timestamp, enrollmentId, spaceId),
+    ...relayDeviceRevocationStatements(env, [grant], timestamp)
+  ])
+  await processRelayRevocationJobs(env)
 }
 
 export async function activatePendingEnrollment(

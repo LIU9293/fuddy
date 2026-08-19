@@ -1,6 +1,6 @@
 import { defaultCompanionRelayUrl } from '../../shared/companion-sync'
 import type { FuddyRuntimeChannel } from '../runtime-profile'
-import type { AccountService } from './account-service'
+import { AccountRequestError, type AccountService } from './account-service'
 import type { CompanionSyncService } from './companion-sync'
 
 export const accountEnrollmentPollIntervalMs = 5_000
@@ -107,12 +107,24 @@ export class AccountEnrollmentCoordinator {
         recipientPublicKey: enrollment.publicKey,
         credentials
       })
-      await this.accountService.completeEnrollment({
-        spaceId,
-        enrollmentId: enrollment.id,
-        wrappedSpaceKey,
-        keyVersion: page.syncSpace.keyVersion
-      })
+      try {
+        await this.accountService.completeEnrollment({
+          spaceId,
+          enrollmentId: enrollment.id,
+          wrappedSpaceKey,
+          keyVersion: page.syncSpace.keyVersion
+        })
+      } catch (error) {
+        if (error instanceof AccountRequestError && (error.status === 404 || error.status === 409)) {
+          try {
+            await this.companionSync.revokeAccountDevice(enrollment.deviceId, enrollment.id)
+          } catch {
+            // A revoked grant is durably requeued by the Account API. Other
+            // rejected grants rotate this generation again on the next poll.
+          }
+        }
+        throw error
+      }
     }
   }
 

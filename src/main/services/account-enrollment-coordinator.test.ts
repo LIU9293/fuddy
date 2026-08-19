@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AccountEnrollmentCoordinator, resolveCompanionRelayUrl } from './account-enrollment-coordinator'
-import type { AccountService } from './account-service'
+import { AccountRequestError, type AccountService } from './account-service'
 import type { CompanionSyncService } from './companion-sync'
 
 describe('AccountEnrollmentCoordinator', () => {
@@ -86,6 +86,60 @@ describe('AccountEnrollmentCoordinator', () => {
     expect(resolveCompanionRelayUrl('http://127.0.0.1:8789/', 'development')).toBe('http://127.0.0.1:8789')
     expect(resolveCompanionRelayUrl(undefined, 'production')).toBe('https://fuddy.ai/api/relay')
     expect(resolveCompanionRelayUrl('http://relay.example.com', 'production')).toBeNull()
+  })
+
+  it('revokes a newly installed Relay token when Account activation is rejected', async () => {
+    const account = {
+      getState: vi.fn(() => ({
+        status: 'signed-in',
+        user: { id: 'user-1' },
+        device: { syncSpaceId: 'space-1' }
+      })),
+      bindRelay: vi.fn(),
+      listPendingEnrollments: vi.fn(async () => ({
+        syncSpace: {
+          id: 'space-1',
+          keyVersion: 1,
+          relayUrl: 'https://relay.example.com',
+          relayAccountId: 'relay-account'
+        },
+        revocations: [],
+        enrollments: [{
+          id: 'revoked-grant',
+          spaceId: 'space-1',
+          deviceId: 'phone-1',
+          deviceName: 'Kai 的 iPhone',
+          publicKey: 'phone-public-key',
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        }]
+      })),
+      wrapEnrollmentGrant: vi.fn(() => 'opaque-grant'),
+      completeEnrollment: vi.fn(async () => {
+        throw new AccountRequestError(409, 'enrollment_not_pending', '这次连接申请已失效。')
+      })
+    } as unknown as AccountService
+    const companion = {
+      ensureAccountRelay: vi.fn(async () => ({
+        relayUrl: 'https://relay.example.com',
+        relayAccountId: 'relay-account'
+      })),
+      enrollAccountDevice: vi.fn(async () => ({
+        relayURL: 'https://relay.example.com',
+        accountID: 'relay-account',
+        deviceID: 'phone-1',
+        deviceToken: 'new-secret',
+        encryptionKey: 'data-key',
+        encryptionKeyId: 'key-id'
+      })),
+      revokeAccountDevice: vi.fn()
+    } as unknown as CompanionSyncService
+
+    await expect(
+      new AccountEnrollmentCoordinator(account, companion, 'https://relay.example.com').processOnce()
+    ).rejects.toThrow('这次连接申请已失效。')
+
+    expect(companion.enrollAccountDevice).toHaveBeenCalledWith(expect.objectContaining({ grantId: 'revoked-grant' }))
+    expect(companion.revokeAccountDevice).toHaveBeenCalledWith('phone-1', 'revoked-grant')
   })
 
   it('does not create a Relay identity when no development Relay is configured', async () => {

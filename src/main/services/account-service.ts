@@ -62,7 +62,7 @@ interface AccountApiErrorBody {
   }
 }
 
-class AccountRequestError extends Error {
+export class AccountRequestError extends Error {
   constructor(
     readonly status: number,
     readonly code: string | undefined,
