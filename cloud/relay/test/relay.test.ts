@@ -24,7 +24,7 @@ async function pairedDevices(): Promise<{
   const pairing = await pairingResponse.json<CompanionPairingStartResult>()
   const claimResponse = await SELF.fetch('https://relay.test/v1/pairings/claim', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `test-${crypto.randomUUID()}` },
     body: JSON.stringify({
       accountId: pairing.accountId,
       pairingSecret: pairing.pairingSecret,
@@ -161,6 +161,15 @@ describe('companion relay', () => {
 
   it('discards nonterminal commands queued by a revoked device', async () => {
     const { pairing, phone } = await pairedDevices()
+    const connect = await SELF.fetch(authenticatedUrl('/v1/connect', pairing.accountId, pairing.macDeviceId), {
+      headers: { Authorization: `Bearer ${pairing.macToken}`, Upgrade: 'websocket' }
+    })
+    expect(connect.status).toBe(101)
+    const socket = connect.webSocket
+    expect(socket).toBeDefined()
+    socket!.accept()
+    const messages: string[] = []
+    socket!.addEventListener('message', (event) => { messages.push(String(event.data)) })
     const commandId = crypto.randomUUID()
     const queued = await SELF.fetch(authenticatedUrl('/v1/commands', pairing.accountId, phone.device.id), {
       method: 'POST',
@@ -191,6 +200,12 @@ describe('companion relay', () => {
         commandId
       ).one().count
     ))).resolves.toBe(0)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(messages.map((value) => JSON.parse(value) as unknown)).toContainEqual({
+      type: 'commands.revoked',
+      commandIds: [commandId]
+    })
+    socket!.close()
   })
 
   it('lets an authenticated Mac enroll multiple account devices without a pairing secret', async () => {
@@ -794,7 +809,76 @@ describe('companion relay', () => {
     await writer.close()
 
     await expect(upload).resolves.toMatchObject({ status: 401 })
-    await expect(env.ATTACHMENTS.head(`${pairing.accountId}/${attachmentId}`)).resolves.toBeNull()
+    await expect(env.ATTACHMENTS.list({ prefix: `${pairing.accountId}/` }))
+      .resolves.toMatchObject({ objects: [] })
+  })
+
+  it('cleans up only a revoked device upload when another device commits the same attachment', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const attachmentId = crypto.randomUUID()
+    const content = new TextEncoder().encode('attachment committed by the remaining device')
+    const sha256 = await crypto.subtle.digest('SHA-256', content)
+      .then((digest) => Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join(''))
+    const body = new FixedLengthStream(content.byteLength)
+    const writer = body.writable.getWriter()
+    const staleUpload = SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      phone.device.id
+    ), {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${phone.deviceToken}`,
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(content.byteLength),
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
+      },
+      body: body.readable
+    })
+
+    const midpoint = Math.floor(content.byteLength / 2)
+    await writer.write(content.slice(0, midpoint))
+    const revoke = await SELF.fetch(authenticatedUrl(
+      `/v1/devices/${phone.device.id}`,
+      pairing.accountId,
+      pairing.macDeviceId
+    ), {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
+    })
+    expect(revoke.status).toBe(204)
+
+    const winningUpload = await SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      pairing.macDeviceId
+    ), {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${pairing.macToken}`,
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(content.byteLength),
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
+      },
+      body: content
+    })
+    expect(winningUpload.status).toBe(201)
+
+    await writer.write(content.slice(midpoint))
+    await writer.close()
+    await expect(staleUpload).resolves.toMatchObject({ status: 401 })
+
+    const download = await SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      pairing.macDeviceId
+    ), {
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
+    })
+    expect(download.status).toBe(200)
+    expect(new Uint8Array(await download.arrayBuffer())).toEqual(content)
   })
 
   it('rejects malformed JSON and oversized bodies without relying on Content-Length', async () => {

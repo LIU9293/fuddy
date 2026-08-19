@@ -190,6 +190,7 @@ export type CompanionSocketMessage =
   | { type: 'sync.event'; event: CompanionSyncEvent }
   | { type: 'command.created'; command: CompanionCommand }
   | { type: 'command.updated'; command: CompanionCommand }
+  | { type: 'commands.revoked'; commandIds: string[] }
   | { type: 'presence.updated'; presence: CompanionPresence }
   | { type: 'error'; message: string }
 
@@ -199,6 +200,7 @@ export type CompanionEncryptedSocketMessage =
   | { type: 'sync.event'; event: CompanionEncryptedSyncEvent }
   | { type: 'command.created'; command: CompanionEncryptedCommand }
   | { type: 'command.updated'; command: CompanionEncryptedCommand }
+  | { type: 'commands.revoked'; commandIds: string[] }
   | { type: 'presence.updated'; presence: CompanionPresence }
   | { type: 'error'; message: string }
 

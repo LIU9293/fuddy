@@ -58,6 +58,28 @@ interface CommandRow extends Record<string, SqlStorageValue> {
   updated_at: string
 }
 
+interface AttachmentRow extends Record<string, SqlStorageValue> {
+  attachment_id: string
+  storage_key: string
+  uploaded_by: string
+  sha256: string
+  size: number
+  account_generation: number | null
+  created_at: string
+}
+
+interface AttachmentRecord {
+  storageKey: string
+  uploadedBy: string
+  sha256: string
+  size: number
+}
+
+type AttachmentCommitResult =
+  | { status: 'committed' }
+  | { status: 'unauthorized' }
+  | { status: 'existing'; attachment: AttachmentRecord }
+
 interface SocketAttachment {
   deviceId: string
   role: CompanionDeviceRole
@@ -235,6 +257,15 @@ export class AccountRelay extends DurableObject<Env> {
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS commands_status_idx ON commands(status, created_at);
+      CREATE TABLE IF NOT EXISTS attachments (
+        attachment_id TEXT PRIMARY KEY,
+        storage_key TEXT NOT NULL UNIQUE,
+        uploaded_by TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        account_generation INTEGER,
+        created_at TEXT NOT NULL
+      );
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (1, datetime('now'));
     `)
     const deviceColumns = this.ctx.storage.sql.exec<{ name: string }>('PRAGMA table_info(devices)').toArray()
@@ -288,6 +319,9 @@ export class AccountRelay extends DurableObject<Env> {
     `)
     this.ctx.storage.sql.exec(`
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (7, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (8, datetime('now'));
     `)
   }
 
@@ -479,20 +513,68 @@ export class AccountRelay extends DurableObject<Env> {
 
   async createAttachmentUploadLease(
     deviceId: string,
-    token: string
-  ): Promise<{ accountGeneration: number | null } | null> {
+    token: string,
+    attachmentId: string
+  ): Promise<{ accountGeneration: number | null; existing: AttachmentRecord | null } | null> {
     const device = await this.authorize(deviceId, token)
     if (!device) return null
-    return { accountGeneration: this.getAccountGeneration() }
+    const existing = this.ctx.storage.sql.exec<AttachmentRow>(
+      'SELECT * FROM attachments WHERE attachment_id = ?',
+      attachmentId
+    ).toArray()[0]
+    return {
+      accountGeneration: this.getAccountGeneration(),
+      existing: existing ? this.mapAttachmentRecord(existing) : null
+    }
   }
 
-  async confirmAttachmentUploadLease(
+  async commitAttachmentUploadLease(
     deviceId: string,
     token: string,
-    accountGeneration: number | null
-  ): Promise<boolean> {
+    input: {
+      attachmentId: string
+      storageKey: string
+      sha256: string
+      size: number
+      accountGeneration: number | null
+    }
+  ): Promise<AttachmentCommitResult> {
     const device = await this.authorize(deviceId, token)
-    return device !== null && this.getAccountGeneration() === accountGeneration
+    if (!device || this.getAccountGeneration() !== input.accountGeneration) {
+      return { status: 'unauthorized' }
+    }
+    const existing = this.ctx.storage.sql.exec<AttachmentRow>(
+      'SELECT * FROM attachments WHERE attachment_id = ?',
+      input.attachmentId
+    ).toArray()[0]
+    if (existing) return { status: 'existing', attachment: this.mapAttachmentRecord(existing) }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO attachments (
+        attachment_id, storage_key, uploaded_by, sha256, size, account_generation, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      input.attachmentId,
+      input.storageKey,
+      deviceId,
+      input.sha256,
+      input.size,
+      input.accountGeneration,
+      new Date().toISOString()
+    )
+    return { status: 'committed' }
+  }
+
+  async resolveAttachmentStorageKey(
+    deviceId: string,
+    token: string,
+    attachmentId: string
+  ): Promise<{ storageKey: string | null } | null> {
+    const device = await this.authorize(deviceId, token)
+    if (!device) return null
+    const row = this.ctx.storage.sql.exec<AttachmentRow>(
+      'SELECT * FROM attachments WHERE attachment_id = ?',
+      attachmentId
+    ).toArray()[0]
+    return { storageKey: row?.storage_key ?? null }
   }
 
   async appendEvent(
@@ -710,6 +792,7 @@ export class AccountRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM commands')
     this.ctx.storage.sql.exec('DELETE FROM events')
     this.ctx.storage.sql.exec('DELETE FROM pairing')
+    this.ctx.storage.sql.exec('DELETE FROM attachments')
     this.ctx.storage.sql.exec('DELETE FROM devices')
     return true
   }
@@ -727,11 +810,28 @@ export class AccountRelay extends DurableObject<Env> {
   }
 
   private discardPendingCommandsFromDevice(deviceId: string): void {
+    const commandIds = this.ctx.storage.sql.exec<{ command_id: string }>(
+      `SELECT command_id FROM commands
+       WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
+      deviceId
+    ).toArray().map((command) => command.command_id)
     this.ctx.storage.sql.exec(
       `DELETE FROM commands
        WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
       deviceId
     )
+    if (commandIds.length > 0) {
+      this.broadcast({ type: 'commands.revoked', commandIds }, 'role:mac')
+    }
+  }
+
+  private mapAttachmentRecord(row: AttachmentRow): AttachmentRecord {
+    return {
+      storageKey: row.storage_key,
+      uploadedBy: row.uploaded_by,
+      sha256: row.sha256,
+      size: row.size
+    }
   }
 
   async alarm(): Promise<void> {

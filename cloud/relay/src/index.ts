@@ -315,9 +315,13 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (attachmentMatch) {
     const context = await authenticatedContext(request, env, url)
     const attachmentId = attachmentMatch[1]
-    const key = `${context.accountId}/${attachmentId}`
+    const legacyKey = `${context.accountId}/${attachmentId}`
     if (request.method === 'PUT') {
-      const uploadLease = await context.stub.createAttachmentUploadLease(context.deviceId, context.token)
+      const uploadLease = await context.stub.createAttachmentUploadLease(
+        context.deviceId,
+        context.token,
+        attachmentId
+      )
       if (!uploadLease) throw new HttpError(401, '设备认证失败。')
       if (request.headers.get('X-Companion-Encryption') !== 'A256GCM') {
         throw new HttpError(400, 'End-to-end encrypted attachment envelope is required.')
@@ -330,15 +334,29 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       if (!/^[a-f0-9]{64}$/.test(sha256)) {
         throw new HttpError(400, 'Attachment SHA-256 is required.')
       }
-      const existing = await env.ATTACHMENTS.head(key)
-      if (existing) {
-        const identicalRetry = existing.customMetadata?.uploadedBy === context.deviceId
-          && existing.customMetadata?.sha256 === sha256
-          && existing.size === contentLength
+      if (uploadLease.existing) {
+        const existing = await env.ATTACHMENTS.head(uploadLease.existing.storageKey)
+        if (!existing) throw new HttpError(503, 'Attachment storage is temporarily unavailable.')
+        const identicalRetry = uploadLease.existing.uploadedBy === context.deviceId
+          && uploadLease.existing.sha256 === sha256
+          && uploadLease.existing.size === contentLength
         if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
         return Response.json({ id: attachmentId, size: existing.size }, { status: 200 })
       }
-      await env.ATTACHMENTS.put(key, request.body, {
+
+      // Existing deployments stored attachments directly at accountId/attachmentId.
+      // Keep those immutable objects readable while all new uploads use unique keys.
+      const legacyObject = await env.ATTACHMENTS.head(legacyKey)
+      if (legacyObject) {
+        const identicalRetry = legacyObject.customMetadata?.uploadedBy === context.deviceId
+          && legacyObject.customMetadata?.sha256 === sha256
+          && legacyObject.size === contentLength
+        if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
+        return Response.json({ id: attachmentId, size: legacyObject.size }, { status: 200 })
+      }
+
+      const storageKey = `${context.accountId}/objects/${attachmentId}/${crypto.randomUUID()}`
+      await env.ATTACHMENTS.put(storageKey, request.body, {
         httpMetadata: {
           contentType: request.headers.get('Content-Type') ?? 'application/octet-stream'
         },
@@ -349,20 +367,42 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           encryption: 'A256GCM'
         }
       })
+      let commit: Awaited<ReturnType<typeof context.stub.commitAttachmentUploadLease>>
       try {
-        const authorized = await context.stub.confirmAttachmentUploadLease(
+        commit = await context.stub.commitAttachmentUploadLease(
           context.deviceId,
           context.token,
-          uploadLease.accountGeneration
+          {
+            attachmentId,
+            storageKey,
+            sha256,
+            size: contentLength,
+            accountGeneration: uploadLease.accountGeneration
+          }
         )
-        if (!authorized) throw new HttpError(401, '设备认证已失效。')
       } catch (error) {
-        await env.ATTACHMENTS.delete(key)
+        await env.ATTACHMENTS.delete(storageKey)
         throw error
       }
-      return Response.json({ id: attachmentId, size: contentLength }, { status: 201 })
+      if (commit.status === 'committed') {
+        return Response.json({ id: attachmentId, size: contentLength }, { status: 201 })
+      }
+      await env.ATTACHMENTS.delete(storageKey)
+      if (commit.status === 'unauthorized') throw new HttpError(401, '设备认证已失效。')
+      const identicalRetry = commit.attachment.uploadedBy === context.deviceId
+        && commit.attachment.sha256 === sha256
+        && commit.attachment.size === contentLength
+      if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
+      return Response.json({ id: attachmentId, size: commit.attachment.size }, { status: 200 })
     }
     if (request.method === 'GET' || request.method === 'HEAD') {
+      const resolved = await context.stub.resolveAttachmentStorageKey(
+        context.deviceId,
+        context.token,
+        attachmentId
+      )
+      if (!resolved) throw new HttpError(401, '设备认证已失效。')
+      const key = resolved.storageKey ?? legacyKey
       const object = await env.ATTACHMENTS.get(key)
       if (!object) throw new HttpError(404, 'Attachment not found.')
       const headers = new Headers()

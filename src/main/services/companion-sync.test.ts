@@ -243,6 +243,50 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('aborts commands from a revoked phone and fences a command fetched before revocation', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-command-revocation-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    const command: CompanionCommand = {
+      commandId: 'revoked-command-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent.rename-session',
+      payload: { runId: 'run-1', title: 'Should not run' },
+      sourceDeviceId: 'revoked-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+    const executeCommand = vi.fn(async () => undefined)
+    const internals = service as unknown as {
+      activeCommandAbortControllers: Map<string, AbortController>
+      cancelRevokedCommands: (commandIds: string[]) => void
+      executeCommand: typeof executeCommand
+      scheduleCommand: (command: CompanionCommand) => Promise<void>
+    }
+    const controller = new AbortController()
+    internals.activeCommandAbortControllers.set(command.commandId, controller)
+    internals.executeCommand = executeCommand
+
+    internals.cancelRevokedCommands([command.commandId])
+
+    expect(controller.signal.aborted).toBe(true)
+    expect(controller.signal.reason).toMatchObject({
+      message: '发起操作的 iPhone 已退出登录，这次操作已取消。'
+    })
+    await internals.scheduleCommand(command)
+    expect(executeCommand).not.toHaveBeenCalled()
+    database.close()
+  })
+
   it('propagates shutdown cancellation into an active phone Work Assistant turn', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-assistant-drain-'))
     directories.push(directory)

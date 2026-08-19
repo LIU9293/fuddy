@@ -79,6 +79,7 @@ export const companionToolSummaryMaximumCharacters = 600
 const companionAttachmentRequestTimeoutMs = 120_000
 const companionEventSyncDebounceMs = 500
 const reconnectDelaysMs = [5_000, 15_000, 60_000] as const
+const maximumRevokedCommandFences = 5_000
 
 export function companionAttachmentStorageId(artifactId: string, sha256: string): string {
   return createHash('sha256').update(`${artifactId}\0${sha256.toLowerCase()}`).digest('hex')
@@ -297,6 +298,7 @@ export class CompanionSyncService {
   private validatedAccountRelaySignature: string | null = null
   private readonly activeCommands = new Map<string, Promise<void>>()
   private readonly activeCommandAbortControllers = new Map<string, AbortController>()
+  private readonly revokedCommandIds = new Set<string>()
   private readonly activeRunCreations = new Map<string, Promise<void>>()
   private disconnecting: Promise<void> | null = null
   private syncRequested = false
@@ -1288,7 +1290,7 @@ export class CompanionSyncService {
   }
 
   private scheduleCommand(remoteCommand: CompanionCommand): Promise<void> {
-    if (this.stopped) return Promise.resolve()
+    if (this.stopped || this.revokedCommandIds.has(remoteCommand.commandId)) return Promise.resolve()
     const active = this.activeCommands.get(remoteCommand.commandId)
     if (active) return active
     const createdRunId = remoteCommand.type === 'agent.create-session'
@@ -1315,6 +1317,7 @@ export class CompanionSyncService {
   }
 
   private async executeCommand(remoteCommand: CompanionCommand, cancellationSignal: AbortSignal): Promise<void> {
+    if (this.revokedCommandIds.has(remoteCommand.commandId)) return
     const existing = this.database.getCompanionCommand(remoteCommand.commandId)
     const recovery = companionCommandRecovery(existing?.status ?? null)
     if (recovery === 'ack-terminal' && existing) {
@@ -1358,11 +1361,15 @@ export class CompanionSyncService {
     let result: unknown
     try {
       result = await this.performCommand(remoteCommand, cancellationSignal)
+      if (this.revokedCommandIds.has(remoteCommand.commandId) || cancellationSignal.aborted) {
+        throw cancellationSignal.reason ?? new Error('发起操作的 iPhone 已退出登录，这次操作已取消。')
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
       const updated = this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, message)
       this.database.enqueueCompanionCommandUpdate(updated)
       this.emitDataChanged()
+      if (this.revokedCommandIds.has(remoteCommand.commandId)) return
       await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'failed', error: message })
       return
     }
@@ -1617,6 +1624,7 @@ export class CompanionSyncService {
           this.iosDevicesOnline = message.presence.iosDevicesOnline
           this.emitStatus()
         }
+        if (message.type === 'commands.revoked') this.cancelRevokedCommands(message.commandIds)
         if (companionSocketMessageRequestsSync(message)) void this.syncNow()
       } catch {
         // A malformed push frame must not interrupt periodic synchronization.
@@ -1645,6 +1653,21 @@ export class CompanionSyncService {
         this.reconnectTimer.unref?.()
       }
     })
+  }
+
+  private cancelRevokedCommands(commandIds: string[]): void {
+    for (const commandId of commandIds) {
+      if (typeof commandId !== 'string' || !commandId) continue
+      this.revokedCommandIds.add(commandId)
+      this.activeCommandAbortControllers.get(commandId)?.abort(
+        new Error('发起操作的 iPhone 已退出登录，这次操作已取消。')
+      )
+    }
+    while (this.revokedCommandIds.size > maximumRevokedCommandFences) {
+      const oldest = this.revokedCommandIds.values().next().value
+      if (typeof oldest !== 'string') break
+      this.revokedCommandIds.delete(oldest)
+    }
   }
 
   private startSocketHeartbeat(socket: WebSocket): void {
