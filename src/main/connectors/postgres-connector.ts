@@ -164,7 +164,12 @@ function buildSignal(config: PostgresConfig, rows: MetricRow[]): ConnectorSignal
 export class PostgresConnector implements ConnectorAdapter {
   readonly kind = 'postgres' as const
 
-  constructor(private readonly credentialVault: CredentialVault) {}
+  constructor(
+    private readonly credentialVault: CredentialVault,
+    private readonly createClient: (config: ConstructorParameters<typeof Client>[0]) => Client = (
+      config
+    ) => new Client(config)
+  ) {}
 
   async test(context: ConnectorContext): Promise<ConnectorProbe> {
     const { config, result } = await this.withReadOnlyClient(context, async (client) => {
@@ -271,7 +276,7 @@ export class PostgresConnector implements ConnectorAdapter {
   ): Promise<{ config: PostgresConfig; result: T }> {
     throwIfCancelled(cancellationSignal)
     const { config } = resolved
-    const client = new Client({
+    const client = this.createClient({
       ...(resolved.connectionString
         ? { connectionString: resolved.connectionString }
         : {
@@ -287,8 +292,18 @@ export class PostgresConnector implements ConnectorAdapter {
       query_timeout: 20_000,
       statement_timeout: 20_000
     })
+    let ending: Promise<void> | null = null
+    const endClient = (): Promise<void> => {
+      ending ??= client.end().catch(() => undefined)
+      return ending
+    }
+    const abortClient = (): void => {
+      void endClient()
+    }
+    cancellationSignal?.addEventListener('abort', abortClient, { once: true })
 
     try {
+      throwIfCancelled(cancellationSignal)
       await client.connect()
       throwIfCancelled(cancellationSignal)
       await client.query('BEGIN TRANSACTION READ ONLY')
@@ -299,8 +314,12 @@ export class PostgresConnector implements ConnectorAdapter {
       } finally {
         await client.query('ROLLBACK').catch(() => undefined)
       }
+    } catch (error) {
+      throwIfCancelled(cancellationSignal)
+      throw error
     } finally {
-      await client.end().catch(() => undefined)
+      cancellationSignal?.removeEventListener('abort', abortClient)
+      await endClient()
     }
   }
 }
