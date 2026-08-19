@@ -90,6 +90,8 @@ interface AuthenticatedCompanionContext {
   encryptionKey: string
 }
 
+type RelayRevocationTarget = Omit<AuthenticatedCompanionContext, 'encryptionKey'>
+
 export interface AccountRelayBinding {
   relayUrl: string
   relayAccountId: string
@@ -293,6 +295,7 @@ export class CompanionSyncService {
   private readonly activeCommands = new Map<string, Promise<void>>()
   private readonly activeRemoteAgentRuns = new Map<string, string>()
   private readonly activeRunCreations = new Map<string, Promise<void>>()
+  private disconnecting: Promise<void> | null = null
   private syncRequested = false
   private stopped = false
   private readonly listeners = new Set<(status: CompanionMacStatus) => void>()
@@ -369,6 +372,7 @@ export class CompanionSyncService {
   }
 
   async activateAccountRelay(ownerUserId: string, syncSpaceId?: string): Promise<void> {
+    await this.disconnecting?.catch(() => undefined)
     if (this.configuration && !this.configuration.ownerUserId) {
       const legacyBelongsToAccount = !this.configuration.syncSpaceId
         || !syncSpaceId
@@ -550,7 +554,11 @@ export class CompanionSyncService {
     syncSpaceId?: string,
     ownerUserId?: string
   ): Promise<CompanionPairingSession> {
+    await this.disconnecting?.catch(() => undefined)
     const previousConfiguration = this.configuration
+    const previousRevocationTarget = previousConfiguration
+      ? this.relayRevocationTarget(previousConfiguration)
+      : null
     const origin = normalizedRelayUrl(relayUrl)
     const macDeviceId = crypto.randomUUID()
     const response = await fetchWithTimeout(relayRequestUrl(origin, '/v1/pairings'), {
@@ -570,7 +578,7 @@ export class CompanionSyncService {
     }
     if (previousConfiguration) {
       try {
-        await this.revokeRemoteAccount()
+        await this.revokeRemoteAccount(previousRevocationTarget!)
       } catch (error) {
         await this.revokePairingAccount(origin, pairing).catch(() => {
           // Preserve the replacement error if the provisional Relay also cannot be cleaned up.
@@ -617,21 +625,49 @@ export class CompanionSyncService {
     }
   }
 
-  async disconnect(): Promise<void> {
+  disconnect(): Promise<void> {
+    if (this.disconnecting) return this.disconnecting
+    const operation = this.disconnectCurrentRelay()
+    this.disconnecting = operation
+    const clear = (): void => {
+      if (this.disconnecting === operation) this.disconnecting = null
+    }
+    void operation.then(clear, clear)
+    return operation
+  }
+
+  private async disconnectCurrentRelay(): Promise<void> {
+    const configuration = this.configuration ? { ...this.configuration } : null
+    const token = configuration
+      ? this.credentials.get(this.tokenReference(configuration.accountId))
+      : null
     await this.stopAndDrain()
-    if (this.configuration) await this.revokeRemoteAccount()
-    this.forgetAccountRelay()
+    if (!configuration) return
+    if (!token) throw new Error('Mac Companion 凭证不存在，请重新配对。')
+    const target = { configuration, token }
+    await this.revokeRemoteAccount(target)
+    this.forgetRelayIdentity(target.configuration)
   }
 
   /** Clears a Relay identity already revoked by the Account API without making another remote request. */
   forgetAccountRelay(): void {
-    const ownerUserId = this.configuration?.ownerUserId
-    if (this.configuration) this.credentials.delete(this.tokenReference(this.configuration.accountId))
-    if (this.configuration) this.credentials.delete(this.encryptionKeyReference(this.configuration.accountId))
-    if (ownerUserId) {
-      delete this.accountConfigurations[ownerUserId]
+    if (!this.configuration) return
+    this.forgetRelayIdentity(this.configuration)
+  }
+
+  private forgetRelayIdentity(target: CompanionMacConfiguration): void {
+    this.credentials.delete(this.tokenReference(target.accountId))
+    this.credentials.delete(this.encryptionKeyReference(target.accountId))
+    let storedConfigurationChanged = false
+    for (const [key, configuration] of Object.entries(this.accountConfigurations)) {
+      if (!this.sameRelayIdentity(configuration, target)) continue
+      delete this.accountConfigurations[key]
+      storedConfigurationChanged = true
+    }
+    if (storedConfigurationChanged) {
       this.database.setSetting(accountConfigurationsKey, this.accountConfigurations)
     }
+    if (!this.configuration || !this.sameRelayIdentity(this.configuration, target)) return
     this.database.setSetting<CompanionMacConfiguration | null>(configurationKey, null)
     this.configuration = null
     this.stopped = true
@@ -643,6 +679,12 @@ export class CompanionSyncService {
     this.lastError = null
     this.closeTransports()
     this.emitStatus()
+  }
+
+  private sameRelayIdentity(left: CompanionMacConfiguration, right: CompanionMacConfiguration): boolean {
+    return left.relayUrl === right.relayUrl
+      && left.accountId === right.accountId
+      && left.macDeviceId === right.macDeviceId
   }
 
   private persistActiveConfiguration(): void {
@@ -1582,11 +1624,16 @@ export class CompanionSyncService {
     return url.toString()
   }
 
-  private async revokeRemoteAccount(): Promise<void> {
-    const context = this.authenticatedTokenContext()
-    const response = await fetchWithTimeout(this.authenticatedUrl('/v1/account', context.configuration), {
+  private relayRevocationTarget(configuration: CompanionMacConfiguration): RelayRevocationTarget {
+    const token = this.credentials.get(this.tokenReference(configuration.accountId))
+    if (!token) throw new Error('Mac Companion 凭证不存在，请重新配对。')
+    return { configuration: { ...configuration }, token }
+  }
+
+  private async revokeRemoteAccount(target: RelayRevocationTarget): Promise<void> {
+    const response = await fetchWithTimeout(this.authenticatedUrl('/v1/account', target.configuration), {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${context.token}` }
+      headers: { Authorization: `Bearer ${target.token}` }
     })
     if (response.status === 204 || response.status === 404) return
     await responseJson(response)

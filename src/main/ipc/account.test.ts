@@ -92,4 +92,39 @@ describe('account IPC lifecycle', () => {
       expect(disconnect).toHaveBeenCalledOnce()
     })
   })
+
+  it('reconciles a signed-out transition from an authorized account request', async () => {
+    let accountState = signedInState
+    const authorizationError = new Error('登录状态已失效，请重新登录。')
+    const coordinator = {
+      stop: vi.fn(),
+      pauseAndDrain: vi.fn(async () => undefined)
+    }
+    const companionSync = {
+      stop: vi.fn(),
+      disconnect: vi.fn(async () => undefined)
+    }
+    const send = vi.fn()
+    electronMocks.windows.push({ webContents: { isDestroyed: () => false, send } })
+
+    registerAccountIpc({
+      accountService: {
+        getState: vi.fn(() => accountState),
+        listDevices: vi.fn(async () => {
+          accountState = signedOutState
+          throw authorizationError
+        })
+      },
+      accountEnrollmentCoordinator: coordinator,
+      companionSync
+    } as unknown as IpcContext)
+
+    const listDevices = electronMocks.handlers.get('account:list-devices')
+    await expect(Promise.resolve(listDevices?.())).rejects.toBe(authorizationError)
+
+    expect(coordinator.stop).toHaveBeenCalledOnce()
+    expect(companionSync.stop).toHaveBeenCalledOnce()
+    expect(companionSync.disconnect).toHaveBeenCalledOnce()
+    expect(send).toHaveBeenCalledWith('account:state-changed', signedOutState)
+  })
 })

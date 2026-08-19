@@ -32,6 +32,18 @@ export function registerAccountIpc(context: IpcContext): void {
     await companionSync.disconnect()
   }
 
+  const runAuthorizedAccountOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
+    try {
+      return await operation()
+    } catch (error) {
+      const state = accountService.getState()
+      if (state.status === 'signed-out') {
+        await reconcileValidatedAccountState(state).catch(() => undefined)
+      }
+      throw error
+    }
+  }
+
   ipcMain.handle('account:get-state', () => {
     const local = accountService.getState()
     if (local.status === 'signed-in') {
@@ -69,13 +81,21 @@ export function registerAccountIpc(context: IpcContext): void {
     return state
   })
 
-  ipcMain.handle('account:list-identities', () => accountService.listIdentities())
+  ipcMain.handle('account:list-identities', () => (
+    runAuthorizedAccountOperation(() => accountService.listIdentities())
+  ))
 
-  ipcMain.handle('account:link-google', () => accountService.linkGoogle((url) => shell.openExternal(url)))
+  ipcMain.handle('account:link-google', () => (
+    runAuthorizedAccountOperation(() => accountService.linkGoogle((url) => shell.openExternal(url)))
+  ))
 
-  ipcMain.handle('account:unlink-google', () => accountService.unlinkGoogle())
+  ipcMain.handle('account:unlink-google', () => (
+    runAuthorizedAccountOperation(() => accountService.unlinkGoogle())
+  ))
 
-  ipcMain.handle('account:list-devices', () => accountService.listDevices())
+  ipcMain.handle('account:list-devices', () => (
+    runAuthorizedAccountOperation(() => accountService.listDevices())
+  ))
 
   ipcMain.handle('account:revoke-device', async (_event, rawInput: unknown) => {
     const input = z.object({ deviceId: z.string().uuid() }).parse(rawInput)
@@ -84,7 +104,12 @@ export function registerAccountIpc(context: IpcContext): void {
     try {
       await accountService.revokeDevice(input.deviceId)
     } catch (error) {
-      if (isCurrentDevice) accountEnrollmentCoordinator.start()
+      const state = accountService.getState()
+      if (state.status === 'signed-out') {
+        await reconcileValidatedAccountState(state).catch(() => undefined)
+      } else if (isCurrentDevice) {
+        accountEnrollmentCoordinator.start()
+      }
       throw error
     }
     if (!isCurrentDevice) return
@@ -107,7 +132,12 @@ export function registerAccountIpc(context: IpcContext): void {
     try {
       state = await accountService.logoutAll()
     } catch (error) {
-      accountEnrollmentCoordinator.start()
+      const current = accountService.getState()
+      if (current.status === 'signed-out') {
+        await reconcileValidatedAccountState(current).catch(() => undefined)
+      } else {
+        accountEnrollmentCoordinator.start()
+      }
       throw error
     }
     companionSync.stop()
