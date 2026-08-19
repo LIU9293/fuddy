@@ -259,6 +259,27 @@ describe('companion relay', () => {
     expect(revoked.status).toBe(401)
   })
 
+  it('does not let an old account revocation delete a reactivated Relay generation', async () => {
+    const { pairing } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await stub.setAccountGeneration(1)
+    await stub.setAccountGeneration(2)
+
+    await expect(stub.revokeAccountByAuthority(1)).resolves.toBe(false)
+    const stillAuthorized = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, pairing.macDeviceId),
+      { headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(stillAuthorized.status).toBe(200)
+
+    await expect(stub.revokeAccountByAuthority(2)).resolves.toBe(true)
+    const revoked = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, pairing.macDeviceId),
+      { headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(revoked.status).toBe(401)
+  })
+
   it('persists ordered Mac events and replays them to iOS', async () => {
     const { pairing, phone } = await pairedDevices()
     const input = {

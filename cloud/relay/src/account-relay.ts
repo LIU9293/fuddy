@@ -181,6 +181,10 @@ export class AccountRelay extends DurableObject<Env> {
         last_seen_at TEXT,
         revoked_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS account_authority (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        generation INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE,
@@ -257,6 +261,9 @@ export class AccountRelay extends DurableObject<Env> {
     }
     this.ctx.storage.sql.exec(`
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (6, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (7, datetime('now'));
     `)
   }
 
@@ -631,7 +638,25 @@ export class AccountRelay extends DurableObject<Env> {
     await this.revokeAccountByAuthority()
   }
 
-  async revokeAccountByAuthority(): Promise<void> {
+  setAccountGeneration(generation: number): void {
+    if (!Number.isSafeInteger(generation) || generation < 1) {
+      throw new Error('Relay account generation must be a positive integer.')
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO account_authority (id, generation) VALUES (1, ?)
+       ON CONFLICT(id) DO UPDATE SET generation = excluded.generation
+       WHERE excluded.generation > account_authority.generation`,
+      generation
+    )
+  }
+
+  async revokeAccountByAuthority(generation?: number): Promise<boolean> {
+    const currentGeneration = this.ctx.storage.sql.exec<{ generation: number }>(
+      'SELECT generation FROM account_authority WHERE id = 1'
+    ).toArray()[0]?.generation
+    if (generation !== undefined && currentGeneration !== undefined && generation !== currentGeneration) {
+      return false
+    }
     const revokedAt = new Date().toISOString()
     this.ctx.storage.sql.exec('UPDATE devices SET revoked_at = ?, token_hash = ?', revokedAt, '')
     for (const socket of this.ctx.getWebSockets()) {
@@ -641,6 +666,7 @@ export class AccountRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM events')
     this.ctx.storage.sql.exec('DELETE FROM pairing')
     this.ctx.storage.sql.exec('DELETE FROM devices')
+    return true
   }
 
   getLastSequence(): number {

@@ -222,6 +222,65 @@ describe('AccountService', () => {
     expect(vault.get('account.refresh-token')).toBe('new-refresh')
   })
 
+  it('discards an old refresh after signing out and into another account', async () => {
+    const database = new FakeDatabase()
+    const vault = new FakeVault()
+    database.setSetting('account.cached-state', {
+      user: { id: 'user-1', email: 'first@example.com', displayName: null },
+      device: { id: 'device-1', platform: 'macos', name: 'Mac', hostId: 'host-1', syncSpaceId: 'space-1' },
+      refreshExpiresAt: '2099-08-19T00:00:00.000Z'
+    })
+    vault.set('account.refresh-token', 'refresh-1')
+    vault.set('account.access-token', 'access-1')
+    let releaseRefresh = (): void => undefined
+    let refreshStarted = false
+    const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve })
+    const service = new AccountService(database as never, vault, {
+      apiUrl: 'https://account.test',
+      runtimeChannel: 'development',
+      appVersion: '0.0.3',
+      fetch: async (url) => {
+        const path = new URL(String(url)).pathname
+        if (path === '/v1/me') return response({}, 401)
+        if (path === '/v1/auth/refresh') {
+          refreshStarted = true
+          await refreshGate
+          return response({ session: {
+            accessToken: 'late-access-1',
+            refreshToken: 'late-refresh-1',
+            accessExpiresAt: '2099-08-19T00:15:00.000Z',
+            refreshExpiresAt: '2099-09-18T00:00:00.000Z'
+          } })
+        }
+        if (path === '/v1/auth/logout') return new Response(null, { status: 204 })
+        if (path === '/v1/auth/email/verify') {
+          return response({
+            user: { id: 'user-2', email: 'second@example.com', displayName: null },
+            device: { id: 'device-2', platform: 'macos', name: 'Mac', hostId: 'host-2', syncSpaceId: 'space-2' },
+            session: {
+              accessToken: 'access-2',
+              refreshToken: 'refresh-2',
+              accessExpiresAt: '2099-08-19T00:15:00.000Z',
+              refreshExpiresAt: '2099-09-18T00:00:00.000Z'
+            }
+          })
+        }
+        return response({}, 404)
+      }
+    })
+
+    const staleValidation = service.getValidatedState()
+    while (!refreshStarted) await new Promise((resolve) => setTimeout(resolve, 0))
+    await service.logout()
+    await service.verifyEmailSignIn('challenge-2', '123456')
+    releaseRefresh()
+
+    await expect(staleValidation).resolves.toMatchObject({ user: { id: 'user-2' } })
+    expect(service.getState()).toMatchObject({ user: { id: 'user-2' } })
+    expect(vault.get('account.access-token')).toBe('access-2')
+    expect(vault.get('account.refresh-token')).toBe('refresh-2')
+  })
+
   it('lists linked identities and normalizes the current-device marker', async () => {
     const database = new FakeDatabase()
     const vault = new FakeVault()

@@ -103,7 +103,8 @@ export function normalizeAccountApiUrl(
 
 export class AccountService {
   private readonly fetchImpl: typeof globalThis.fetch
-  private refreshInFlight: Promise<void> | null = null
+  private authGeneration = 0
+  private refreshInFlight: { generation: number; promise: Promise<void> } | null = null
 
   constructor(
     private readonly database: AppDatabase,
@@ -148,6 +149,7 @@ export class AccountService {
   async getValidatedState(): Promise<AccountState> {
     const local = this.getState()
     if (local.status !== 'signed-in' || !this.options.apiUrl) return local
+    const generation = this.authGeneration
     const accessToken = this.credentialVault.get(accessTokenReference)
     if (!accessToken || !this.credentialVault.get(refreshTokenReference)) return this.signedOutState(null)
     try {
@@ -155,11 +157,13 @@ export class AccountService {
         headers: { authorization: `Bearer ${accessToken}` },
         signal: AbortSignal.timeout(8_000)
       })
+      if (this.authGeneration !== generation) return this.getState()
       if (current.ok) return local
       if (current.status !== 401) return { ...local, serviceStatus: 'offline', serviceMessage: '账户服务暂时不可用。' }
       await this.refreshAuthorization(accessToken)
       return this.getState()
     } catch {
+      if (this.authGeneration !== generation) return this.getState()
       if (this.getState().status === 'signed-out') {
         return this.signedOutState('登录状态已失效，请重新登录。')
       }
@@ -255,6 +259,7 @@ export class AccountService {
   }
 
   async logout(): Promise<AccountState> {
+    const generation = this.authGeneration
     const accessToken = this.credentialVault.get(accessTokenReference)
     if (accessToken && this.options.apiUrl) {
       try {
@@ -263,7 +268,7 @@ export class AccountService {
         // Local sign-out must remain available while the Account API is offline.
       }
     }
-    this.clearLocalAuth()
+    if (this.authGeneration === generation) this.clearLocalAuth()
     return this.getState()
   }
 
@@ -353,6 +358,7 @@ export class AccountService {
   }
 
   private persistAuth(payload: AuthPayload): void {
+    this.authGeneration += 1
     this.persistSession(payload.session)
     this.database.setSetting<CachedAccount>(cachedAccountKey, {
       user: payload.user,
@@ -376,6 +382,7 @@ export class AccountService {
   }
 
   private clearLocalAuth(): void {
+    this.authGeneration += 1
     this.credentialVault.delete(accessTokenReference)
     this.credentialVault.delete(refreshTokenReference)
     this.database.setSetting<CachedAccount | null>(cachedAccountKey, null)
@@ -399,16 +406,20 @@ export class AccountService {
   }
 
   private async requestAuthorized(path: string, init: RequestInit): Promise<Response> {
+    const generation = this.authGeneration
     let accessToken = this.credentialVault.get(accessTokenReference)
     if (!accessToken) throw new Error('请先登录。')
     let response = await this.fetchResponse(path, init, accessToken)
+    if (this.authGeneration !== generation) throw new Error('账户已切换，请重试。')
     if (response.status === 401) {
       await this.refreshAuthorization(accessToken)
+      if (this.authGeneration !== generation) throw new Error('账户已切换，请重试。')
       accessToken = this.credentialVault.get(accessTokenReference)
       if (!accessToken) throw new Error('登录状态已失效，请重新登录。')
       response = await this.fetchResponse(path, init, accessToken)
+      if (this.authGeneration !== generation) throw new Error('账户已切换，请重试。')
       if (response.status === 401) {
-        this.clearLocalAuth()
+        if (this.credentialVault.get(accessTokenReference) === accessToken) this.clearLocalAuth()
         throw new Error('登录状态已失效，请重新登录。')
       }
     }
@@ -420,10 +431,11 @@ export class AccountService {
       rejectedAccessToken
       && this.credentialVault.get(accessTokenReference) !== rejectedAccessToken
     ) return
-    if (this.refreshInFlight) return this.refreshInFlight
-    this.refreshInFlight = (async () => {
-      const refreshToken = this.credentialVault.get(refreshTokenReference)
-      if (!refreshToken) throw new Error('登录状态已失效，请重新登录。')
+    const generation = this.authGeneration
+    if (this.refreshInFlight?.generation === generation) return this.refreshInFlight.promise
+    const refreshToken = this.credentialVault.get(refreshTokenReference)
+    if (!refreshToken) throw new Error('登录状态已失效，请重新登录。')
+    const promise = (async () => {
       let response: Response
       try {
         response = await this.request('/v1/auth/refresh', {
@@ -432,18 +444,27 @@ export class AccountService {
         })
       } catch (error) {
         if (error instanceof AccountRequestError && error.status === 401) {
-          this.clearLocalAuth()
+          if (
+            this.authGeneration === generation
+            && this.credentialVault.get(refreshTokenReference) === refreshToken
+          ) this.clearLocalAuth()
           throw new Error('登录状态已失效，请重新登录。')
         }
         throw error
       }
       const payload = await response.json() as { session: SessionPayload }
+      if (
+        this.authGeneration !== generation
+        || this.credentialVault.get(refreshTokenReference) !== refreshToken
+      ) return
       this.persistSession(payload.session)
     })()
+    const flight = { generation, promise }
+    this.refreshInFlight = flight
     try {
-      await this.refreshInFlight
+      await promise
     } finally {
-      this.refreshInFlight = null
+      if (this.refreshInFlight === flight) this.refreshInFlight = null
     }
   }
 

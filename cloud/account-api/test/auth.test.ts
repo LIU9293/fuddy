@@ -62,6 +62,21 @@ describe('email authentication', () => {
     await expect(me.json()).resolves.toMatchObject({ user: { email: 'kai@example.com' } })
   })
 
+  it('atomically reserves one email cooldown under parallel starts', async () => {
+    const email = 'parallel-start@example.com'
+    const starts = await Promise.all(
+      Array.from({ length: 20 }, () => post('/v1/auth/email/start', { email }))
+    )
+    expect(starts.filter((result) => result.status === 202)).toHaveLength(1)
+    expect(starts.filter((result) => result.status === 429)).toHaveLength(19)
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT COUNT(*) AS count FROM auth_challenges WHERE email = ?'
+    ).bind(email).first()).resolves.toEqual({ count: 1 })
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT COUNT(*) AS count FROM auth_email_cooldowns WHERE email = ?'
+    ).bind(email).first()).resolves.toEqual({ count: 1 })
+  })
+
   it('atomically limits parallel verification attempts for one email code', async () => {
     const started = await post('/v1/auth/email/start', { email: 'parallel-otp@example.com' })
     const challenge = await started.json<{ challengeId: string; debugCode: string }>()
@@ -101,11 +116,13 @@ describe('email authentication', () => {
     await env.ACCOUNT_DB.prepare(
       `UPDATE auth_challenges SET created_at = datetime('now', '-2 minutes') WHERE email = ?`
     ).bind(email).run()
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
     const leftStart = await post('/v1/auth/email/start', { email })
     const left = await leftStart.json<{ challengeId: string; debugCode: string }>()
     await env.ACCOUNT_DB.prepare(
       `UPDATE auth_challenges SET created_at = datetime('now', '-2 minutes') WHERE id = ?`
     ).bind(left.challengeId).run()
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
     const rightStart = await post('/v1/auth/email/start', { email })
     const right = await rightStart.json<{ challengeId: string; debugCode: string }>()
     const installation = { ...device, id: crypto.randomUUID(), name: '并发 Mac' }
@@ -266,9 +283,10 @@ describe('email authentication', () => {
 
     const relayAdmin = {
       revokeDevice: vi.fn(async () => true),
+      setAccountGeneration: vi.fn(async () => undefined),
       revokeAccount: vi.fn()
         .mockRejectedValueOnce(new Error('temporary Relay outage'))
-        .mockResolvedValue(undefined)
+        .mockResolvedValue(true)
     } satisfies RelayAdministrationBinding
     const firstRetry = await processRelayRevocationJobs(env, {
       relayAdmin,
@@ -300,11 +318,55 @@ describe('email authentication', () => {
     })
   })
 
+  it('cancels an old account revocation generation when the Mac signs back in', async () => {
+    const email = 'relay-reactivation@example.com'
+    const installation = { ...device, id: crypto.randomUUID() }
+    const first = await signIn(email, installation)
+    const spaceId = first.payload.device.syncSpaceId as string
+    const relayAccountId = 'relay-account-reactivated'
+    const timestamp = new Date().toISOString()
+    await env.ACCOUNT_DB.batch([
+      env.ACCOUNT_DB.prepare(
+        'UPDATE sync_spaces SET relay_account_id = ?, updated_at = ? WHERE id = ?'
+      ).bind(relayAccountId, timestamp, spaceId),
+      env.ACCOUNT_DB.prepare(
+        `INSERT INTO relay_revocation_jobs
+          (id, operation, source_id, relay_account_id, device_id, source_generation,
+           status, attempt_count, next_attempt_at, created_at, updated_at)
+         VALUES (?, 'account', ?, ?, NULL, 1, 'pending', 1, ?, ?, ?)`
+      ).bind(
+        `account:${spaceId}:${relayAccountId}`,
+        spaceId,
+        relayAccountId,
+        timestamp,
+        timestamp,
+        timestamp
+      ),
+      env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email)
+    ])
+
+    const second = await signIn(email, installation)
+    expect(second.verify.status).toBe(200)
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT relay_generation AS relayGeneration FROM sync_spaces WHERE id = ?'
+    ).bind(spaceId).first()).resolves.toEqual({ relayGeneration: 2 })
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT status, source_generation AS sourceGeneration
+       FROM relay_revocation_jobs WHERE id = ?`
+    ).bind(`account:${spaceId}:${relayAccountId}`).first()).resolves.toEqual({
+      status: 'completed',
+      sourceGeneration: 1
+    })
+  })
+
   it('lists the current device separately from other signed-in devices', async () => {
     const first = await signIn('devices@example.com', { ...device, id: crypto.randomUUID() })
     await env.ACCOUNT_DB.prepare(
       `UPDATE auth_challenges SET created_at = datetime('now', '-2 minutes') WHERE email = ?`
     ).bind('devices@example.com').run()
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?')
+      .bind('devices@example.com')
+      .run()
     const second = await signIn('devices@example.com', { ...device, id: crypto.randomUUID(), name: '备用 Mac' })
     const response = await SELF.fetch('https://account.test/v1/devices', {
       headers: { authorization: `Bearer ${first.payload.session.accessToken}` }

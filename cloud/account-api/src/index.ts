@@ -289,6 +289,9 @@ async function createSession(
   provider: 'email' | 'google'
 ): Promise<Record<string, unknown>> {
   const deviceRecord = await upsertDevice(env, user.id, device, now)
+  if (device.platform === 'macos' && deviceRecord.syncSpaceId) {
+    await reactivateRelayAccountIfNeeded(env, deviceRecord.syncSpaceId)
+  }
   const sessionId = crypto.randomUUID()
   const familyId = crypto.randomUUID()
   const accessToken = randomToken('fat')
@@ -391,29 +394,38 @@ async function startEmail(request: Request, env: Environment): Promise<Response>
   if (suppression) {
     throw new ApiError(422, 'email_suppressed', '这个邮箱暂时无法接收验证码，请更换邮箱或联系支持。')
   }
-  const recent = await env.ACCOUNT_DB.prepare(
-    'SELECT created_at FROM auth_challenges WHERE email = ? ORDER BY created_at DESC LIMIT 1'
-  )
-    .bind(email)
-    .first<{ created_at: string }>()
-  if (recent) {
-    const elapsed = Math.floor((now.getTime() - new Date(recent.created_at).getTime()) / 1000)
-    if (elapsed < OTP_RESEND_SECONDS) {
-      throw new ApiError(429, 'otp_cooldown', '验证码刚刚已经发送，请稍后重试。', {
-        retryAfterSeconds: OTP_RESEND_SECONDS - elapsed
-      })
-    }
-  }
   const challengeId = crypto.randomUUID()
+  const timestamp = isoNow(now)
+  const availableAt = addSeconds(now, OTP_RESEND_SECONDS).toISOString()
+  const reservation = await env.ACCOUNT_DB.prepare(
+    `INSERT INTO auth_email_cooldowns (email, challenge_id, available_at, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(email) DO UPDATE SET challenge_id = excluded.challenge_id,
+       available_at = excluded.available_at, updated_at = excluded.updated_at
+     WHERE auth_email_cooldowns.available_at <= ?
+     RETURNING available_at`
+  ).bind(email, challengeId, availableAt, timestamp, timestamp).first<{ available_at: string }>()
+  if (!reservation) {
+    const cooldown = await env.ACCOUNT_DB.prepare(
+      'SELECT available_at FROM auth_email_cooldowns WHERE email = ?'
+    ).bind(email).first<{ available_at: string }>()
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil(((cooldown ? new Date(cooldown.available_at).getTime() : now.getTime()) - now.getTime()) / 1_000)
+    )
+    throw new ApiError(429, 'otp_cooldown', '验证码刚刚已经发送，请稍后重试。', {
+      retryAfterSeconds
+    })
+  }
   const code = randomCode()
   const expiresAt = addSeconds(now, OTP_SECONDS).toISOString()
-  await env.ACCOUNT_DB.prepare(
-    `INSERT INTO auth_challenges (id, email, code_hash, expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?)`
-  )
-    .bind(challengeId, email, await hmac(`${challengeId}:${code}`, env.OTP_PEPPER), expiresAt, isoNow(now))
-    .run()
   try {
+    await env.ACCOUNT_DB.prepare(
+      `INSERT INTO auth_challenges (id, email, code_hash, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+      .bind(challengeId, email, await hmac(`${challengeId}:${code}`, env.OTP_PEPPER), expiresAt, timestamp)
+      .run()
     const resendEmailId = await sendEmailCode(env, email, code, challengeId)
     const deliveryStatus = resendEmailId ? 'sent' : 'test'
     await env.ACCOUNT_DB.prepare(
@@ -422,7 +434,12 @@ async function startEmail(request: Request, env: Environment): Promise<Response>
        WHERE id = ?`
     ).bind(resendEmailId, deliveryStatus, isoNow(now), challengeId).run()
   } catch (error) {
-    await env.ACCOUNT_DB.prepare('DELETE FROM auth_challenges WHERE id = ?').bind(challengeId).run()
+    await env.ACCOUNT_DB.batch([
+      env.ACCOUNT_DB.prepare('DELETE FROM auth_challenges WHERE id = ?').bind(challengeId),
+      env.ACCOUNT_DB.prepare(
+        'DELETE FROM auth_email_cooldowns WHERE email = ? AND challenge_id = ?'
+      ).bind(email, challengeId)
+    ])
     throw error
   }
   return json(
@@ -831,15 +848,21 @@ async function bindRelay(request: Request, env: Environment, spaceId: string): P
     throw new ApiError(400, 'relay_url_invalid', 'Relay 必须使用 HTTPS。')
   }
   const space = await env.ACCOUNT_DB.prepare(
-    `SELECT s.id, s.relay_account_id, h.device_id AS host_device_id
+    `SELECT s.id, s.relay_account_id, s.relay_generation, h.device_id AS host_device_id
      FROM sync_spaces s JOIN hosts h ON h.id = s.host_id
      WHERE s.id = ? AND s.owner_user_id = ? AND s.revoked_at IS NULL AND h.revoked_at IS NULL`
   )
     .bind(spaceId, user.userId)
-    .first<{ id: string; relay_account_id: string; host_device_id: string }>()
+    .first<{ id: string; relay_account_id: string; relay_generation: number; host_device_id: string }>()
   if (!space) throw new ApiError(404, 'sync_space_not_found', '没有找到可连接的工作空间。')
   if (space.host_device_id !== user.deviceId) {
     throw new ApiError(403, 'host_required', '需要由对应的 Mac Host 绑定 Relay。')
+  }
+  if (env.RELAY_ADMIN) {
+    await (env.RELAY_ADMIN as RelayAdministrationBinding).setAccountGeneration(
+      input.relayAccountId,
+      space.relay_generation
+    )
   }
   const timestamp = isoNow()
   await env.ACCOUNT_DB.batch([
@@ -920,13 +943,14 @@ async function listPendingEnrollments(request: Request, env: Environment, spaceI
 }
 
 type RelayDeviceRevocationTarget = { id: string; deviceId: string; relayAccountId: string }
-type RelayAccountRevocationTarget = { spaceId: string; relayAccountId: string }
+type RelayAccountRevocationTarget = { spaceId: string; relayAccountId: string; relayGeneration: number }
 type RelayRevocationJob = {
   id: string
   operation: 'account' | 'device'
   source_id: string
   relay_account_id: string
   device_id: string | null
+  source_generation: number
   attempt_count: number
 }
 
@@ -962,21 +986,62 @@ function relayAccountRevocationStatements(
 ): D1PreparedStatement[] {
   return spaces.map((space) => env.ACCOUNT_DB.prepare(
     `INSERT INTO relay_revocation_jobs
-      (id, operation, source_id, relay_account_id, device_id, status, attempt_count,
+      (id, operation, source_id, relay_account_id, device_id, source_generation, status, attempt_count,
        next_attempt_at, created_at, updated_at)
-     VALUES (?, 'account', ?, ?, NULL, 'pending', 0, ?, ?, ?)
+     VALUES (?, 'account', ?, ?, NULL, ?, 'pending', 0, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET relay_account_id = excluded.relay_account_id,
-       device_id = NULL, status = 'pending', attempt_count = 0,
+       device_id = NULL, source_generation = excluded.source_generation,
+       status = 'pending', attempt_count = 0,
        next_attempt_at = excluded.next_attempt_at, last_error = NULL,
        completed_at = NULL, updated_at = excluded.updated_at`
   ).bind(
     `account:${space.spaceId}:${space.relayAccountId}`,
     space.spaceId,
     space.relayAccountId,
+    space.relayGeneration,
     timestamp,
     timestamp,
     timestamp
   ))
+}
+
+export async function reactivateRelayAccountIfNeeded(
+  env: Environment,
+  spaceId: string,
+  relayAdminOverride?: RelayAdministrationBinding
+): Promise<number | null> {
+  const pending = await env.ACCOUNT_DB.prepare(
+    `SELECT s.relay_account_id, s.relay_generation
+     FROM sync_spaces s
+     WHERE s.id = ? AND EXISTS (
+       SELECT 1 FROM relay_revocation_jobs j
+       WHERE j.operation = 'account' AND j.source_id = s.id AND j.status = 'pending'
+     )`
+  ).bind(spaceId).first<{ relay_account_id: string; relay_generation: number }>()
+  if (!pending) return null
+  const timestamp = isoNow()
+  await env.ACCOUNT_DB.prepare(
+    `UPDATE sync_spaces SET relay_generation = relay_generation + 1, updated_at = ?
+     WHERE id = ? AND relay_generation = ? AND EXISTS (
+       SELECT 1 FROM relay_revocation_jobs
+       WHERE operation = 'account' AND source_id = ? AND status = 'pending'
+         AND source_generation = ?
+     )`
+  ).bind(timestamp, spaceId, pending.relay_generation, spaceId, pending.relay_generation).run()
+  const current = await env.ACCOUNT_DB.prepare(
+    'SELECT relay_account_id, relay_generation FROM sync_spaces WHERE id = ?'
+  ).bind(spaceId).first<{ relay_account_id: string; relay_generation: number }>()
+  if (!current) return null
+  const relayAdmin = relayAdminOverride
+    ?? (env.RELAY_ADMIN ? env.RELAY_ADMIN as RelayAdministrationBinding : undefined)
+  if (relayAdmin) await relayAdmin.setAccountGeneration(current.relay_account_id, current.relay_generation)
+  await env.ACCOUNT_DB.prepare(
+    `UPDATE relay_revocation_jobs
+     SET status = 'completed', completed_at = ?, updated_at = ?, last_error = NULL
+     WHERE operation = 'account' AND source_id = ? AND relay_account_id = ?
+       AND status = 'pending' AND source_generation < ?`
+  ).bind(timestamp, timestamp, spaceId, current.relay_account_id, current.relay_generation).run()
+  return current.relay_generation
 }
 
 export async function processRelayRevocationJobs(
@@ -994,7 +1059,7 @@ export async function processRelayRevocationJobs(
   const timestamp = now.toISOString()
   const limit = Math.min(Math.max(options.limit ?? 25, 1), 100)
   const jobs = (await env.ACCOUNT_DB.prepare(
-    `SELECT id, operation, source_id, relay_account_id, device_id, attempt_count
+    `SELECT id, operation, source_id, relay_account_id, device_id, source_generation, attempt_count
      FROM relay_revocation_jobs
      WHERE status = 'pending' AND next_attempt_at <= ?
      ORDER BY created_at ASC
@@ -1003,8 +1068,15 @@ export async function processRelayRevocationJobs(
   let completed = 0
   for (const job of jobs) {
     try {
+      let relayRevoked = false
       if (job.operation === 'account') {
-        await relayAdmin.revokeAccount(job.relay_account_id)
+        const currentSpace = await env.ACCOUNT_DB.prepare(
+          `SELECT id FROM sync_spaces
+           WHERE id = ? AND relay_account_id = ? AND relay_generation = ?`
+        ).bind(job.source_id, job.relay_account_id, job.source_generation).first<{ id: string }>()
+        if (currentSpace) {
+          relayRevoked = await relayAdmin.revokeAccount(job.relay_account_id, job.source_generation)
+        }
       } else {
         if (!job.device_id) throw new Error('Relay device revocation is missing a device ID.')
         const currentGrant = await env.ACCOUNT_DB.prepare(
@@ -1016,7 +1088,7 @@ export async function processRelayRevocationJobs(
         if (currentGrant) {
           // Relay compares the Account enrollment ID atomically with its active
           // device generation, so a delayed job cannot revoke a re-enrolled phone.
-          await relayAdmin.revokeDevice(job.relay_account_id, job.device_id, job.source_id)
+          relayRevoked = await relayAdmin.revokeDevice(job.relay_account_id, job.device_id, job.source_id)
         }
       }
       const completedAt = new Date().toISOString()
@@ -1027,20 +1099,29 @@ export async function processRelayRevocationJobs(
                last_error = NULL, completed_at = ?, updated_at = ?
            WHERE id = ? AND status = 'pending'`
         ).bind(completedAt, completedAt, job.id),
-        job.operation === 'account'
+        relayRevoked && job.operation === 'account'
           ? env.ACCOUNT_DB.prepare(
               `UPDATE device_grants SET relay_revoked_at = ?, updated_at = ?
                WHERE space_id = ? AND status = 'revoked' AND relay_revoked_at IS NULL
                  AND EXISTS (
                    SELECT 1 FROM sync_spaces
-                   WHERE id = ? AND relay_account_id = ?
+                   WHERE id = ? AND relay_account_id = ? AND relay_generation = ?
                  )`
-            ).bind(completedAt, completedAt, job.source_id, job.source_id, job.relay_account_id)
-          : env.ACCOUNT_DB.prepare(
+            ).bind(
+              completedAt,
+              completedAt,
+              job.source_id,
+              job.source_id,
+              job.relay_account_id,
+              job.source_generation
+            )
+          : relayRevoked && job.operation === 'device'
+            ? env.ACCOUNT_DB.prepare(
               `UPDATE device_grants SET relay_revoked_at = ?, updated_at = ?
                WHERE id = ? AND status = 'revoked' AND relay_revoked_at IS NULL`
             ).bind(completedAt, completedAt, job.source_id)
-      ]
+            : null
+      ].filter((statement): statement is D1PreparedStatement => statement !== null)
       await env.ACCOUNT_DB.batch(statements)
       completed += 1
     } catch (error) {
@@ -1080,10 +1161,11 @@ async function revokeDevice(request: Request, env: Environment, deviceId: string
     : []
   const relaySpaces = device.platform === 'macos'
     ? (await env.ACCOUNT_DB.prepare(
-        `SELECT s.id AS spaceId, s.relay_account_id AS relayAccountId
+        `SELECT s.id AS spaceId, s.relay_account_id AS relayAccountId,
+                s.relay_generation AS relayGeneration
          FROM sync_spaces s JOIN hosts h ON h.id = s.host_id
          WHERE h.device_id = ? AND s.revoked_at IS NULL AND s.relay_account_id IS NOT NULL`
-      ).bind(deviceId).all<{ spaceId: string; relayAccountId: string }>()).results
+      ).bind(deviceId).all<RelayAccountRevocationTarget>()).results
     : []
   const timestamp = isoNow()
   const statements: D1PreparedStatement[] = [
@@ -1342,10 +1424,11 @@ async function route(request: Request, env: Environment): Promise<Response> {
   if (request.method === 'POST' && parts.join('/') === 'v1/auth/logout-all') {
     const user = await authenticate(request, env)
     const relaySpaces = (await env.ACCOUNT_DB.prepare(
-      `SELECT s.id AS spaceId, s.relay_account_id AS relayAccountId
+      `SELECT s.id AS spaceId, s.relay_account_id AS relayAccountId,
+              s.relay_generation AS relayGeneration
        FROM sync_spaces s JOIN hosts h ON h.id = s.host_id
        WHERE h.user_id = ? AND s.revoked_at IS NULL AND s.relay_account_id IS NOT NULL`
-    ).bind(user.userId).all<{ spaceId: string; relayAccountId: string }>()).results
+    ).bind(user.userId).all<RelayAccountRevocationTarget>()).results
     const timestamp = isoNow()
     await env.ACCOUNT_DB.batch([
       env.ACCOUNT_DB.prepare('UPDATE auth_sessions SET revoked_at = ?, updated_at = ? WHERE user_id = ?')

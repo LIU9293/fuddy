@@ -1,4 +1,5 @@
 export interface RelayAdministrationBinding {
   revokeDevice(accountId: string, deviceId: string, grantId?: string): Promise<boolean>
-  revokeAccount(accountId: string): Promise<void>
+  setAccountGeneration(accountId: string, generation: number): Promise<void>
+  revokeAccount(accountId: string, generation?: number): Promise<boolean>
 }

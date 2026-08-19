@@ -115,9 +115,14 @@ export class RelayAdministration extends WorkerEntrypoint<Env> {
     return await relay(this.env, accountId).revokeDeviceByAuthority(deviceId, grantId)
   }
 
-  async revokeAccount(accountId: string): Promise<void> {
-    await relay(this.env, accountId).revokeAccountByAuthority()
-    await deleteAccountAttachments(this.env, accountId)
+  async setAccountGeneration(accountId: string, generation: number): Promise<void> {
+    await relay(this.env, accountId).setAccountGeneration(generation)
+  }
+
+  async revokeAccount(accountId: string, generation?: number): Promise<boolean> {
+    const revoked = await relay(this.env, accountId).revokeAccountByAuthority(generation)
+    if (revoked) await deleteAccountAttachments(this.env, accountId)
+    return revoked
   }
 }
 
