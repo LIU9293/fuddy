@@ -92,7 +92,7 @@ describe('companion relay', () => {
       status: 'ok',
       minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-19.2'
+      build: '2026-08-20.1'
     })
   })
 
@@ -615,7 +615,7 @@ describe('companion relay', () => {
   })
 
   it('rolls retained events at 5000 while preserving the latest snapshot baseline', async () => {
-    const { pairing } = await pairedDevices()
+    const { pairing, phone } = await pairedDevices()
     const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
     const now = new Date().toISOString()
     await runInDurableObject(stub, (_instance, state) => {
@@ -668,8 +668,34 @@ describe('companion relay', () => {
       ).one().sequence,
       newest: state.storage.sql.exec<{ count: number }>(
         'SELECT COUNT(*) AS count FROM events WHERE event_id = ?', newestId
-      ).one().count
-    }))).resolves.toEqual({ count: maximumRetainedEvents, snapshot: 1, oldestIncrement: 4, newest: 1 })
+      ).one().count,
+      trimmedThrough: state.storage.sql.exec<{ trimmed_through_sequence: number }>(
+        'SELECT trimmed_through_sequence FROM event_retention WHERE id = 1'
+      ).one().trimmed_through_sequence
+    }))).resolves.toEqual({
+      count: maximumRetainedEvents,
+      snapshot: 1,
+      oldestIncrement: 4,
+      newest: 1,
+      trimmedThrough: 3
+    })
+
+    const reset = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=2', pairing.accountId, phone.device.id),
+      { headers: { Authorization: `Bearer ${phone.deviceToken}` } }
+    )
+    const resetPage = await reset.json<CompanionEncryptedEventPage>()
+    expect(resetPage.replayResetSequence).toBe(0)
+    expect(resetPage.events[0]).toMatchObject({ sequence: 1, type: 'snapshot.created' })
+    expect(resetPage.events[1]?.sequence).toBe(4)
+
+    const contiguous = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=3', pairing.accountId, phone.device.id),
+      { headers: { Authorization: `Bearer ${phone.deviceToken}` } }
+    )
+    const contiguousPage = await contiguous.json<CompanionEncryptedEventPage>()
+    expect(contiguousPage.replayResetSequence).toBeUndefined()
+    expect(contiguousPage.events[0]?.sequence).toBe(4)
   })
 
   it('schedules recurring Durable Object maintenance after retained data changes', async () => {
@@ -763,8 +789,29 @@ describe('companion relay', () => {
       count: state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM commands').one().count,
       newest: state.storage.sql.exec<{ count: number }>(
         'SELECT COUNT(*) AS count FROM commands WHERE command_id = ?', commandId
+      ).one().count,
+      tombstones: state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM revoked_commands'
       ).one().count
-    }))).resolves.toEqual({ count: maximumRetainedCommands - 99, newest: 1 })
+    }))).resolves.toEqual({ count: maximumRetainedCommands - 99, newest: 1, tombstones: 100 })
+
+    const retry = await SELF.fetch(authenticatedUrl('/v1/commands', pairing.accountId, phone.device.id), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.deviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId: 'terminal-1', protocolVersion: companionProtocolVersion, type: 'agent.send-message',
+        payload: encryptedPayload, createdAt: now
+      })
+    })
+    expect(retry.status).toBe(409)
+    await expect(retry.json()).resolves.toEqual({
+      error: '远程命令已经结束或撤销，不能重复提交。'
+    })
+    await expect(runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM commands WHERE command_id = 'terminal-1'`
+      ).one().count
+    ))).resolves.toBe(0)
   })
 
   it('rejects a new command with a conflict when every retained command is active', async () => {

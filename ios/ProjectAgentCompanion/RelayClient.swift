@@ -84,6 +84,7 @@ final class RelayClient {
             protocolVersion: encrypted.protocolVersion,
             events: events,
             lastSequence: encrypted.lastSequence,
+            replayResetSequence: encrypted.replayResetSequence,
             presence: encrypted.presence
         )
     }

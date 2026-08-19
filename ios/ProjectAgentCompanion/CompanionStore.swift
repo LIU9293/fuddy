@@ -807,6 +807,10 @@ final class CompanionStore: ObservableObject {
                         )
                     else { throw RelayError.protocolMismatch }
                 }
+                companionApplyReplayResetIfNeeded(
+                    state: &state,
+                    replayResetSequence: page.replayResetSequence
+                )
                 for event in page.events where event.sequence > state.lastSequence {
                     if page.protocolVersion == nil
                         && !companionProtocolVersionIsSupported(event.protocolVersion)

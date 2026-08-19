@@ -100,6 +100,7 @@ export type RelayMutationResult<T> =
   | { status: 'unauthorized' }
   | { status: 'account-unbound' }
   | { status: 'capacity-exceeded' }
+  | { status: 'command-retired' }
 
 interface AccountAuthorityRow extends Record<string, SqlStorageValue> {
   generation: number
@@ -289,6 +290,10 @@ export class AccountRelay extends DurableObject<Env> {
         occurred_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS events_sequence_idx ON events(sequence);
+      CREATE TABLE IF NOT EXISTS event_retention (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        trimmed_through_sequence INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS commands (
         command_id TEXT PRIMARY KEY,
         protocol_version INTEGER NOT NULL,
@@ -425,6 +430,13 @@ export class AccountRelay extends DurableObject<Env> {
       CREATE INDEX IF NOT EXISTS attachment_upload_leases_expiry_idx
         ON attachment_upload_leases(expires_at);
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (13, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS event_retention (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        trimmed_through_sequence INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (14, datetime('now'));
     `)
   }
 
@@ -850,16 +862,19 @@ export class AccountRelay extends DurableObject<Env> {
       `, acknowledged, deviceId)
       this.compactEventsToLatestSnapshot()
     }
+    const replayResetSequence = this.replayResetSequence(after)
+    const queryAfter = replayResetSequence ?? after
     const events = this.ctx.storage.sql.exec<EventRow>(
       'SELECT * FROM events WHERE sequence > ? ORDER BY sequence ASC LIMIT ?',
-      after,
+      queryAfter,
       limit
     ).toArray().map(mapEvent)
     return {
       minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
       events,
-      lastSequence: events.at(-1)?.sequence ?? after,
+      lastSequence: events.at(-1)?.sequence ?? queryAfter,
+      ...(replayResetSequence === null ? {} : { replayResetSequence }),
       presence: this.getPresence()
     }
   }
@@ -875,7 +890,7 @@ export class AccountRelay extends DurableObject<Env> {
     const revoked = this.ctx.storage.sql.exec<{ command_id: string }>(
       'SELECT command_id FROM revoked_commands WHERE command_id = ?', input.commandId
     ).toArray()[0]
-    if (revoked) throw new Error('远程命令已被撤销，不能重复提交。')
+    if (revoked) return { status: 'command-retired' }
     const existing = this.ctx.storage.sql.exec<{ command_id: string }>(
       'SELECT command_id FROM commands WHERE command_id = ?', input.commandId
     ).toArray()[0]
@@ -1177,6 +1192,7 @@ export class AccountRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM commands')
     this.ctx.storage.sql.exec('DELETE FROM revoked_commands')
     this.ctx.storage.sql.exec('DELETE FROM events')
+    this.ctx.storage.sql.exec('DELETE FROM event_retention')
     this.ctx.storage.sql.exec('DELETE FROM pairing')
     this.ctx.storage.sql.exec('DELETE FROM attachments')
     this.ctx.storage.sql.exec('DELETE FROM attachment_upload_leases')
@@ -1346,6 +1362,18 @@ export class AccountRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM events WHERE sequence < ?', snapshot.sequence)
   }
 
+  private replayResetSequence(after: number): number | null {
+    const snapshotSequence = this.ctx.storage.sql.exec<{ sequence: number }>(
+      `SELECT sequence FROM events WHERE type = 'snapshot.created' ORDER BY sequence DESC LIMIT 1`
+    ).toArray()[0]?.sequence
+    const trimmedThrough = this.ctx.storage.sql.exec<{ trimmed_through_sequence: number }>(
+      'SELECT trimmed_through_sequence FROM event_retention WHERE id = 1'
+    ).toArray()[0]?.trimmed_through_sequence
+    if (snapshotSequence === undefined || trimmedThrough === undefined) return null
+    if (after < snapshotSequence || after >= trimmedThrough) return null
+    return Math.max(0, snapshotSequence - 1)
+  }
+
   private trimEventRetention(): void {
     let retainedCount = this.ctx.storage.sql.exec<{ count: number }>(
       'SELECT COUNT(*) AS count FROM events'
@@ -1370,24 +1398,43 @@ export class AccountRelay extends DurableObject<Env> {
         retainedCount -= 1
         if (retainedCount <= maximumRetainedEvents) break
       }
-      if (latestSnapshotSequence === null) {
-        this.ctx.storage.sql.exec('DELETE FROM events WHERE sequence <= ?', cutoff)
-      } else {
-        this.ctx.storage.sql.exec(
-          'DELETE FROM events WHERE sequence <= ? AND sequence != ?',
-          cutoff,
-          latestSnapshotSequence
-        )
-      }
+      this.ctx.storage.transactionSync(() => {
+        const deleted = latestSnapshotSequence === null
+          ? this.ctx.storage.sql.exec('DELETE FROM events WHERE sequence <= ?', cutoff)
+          : this.ctx.storage.sql.exec(
+              'DELETE FROM events WHERE sequence <= ? AND sequence != ?',
+              cutoff,
+              latestSnapshotSequence
+            )
+        if (deleted.rowsWritten > 0) {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO event_retention (id, trimmed_through_sequence) VALUES (1, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               trimmed_through_sequence = MAX(trimmed_through_sequence, excluded.trimmed_through_sequence)`,
+            cutoff
+          )
+        }
+      })
     }
   }
 
   private pruneTerminalCommands(): void {
-    this.ctx.storage.sql.exec(`
-      DELETE FROM commands
-      WHERE status IN ('completed', 'failed')
-        AND updated_at < datetime('now', ?)
-    `, `-${terminalCommandRetentionDays} days`)
+    const cutoff = new Date(Date.now() - terminalCommandRetentionDays * 86_400_000).toISOString()
+    const retiredAt = new Date().toISOString()
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `INSERT OR IGNORE INTO revoked_commands (command_id, revoked_at)
+         SELECT command_id, ? FROM commands
+         WHERE status IN ('completed', 'failed') AND updated_at < ?`,
+        retiredAt,
+        cutoff
+      )
+      this.ctx.storage.sql.exec(
+        `DELETE FROM commands
+         WHERE status IN ('completed', 'failed') AND updated_at < ?`,
+        cutoff
+      )
+    })
   }
 
   private pruneOldestTerminalCommandsForCapacity(): void {
@@ -1395,13 +1442,23 @@ export class AccountRelay extends DurableObject<Env> {
       'SELECT COUNT(*) AS count FROM commands'
     ).one().count
     if (count < maximumRetainedCommands) return
-    this.ctx.storage.sql.exec(
-      `DELETE FROM commands WHERE command_id IN (
-         SELECT command_id FROM commands
+    const retiredAt = new Date().toISOString()
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `INSERT OR IGNORE INTO revoked_commands (command_id, revoked_at)
+         SELECT command_id, ? FROM commands
          WHERE status IN ('completed', 'failed')
-         ORDER BY updated_at ASC LIMIT 100
-       )`
-    )
+         ORDER BY updated_at ASC, command_id ASC LIMIT 100`,
+        retiredAt
+      )
+      this.ctx.storage.sql.exec(
+        `DELETE FROM commands WHERE command_id IN (
+           SELECT command_id FROM commands
+           WHERE status IN ('completed', 'failed')
+           ORDER BY updated_at ASC, command_id ASC LIMIT 100
+         )`
+      )
+    })
   }
 
   private pruneExpiredAttachmentUploadLeases(): void {

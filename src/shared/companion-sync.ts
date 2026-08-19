@@ -170,6 +170,7 @@ export interface CompanionEventPage {
   protocolVersion: number
   events: CompanionSyncEvent[]
   lastSequence: number
+  replayResetSequence?: number
   presence?: CompanionPresence
 }
 

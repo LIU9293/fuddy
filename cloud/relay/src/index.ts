@@ -31,7 +31,7 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 export const maximumAttachmentBytes = companionAttachmentObjectMaximumBytes
-const relayBuild = '2026-08-19.2'
+const relayBuild = '2026-08-20.1'
 const canonicalRelayPathPrefix = '/api/relay'
 
 function randomToken(byteLength = 32): string {
@@ -94,6 +94,7 @@ function relayMutationValue<T>(result: RelayMutationResult<T>): T {
   if (result.status === 'unauthorized') throw new HttpError(401, '设备认证失败。')
   if (result.status === 'account-unbound') throw new HttpError(409, 'Relay 账户尚未完成 Fuddy 账户绑定。')
   if (result.status === 'capacity-exceeded') throw new HttpError(409, '账户命令存储已达到上限，请等待活跃命令结束。')
+  if (result.status === 'command-retired') throw new HttpError(409, '远程命令已经结束或撤销，不能重复提交。')
   return result.value
 }
 
