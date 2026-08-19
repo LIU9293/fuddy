@@ -66,6 +66,39 @@ describe('TaskDispatcher Agent Run turn queue', () => {
     }
   })
 
+  it('does not start a queued turn after its caller cancels authorization', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'project-agent-turn-cancelled-queue-'))
+    let releaseFirst!: () => void
+    const startedPrompts: string[] = []
+    const { database, dispatcher, runId } = createDispatcher(root, async (input) => {
+      startedPrompts.push(input.prompt)
+      await new Promise<void>((resolve) => { releaseFirst = resolve })
+      return { text: '完成', sessionId: 'queue-session' }
+    })
+    try {
+      const first = dispatcher.sendMessage(runId, '第一条消息')
+      await vi.waitFor(() => expect(startedPrompts).toHaveLength(1))
+      const cancellation = new AbortController()
+      const second = dispatcher.sendMessage(
+        runId,
+        '不应开始的消息',
+        () => undefined,
+        undefined,
+        [],
+        cancellation.signal
+      )
+      cancellation.abort(new Error('账户连接已停止'))
+
+      releaseFirst()
+      await first
+      await expect(second).rejects.toThrow('账户连接已停止')
+      expect(startedPrompts).toHaveLength(1)
+    } finally {
+      database.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('stops only the active reply without failing the Session', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-turn-stop-'))
     let receivedSignal: AbortSignal | null = null

@@ -127,4 +127,39 @@ describe('account IPC lifecycle', () => {
     expect(companionSync.disconnect).toHaveBeenCalledOnce()
     expect(send).toHaveBeenCalledWith('account:state-changed', signedOutState)
   })
+
+  it('drains phone commands before logout-all forgets Relay credentials', async () => {
+    let finishDrain: (() => void) | undefined
+    let accountState = signedInState
+    const stopAndDrain = vi.fn(() => new Promise<void>((resolve) => { finishDrain = resolve }))
+    const forgetAccountRelay = vi.fn()
+    const logoutAll = vi.fn(async () => {
+      accountState = signedOutState
+      return signedOutState
+    })
+    const coordinator = { pauseAndDrain: vi.fn(async () => undefined) }
+    const send = vi.fn()
+    electronMocks.windows.push({ webContents: { isDestroyed: () => false, send } })
+
+    registerAccountIpc({
+      accountService: {
+        getState: vi.fn(() => accountState),
+        logoutAll
+      },
+      accountEnrollmentCoordinator: coordinator,
+      companionSync: { stopAndDrain, forgetAccountRelay }
+    } as unknown as IpcContext)
+
+    const logoutAllHandler = electronMocks.handlers.get('account:logout-all')
+    const loggingOut = Promise.resolve(logoutAllHandler?.())
+    await vi.waitFor(() => expect(stopAndDrain).toHaveBeenCalledOnce())
+    expect(logoutAll).not.toHaveBeenCalled()
+    expect(forgetAccountRelay).not.toHaveBeenCalled()
+
+    finishDrain?.()
+    await loggingOut
+    expect(logoutAll).toHaveBeenCalledOnce()
+    expect(forgetAccountRelay).toHaveBeenCalledOnce()
+    expect(send).toHaveBeenCalledWith('account:state-changed', signedOutState)
+  })
 })

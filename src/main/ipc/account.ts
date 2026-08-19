@@ -100,7 +100,10 @@ export function registerAccountIpc(context: IpcContext): void {
   ipcMain.handle('account:revoke-device', async (_event, rawInput: unknown) => {
     const input = z.object({ deviceId: z.string().uuid() }).parse(rawInput)
     const isCurrentDevice = accountService.getState().device?.id === input.deviceId
-    if (isCurrentDevice) await accountEnrollmentCoordinator.pauseAndDrain()
+    if (isCurrentDevice) {
+      await accountEnrollmentCoordinator.pauseAndDrain()
+      await companionSync.stopAndDrain()
+    }
     try {
       await accountService.revokeDevice(input.deviceId)
     } catch (error) {
@@ -108,19 +111,19 @@ export function registerAccountIpc(context: IpcContext): void {
       if (state.status === 'signed-out') {
         await reconcileValidatedAccountState(state).catch(() => undefined)
       } else if (isCurrentDevice) {
+        await companionSync.start().catch(() => undefined)
         accountEnrollmentCoordinator.start()
       }
       throw error
     }
     if (!isCurrentDevice) return
-    companionSync.stop()
     companionSync.forgetAccountRelay()
     broadcastAccountState()
   })
 
   ipcMain.handle('account:logout', async () => {
     await accountEnrollmentCoordinator.pauseAndDrain()
-    companionSync.stop()
+    await companionSync.stopAndDrain()
     const state = await accountService.logout()
     broadcastAccountState()
     return state
@@ -128,6 +131,7 @@ export function registerAccountIpc(context: IpcContext): void {
 
   ipcMain.handle('account:logout-all', async () => {
     await accountEnrollmentCoordinator.pauseAndDrain()
+    await companionSync.stopAndDrain()
     let state: Awaited<ReturnType<typeof accountService.logoutAll>>
     try {
       state = await accountService.logoutAll()
@@ -136,11 +140,11 @@ export function registerAccountIpc(context: IpcContext): void {
       if (current.status === 'signed-out') {
         await reconcileValidatedAccountState(current).catch(() => undefined)
       } else {
+        await companionSync.start().catch(() => undefined)
         accountEnrollmentCoordinator.start()
       }
       throw error
     }
-    companionSync.stop()
     companionSync.forgetAccountRelay()
     broadcastAccountState()
     return state

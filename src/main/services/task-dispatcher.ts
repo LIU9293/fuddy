@@ -245,7 +245,8 @@ export class TaskDispatcher {
     prompt: string,
     onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined,
     userMessageId?: string,
-    attachments: WorkAssistantImageAttachment[] = []
+    attachments: WorkAssistantImageAttachment[] = [],
+    cancellationSignal?: AbortSignal
   ): Promise<AgentRunDetail> {
     this.database.getAgentRun(runId)
     const previous = this.turnQueueTails.get(runId)
@@ -254,13 +255,14 @@ export class TaskDispatcher {
       this.publishRunUpdate(runId, queuedUpdate)
       onUpdate(queuedUpdate)
     }
-    const execute = (): Promise<AgentRunDetail> => this.executeTurn(
-      runId,
-      prompt,
-      onUpdate,
-      userMessageId,
-      attachments
-    )
+    const execute = (): Promise<AgentRunDetail> => {
+      if (cancellationSignal?.aborted) {
+        return Promise.reject(cancellationSignal.reason instanceof Error
+          ? cancellationSignal.reason
+          : new Error('这次手机操作已停止。'))
+      }
+      return this.executeTurn(runId, prompt, onUpdate, userMessageId, attachments)
+    }
     const turn = previous ? previous.then(execute, execute) : execute()
     this.turnQueueTails.set(runId, turn)
     const clearQueueTail = (): void => {

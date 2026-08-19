@@ -293,6 +293,7 @@ export class CompanionSyncService {
   private activeSync: Promise<CompanionMacStatus> | null = null
   private validatedAccountRelaySignature: string | null = null
   private readonly activeCommands = new Map<string, Promise<void>>()
+  private readonly activeCommandAbortControllers = new Map<string, AbortController>()
   private readonly activeRemoteAgentRuns = new Map<string, string>()
   private readonly activeRunCreations = new Map<string, Promise<void>>()
   private disconnecting: Promise<void> | null = null
@@ -773,6 +774,9 @@ export class CompanionSyncService {
 
   stop(): void {
     this.stopped = true
+    for (const controller of this.activeCommandAbortControllers.values()) {
+      controller.abort(new Error('账户连接已停止，这次手机操作未继续执行。'))
+    }
     this.closeTransports()
     this.state = this.configuration ? 'disconnected' : 'not-configured'
     this.realtimeState = 'disconnected'
@@ -1231,13 +1235,15 @@ export class CompanionSyncService {
     const activeAgentRunId = remoteCommand.type === 'agent.send-message'
       ? this.commandRunId(remoteCommand)
       : null
-    const operation = this.executeCommand(remoteCommand)
+    const abortController = new AbortController()
+    const operation = this.executeCommand(remoteCommand, abortController.signal)
       .catch((error) => {
         this.lastError = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
         this.emitStatus()
       })
       .finally(() => {
         this.activeCommands.delete(remoteCommand.commandId)
+        this.activeCommandAbortControllers.delete(remoteCommand.commandId)
         this.activeRemoteAgentRuns.delete(remoteCommand.commandId)
         if (createdRunId && this.activeRunCreations.get(createdRunId) === operation) {
           this.activeRunCreations.delete(createdRunId)
@@ -1245,12 +1251,13 @@ export class CompanionSyncService {
         this.scheduleEventSync()
       })
     this.activeCommands.set(remoteCommand.commandId, operation)
+    this.activeCommandAbortControllers.set(remoteCommand.commandId, abortController)
     if (activeAgentRunId) this.activeRemoteAgentRuns.set(remoteCommand.commandId, activeAgentRunId)
     if (createdRunId) this.activeRunCreations.set(createdRunId, operation)
     return operation
   }
 
-  private async executeCommand(remoteCommand: CompanionCommand): Promise<void> {
+  private async executeCommand(remoteCommand: CompanionCommand, cancellationSignal: AbortSignal): Promise<void> {
     const existing = this.database.getCompanionCommand(remoteCommand.commandId)
     const recovery = companionCommandRecovery(existing?.status ?? null)
     if (recovery === 'ack-terminal' && existing) {
@@ -1293,7 +1300,7 @@ export class CompanionSyncService {
     await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'executing' })
     let result: unknown
     try {
-      result = await this.performCommand(remoteCommand)
+      result = await this.performCommand(remoteCommand, cancellationSignal)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
       const updated = this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, message)
@@ -1315,11 +1322,13 @@ export class CompanionSyncService {
     return typeof runId === 'string' && runId.trim() ? runId.trim() : null
   }
 
-  private async performCommand(remoteCommand: CompanionCommand): Promise<unknown> {
+  private async performCommand(remoteCommand: CompanionCommand, cancellationSignal: AbortSignal): Promise<unknown> {
+    if (cancellationSignal.aborted) throw cancellationSignal.reason
     const payload = remoteCommand.payload as Record<string, unknown>
     switch (remoteCommand.type) {
       case 'assistant.send-message': {
         const attachments = await this.materializeIncomingAttachments(remoteCommand.commandId, payload)
+        if (cancellationSignal.aborted) throw cancellationSignal.reason
         const images = attachments
           .filter((attachment) => ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(attachment.descriptor.mimeType))
           .map((attachment): WorkAssistantImageAttachment => ({
@@ -1345,6 +1354,7 @@ export class CompanionSyncService {
           ? payload.clientMessageId.trim()
           : undefined
         const attachments = await this.materializeIncomingAttachments(remoteCommand.commandId, payload)
+        if (cancellationSignal.aborted) throw cancellationSignal.reason
         const attachmentContext = attachments.length > 0
           ? `\n\n用户从 iPhone 附加了以下本机文件，请按需读取：\n${attachments.map((attachment) => `- ${attachment.path}`).join('\n')}`
           : ''
@@ -1352,7 +1362,9 @@ export class CompanionSyncService {
           runId,
           `${this.requiredString(payload, 'prompt')}${attachmentContext}`,
           () => this.scheduleEventSync(),
-          clientMessageId
+          clientMessageId,
+          [],
+          cancellationSignal
         )
       }
       case 'agent.stop-message':

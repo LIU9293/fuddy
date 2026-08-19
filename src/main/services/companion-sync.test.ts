@@ -1126,7 +1126,9 @@ describe('Companion sync transport policy', () => {
         'run-from-phone',
         '请继续分析',
         expect.any(Function),
-        'phone-message-id'
+        'phone-message-id',
+        [],
+        expect.any(AbortSignal)
       )
       expect(database.getCompanionCommand(command.commandId)?.status).toBe('executing')
     })
@@ -1199,7 +1201,14 @@ describe('Companion sync transport policy', () => {
     await service.syncNow()
     await vi.waitFor(() => expect(database.getCompanionCommand(legacyCommand.commandId)?.status).toBe('completed'))
 
-    expect(sendMessage).toHaveBeenCalledWith('legacy-run', 'Preserve this action', expect.any(Function), undefined)
+    expect(sendMessage).toHaveBeenCalledWith(
+      'legacy-run',
+      'Preserve this action',
+      expect.any(Function),
+      undefined,
+      [],
+      expect.any(AbortSignal)
+    )
     expect(database.getCompanionCommand(legacyCommand.commandId)?.protocolVersion).toBe(companionProtocolVersion)
     service.stop()
     database.close()
