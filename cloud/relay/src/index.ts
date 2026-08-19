@@ -294,9 +294,9 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
   if (request.method === 'GET' && url.pathname === '/v1/commands/pending') {
     const context = relayRequestContext(request, env, url)
-    const commands = await context.stub.pendingCommands(context.deviceId, context.token)
-    if (!commands) throw new HttpError(401, '设备认证失败。')
-    return Response.json({ commands })
+    const page = await context.stub.pendingCommands(context.deviceId, context.token)
+    if (!page) throw new HttpError(401, '设备认证失败。')
+    return Response.json(page)
   }
 
   const commandMatch = url.pathname.match(/^\/v1\/commands\/([^/]+)$/)

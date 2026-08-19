@@ -287,6 +287,44 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('replays revoked command fences through polling when realtime delivery was missed', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-command-revocation-poll-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'poll-account',
+      macDeviceId: 'poll-mac',
+      pairedAt: new Date().toISOString(),
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      expect(new URL(String(input)).pathname).toBe('/v1/commands/pending')
+      return jsonResponse({ commands: [], revokedCommandIds: ['polled-revoked-command'] })
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    const internals = service as unknown as {
+      activeCommandAbortControllers: Map<string, AbortController>
+      processPendingCommands: () => Promise<void>
+      scheduleCommand: (command: CompanionCommand) => Promise<void>
+    }
+    const controller = new AbortController()
+    internals.activeCommandAbortControllers.set('polled-revoked-command', controller)
+
+    await internals.processPendingCommands()
+
+    expect(controller.signal.aborted).toBe(true)
+    expect(controller.signal.reason).toMatchObject({
+      message: '发起操作的 iPhone 已退出登录，这次操作已取消。'
+    })
+    database.close()
+  })
+
   it('propagates shutdown cancellation into an active phone Work Assistant turn', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-assistant-drain-'))
     directories.push(directory)

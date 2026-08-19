@@ -187,25 +187,29 @@ describe('companion relay', () => {
     const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
     await expect(stub.revokeDeviceByAuthority(phone.device.id)).resolves.toBe(true)
 
-    const pending = await SELF.fetch(
-      authenticatedUrl('/v1/commands/pending', pairing.accountId, pairing.macDeviceId),
-      { headers: { Authorization: `Bearer ${pairing.macToken}` } }
-    )
-    expect(pending.status).toBe(200)
-    await expect(pending.json<{ commands: CompanionEncryptedCommand[] }>())
-      .resolves.toEqual({ commands: [] })
-    await expect(runInDurableObject(stub, (_instance, state) => (
-      state.storage.sql.exec<{ count: number }>(
-        'SELECT COUNT(*) AS count FROM commands WHERE command_id = ?',
-        commandId
-      ).one().count
-    ))).resolves.toBe(0)
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(messages.map((value) => JSON.parse(value) as unknown)).toContainEqual({
       type: 'commands.revoked',
       commandIds: [commandId]
     })
     socket!.close()
+    await evictDurableObject(stub)
+
+    const pending = await SELF.fetch(
+      authenticatedUrl('/v1/commands/pending', pairing.accountId, pairing.macDeviceId),
+      { headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(pending.status).toBe(200)
+    await expect(pending.json<{
+      commands: CompanionEncryptedCommand[]
+      revokedCommandIds: string[]
+    }>()).resolves.toEqual({ commands: [], revokedCommandIds: [commandId] })
+    await expect(runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM commands WHERE command_id = ?',
+        commandId
+      ).one().count
+    ))).resolves.toBe(0)
   })
 
   it('lets an authenticated Mac enroll multiple account devices without a pairing secret', async () => {

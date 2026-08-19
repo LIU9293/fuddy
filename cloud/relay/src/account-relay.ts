@@ -257,6 +257,11 @@ export class AccountRelay extends DurableObject<Env> {
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS commands_status_idx ON commands(status, created_at);
+      CREATE TABLE IF NOT EXISTS revoked_commands (
+        command_id TEXT PRIMARY KEY,
+        revoked_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS revoked_commands_time_idx ON revoked_commands(revoked_at);
       CREATE TABLE IF NOT EXISTS attachments (
         attachment_id TEXT PRIMARY KEY,
         storage_key TEXT NOT NULL UNIQUE,
@@ -322,6 +327,9 @@ export class AccountRelay extends DurableObject<Env> {
     `)
     this.ctx.storage.sql.exec(`
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (8, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (9, datetime('now'));
     `)
   }
 
@@ -667,6 +675,10 @@ export class AccountRelay extends DurableObject<Env> {
 
   async createCommand(deviceId: string, token: string, input: CompanionEncryptedCommandInput): Promise<CompanionEncryptedCommand> {
     await this.requireAuthorization(deviceId, token, 'ios')
+    const revoked = this.ctx.storage.sql.exec<{ command_id: string }>(
+      'SELECT command_id FROM revoked_commands WHERE command_id = ?', input.commandId
+    ).toArray()[0]
+    if (revoked) throw new Error('远程命令已被撤销，不能重复提交。')
     const existing = this.ctx.storage.sql.exec<{ command_id: string }>(
       'SELECT command_id FROM commands WHERE command_id = ?', input.commandId
     ).toArray()[0]
@@ -704,12 +716,21 @@ export class AccountRelay extends DurableObject<Env> {
     ).toArray().map(mapCommand)
   }
 
-  async pendingCommands(deviceId: string, token: string): Promise<CompanionEncryptedCommand[] | null> {
+  async pendingCommands(
+    deviceId: string,
+    token: string
+  ): Promise<{ commands: CompanionEncryptedCommand[]; revokedCommandIds: string[] } | null> {
     const device = await this.authorize(deviceId, token, 'mac')
     if (!device) return null
-    return this.ctx.storage.sql.exec<CommandRow>(
-      `SELECT * FROM commands WHERE status IN ('queued', 'delivered', 'executing') ORDER BY created_at ASC LIMIT 100`
-    ).toArray().map(mapCommand)
+    return {
+      commands: this.ctx.storage.sql.exec<CommandRow>(
+        `SELECT * FROM commands WHERE status IN ('queued', 'delivered', 'executing') ORDER BY created_at ASC LIMIT 100`
+      ).toArray().map(mapCommand),
+      revokedCommandIds: this.ctx.storage.sql.exec<{ command_id: string }>(
+        'SELECT command_id FROM revoked_commands ORDER BY revoked_at DESC LIMIT ?',
+        maximumRetainedCommands
+      ).toArray().map((command) => command.command_id)
+    }
   }
 
   async updateCommand(
@@ -790,6 +811,7 @@ export class AccountRelay extends DurableObject<Env> {
       try { socket.close(1000, 'Account disconnected') } catch { /* Already closed. */ }
     }
     this.ctx.storage.sql.exec('DELETE FROM commands')
+    this.ctx.storage.sql.exec('DELETE FROM revoked_commands')
     this.ctx.storage.sql.exec('DELETE FROM events')
     this.ctx.storage.sql.exec('DELETE FROM pairing')
     this.ctx.storage.sql.exec('DELETE FROM attachments')
@@ -815,6 +837,14 @@ export class AccountRelay extends DurableObject<Env> {
        WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
       deviceId
     ).toArray().map((command) => command.command_id)
+    const revokedAt = new Date().toISOString()
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO revoked_commands (command_id, revoked_at)
+       SELECT command_id, ? FROM commands
+       WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
+      revokedAt,
+      deviceId
+    )
     this.ctx.storage.sql.exec(
       `DELETE FROM commands
        WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
@@ -837,6 +867,7 @@ export class AccountRelay extends DurableObject<Env> {
   async alarm(): Promise<void> {
     this.compactAcknowledgedEvents()
     this.pruneTerminalCommands()
+    this.pruneRevokedCommands()
     const activeDevices = this.ctx.storage.sql.exec<{ count: number }>(
       'SELECT COUNT(*) AS count FROM devices WHERE revoked_at IS NULL'
     ).one().count
@@ -947,6 +978,20 @@ export class AccountRelay extends DurableObject<Env> {
       WHERE status IN ('completed', 'failed')
         AND updated_at < datetime('now', ?)
     `, `-${terminalCommandRetentionDays} days`)
+  }
+
+  private pruneRevokedCommands(): void {
+    this.ctx.storage.sql.exec(
+      `DELETE FROM revoked_commands WHERE revoked_at < datetime('now', ?)`,
+      `-${terminalCommandRetentionDays} days`
+    )
+    this.ctx.storage.sql.exec(
+      `DELETE FROM revoked_commands WHERE command_id IN (
+        SELECT command_id FROM revoked_commands
+        ORDER BY revoked_at DESC LIMIT -1 OFFSET ?
+      )`,
+      maximumRetainedCommands
+    )
   }
 
   private async ensureMaintenanceAlarm(): Promise<void> {

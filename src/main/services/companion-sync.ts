@@ -1267,7 +1267,13 @@ export class CompanionSyncService {
       headers: { Authorization: `Bearer ${context.token}` }
     })
     if (this.stopped) return
-    const body = await responseJson<{ commands: unknown[] }>(response)
+    const body = await responseJson<{ commands: unknown[]; revokedCommandIds?: unknown }>(response)
+    if (Array.isArray(body.revokedCommandIds)) {
+      this.cancelRevokedCommands(body.revokedCommandIds
+        .filter((commandId): commandId is string => typeof commandId === 'string')
+        .slice(0, maximumRevokedCommandFences))
+    }
+    if (this.stopped) return
     const commands = await Promise.all(body.commands.map(async (value) => {
       const encrypted = companionPendingEncryptedCommandSchema.parse(value)
       const payload = await openCompanionJson(
