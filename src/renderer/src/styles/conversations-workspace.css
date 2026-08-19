@@ -2198,6 +2198,28 @@
 .agent-session-rename-dialog button[type="submit"] { color: white; background: #343430; }
 .agent-session-rename-dialog button:disabled { cursor: default; opacity: .45; }
 
+.confirmation-dialog {
+  width: min(420px, calc(100vw - 48px));
+  padding: 18px;
+  border: 1px solid rgba(45, 45, 40, .11);
+  border-radius: 13px;
+  color: #343430;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(25, 25, 22, .2);
+}
+
+.confirmation-dialog::backdrop {
+  background: rgba(25, 25, 22, .2);
+  backdrop-filter: blur(2px);
+}
+
+.confirmation-dialog strong { font-size: 13px; }
+.confirmation-dialog p { margin: 9px 0 15px; color: #707069; font-size: 11px; line-height: 1.5; }
+.confirmation-dialog > div { display: flex; justify-content: flex-end; gap: 7px; }
+.confirmation-dialog button { height: 30px; padding: 0 11px; border: 0; border-radius: 7px; color: #5d5d57; background: rgba(45, 45, 40, .065); font-size: 11px; cursor: pointer; }
+.confirmation-dialog button.is-danger { color: #fff; background: #b84842; }
+.confirmation-dialog button:disabled { cursor: default; opacity: .45; }
+
 .agent-session-main small,
 .agent-session-summary {
   overflow: hidden;
@@ -3947,11 +3969,31 @@
 .notice-toast button {
   display: grid;
   place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: -6px -7px -6px 0;
   padding: 0;
   border: 0;
+  border-radius: 7px;
   background: transparent;
   color: #8b8b84;
   cursor: pointer;
+}
+
+.notice-toast button:hover {
+  color: currentColor;
+  background: rgba(40, 40, 35, 0.06);
+}
+
+.notice-toast button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .notice-toast button:hover {
+    background: rgba(255, 255, 248, 0.08);
+  }
 }
 
 .composer {

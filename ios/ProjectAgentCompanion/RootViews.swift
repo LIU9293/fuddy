@@ -651,7 +651,7 @@ private struct CompanionConversationMessage<Supplement: View>: View {
 
     private var messageContent: some View {
         VStack(alignment: .leading, spacing: 7) {
-            MarkdownText(content)
+            MarkdownText(content, expandsHorizontally: role != "user")
                 .font(role == "system" ? .caption : .subheadline)
             supplement()
         }
@@ -696,7 +696,11 @@ private struct AssistantMessageView: View {
                             Image(systemName: "bubble.left.and.text.bubble.right")
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(run.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                Text(run.status == "draft" ? "草稿 · 首条消息尚未发送" : "\(run.provider) · \(run.status)")
+                                Text(
+                                    run.status == "draft"
+                                        ? "草稿 · 首条消息尚未发送"
+                                        : "\(companionAgentProviderLabel(run.provider)) · \(companionRunStatusLabel(run.status))"
+                                )
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -1140,7 +1144,7 @@ struct RunsListView: View {
     }
 
     private func runMetadata(_ run: AgentRun) -> String {
-        "\(run.provider) · \(relativeDate(run.updatedAt))"
+        "\(companionAgentProviderLabel(run.provider)) · \(relativeDate(run.updatedAt))"
     }
 
     private func archive(_ run: AgentRun) async {
@@ -1479,7 +1483,7 @@ struct RunDetailView: View {
                            page.records.last?.agentMessages.last?.role == "user" {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
-                                Text("\(detail.run.provider) 正在处理")
+                                Text("\(companionAgentProviderLabel(detail.run.provider)) 正在处理")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -1497,7 +1501,7 @@ struct RunDetailView: View {
                         CompanionChatComposer(
                             text: $prompt,
                             attachments: $attachments,
-                            placeholder: "给 \(detail.run.provider) 发送消息",
+                            placeholder: "给 \(companionAgentProviderLabel(detail.run.provider)) 发送消息",
                             sending: sending,
                             active: ["running", "queued"].contains(detail.run.status),
                             onSend: { Task { await send() } },
@@ -2052,7 +2056,12 @@ private func normalizeMarkdownTableRow(_ cells: [String], columnCount: Int) -> [
 
 struct MarkdownText: View {
     let content: String
-    init(_ content: String) { self.content = content }
+    let expandsHorizontally: Bool
+
+    init(_ content: String, expandsHorizontally: Bool = true) {
+        self.content = content
+        self.expandsHorizontally = expandsHorizontally
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -2060,7 +2069,7 @@ struct MarkdownText: View {
                 blockView(block)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: expandsHorizontally ? .infinity : nil, alignment: .leading)
     }
 
     @ViewBuilder

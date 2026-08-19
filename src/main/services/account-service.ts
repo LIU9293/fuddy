@@ -203,7 +203,7 @@ export class AccountService {
 
   async signInWithGoogle(openExternal: (url: string) => Promise<unknown>): Promise<AccountState> {
     const clientId = this.options.googleClientId?.trim()
-    if (!clientId) throw new Error('Google 登录尚未配置。')
+    if (!clientId) throw new Error('Google 登录暂时不可用，请使用邮箱继续。')
     const idToken = await getGoogleIdToken({ clientId, openExternal, fetch: this.fetchImpl })
     return this.acceptGoogleIdToken(idToken)
   }
@@ -215,7 +215,7 @@ export class AccountService {
 
   async linkGoogle(openExternal: (url: string) => Promise<unknown>): Promise<AccountIdentity[]> {
     const clientId = this.options.googleClientId?.trim()
-    if (!clientId) throw new Error('Google 登录尚未配置。')
+    if (!clientId) throw new Error('Google 登录暂时不可用，请使用邮箱继续。')
     const idToken = await getGoogleIdToken({ clientId, openExternal, fetch: this.fetchImpl })
     const response = await this.requestAuthorized('/v1/identities/google', {
       method: 'POST',
@@ -468,7 +468,7 @@ export class AccountService {
   }
 
   private async fetchResponse(path: string, init: RequestInit, accessToken?: string): Promise<Response> {
-    if (!this.options.apiUrl) throw new Error('Account API 尚未配置。')
+    if (!this.options.apiUrl) throw new Error('暂时无法登录，请稍后再试。')
     const headers = new Headers(init.headers)
     headers.set('content-type', 'application/json')
     if (accessToken) headers.set('authorization', `Bearer ${accessToken}`)
@@ -480,7 +480,7 @@ export class AccountService {
         signal: init.signal ?? AbortSignal.timeout(8_000)
       })
     } catch {
-      throw new Error('无法连接 Fuddy 账户服务，请检查网络后重试。')
+      throw new Error('暂时无法登录，请检查网络后重试。')
     }
     return response
   }
@@ -496,7 +496,7 @@ export class AccountService {
       throw new AccountRequestError(
         response.status,
         body?.error?.code,
-        body?.error?.message || `账户服务请求失败（${response.status}）。`
+        body?.error?.message || '操作没有完成，请稍后重试。'
       )
     }
     return response

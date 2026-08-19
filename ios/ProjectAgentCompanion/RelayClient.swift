@@ -347,8 +347,16 @@ final class RelayClient {
     private static func validate(response: URLResponse, data: Data) throws {
         guard let response = response as? HTTPURLResponse else { throw RelayError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else {
-            let body = try? JSONDecoder().decode(RelayErrorBody.self, from: data)
-            throw RelayError.server(body?.error ?? "Relay request failed (\(response.statusCode))")
+            let message = switch response.statusCode {
+            case 401: "登录已过期，请重新登录。"
+            case 403: "这台设备暂时无法访问同步内容。"
+            case 404: "没有找到要同步的内容。"
+            case 409: "同步状态已更新，请重试。"
+            case 413: "文件太大，无法同步。"
+            case 429: "操作太频繁，请稍后重试。"
+            default: "同步暂时不可用，请稍后重试。"
+            }
+            throw RelayError.server(message)
         }
     }
 
@@ -365,15 +373,14 @@ final class RelayClient {
     }
 }
 
-private struct RelayErrorBody: Codable { let error: String }
 private struct PushTokenRegistration: Codable { let token: String }
 enum RelayError: LocalizedError {
     case protocolMismatch, invalidRelayURL, invalidResponse, integrity(String), server(String)
     var errorDescription: String? {
         switch self {
-        case .protocolMismatch: "Mac 与 iPhone 的协议版本不一致。"
-        case .invalidRelayURL: "同步服务地址无效或不安全。"
-        case .invalidResponse: "Relay 返回了无效响应。"
+        case .protocolMismatch: "请更新 Mac 和 iPhone 上的 Fuddy 后重试。"
+        case .invalidRelayURL: "暂时无法连接同步服务，请稍后重试。"
+        case .invalidResponse: "连接没有完成，请重试。"
         case .integrity(let message): message
         case .server(let message): message
         }

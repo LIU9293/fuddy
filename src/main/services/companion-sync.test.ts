@@ -533,7 +533,7 @@ describe('Companion sync transport policy', () => {
     const status = await service.syncNow()
 
     expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 1 })
-    expect(status.lastError).toContain('已隔离 1 条')
+    expect(status.lastError).toContain('有 1 条内容无法发送')
     expect(publishedEntityIds).toEqual(['later-message'])
     service.stop()
     database.close()

@@ -670,7 +670,7 @@ export class CompanionSyncService {
       this.lastSyncedAt = new Date().toISOString()
       const isolatedEvents = this.database.countDeadLetterCompanionEvents()
       this.lastError = isolatedEvents > 0
-        ? `已隔离 ${isolatedEvents} 条无法安全发送的 Companion 事件；其余事件已继续同步。`
+        ? `有 ${isolatedEvents} 条内容无法发送，其他内容已继续同步。`
         : null
     } catch (error) {
       this.state = 'error'

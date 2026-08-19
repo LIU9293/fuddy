@@ -9,7 +9,7 @@ import type {
   CompanionPairingStartResult,
 } from '../../../src/shared/companion-sync'
 import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
-import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/index'
+import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/request-guards'
 
 async function pairedDevices(): Promise<{
   pairing: CompanionPairingStartResult

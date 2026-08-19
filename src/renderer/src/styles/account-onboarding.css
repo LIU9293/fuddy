@@ -21,12 +21,6 @@
   inset: 0;
 }
 
-.account-entry-titlebar img {
-  width: 58px;
-  height: auto;
-  opacity: 0.84;
-}
-
 .account-entry-main {
   display: grid;
   place-items: center;
@@ -41,7 +35,6 @@
   margin-top: -28px;
 }
 
-.account-assistant-mark,
 .onboarding-icon {
   display: grid;
   place-items: center;
@@ -52,6 +45,14 @@
   background: #272724;
   border-radius: 12px;
   box-shadow: 0 8px 24px rgba(30, 30, 27, 0.13);
+}
+
+.account-wordmark-mark {
+  display: block;
+  width: 76px;
+  height: auto;
+  margin: 0 auto 22px;
+  opacity: 0.9;
 }
 
 .account-entry-panel h1,
@@ -144,8 +145,7 @@
 }
 
 .account-provider-note,
-.account-legal,
-.account-dev-code {
+.account-legal {
   color: #888880;
   font-size: 11px;
   line-height: 1.45;
@@ -234,15 +234,6 @@
   box-shadow: 0 0 0 3px rgba(40, 103, 232, 0.09);
 }
 
-.account-dev-code {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  margin: 0;
-  color: #596e4f;
-}
-
 .account-entry-error {
   margin: 0;
   color: #ad3f35;
@@ -256,14 +247,26 @@
 }
 
 .account-back-button {
+  position: absolute;
+  z-index: 3;
+  top: 15px;
+  left: 76px;
   display: flex;
   align-items: center;
   gap: 2px;
-  margin: 0 auto 22px;
-  padding: 4px 6px;
+  min-height: 28px;
+  margin: 0;
+  padding: 4px 8px 4px 5px;
   color: #777770;
   font-size: 11px;
   background: transparent;
+  border-radius: 7px;
+  -webkit-app-region: no-drag;
+}
+
+.account-back-button:hover {
+  color: #44443f;
+  background: rgba(40, 40, 35, 0.06);
 }
 
 .account-user-button {
@@ -474,13 +477,35 @@
     border-bottom-color: rgba(255, 255, 248, 0.07);
   }
 
-  .account-entry-titlebar img {
+  .account-wordmark-mark {
     filter: invert(1);
   }
 
   .account-entry-panel h1,
   .onboarding-step h1 {
     color: #f2f2ef;
+  }
+
+  .account-eyebrow,
+  .account-lede,
+  .account-back-button,
+  .account-user-button,
+  .account-provider-note,
+  .account-legal,
+  .agent-detection-list small,
+  .existing-projects-note small,
+  .onboarding-progress li {
+    color: #aaa9a3;
+  }
+
+  .account-lede strong,
+  .account-form > label,
+  .onboarding-field > span {
+    color: #d7d7d2;
+  }
+
+  .account-entry-error {
+    color: #f09a91;
   }
 
   .account-provider-button,
@@ -496,9 +521,29 @@
     border-color: rgba(255, 255, 248, 0.1);
   }
 
+  .account-provider-button:hover:not(:disabled),
+  .account-secondary-button:hover:not(:disabled),
+  .project-folder-picker:hover {
+    background: rgba(52, 53, 48, 0.96);
+    border-color: rgba(255, 255, 248, 0.18);
+  }
+
+  .existing-projects-note strong {
+    color: #83be94;
+  }
+
+  .account-back-button:hover {
+    color: #ededeb;
+    background: rgba(255, 255, 248, 0.08);
+  }
+
   .onboarding-icon {
     color: #a8c1ef;
     background: #273247;
+  }
+
+  .onboarding-progress li > span {
+    background: #2d2e2a;
   }
 
   .account-divider::before,

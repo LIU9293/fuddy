@@ -155,9 +155,6 @@ struct AccountLoginView: View {
                 .onChange(of: code) { _, value in
                     code = String(value.filter(\.isNumber).prefix(6))
                 }
-            if let debugCode = challenge.debugCode {
-                Text("开发环境验证码：\(debugCode)").font(.caption).foregroundStyle(.secondary)
-            }
             Button {
                 Task { await store.verifyEmailSignIn(code: code) }
             } label: {

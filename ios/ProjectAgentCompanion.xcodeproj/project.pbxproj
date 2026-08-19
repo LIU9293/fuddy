@@ -28,6 +28,7 @@
 		C9E838840AF4AEFC5FA6D5E2 /* CompanionProtocol.generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E9817F585A949923395BBF3 /* CompanionProtocol.generated.swift */; };
 		CEEC8634B87722C29C13BC86 /* ggml-large-v3-turbo-q5_0.bin in Resources */ = {isa = PBXBuildFile; fileRef = 5DC48F9ABB552BBDC3D01B39 /* ggml-large-v3-turbo-q5_0.bin */; };
 		D72907235AA17CEDCDF811B5 /* AccountSyncSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8538A19087973580AAB03B5 /* AccountSyncSetupView.swift */; };
+		D8AFF60D5D6AFDA20C1C86DB /* UserFacingLabels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B16354DDCFA1D79235BA2A /* UserFacingLabels.swift */; };
 		E10C5BCC535AA32D689C583A /* CompanionCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8625D23798C1233D38D3813A /* CompanionCrypto.swift */; };
 		F1FD298AB5A25BB1E46E7F90 /* ChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52B7088EB0EFC0E27BEF8BB5 /* ChatComposer.swift */; };
 		F9E6CDF2312ADB3376C46EA6 /* ProjectAgentCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */; };
@@ -58,6 +59,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		19B16354DDCFA1D79235BA2A /* UserFacingLabels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserFacingLabels.swift; sourceTree = "<group>"; };
 		4512748A17A4C137A065311B /* whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = whisper.xcframework; path = "../.third-party-tools/whisper/v1.9.2/build-apple/whisper.xcframework"; sourceTree = "<group>"; };
 		4862CB9096D1A9D2CC3D3B99 /* WhisperInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperInputTests.swift; sourceTree = "<group>"; };
 		4E9817F585A949923395BBF3 /* CompanionProtocol.generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionProtocol.generated.swift; sourceTree = "<group>"; };
@@ -170,6 +172,7 @@
 				B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */,
 				F5A57F13FB0BBE001DAB5DF0 /* RelayClient.swift */,
 				F0BC51CC42E21CDCBA0EE606 /* RootViews.swift */,
+				19B16354DDCFA1D79235BA2A /* UserFacingLabels.swift */,
 				60D0BAE3551C392C4DD3FA33 /* WhisperTranscriptionService.swift */,
 				0C10FADAABD0E766932305CA /* Resources */,
 			);
@@ -292,6 +295,7 @@
 				F9E6CDF2312ADB3376C46EA6 /* ProjectAgentCompanionApp.swift in Sources */,
 				07F3CDC397BE47E65A5A057B /* RelayClient.swift in Sources */,
 				67E70F0EB9A59223134B00A5 /* RootViews.swift in Sources */,
+				D8AFF60D5D6AFDA20C1C86DB /* UserFacingLabels.swift in Sources */,
 				8FAB7375F2E78B06CBCE0B09 /* WhisperTranscriptionService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

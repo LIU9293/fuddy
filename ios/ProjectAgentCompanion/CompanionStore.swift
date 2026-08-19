@@ -392,6 +392,8 @@ final class CompanionStore: ObservableObject {
         accountEnrollmentTask?.cancel()
         accountEnrollmentTask = nil
         accountEnrollmentTaskID = nil
+        accountEnrollmentInProgress = false
+        accountEnrollmentMessage = "正在重新查找你的 Mac…"
         beginAccountEnrollmentIfNeeded()
     }
 
@@ -453,9 +455,13 @@ final class CompanionStore: ObservableObject {
         let replacingLegacyPairing = isPaired
         let shouldMigrateLegacyCache = credentials?.syncSpaceID == nil
         accountEnrollmentInProgress = true
-        accountEnrollmentMessage = "正在寻找同一账户下的 Mac…"
+        accountEnrollmentMessage = "正在查找你的 Mac…"
         if !replacingLegacyPairing { connection = .connecting }
-        defer { accountEnrollmentInProgress = false }
+        defer {
+            if accountEnrollmentTaskID == taskID {
+                accountEnrollmentInProgress = false
+            }
+        }
         let deadline = Date().addingTimeInterval(10 * 60)
         do {
             while !Task.isCancelled && Date() < deadline {
@@ -474,7 +480,7 @@ final class CompanionStore: ObservableObject {
                         preferredID: selectedAccountSyncSpaceID
                     )
                 else {
-                    accountEnrollmentMessage = "暂时没有可连接的空间，请稍后重试。"
+                    accountEnrollmentMessage = "暂时没有找到可连接的 Mac，请稍后重试。"
                     if !replacingLegacyPairing { connection = .unpaired }
                     return
                 }
@@ -491,7 +497,7 @@ final class CompanionStore: ObservableObject {
                 )
                 currentSession = try persistRefreshedAccountSession(afterCreate)
                 guard accountEnrollmentTaskID == taskID, !Task.isCancelled else { return }
-                accountEnrollmentMessage = "已找到 \(space.hostName)，正在等待安全授权…"
+                accountEnrollmentMessage = "已找到 \(space.hostName)，正在连接…"
 
                 while !Task.isCancelled && Date() < deadline {
                     let (status, afterPoll) = try await accountClient.enrollment(

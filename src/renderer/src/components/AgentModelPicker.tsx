@@ -68,7 +68,7 @@ export function buildAgentModelPickerOptions({
       value: '',
       label: inheritedReasoningLabel
         ? `${inheritedReasoningLabel} · 全局默认`
-        : '使用 Agent 默认 Reasoning'
+        : '使用 Agent 默认思考深度'
     },
     ...reasoningEfforts.map((effort) => ({ value: effort.id, label: effort.label })),
     ...(reasoningEffort && !reasoningEfforts.some((effort) => effort.id === reasoningEffort)
@@ -145,7 +145,7 @@ export function AgentModelPicker({
         onClick={() => setOpen((current) => !current)}
       ><span>{label}</span><ChevronUp size={11} /></button>
       {open && (
-        <div className="composer-model-picker-popover" role="dialog" aria-label="选择 Agent、模型和 Reasoning Level">
+        <div className="composer-model-picker-popover" role="dialog" aria-label="选择 Agent、模型和思考深度">
           <label>
             <span>Agent</span>
             <SelectMenu
@@ -176,13 +176,13 @@ export function AgentModelPicker({
                 />
               </label>
               <label>
-                <span>Reasoning Level</span>
+                <span>思考深度</span>
                 <SelectMenu
                   value={reasoningEffort}
                   options={reasoningOptions}
                   position="up"
                   onChange={(value) => onChange(provider, model, value)}
-                  ariaLabel="选择 Reasoning Level"
+                  ariaLabel="选择思考深度"
                   disabled={reasoningEfforts.length === 0 && !reasoningEffort && !inheritedReasoningEffort}
                 />
               </label>
@@ -190,7 +190,7 @@ export function AgentModelPicker({
             </>
           )}
           {provider === 'pi' && (
-            <p className="composer-model-picker-status">Pi 使用内置模型，不提供模型与 Reasoning Level 选择。</p>
+            <p className="composer-model-picker-status">Fuddy Agent 使用内置模型，无需选择模型或思考深度。</p>
           )}
         </div>
       )}

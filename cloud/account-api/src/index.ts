@@ -131,7 +131,7 @@ function pathParts(request: Request): string[] {
 
 function requireConfiguration(env: Environment): void {
   if (!env.OTP_PEPPER || !env.SESSION_TOKEN_PEPPER) {
-    throw new ApiError(503, 'service_not_configured', '认证服务尚未完成安全配置。')
+    throw new ApiError(503, 'service_not_configured', '登录暂时不可用，请稍后重试。')
   }
 }
 
@@ -155,7 +155,7 @@ async function rateLimit(env: Environment, rawKey: string, limit: number, now: D
 async function sendEmailCode(env: Environment, to: string, code: string, challengeId: string): Promise<string | null> {
   if (env.EMAIL_DELIVERY_MODE === 'test' && env.ENVIRONMENT !== 'production') return null
   if (!env.RESEND_API_KEY || !env.RESEND_FROM) {
-    throw new ApiError(503, 'email_not_configured', '邮件服务尚未配置。')
+    throw new ApiError(503, 'email_not_configured', '验证码暂时无法发送，请稍后重试。')
   }
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -175,7 +175,7 @@ async function sendEmailCode(env: Environment, to: string, code: string, challen
   try {
     raw = await readLimitedText(response, 32 * 1024)
   } catch {
-    throw new ApiError(502, 'email_delivery_failed', '邮件服务返回了异常响应。')
+    throw new ApiError(502, 'email_delivery_failed', '验证码暂时无法发送，请稍后重试。')
   }
   if (!response.ok) {
     const details = parseResendErrorDetails(raw)
@@ -191,10 +191,10 @@ async function sendEmailCode(env: Environment, to: string, code: string, challen
   try {
     decoded = JSON.parse(raw) as unknown
   } catch {
-    throw new ApiError(502, 'email_delivery_failed', '邮件服务返回了异常响应。')
+    throw new ApiError(502, 'email_delivery_failed', '验证码暂时无法发送，请稍后重试。')
   }
   const payload = z.object({ id: z.string().trim().min(1).max(200) }).safeParse(decoded)
-  if (!payload.success) throw new ApiError(502, 'email_delivery_failed', '邮件服务返回了异常响应。')
+  if (!payload.success) throw new ApiError(502, 'email_delivery_failed', '验证码暂时无法发送，请稍后重试。')
   return payload.data.id
 }
 
@@ -539,7 +539,7 @@ async function verifyEmail(request: Request, env: Environment): Promise<Response
 
 async function verifyGoogleIdentity(env: Environment, idToken: string): Promise<VerifiedGoogleIdentity> {
   const audiences = env.GOOGLE_CLIENT_IDS.split(',').map((value) => value.trim()).filter(Boolean)
-  if (audiences.length === 0) throw new ApiError(503, 'google_not_configured', 'Google 登录尚未配置。')
+  if (audiences.length === 0) throw new ApiError(503, 'google_not_configured', 'Google 登录暂时不可用，请使用邮箱继续。')
   let payload: Awaited<ReturnType<typeof jwtVerify>>['payload']
   try {
     ;({ payload } = await jwtVerify(idToken, GOOGLE_JWKS, {

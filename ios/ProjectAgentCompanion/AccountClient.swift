@@ -11,8 +11,8 @@ enum AccountClientError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notConfigured: "账户服务尚未配置。"
-        case .invalidResponse: "账户服务返回了无法识别的内容。"
+        case .notConfigured: "暂时无法登录，请稍后再试。"
+        case .invalidResponse: "登录没有完成，请重试。"
         case .authenticationRequired: "登录已过期，请重新登录。"
         case .networkUnavailable: "暂时无法连接 Fuddy，请检查网络后重试。"
         case .service(let message): message
@@ -234,7 +234,7 @@ struct AccountClient {
         if result.response.statusCode == 401 { throw AccountClientError.authenticationRequired }
         guard (200..<300).contains(result.response.statusCode) else {
             let message = (try? JSONDecoder().decode(AccountAPIError.self, from: result.data))?.error.message
-            throw AccountClientError.service(message ?? "账户服务请求失败（\(result.response.statusCode)）。")
+            throw AccountClientError.service(message ?? "操作没有完成，请稍后重试。")
         }
         return current
     }
@@ -250,7 +250,7 @@ struct AccountClient {
             let detail = (try? JSONDecoder().decode(AccountAPIError.self, from: data))?.error
             if http.statusCode == 401 { throw AccountClientError.authenticationRequired }
             let message = detail?.message
-            throw AccountClientError.service(message ?? "账户服务请求失败（\(http.statusCode)）。")
+            throw AccountClientError.service(message ?? "操作没有完成，请稍后重试。")
         }
         guard let decoded = try? JSONDecoder().decode(Response.self, from: data) else {
             throw AccountClientError.invalidResponse
@@ -285,7 +285,7 @@ struct AccountClient {
         if result.response.statusCode == 401 { throw AccountClientError.authenticationRequired }
         guard (200..<300).contains(result.response.statusCode) else {
             let message = (try? JSONDecoder().decode(AccountAPIError.self, from: result.data))?.error.message
-            throw AccountClientError.service(message ?? "账户服务请求失败（\(result.response.statusCode)）。")
+            throw AccountClientError.service(message ?? "操作没有完成，请稍后重试。")
         }
         guard let decoded = try? JSONDecoder().decode(Response.self, from: result.data) else {
             throw AccountClientError.invalidResponse

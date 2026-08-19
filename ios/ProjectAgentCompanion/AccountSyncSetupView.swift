@@ -12,9 +12,9 @@ struct AccountSyncSetupView: View {
                         .foregroundStyle(.tint)
 
                     VStack(spacing: 8) {
-                        Text("正在同步你的项目")
+                        Text("正在连接你的 Mac")
                             .font(.title2.bold())
-                        Text(store.accountEnrollmentMessage ?? "正在查找已登录同一账户的 Mac…")
+                        Text(store.accountEnrollmentMessage ?? "正在查找你的 Mac…")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -24,15 +24,17 @@ struct AccountSyncSetupView: View {
                         ProgressView()
                             .controlSize(.large)
                             .accessibilityLabel("正在自动连接 Mac")
-                    } else {
-                        Button("重新查找") { store.retryAccountEnrollment() }
-                            .buttonStyle(.bordered)
                     }
 
+                    Button(store.accountEnrollmentInProgress ? "重新查找" : "重试") {
+                        store.retryAccountEnrollment()
+                    }
+                    .buttonStyle(.bordered)
+
                     VStack(alignment: .leading, spacing: 10) {
-                        Label("在 Mac 上打开 Fuddy", systemImage: "laptopcomputer")
+                        Label("保持 Mac 上的 Fuddy 开启", systemImage: "laptopcomputer")
                             .font(.subheadline.weight(.semibold))
-                        Text("确认 Mac 和这台 iPhone 登录的是同一账户。Mac 在线后，项目和 Agent Run 会自动出现。")
+                        Text("iPhone 会自动连接到同一账户下的 Mac，项目和 Agent Run 随后会出现。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -51,7 +53,7 @@ struct AccountSyncSetupView: View {
                 .frame(maxWidth: 560)
                 .frame(maxWidth: .infinity)
             }
-            .navigationTitle("同步项目")
+            .navigationTitle("连接 Mac")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

@@ -2,7 +2,6 @@ import { WorkerEntrypoint } from 'cloudflare:workers'
 import type {
   CompanionDevice,
   CompanionDeviceEnrollmentResult,
-  CompanionEncryptedSyncEventInput,
   CompanionEventBatchResult,
   CompanionEncryptedEventPage,
   CompanionPairingStartResult,
@@ -20,20 +19,18 @@ import {
   syncEventBatchSchema,
   syncEventSchema
 } from './schemas'
+import {
+  assertEncryptedEventPayloadSizes,
+  enforceRateLimit,
+  HttpError
+} from './request-guards'
 
 export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 const maximumAttachmentBytes = 100 * 1024 * 1024 + 32
-export const maximumEncryptedEventPayloadBytes = 1_900_000
 const relayBuild = '2026-08-18.1'
 const canonicalRelayPathPrefix = '/api/relay'
-
-class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message)
-  }
-}
 
 function randomToken(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength)
@@ -83,18 +80,6 @@ function routedRelayPath(pathname: string): string {
     return pathname.slice(canonicalRelayPathPrefix.length)
   }
   return pathname
-}
-
-export function assertEncryptedEventPayloadSizes(inputs: CompanionEncryptedSyncEventInput[]): void {
-  for (const input of inputs) {
-    const payloadBytes = new TextEncoder().encode(JSON.stringify(input.payload)).byteLength
-    if (payloadBytes > maximumEncryptedEventPayloadBytes) {
-      throw new HttpError(
-        413,
-        `Encrypted event payload exceeds the ${maximumEncryptedEventPayloadBytes} byte Relay limit.`
-      )
-    }
-  }
 }
 
 function relay(env: Env, accountId: string): DurableObjectStub<AccountRelay> {
@@ -384,12 +369,6 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   throw new HttpError(404, 'Route not found.')
-}
-
-export async function enforceRateLimit(binding: RateLimit, request: Request, scope: string): Promise<void> {
-  const client = request.headers.get('CF-Connecting-IP')?.trim() || 'unknown-client'
-  const outcome = await binding.limit({ key: `${scope}:${client}` })
-  if (!outcome.success) throw new HttpError(429, '请求过于频繁，请稍后重试。')
 }
 
 export default {

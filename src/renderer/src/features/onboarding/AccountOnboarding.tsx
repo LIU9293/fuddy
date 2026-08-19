@@ -1,13 +1,11 @@
 import {
-  Bot,
   Check,
   ChevronLeft,
   FolderOpen,
   Laptop,
   LoaderCircle,
   Mail,
-  RefreshCw,
-  ShieldCheck
+  RefreshCw
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type {
@@ -16,6 +14,7 @@ import type {
   StartEmailSignInResult
 } from '../../../../shared/account'
 import fuddyWordmark from '../../assets/fuddy-wordmark.png'
+import { userFacingErrorMessage } from '../../user-facing-error'
 
 export interface AccountOnboardingProps {
   state: AccountState
@@ -25,7 +24,7 @@ export interface AccountOnboardingProps {
 type BusyAction = 'email' | 'verify' | 'google' | null
 
 function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback
+  return userFacingErrorMessage(error, fallback)
 }
 
 function projectNameFromPath(path: string): string {
@@ -38,7 +37,6 @@ function EntryChrome({ children }: { children: React.ReactNode }): React.JSX.Ele
     <div className="account-entry-shell">
       <header className="account-entry-titlebar">
         <div className="window-drag-region" />
-        <img src={fuddyWordmark} alt="Fuddy" />
       </header>
       {children}
     </div>
@@ -111,13 +109,12 @@ function LoginView({ state, onStateChange }: AccountOnboardingProps): React.JSX.
     <EntryChrome>
       <main className="account-entry-main">
         <section className="account-entry-panel" aria-labelledby="account-entry-title">
-          <div className="account-assistant-mark" aria-hidden="true"><Bot size={19} /></div>
+          <img className="account-wordmark-mark" src={fuddyWordmark} alt="Fuddy" />
           {challenge ? (
             <>
               <button className="account-back-button" type="button" onClick={() => { setChallenge(null); setError(null) }}>
                 <ChevronLeft size={15} /> 更换邮箱
               </button>
-              <p className="account-eyebrow">登录 Fuddy</p>
               <h1 id="account-entry-title">输入验证码</h1>
               <p className="account-lede">验证码已发送至 <strong>{challenge.email}</strong>，10 分钟内有效。</p>
               <form className="account-form" onSubmit={(event) => { event.preventDefault(); void verify() }}>
@@ -133,9 +130,6 @@ function LoginView({ state, onStateChange }: AccountOnboardingProps): React.JSX.
                   placeholder="6 位数字"
                   aria-describedby={error ? 'account-entry-error' : undefined}
                 />
-                {challenge.debugCode && (
-                  <p className="account-dev-code"><ShieldCheck size={13} /> 开发环境验证码：{challenge.debugCode}</p>
-                )}
                 {error && <p className="account-entry-error" id="account-entry-error" role="alert">{error}</p>}
                 <button className="account-primary-button" type="submit" disabled={code.length !== 6 || Boolean(busy)}>
                   {busy === 'verify' && <LoaderCircle className="spin" size={15} />}
@@ -254,8 +248,8 @@ function AgentStep({ onStateChange }: Pick<AccountOnboardingProps, 'onStateChang
     <section className="onboarding-step" aria-labelledby="onboarding-title">
       <div className="onboarding-icon" aria-hidden="true"><Laptop size={22} /></div>
       <p className="account-eyebrow">第 1 步</p>
-      <h1 id="onboarding-title">连接 Coding Agent</h1>
-      <p className="account-lede">Fuddy 会查找这台 Mac 上可用的 Coding Agent，你稍后也可以在设置中更改。</p>
+      <h1 id="onboarding-title">检查 Coding Agent</h1>
+      <p className="account-lede">Fuddy 会检查这台 Mac 上可用的 Coding Agent，你稍后也可以在设置中更改。</p>
       {codingAgents.length > 0 && (
         <div className="agent-detection-list" aria-live="polite">
           {codingAgents.map((agent) => (
