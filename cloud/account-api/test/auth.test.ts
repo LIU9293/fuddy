@@ -364,6 +364,79 @@ describe('email authentication', () => {
     })
   })
 
+  it('durably revokes the previous Relay account when a re-signed-in Mac replaces it', async () => {
+    const email = 'relay-replacement@example.com'
+    const installation = { ...device, id: crypto.randomUUID() }
+    const first = await signIn(email, installation)
+    const spaceId = first.payload.device.syncSpaceId as string
+    const oldRelayAccountId = 'relay-account-before-logout'
+    const newRelayAccountId = 'relay-account-after-login'
+    const authorization = (accessToken: string) => ({
+      authorization: `Bearer ${accessToken}`,
+      'content-type': 'application/json'
+    })
+
+    const initialBinding = await SELF.fetch(`https://account.test/v1/sync-spaces/${spaceId}/relay-binding`, {
+      method: 'POST',
+      headers: authorization(first.payload.session.accessToken),
+      body: JSON.stringify({ relayUrl: 'https://fuddy.ai/api/relay', relayAccountId: oldRelayAccountId })
+    })
+    expect(initialBinding.status).toBe(200)
+    expect(await env.ACCOUNT_DB.prepare(
+      `SELECT COUNT(*) AS count FROM relay_revocation_jobs
+       WHERE source_id = ? AND operation = 'account'`
+    ).bind(spaceId).first()).toEqual({ count: 0 })
+
+    const logout = await SELF.fetch('https://account.test/v1/auth/logout-all', {
+      method: 'POST',
+      headers: authorization(first.payload.session.accessToken)
+    })
+    expect(logout.status).toBe(204)
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const second = await signIn(email, installation)
+    expect(second.verify.status).toBe(200)
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT status, source_generation AS sourceGeneration
+       FROM relay_revocation_jobs WHERE id = ?`
+    ).bind(`account:${spaceId}:${oldRelayAccountId}`).first()).resolves.toEqual({
+      status: 'completed',
+      sourceGeneration: 1
+    })
+
+    const replacement = await SELF.fetch(`https://account.test/v1/sync-spaces/${spaceId}/relay-binding`, {
+      method: 'POST',
+      headers: authorization(second.payload.session.accessToken),
+      body: JSON.stringify({ relayUrl: 'https://fuddy.ai/api/relay', relayAccountId: newRelayAccountId })
+    })
+    expect(replacement.status).toBe(200)
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT relay_account_id AS relayAccountId, relay_generation AS relayGeneration
+       FROM sync_spaces WHERE id = ?`
+    ).bind(spaceId).first()).resolves.toEqual({ relayAccountId: newRelayAccountId, relayGeneration: 2 })
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT status, source_generation AS sourceGeneration
+       FROM relay_revocation_jobs WHERE id = ?`
+    ).bind(`account:${spaceId}:${oldRelayAccountId}`).first()).resolves.toEqual({
+      status: 'pending',
+      sourceGeneration: 2
+    })
+
+    const relayAdmin = {
+      revokeDevice: vi.fn(async () => true),
+      setAccountGeneration: vi.fn(async () => undefined),
+      revokeAccount: vi.fn(async () => true)
+    } satisfies RelayAdministrationBinding
+    await expect(processRelayRevocationJobs(env, {
+      relayAdmin,
+      now: new Date('2030-01-01T00:00:00.000Z')
+    })).resolves.toEqual({ attempted: 1, completed: 1 })
+    expect(relayAdmin.revokeAccount).toHaveBeenCalledWith(oldRelayAccountId, 2)
+    expect(relayAdmin.revokeAccount).not.toHaveBeenCalledWith(newRelayAccountId, expect.anything())
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT status FROM relay_revocation_jobs WHERE id = ?'
+    ).bind(`account:${spaceId}:${oldRelayAccountId}`).first()).resolves.toEqual({ status: 'completed' })
+  })
+
   it('lists the current device separately from other signed-in devices', async () => {
     const first = await signIn('devices@example.com', { ...device, id: crypto.randomUUID() })
     await env.ACCOUNT_DB.prepare(
