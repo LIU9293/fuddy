@@ -1501,7 +1501,7 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
-  it('drains a retained encrypted v3 command and reports its result with protocol v4', async () => {
+  it('drains a retained encrypted v3 command and reports its result with the current protocol', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-legacy-command-'))
     directories.push(directory)
     const database = createTestDatabase(join(directory, 'app.sqlite'))

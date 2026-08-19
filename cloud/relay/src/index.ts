@@ -31,7 +31,7 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 export const maximumAttachmentBytes = companionAttachmentObjectMaximumBytes
-const relayBuild = '2026-08-20.1'
+const relayBuild = '2026-08-20.2'
 const canonicalRelayPathPrefix = '/api/relay'
 
 function randomToken(byteLength = 32): string {

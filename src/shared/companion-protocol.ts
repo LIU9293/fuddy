@@ -1,6 +1,6 @@
 export const companionProtocol = {
-  minimumVersion: 4,
-  currentVersion: 4
+  minimumVersion: 5,
+  currentVersion: 5
 } as const
 
 export const companionEventDefinitions = {

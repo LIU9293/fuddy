@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CredentialStorageStatus, ProviderSettings } from '../../shared/contracts'
+import { companionProtocolVersion } from '../../shared/companion-sync'
 import { AppDatabase } from './database'
 
 const temporaryDirectories: string[] = []
@@ -119,14 +120,18 @@ describe('AppDatabase lifecycle', () => {
       'dead_letter_reason'
     ]))
     expect(JSON.parse(repaired.payload_json)).toMatchObject({
-      protocolVersion: 4,
+      protocolVersion: companionProtocolVersion,
       payload: {},
       result: null
     })
-    expect(repaired).toMatchObject({ protocol_version: 4, attempts: 0, last_error: null })
+    expect(repaired).toMatchObject({ protocol_version: companionProtocolVersion, attempts: 0, last_error: null })
     expect(JSON.parse(upgradedProjectEvent.payload_json)).toEqual({ id: 'legacy-project' })
-    expect(upgradedProjectEvent).toMatchObject({ protocol_version: 4, attempts: 0, last_error: null })
-    expect(upgradedRemoteCommand).toEqual({ protocol_version: 4, status: 'executing' })
+    expect(upgradedProjectEvent).toMatchObject({
+      protocol_version: companionProtocolVersion,
+      attempts: 0,
+      last_error: null
+    })
+    expect(upgradedRemoteCommand).toEqual({ protocol_version: companionProtocolVersion, status: 'executing' })
     expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
     upgraded.close()
   })

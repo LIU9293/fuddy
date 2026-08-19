@@ -92,7 +92,7 @@ describe('companion relay', () => {
       status: 'ok',
       minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-20.1'
+      build: '2026-08-20.2'
     })
   })
 
@@ -857,7 +857,7 @@ describe('companion relay', () => {
     }))).resolves.toEqual({ count: maximumRetainedCommands, inserted: 0 })
   })
 
-  it('preserves retained encrypted events and commands across the protocol-v4 migration', async () => {
+  it('preserves retained encrypted events and commands across protocol upgrades', async () => {
     const { pairing, phone } = await pairedDevices()
     const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
     const now = new Date().toISOString()

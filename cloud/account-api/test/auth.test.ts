@@ -188,6 +188,54 @@ describe('email authentication', () => {
     expect(existing.verify.status).toBe(200)
   })
 
+  it('atomically admits only one concurrent Mac at the account limit', async () => {
+    const email = 'concurrent-mac-limit@example.com'
+    const first = await signIn(email, { ...device, id: crypto.randomUUID() })
+    const userId = first.payload.user.id as string
+    const timestamp = new Date().toISOString()
+    for (let index = 1; index < maximumActiveMacHostsPerUser - 1; index += 1) {
+      await env.ACCOUNT_DB.prepare(
+        `INSERT INTO devices (
+          id, user_id, installation_id, platform, name, public_key, app_version,
+          protocol_version, created_at, updated_at, last_seen_at
+        ) VALUES (?, ?, ?, 'macos', ?, 'public-key-material', '0.0.3', 1, ?, ?, ?)`
+      ).bind(
+        crypto.randomUUID(), userId, crypto.randomUUID(), `已有 Mac ${index}`,
+        timestamp, timestamp, timestamp
+      ).run()
+    }
+
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const leftStart = await post('/v1/auth/email/start', { email })
+    const left = await leftStart.json<{ challengeId: string; debugCode: string }>()
+    await env.ACCOUNT_DB.prepare(
+      `UPDATE auth_challenges SET created_at = datetime('now', '-2 minutes') WHERE id = ?`
+    ).bind(left.challengeId).run()
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const rightStart = await post('/v1/auth/email/start', { email })
+    const right = await rightStart.json<{ challengeId: string; debugCode: string }>()
+
+    const [leftVerify, rightVerify] = await Promise.all([
+      post('/v1/auth/email/verify', {
+        challengeId: left.challengeId,
+        code: left.debugCode,
+        device: { ...device, id: crypto.randomUUID(), name: '并发 Mac A' }
+      }),
+      post('/v1/auth/email/verify', {
+        challengeId: right.challengeId,
+        code: right.debugCode,
+        device: { ...device, id: crypto.randomUUID(), name: '并发 Mac B' }
+      })
+    ])
+    expect([leftVerify.status, rightVerify.status].sort()).toEqual([200, 409])
+    const rejected = leftVerify.status === 409 ? leftVerify : rightVerify
+    await expect(rejected.json()).resolves.toMatchObject({ error: { code: 'mac_host_limit_reached' } })
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT COUNT(*) AS count FROM devices
+       WHERE user_id = ? AND platform = 'macos' AND revoked_at IS NULL`
+    ).bind(userId).first()).resolves.toEqual({ count: maximumActiveMacHostsPerUser })
+  })
+
   it('does not let an existing installation change platform to bypass Mac limits', async () => {
     const email = 'platform-mismatch@example.com'
     const installationId = crypto.randomUUID()

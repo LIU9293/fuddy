@@ -219,29 +219,20 @@ async function upsertDevice(
 ): Promise<{ id: string; hostId: string | null; syncSpaceId: string | null }> {
   const installationId = input.id ?? crypto.randomUUID()
   const timestamp = isoNow(now)
-  const existingInstallation = await env.ACCOUNT_DB.prepare(
-    `SELECT id, platform, revoked_at FROM devices WHERE user_id = ? AND installation_id = ?`
-  ).bind(userId, installationId).first<{ id: string; platform: string; revoked_at: string | null }>()
-  if (existingInstallation && existingInstallation.platform !== input.platform) {
-    throw new ApiError(409, 'device_platform_mismatch', '这台设备的系统类型与首次注册时不一致。')
-  }
-  if (!existingInstallation || existingInstallation.revoked_at) {
-    const active = await env.ACCOUNT_DB.prepare(
-      `SELECT COUNT(*) AS devices,
-              SUM(CASE WHEN platform = 'macos' THEN 1 ELSE 0 END) AS macs
-       FROM devices WHERE user_id = ? AND revoked_at IS NULL`
-    ).bind(userId).first<{ devices: number; macs: number | null }>()
-    if ((active?.devices ?? 0) >= maximumActiveDevicesPerUser) {
-      throw new ApiError(409, 'device_limit_reached', `每个账户最多保留 ${maximumActiveDevicesPerUser} 台活跃设备。`)
-    }
-    if (input.platform === 'macos' && (active?.macs ?? 0) >= maximumActiveMacHostsPerUser) {
-      throw new ApiError(409, 'mac_host_limit_reached', `每个账户最多保留 ${maximumActiveMacHostsPerUser} 台活跃 Mac。`)
-    }
-  }
   const device = await env.ACCOUNT_DB.prepare(
     `INSERT INTO devices
        (id, user_id, installation_id, platform, name, public_key, app_version, protocol_version, created_at, updated_at, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM devices
+       WHERE user_id = ? AND installation_id = ? AND platform = ? AND revoked_at IS NULL
+     ) OR (
+       (SELECT COUNT(*) FROM devices WHERE user_id = ? AND revoked_at IS NULL) < ?
+       AND (
+         ? != 'macos' OR
+         (SELECT COUNT(*) FROM devices WHERE user_id = ? AND platform = 'macos' AND revoked_at IS NULL) < ?
+       )
+     )
      ON CONFLICT(user_id, installation_id) DO UPDATE SET
        name = excluded.name,
        public_key = excluded.public_key,
@@ -250,6 +241,7 @@ async function upsertDevice(
        updated_at = excluded.updated_at,
        last_seen_at = excluded.last_seen_at,
        revoked_at = NULL
+     WHERE devices.platform = excluded.platform
      RETURNING id`
   )
     .bind(
@@ -263,10 +255,37 @@ async function upsertDevice(
       input.protocolVersion,
       timestamp,
       timestamp,
-      timestamp
+      timestamp,
+      userId,
+      installationId,
+      input.platform,
+      userId,
+      maximumActiveDevicesPerUser,
+      input.platform,
+      userId,
+      maximumActiveMacHostsPerUser
     )
     .first<{ id: string }>()
-  if (!device) throw new ApiError(500, 'device_registration_failed', '设备注册失败。')
+  if (!device) {
+    const existingInstallation = await env.ACCOUNT_DB.prepare(
+      `SELECT platform FROM devices WHERE user_id = ? AND installation_id = ?`
+    ).bind(userId, installationId).first<{ platform: string }>()
+    if (existingInstallation && existingInstallation.platform !== input.platform) {
+      throw new ApiError(409, 'device_platform_mismatch', '这台设备的系统类型与首次注册时不一致。')
+    }
+    const active = await env.ACCOUNT_DB.prepare(
+      `SELECT COUNT(*) AS devices,
+              SUM(CASE WHEN platform = 'macos' THEN 1 ELSE 0 END) AS macs
+       FROM devices WHERE user_id = ? AND revoked_at IS NULL`
+    ).bind(userId).first<{ devices: number; macs: number | null }>()
+    if ((active?.devices ?? 0) >= maximumActiveDevicesPerUser) {
+      throw new ApiError(409, 'device_limit_reached', `每个账户最多保留 ${maximumActiveDevicesPerUser} 台活跃设备。`)
+    }
+    if (input.platform === 'macos' && (active?.macs ?? 0) >= maximumActiveMacHostsPerUser) {
+      throw new ApiError(409, 'mac_host_limit_reached', `每个账户最多保留 ${maximumActiveMacHostsPerUser} 台活跃 Mac。`)
+    }
+    throw new ApiError(500, 'device_registration_failed', '设备注册失败。')
+  }
   const id = device.id
 
   if (input.platform !== 'macos') return { id, hostId: null, syncSpaceId: null }
