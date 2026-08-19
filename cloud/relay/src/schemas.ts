@@ -23,6 +23,12 @@ export const pairingClaimSchema = z.object({
   publicKey: z.string().trim().max(2_000).nullable().optional()
 })
 
+export const deviceEnrollmentSchema = z.object({
+  deviceId: identifier,
+  deviceName: z.string().trim().min(1).max(200),
+  publicKey: z.string().trim().min(16).max(2_000)
+})
+
 export const pushRegistrationSchema = z.object({
   token: z.string().regex(/^[a-fA-F0-9]{32,256}$/)
 })

@@ -17,6 +17,19 @@ func companionSocketHeartbeatShouldReconnect(awaitingPong: Bool) -> Bool {
     awaitingPong
 }
 
+func companionRelayURLComponents(baseURL: String, path: String) -> URLComponents? {
+    guard var components = URLComponents(string: baseURL),
+          components.host != nil,
+          components.user == nil,
+          components.password == nil,
+          components.query == nil,
+          components.fragment == nil else { return nil }
+    let basePath = components.path == "/" ? "" : components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    let requestPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    components.path = "/" + [basePath, requestPath].filter { !$0.isEmpty }.joined(separator: "/")
+    return components
+}
+
 @MainActor
 final class RelayClient {
     private let credentials: CompanionCredentials
@@ -30,45 +43,6 @@ final class RelayClient {
     private(set) var realtimeConnected = false
 
     init(credentials: CompanionCredentials) { self.credentials = credentials }
-
-    static func claim(pairing: PairingPayload, deviceName: String) async throws -> CompanionCredentials {
-        guard companionProtocolRangeSupportsLocalVersion(
-            minimumVersion: pairing.minimumProtocolVersion ?? pairing.protocolVersion,
-            currentVersion: pairing.protocolVersion
-        ) else { throw RelayError.protocolMismatch }
-        let deviceID = UUID().uuidString
-        guard var components = URLComponents(string: pairing.relayUrl),
-              components.scheme == "https",
-              components.host != nil,
-              components.query == nil,
-              components.fragment == nil else { throw RelayError.invalidRelayURL }
-        components.path = "/v1/pairings/claim"
-        guard let url = components.url else { throw RelayError.invalidRelayURL }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "accountId": pairing.accountId,
-            "pairingSecret": pairing.pairingSecret,
-            "deviceId": deviceID,
-            "deviceName": deviceName
-        ])
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try validate(response: response, data: data)
-        let result = try JSONDecoder().decode(PairingClaimResult.self, from: data)
-        guard companionProtocolRangeSupportsLocalVersion(
-            minimumVersion: result.minimumProtocolVersion ?? result.protocolVersion,
-            currentVersion: result.protocolVersion
-        ) else { throw RelayError.protocolMismatch }
-        return CompanionCredentials(
-            relayURL: pairing.relayUrl,
-            accountID: result.accountId,
-            deviceID: result.device.id,
-            deviceToken: result.deviceToken,
-            encryptionKey: pairing.encryptionKey,
-            encryptionKeyId: pairing.encryptionKeyId
-        )
-    }
 
     func events(after: Int) async throws -> SyncEventPage {
         var components = authenticatedComponents(path: "/v1/events")
@@ -159,6 +133,13 @@ final class RelayClient {
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(PushTokenRegistration(token: token))
+        let (data, response) = try await session.data(for: request)
+        try Self.validate(response: response, data: data)
+    }
+
+    func revokeSelf() async throws {
+        var request = authorizedRequest(url: authenticatedComponents(path: "/v1/devices/self").url!)
+        request.httpMethod = "DELETE"
         let (data, response) = try await session.data(for: request)
         try Self.validate(response: response, data: data)
     }
@@ -331,7 +312,7 @@ final class RelayClient {
     private func encryptionKey() throws -> String {
         guard let key = credentials.encryptionKey, !key.isEmpty,
               let keyId = credentials.encryptionKeyId, !keyId.isEmpty else {
-            throw RelayError.integrity("Companion 端到端加密密钥不存在，请重新配对。")
+            throw RelayError.integrity("同步密钥不存在，请退出 Fuddy 后重新登录。")
         }
         return key
     }
@@ -349,7 +330,7 @@ final class RelayClient {
     }
 
     private func authenticatedComponents(path: String) -> URLComponents {
-        var components = URLComponents(string: credentials.relayURL + path)!
+        var components = companionRelayURLComponents(baseURL: credentials.relayURL, path: path)!
         components.queryItems = [
             URLQueryItem(name: "accountId", value: credentials.accountID),
             URLQueryItem(name: "deviceId", value: credentials.deviceID)
@@ -391,7 +372,7 @@ enum RelayError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .protocolMismatch: "Mac 与 iPhone 的协议版本不一致。"
-        case .invalidRelayURL: "配对二维码中的 Relay 地址无效或不安全。"
+        case .invalidRelayURL: "同步服务地址无效或不安全。"
         case .invalidResponse: "Relay 返回了无效响应。"
         case .integrity(let message): message
         case .server(let message): message

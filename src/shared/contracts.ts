@@ -1050,6 +1050,25 @@ export interface MicrophoneAccessResult {
 }
 
 export interface DesktopApi {
+  getAccountState(): Promise<import('./account').AccountState>
+  startEmailSignIn(email: string): Promise<import('./account').StartEmailSignInResult>
+  verifyEmailSignIn(input: import('./account').VerifyEmailSignInInput): Promise<import('./account').AccountState>
+  signInWithGoogle(): Promise<import('./account').AccountState>
+  listAccountIdentities(): Promise<import('./account').AccountIdentity[]>
+  linkGoogleAccount(): Promise<import('./account').AccountIdentity[]>
+  unlinkGoogleAccount(): Promise<import('./account').AccountIdentity[]>
+  listAccountDevices(): Promise<import('./account').AccountDeviceSummary[]>
+  revokeAccountDevice(deviceId: string): Promise<void>
+  logoutAccount(): Promise<import('./account').AccountState>
+  logoutAllAccounts(): Promise<import('./account').AccountState>
+  onAccountStateChanged(callback: (state: import('./account').AccountState) => void): () => void
+  detectCodingAgents(): Promise<import('./account').AgentDetectionResult>
+  completeAgentDetection(): Promise<import('./account').AccountState>
+  selectOnboardingProjectFolder(): Promise<string | null>
+  completeProjectOnboarding(input: import('./account').CompleteProjectOnboardingInput): Promise<{
+    account: import('./account').AccountState
+    project: Project | null
+  }>
   getBootstrap(): Promise<AppBootstrap>
   getBootstrapPatch(keys: AppBootstrapDataKey[]): Promise<AppBootstrapPatch>
   requestComputerUsePermissions(): Promise<Capability[]>
@@ -1083,8 +1102,7 @@ export interface DesktopApi {
   updateAgentRunExecutionSettings(input: UpdateAgentRunExecutionSettingsInput): Promise<AgentRun>
   archiveAgentRun(id: string): Promise<void>
   getCompanionStatus(): Promise<import('./companion-sync').CompanionMacStatus>
-  beginCompanionPairing(relayUrl: string): Promise<import('./companion-sync').CompanionPairingSession>
-  disconnectCompanion(): Promise<void>
+  getCompanionRelayConfiguration(): Promise<{ relayUrl: string | null; available: boolean }>
   syncCompanionNow(): Promise<import('./companion-sync').CompanionMacStatus>
   onCompanionStatusChanged(
     callback: (status: import('./companion-sync').CompanionMacStatus) => void

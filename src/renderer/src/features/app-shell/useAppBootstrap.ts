@@ -11,6 +11,7 @@ import {
 import { AppDataStore } from './app-data-store'
 
 interface UseAppBootstrapOptions {
+  enabled: boolean
   onOpenAgentRun: (runId: string) => void
   onError: (message: string) => void
 }
@@ -46,19 +47,20 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
   }, [])
 
   const refresh = useCallback(async (): Promise<void> => {
+    if (!options.enabled) return
     await enqueueRefresh(async () => {
       const nextBootstrap = await window.projectAgent.getBootstrap()
       if (mounted.current) store.replace(nextBootstrap)
     })
-  }, [enqueueRefresh, store])
+  }, [enqueueRefresh, options.enabled, store])
 
   const refreshDomains = useCallback(async (keys: readonly AppBootstrapDataKey[]): Promise<void> => {
-    if (keys.length === 0) return
+    if (!options.enabled || keys.length === 0) return
     await enqueueRefresh(async () => {
       const patch = await window.projectAgent.getBootstrapPatch([...new Set(keys)])
       if (mounted.current) store.patch(patch)
     })
-  }, [enqueueRefresh, store])
+  }, [enqueueRefresh, options.enabled, store])
 
   const refreshPatch = useCallback((keys: readonly AppBootstrapDataKey[]): void => {
     mergeBootstrapKeys(pendingPatchKeys.current, keys)
@@ -77,6 +79,7 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
   }, [refreshDomains])
 
   useEffect(() => {
+    if (!options.enabled) return
     mounted.current = true
     let active = true
     let retryTimer: number | null = null
@@ -122,7 +125,7 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
       stopOpenAgentRun()
       stopAgentRuns()
     }
-  }, [enqueueRefresh, refreshPatch, store])
+  }, [enqueueRefresh, options.enabled, refreshPatch, store])
 
   return { ready, store, setBootstrap, refresh, refreshDomains }
 }

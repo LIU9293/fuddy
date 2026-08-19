@@ -51,6 +51,7 @@ export function registerRunIpc(context: IpcContext): void {
     automationRuntime,
     projectAgentIntegration,
     companionSync,
+    accountEnrollmentCoordinator,
     persistAttachments
   } = context
   ipcMain.handle('task:dispatch', (event, rawInput: unknown) => {
@@ -110,11 +111,10 @@ export function registerRunIpc(context: IpcContext): void {
 
   ipcMain.handle('companion:get-status', () => companionSync.getStatus())
 
-  ipcMain.handle('companion:begin-pairing', (_event, rawRelayUrl: unknown) => {
-    return companionSync.beginPairing(z.url().parse(rawRelayUrl))
-  })
-
-  ipcMain.handle('companion:disconnect', () => companionSync.disconnect())
+  ipcMain.handle('companion:get-relay-configuration', () => ({
+    relayUrl: accountEnrollmentCoordinator.getRelayUrl(),
+    available: Boolean(accountEnrollmentCoordinator.getRelayUrl())
+  }))
 
   ipcMain.handle('companion:sync-now', () => companionSync.syncNow())
 

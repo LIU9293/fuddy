@@ -23,7 +23,7 @@ import type { CompanionEncryptedEnvelope } from './companion-crypto'
 
 export const companionProtocolVersion = companionProtocol.currentVersion
 export const companionMinimumProtocolVersion = companionProtocol.minimumVersion
-export const defaultCompanionRelayUrl = 'https://project-agent-companion-relay.moghub.workers.dev'
+export const defaultCompanionRelayUrl = 'https://fuddy.ai/api/relay'
 export { companionCommandTypes, companionEventDefinitions }
 export type { CompanionCommandType, CompanionEntityType, CompanionEventType }
 
@@ -72,6 +72,14 @@ export interface CompanionPairingClaimResult {
   device: CompanionDevice
   deviceToken: string
 }
+
+export interface CompanionDeviceEnrollmentInput {
+  deviceId: string
+  deviceName: string
+  publicKey?: string | null
+}
+
+export type CompanionDeviceEnrollmentResult = CompanionPairingClaimResult
 
 interface CompanionSyncEventBase {
   eventId: string
@@ -215,6 +223,8 @@ export interface CompanionMacConfiguration {
   accountId: string
   macDeviceId: string
   pairedAt: string
+  /** Account sync space that owns this Relay identity. Absent on legacy pairings. */
+  syncSpaceId?: string
   /** Key material is stored in the credential vault; only its identifier is persisted here. */
   encryptionKeyId?: string
 }
@@ -230,6 +240,9 @@ export interface CompanionMacStatus {
   lastSyncedAt: string | null
   lastError: string | null
   pendingEvents: number
+  isolatedEvents: number
+  /** Known only while the realtime Relay connection is active. */
+  iosDevicesOnline: number | null
 }
 
 export interface CompanionPairingSession {
@@ -314,6 +327,7 @@ export interface CompanionCommandRecord {
 
 export interface CompanionOutboxPayloadMap {
   'snapshot.created': CompanionSnapshotPayload
+  'chat-page.updated': CompanionChatPage
   'project.created': Project
   'project.updated': Project
   'goal.created': ProjectGoal
@@ -334,8 +348,9 @@ export interface CompanionOutboxPayloadMap {
 }
 
 export interface CompanionRelayEventPayloadMap extends Omit<CompanionOutboxPayloadMap,
-  'snapshot.created' | 'artifact.updated' | 'work-assistant-message.created' | 'work-assistant-message.updated'> {
+  'snapshot.created' | 'chat-page.updated' | 'artifact.updated' | 'work-assistant-message.created' | 'work-assistant-message.updated'> {
   'snapshot.created': CompanionRelaySnapshotPayload
+  'chat-page.updated': CompanionRelayChatPage
   'artifact.updated': AgentRunArtifact | CompanionArtifactEventPayload
   'work-assistant-message.created': CompanionRelayWorkAssistantMessage
   'work-assistant-message.updated': CompanionRelayWorkAssistantMessage

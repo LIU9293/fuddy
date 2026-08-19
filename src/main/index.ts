@@ -40,6 +40,11 @@ import { startAutoUpdateService } from './services/auto-update-service'
 import { resolveFuddyRuntimeProfile } from './runtime-profile'
 import { registerWorkspaceFileProtocol } from './services/workspace-file-protocol'
 import { workspaceFilePreviewScheme } from '../shared/workspace-file-preview'
+import { AccountService, normalizeAccountApiUrl } from './services/account-service'
+import {
+  AccountEnrollmentCoordinator,
+  resolveCompanionRelayUrl
+} from './services/account-enrollment-coordinator'
 
 protocol.registerSchemesAsPrivileged([{
   scheme: workspaceFilePreviewScheme,
@@ -91,6 +96,7 @@ let agentToolsMcp: ThirdPartyMcpRuntime | null = null
 let shutdownPromise: Promise<void> | null = null
 let shutdownComplete = false
 let companionSync: CompanionSyncService | null = null
+let accountEnrollmentCoordinator: AccountEnrollmentCoordinator | null = null
 let pendingAgentRunNavigationId: string | null = null
 let stopAutoUpdates: (() => void) | null = null
 
@@ -302,6 +308,27 @@ if (!hasLock) {
       const databasePath = join(userDataPath, 'project-agent.sqlite')
       database = new AppDatabase(databasePath)
       const credentialVault = new CredentialVault(join(userDataPath, 'credentials.enc'))
+      const configuredAccountApiUrl = process.env.FUDDY_ACCOUNT_API_URL?.trim()
+      const defaultAccountApiUrl = runtimeProfile.channel === 'development'
+        ? 'http://127.0.0.1:8788'
+        : 'https://fuddy.ai/api/account'
+      const accountApiUrl = normalizeAccountApiUrl(
+        configuredAccountApiUrl || defaultAccountApiUrl,
+        runtimeProfile.channel
+      )
+      const accountService = new AccountService(database, credentialVault, {
+        apiUrl: accountApiUrl,
+        runtimeChannel: runtimeProfile.channel,
+        appVersion: app.getVersion(),
+        googleClientId: process.env.FUDDY_GOOGLE_CLIENT_ID?.trim()
+          || (runtimeProfile.channel === 'production'
+            ? '877382581311-dt2ln9r81lqe8i0d6svknfs1dfi1s889.apps.googleusercontent.com'
+            : null)
+      })
+      const companionRelayUrl = resolveCompanionRelayUrl(
+        process.env.FUDDY_COMPANION_RELAY_URL,
+        runtimeProfile.channel
+      )
       const providerSettings = new ProviderSettingsService(database, credentialVault)
       const whisperRoot = app.isPackaged
         ? join(process.resourcesPath, 'third-party', 'whisper')
@@ -394,6 +421,11 @@ if (!hasLock) {
         workspaceFiles,
         () => buildAgentModelLabels(providerSettings.getPublicSettings())
       )
+      accountEnrollmentCoordinator = new AccountEnrollmentCoordinator(
+        accountService,
+        companionSync,
+        companionRelayUrl
+      )
       companionSync.setWorkAssistantActionExecutor((input) => morningBriefingService.executeAction(input))
       companionSync.onStatusChanged((status) => {
         if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:status-changed', status)
@@ -478,7 +510,9 @@ if (!hasLock) {
         workspaceFiles,
         automationRuntime,
         projectAgentIntegration,
-        companionSync
+        companionSync,
+        accountService,
+        accountEnrollmentCoordinator
       )
       createWindow()
       const updateConfigurationExists = existsSync(join(process.resourcesPath, 'app-update.yml'))
@@ -493,7 +527,10 @@ if (!hasLock) {
         .catch((error: unknown) => {
           Sentry.captureException(error, { tags: { boundary: 'decision-remediation-startup' } })
         })
-      void companionSync.start()
+      if (accountService.getState().status === 'signed-in') {
+        void companionSync.start()
+        accountEnrollmentCoordinator.start()
+      }
       if (process.env.PROJECT_AGENT_SENTRY_TEST === '1') {
         setTimeout(() => {
           Sentry.captureException(new Error('Fuddy main-process Sentry integration test'))
@@ -530,6 +567,8 @@ async function shutdown(): Promise<void> {
     automationScheduler = null
     stopAutoUpdates?.()
     stopAutoUpdates = null
+    accountEnrollmentCoordinator?.stop()
+    accountEnrollmentCoordinator = null
     companionSync?.stop()
     companionSync = null
     await agentToolsMcp?.stop()

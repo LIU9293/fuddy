@@ -1,5 +1,8 @@
+import { WorkerEntrypoint } from 'cloudflare:workers'
 import type {
   CompanionDevice,
+  CompanionDeviceEnrollmentResult,
+  CompanionEncryptedSyncEventInput,
   CompanionEventBatchResult,
   CompanionEncryptedEventPage,
   CompanionPairingStartResult,
@@ -10,6 +13,7 @@ import { AccountRelay } from './account-relay'
 import {
   commandSchema,
   commandUpdateSchema,
+  deviceEnrollmentSchema,
   pairingClaimSchema,
   pairingStartSchema,
   pushRegistrationSchema,
@@ -21,7 +25,9 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 const maximumAttachmentBytes = 100 * 1024 * 1024 + 32
-const relayBuild = '2026-08-13.1'
+export const maximumEncryptedEventPayloadBytes = 1_900_000
+const relayBuild = '2026-08-18.1'
+const canonicalRelayPathPrefix = '/api/relay'
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -65,8 +71,54 @@ function requiredSearchParam(url: URL, name: string): string {
   return value
 }
 
+function publicRelayUrl(url: URL): string {
+  return url.pathname === canonicalRelayPathPrefix || url.pathname.startsWith(`${canonicalRelayPathPrefix}/`)
+    ? `${url.origin}${canonicalRelayPathPrefix}`
+    : url.origin
+}
+
+function routedRelayPath(pathname: string): string {
+  if (pathname === canonicalRelayPathPrefix) return '/'
+  if (pathname.startsWith(`${canonicalRelayPathPrefix}/`)) {
+    return pathname.slice(canonicalRelayPathPrefix.length)
+  }
+  return pathname
+}
+
+export function assertEncryptedEventPayloadSizes(inputs: CompanionEncryptedSyncEventInput[]): void {
+  for (const input of inputs) {
+    const payloadBytes = new TextEncoder().encode(JSON.stringify(input.payload)).byteLength
+    if (payloadBytes > maximumEncryptedEventPayloadBytes) {
+      throw new HttpError(
+        413,
+        `Encrypted event payload exceeds the ${maximumEncryptedEventPayloadBytes} byte Relay limit.`
+      )
+    }
+  }
+}
+
 function relay(env: Env, accountId: string): DurableObjectStub<AccountRelay> {
   return env.ACCOUNT_RELAY.getByName(accountId)
+}
+
+async function deleteAccountAttachments(env: Env, accountId: string): Promise<void> {
+  let cursor: string | undefined
+  do {
+    const page = await env.ATTACHMENTS.list({ prefix: `${accountId}/`, cursor })
+    if (page.objects.length > 0) await env.ATTACHMENTS.delete(page.objects.map((object) => object.key))
+    cursor = page.truncated ? page.cursor : undefined
+  } while (cursor)
+}
+
+export class RelayAdministration extends WorkerEntrypoint<Env> {
+  async revokeDevice(accountId: string, deviceId: string): Promise<boolean> {
+    return await relay(this.env, accountId).revokeDeviceByAuthority(deviceId)
+  }
+
+  async revokeAccount(accountId: string): Promise<void> {
+    await relay(this.env, accountId).revokeAccountByAuthority()
+    await deleteAccountAttachments(this.env, accountId)
+  }
 }
 
 function relayRequestContext(request: Request, env: Env, url: URL): {
@@ -103,6 +155,8 @@ async function authenticatedContext(
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url)
+  const relayUrl = publicRelayUrl(url)
+  url.pathname = routedRelayPath(url.pathname)
   if (request.method === 'GET' && url.pathname === '/health') {
     return Response.json({
       status: 'ok',
@@ -132,7 +186,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const pairingPayload = JSON.stringify({
       minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
-      relayUrl: url.origin,
+      relayUrl,
       accountId,
       pairingSecret
     })
@@ -173,6 +227,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (request.method === 'POST' && url.pathname === '/v1/events') {
     const context = relayRequestContext(request, env, url)
     const input = syncEventSchema.parse(await readJson(request))
+    assertEncryptedEventPayloadSizes([input])
     const event = await context.stub.appendEvent(
       context.deviceId,
       context.token,
@@ -185,6 +240,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (request.method === 'POST' && url.pathname === '/v1/events/batch') {
     const context = relayRequestContext(request, env, url)
     const input = syncEventBatchSchema.parse(await readJson(request))
+    assertEncryptedEventPayloadSizes(input.events)
     const result = await context.stub.appendEvents(
       context.deviceId,
       context.token,
@@ -198,6 +254,44 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const context = await authenticatedContext(request, env, url, 'ios')
     const input = commandSchema.parse(await readJson(request))
     return Response.json(await context.stub.createCommand(context.deviceId, context.token, input), { status: 201 })
+  }
+
+  if (request.method === 'POST' && url.pathname === '/v1/devices/enroll') {
+    const context = await authenticatedContext(request, env, url, 'mac')
+    const input = deviceEnrollmentSchema.parse(await readJson(request))
+    if (input.deviceId === context.deviceId) throw new HttpError(409, '不能把 Mac 设备覆盖为 iOS 设备。')
+    const enrollment = await context.stub.enrollDevice(
+      context.deviceId,
+      context.token,
+      context.accountId,
+      input
+    ) as CompanionDeviceEnrollmentResult | null
+    if (!enrollment) throw new HttpError(401, '设备认证失败。')
+    return Response.json(enrollment, { status: 201 })
+  }
+
+  if (request.method === 'GET' && url.pathname === '/v1/device') {
+    const context = await authenticatedContext(request, env, url)
+    return Response.json({ device: context.device })
+  }
+
+  if (request.method === 'DELETE' && url.pathname === '/v1/devices/self') {
+    const context = await authenticatedContext(request, env, url, 'ios')
+    const revoked = await context.stub.revokeSelfDevice(context.deviceId, context.token)
+    if (!revoked) throw new HttpError(401, '设备认证失败。')
+    return new Response(null, { status: 204 })
+  }
+
+  const deviceMatch = url.pathname.match(/^\/v1\/devices\/([^/]+)$/)
+  if (request.method === 'DELETE' && deviceMatch) {
+    const context = await authenticatedContext(request, env, url, 'mac')
+    const revoked = await context.stub.revokeDevice(
+      context.deviceId,
+      context.token,
+      decodeURIComponent(deviceMatch[1])
+    )
+    if (!revoked) throw new HttpError(409, '不能通过设备接口撤销 Mac Host。')
+    return new Response(null, { status: 204 })
   }
 
   if (request.method === 'PUT' && url.pathname === '/v1/devices/push-token') {
@@ -279,12 +373,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (request.method === 'DELETE' && url.pathname === '/v1/account') {
     const context = await authenticatedContext(request, env, url, 'mac')
     await context.stub.revokeAccount(context.deviceId, context.token)
-    let cursor: string | undefined
-    do {
-      const page = await env.ATTACHMENTS.list({ prefix: `${context.accountId}/`, cursor })
-      if (page.objects.length > 0) await env.ATTACHMENTS.delete(page.objects.map((object) => object.key))
-      cursor = page.truncated ? page.cursor : undefined
-    } while (cursor)
+    await deleteAccountAttachments(env, context.accountId)
     return new Response(null, { status: 204 })
   }
 

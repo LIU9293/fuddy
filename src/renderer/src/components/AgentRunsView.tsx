@@ -815,6 +815,7 @@ export function AgentRunsView({
   codingAgentSettings,
   selectedRunId,
   creating,
+  initialProjectId,
   prefill,
   onPrefillConsumed,
   onSelectRun,
@@ -829,6 +830,7 @@ export function AgentRunsView({
   codingAgentSettings: CodingAgentSettings
   selectedRunId: string | null
   creating: boolean
+  initialProjectId?: string | null
   prefill: { runId: string; prompt: string; requestId: string } | null
   onPrefillConsumed: () => void
   onSelectRun: (runId: string | null) => void
@@ -860,7 +862,8 @@ export function AgentRunsView({
   const [milestoneValue, setMilestoneValue] = useState('')
   const [title, setTitle] = useState('')
   const titleInputRef = useRef<HTMLInputElement | null>(null)
-  const previousCreatingRef = useRef(creating)
+  const previousCreatingRef = useRef(false)
+  const previousCreateProjectIdRef = useRef<string | null | undefined>(undefined)
   const selectedRunIdRef = useRef(selectedRunId)
   const activeRequestIdByRunRef = useRef(new Map<string, string>())
   const persistedDraftPromptRef = useRef<{ runId: string; prompt: string } | null>(null)
@@ -1097,21 +1100,27 @@ export function AgentRunsView({
     return projects.find((project) => project.id === nextProjectId)?.profile.defaultAgent ?? 'pi'
   }
 
-  function resetNewRun(): void {
+  function resetNewRun(nextProjectId: string | null): void {
     setDetail(null)
-    setProvider(projectDefaultAgent(projectId))
+    setProjectId(nextProjectId)
+    setProvider(projectDefaultAgent(nextProjectId))
     setMilestoneValue('')
     setTitle('')
   }
 
   useEffect(() => {
     const justStartedCreating = creating && !previousCreatingRef.current
+    const createProjectChanged = creating && previousCreateProjectIdRef.current !== initialProjectId
     previousCreatingRef.current = creating
-    if (justStartedCreating) {
-      resetNewRun()
+    previousCreateProjectIdRef.current = initialProjectId
+    if (justStartedCreating || createProjectChanged) {
+      const requestedProjectId = initialProjectId === undefined
+        ? projects[0]?.id ?? null
+        : projects.some((project) => project.id === initialProjectId) ? initialProjectId : null
+      resetNewRun(requestedProjectId)
       window.requestAnimationFrame(() => titleInputRef.current?.focus())
     }
-  }, [creating])
+  }, [creating, initialProjectId, projects])
 
   async function createRun(): Promise<void> {
     if (!title.trim() || creatingBusy) return
@@ -1532,7 +1541,10 @@ export function RunLiveActivity({
       {activities.length > 0 && <ActivityStages stages={groupLiveActivityStages(activities)} live />}
       {streamingText.trim() && <div className="agent-run-live-message"><Markdown content={streamingText} /></div>}
       {activities.length === 0 && !streamingText.trim() && !approval && (
-        <div className="agent-run-live-idle" role="status">正在思考…</div>
+        <div className="agent-run-live-idle" role="status">
+          <LoaderCircle size={13} className="spin" aria-hidden="true" />
+          <span>正在思考…</span>
+        </div>
       )}
     </div>
   )

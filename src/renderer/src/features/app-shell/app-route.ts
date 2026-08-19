@@ -7,7 +7,7 @@ export type AppMainRoute =
   | { kind: 'files' }
   | { kind: 'projects' }
   | { kind: 'project'; projectId: string; section: ProjectSection }
-  | { kind: 'runs'; runId: string | null; creating: boolean }
+  | { kind: 'runs'; runId: string | null; creating: boolean; createProjectId?: string | null }
   | { kind: 'automations' }
 
 export type AppRoute = AppMainRoute | {
@@ -81,6 +81,10 @@ export function creatingRunForRoute(route: AppRoute): boolean {
   return route.kind === 'runs' && route.creating
 }
 
+export function creatingRunProjectForRoute(route: AppRoute): string | null | undefined {
+  return route.kind === 'runs' && route.creating ? route.createProjectId : undefined
+}
+
 export interface AppNavigationController {
   route: AppRoute
   navigation: Navigation
@@ -90,6 +94,7 @@ export interface AppNavigationController {
   settingsSection: SettingsSection
   selectedAgentRunId: string | null
   creatingAgentRun: boolean
+  creatingAgentRunProjectId: string | null | undefined
   openBriefing: () => void
   openInbox: () => void
   openFiles: () => void
@@ -99,7 +104,7 @@ export interface AppNavigationController {
   setProjectSection: (section: ProjectSection) => void
   openRun: (runId: string) => void
   openRuns: () => void
-  createRun: () => void
+  createRun: (projectId?: string | null) => void
   setRunSelection: (runId: string | null, creating: boolean) => void
   openSettings: () => void
   closeSettings: () => void
@@ -119,6 +124,7 @@ export function useAppNavigation(): AppNavigationController {
     settingsSection: route.kind === 'settings' ? route.section : 'general',
     selectedAgentRunId: selectedRunForRoute(route),
     creatingAgentRun: creatingRunForRoute(route),
+    creatingAgentRunProjectId: creatingRunProjectForRoute(route),
     openBriefing: () => dispatch({ type: 'open-main', route: { kind: 'briefing' } }),
     openInbox: () => dispatch({ type: 'open-main', route: { kind: 'inbox' } }),
     openFiles: () => dispatch({ type: 'open-main', route: { kind: 'files' } }),
@@ -128,7 +134,10 @@ export function useAppNavigation(): AppNavigationController {
     setProjectSection: (section) => dispatch({ type: 'set-project-section', section }),
     openRun: (runId) => dispatch({ type: 'open-main', route: { kind: 'runs', runId, creating: false } }),
     openRuns: () => dispatch({ type: 'open-main', route: { kind: 'runs', runId: null, creating: false } }),
-    createRun: () => dispatch({ type: 'open-main', route: { kind: 'runs', runId: null, creating: true } }),
+    createRun: (projectId) => dispatch({
+      type: 'open-main',
+      route: { kind: 'runs', runId: null, creating: true, createProjectId: projectId }
+    }),
     setRunSelection: (runId, creating) => dispatch({
       type: 'open-main',
       route: { kind: 'runs', runId: creating ? null : runId, creating }

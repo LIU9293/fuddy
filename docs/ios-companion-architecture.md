@@ -12,7 +12,7 @@ React Native is technically viable: React Navigation's Native Stack uses `UINavi
 flowchart LR
   Phone["SwiftUI iPhone app\nread cache + commands"]
   Relay["Cloudflare Worker\nauth + API boundary"]
-  DO["Durable Object per pairing\nevent log + command queue + WebSocket"]
+  DO["Durable Object per Sync Space\nevent log + command queue + WebSocket"]
   R2["Private R2 bucket\nattachments"]
   APNS["Apple Push Notification service\nbackground wake-up + Run alerts"]
   Mac["Electron Mac app\nSQLite outbox + Agent runtimes"]
@@ -27,7 +27,7 @@ flowchart LR
   Mac <--> Workspaces
 ```
 
-The deployed relay is `https://project-agent-companion-relay.moghub.workers.dev`. It uses one Durable Object per random account/pairing ID, the Hibernation WebSocket API, SQLite-backed ordered events and commands, and a private R2 bucket. Cloudflare recommends Hibernation because the object can sleep while clients remain connected: [Durable Objects WebSockets](https://developers.cloudflare.com/durable-objects/best-practices/websockets/).
+The canonical relay is `https://fuddy.ai/api/relay`; the previous `workers.dev` route remains available for already-installed clients. It uses one Durable Object per account-owned Sync Space, the Hibernation WebSocket API, SQLite-backed ordered events and commands, and a private R2 bucket. Cloudflare recommends Hibernation because the object can sleep while clients remain connected: [Durable Objects WebSockets](https://developers.cloudflare.com/durable-objects/best-practices/websockets/).
 
 ## Consistency model
 
@@ -44,22 +44,22 @@ The WebSocket is a wake-up hint, not the source of truth. A committed batch emit
 
 Mac keeps complete Agent tool output only in its authoritative local database. Snapshot and incremental Relay payloads retain the tool name and terminal status, normalize whitespace, remove native metadata/arguments, and cap the displayed summary at 600 characters. User messages, assistant answers, and provider-supported reasoning summaries continue to replay normally; raw private chain-of-thought is never part of the protocol.
 
-Every phone chat is projected into the same stable `CompanionChatRecord` block stream. A pairing snapshot includes only the newest 100 display blocks for Work Assistant and for each Agent Run, ordered oldest-to-newest so the shared timeline can open at the latest message. Reaching the top sends the constrained `chat.load-history` command with a stable `before` record cursor; Mac returns at most 100 complete earlier blocks through the encrypted command result. A process block is never split between pages, even when it contains several reasoning/tool events. iOS merges the page by record ID and preserves the visible scroll target while Mac remains authoritative for the full history.
+Every phone chat is projected into the same stable `CompanionChatRecord` block stream. An initial Sync Space snapshot includes only the newest 100 display blocks for Work Assistant and for each Agent Run, ordered oldest-to-newest so the shared timeline can open at the latest message. Reaching the top sends the constrained `chat.load-history` command with a stable `before` record cursor; Mac returns at most 100 complete earlier blocks through the encrypted command result. A process block is never split between pages, even when it contains several reasoning/tool events. iOS merges the page by record ID and preserves the visible scroll target while Mac remains authoritative for the full history.
 
 Each event page and WebSocket presence frame also carries current Durable Object presence. The iPhone updates presence directly from `sync.ready` and `presence.updated`, and distinguishes “Relay unreachable” from “Relay connected but Mac offline”; commands may still be queued in the second state and will execute when the Mac reconnects. The Mac settings UI reports HTTP replay and realtime WebSocket health separately so a successful replay cannot hide a stale socket.
 
-## Pairing and authentication
+## Account authorization and authentication
 
-- Mac requests an account ID, a one-time pairing secret, and a Mac bearer token.
-- The pairing secret expires after ten minutes and can be claimed once.
-- Mac renders the complete pairing payload as a QR code. iOS scans it with VisionKit's native `DataScannerViewController`, validates an HTTPS Relay origin, and claims it without retyping secrets; Universal Clipboard paste remains the fallback.
-- The pairing payload carries a generated contract fingerprint. iOS rejects a different fingerprint before claiming the pairing, so TypeScript/Swift DTO drift fails visibly instead of corrupting the local cache. Payloads from pre-fingerprint Mac builds remain accepted during the compatibility window.
-- iOS stores its bearer token in Keychain with `AfterFirstUnlockThisDeviceOnly`; Mac stores its token in the existing encrypted credential vault/macOS Keychain path.
-- Durable Object storage contains only SHA-256 token hashes. Tokens and pairing secrets are never logged or stored in SQLite on the Mac.
-- Every account/device operation requires account ID, device ID, and bearer token. Role checks ensure only Mac can append authoritative events or complete commands, while only iOS can create commands.
-- Disconnecting from the Mac revokes every paired device, clears the Durable Object event/command data, closes sockets, and deletes that account's R2 objects. A stale phone token receives `401` afterward.
+- Mac and iPhone must first establish independent Fuddy account sessions. The Account API registers each installation as a revocable device and creates one Sync Space per Mac host.
+- After iPhone login, it restores its previous Sync Space or chooses the most recently online space, generates a device P-256 key, and creates an enrollment request. There is no QR or manual pairing step in the current UI.
+- The online Mac validates the same-account enrollment and uses ECDH, HKDF-SHA256 and AES-256-GCM to wrap the Relay token and Space Data Key for that specific iPhone public key. The Account API stores only the opaque wrapped grant.
+- iOS stores account tokens, its device private key and Relay credentials in Keychain with device-only accessibility; Mac stores its session, private key and Relay token in the credential vault/macOS Keychain path.
+- Durable Object storage contains only SHA-256 token hashes. Tokens, Space Data Keys and account refresh tokens are never logged or stored in application SQLite.
+- Every Relay operation requires Sync Space ID, device ID and bearer token. Role checks ensure only Mac can append authoritative events or complete commands, while only iOS can create commands.
+- Revoking a device or Sync Space through the Account API directly revokes Relay access through a private Service Binding. A stale device token receives `401` afterward.
+- The legacy one-time pairing endpoints remain deployed only so older installed clients can upgrade without losing access. New Mac and iOS interfaces neither create nor scan pairing QR codes.
 
-Current transport is HTTPS and private Cloudflare storage. Before distributing the app beyond trusted personal devices, add application-layer end-to-end encryption so Cloudflare stores opaque event and attachment ciphertext, plus abuse protection or authenticated account creation on the public pairing endpoint.
+Current transport uses HTTPS, private Cloudflare storage and application-layer AES-256-GCM encryption so Cloudflare stores opaque event and attachment ciphertext. Abuse protection, account deletion and active Space Data Key rotation remain release gates for untrusted multi-user distribution.
 
 The current personal-device MVP retains ordered events, terminal commands, and R2 attachments until the Mac disconnects the account. Before long-lived multi-user rollout, add per-device replay acknowledgements, snapshot compaction, and attachment retention/garbage collection; deleting history without an acknowledged snapshot would create silent gaps for an offline phone.
 

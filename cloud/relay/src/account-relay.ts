@@ -8,6 +8,8 @@ import type {
   CompanionEncryptedSyncEventInput,
   CompanionCommandUpdate,
   CompanionDevice,
+  CompanionDeviceEnrollmentInput,
+  CompanionDeviceEnrollmentResult,
   CompanionDeviceRole,
   CompanionEventBatchResult,
   CompanionPairingClaimInput,
@@ -237,6 +239,17 @@ export class AccountRelay extends DurableObject<Env> {
         `INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (4, datetime('now'))`
       )
     }
+    const protocolV4Migration = this.ctx.storage.sql.exec<{ id: number }>(
+      'SELECT id FROM _sql_schema_migrations WHERE id = 5'
+    ).toArray()[0]
+    if (!protocolV4Migration) {
+      // Retained encrypted v2/v3 events remain replayable by the v4 iOS client,
+      // and the v4 Mac explicitly drains retained encrypted commands. Do not
+      // discard acknowledged Mac mutations or queued user actions here.
+      this.ctx.storage.sql.exec(
+        `INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (5, datetime('now'))`
+      )
+    }
   }
 
   async initializePairing(input: {
@@ -304,6 +317,96 @@ export class AccountRelay extends DurableObject<Env> {
       },
       error: null
     }
+  }
+
+  async enrollDevice(
+    macDeviceId: string,
+    macToken: string,
+    accountId: string,
+    input: CompanionDeviceEnrollmentInput
+  ): Promise<CompanionDeviceEnrollmentResult | null> {
+    const mac = await this.authorize(macDeviceId, macToken, 'mac')
+    if (!mac) return null
+    const now = new Date().toISOString()
+    const deviceToken = randomToken()
+    const tokenHash = await secretHash(deviceToken)
+    this.ctx.storage.sql.exec(
+      `INSERT INTO devices (
+        id, role, platform, name, token_hash, public_key, created_at, last_seen_at, revoked_at
+      ) VALUES (?, 'ios', 'ios', ?, ?, ?, ?, NULL, NULL)
+      ON CONFLICT(id) DO UPDATE SET
+        role = 'ios', platform = 'ios', name = excluded.name, token_hash = excluded.token_hash,
+        public_key = excluded.public_key, last_seen_at = NULL, revoked_at = NULL`,
+      input.deviceId,
+      input.deviceName,
+      tokenHash,
+      input.publicKey ?? null,
+      now
+    )
+    const row = this.ctx.storage.sql.exec<DeviceRow>('SELECT * FROM devices WHERE id = ?', input.deviceId).one()
+    return {
+      minimumProtocolVersion: companionMinimumProtocolVersion,
+      protocolVersion: companionProtocolVersion,
+      accountId,
+      device: mapDevice(row),
+      deviceToken
+    }
+  }
+
+  async revokeDevice(macDeviceId: string, macToken: string, deviceId: string): Promise<boolean> {
+    const mac = await this.authorize(macDeviceId, macToken, 'mac')
+    if (!mac || deviceId === macDeviceId) return false
+    const device = this.ctx.storage.sql.exec<DeviceRow>(
+      `SELECT * FROM devices WHERE id = ? AND role = 'ios' AND revoked_at IS NULL`,
+      deviceId
+    ).toArray()[0]
+    if (!device) return true
+    this.ctx.storage.sql.exec(
+      'UPDATE devices SET revoked_at = ?, token_hash = ? WHERE id = ?',
+      new Date().toISOString(),
+      '',
+      deviceId
+    )
+    for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
+      try { socket.close(1000, 'Device revoked') } catch { /* Already closed. */ }
+    }
+    this.broadcastPresence()
+    return true
+  }
+
+  async revokeSelfDevice(deviceId: string, token: string): Promise<boolean> {
+    const device = await this.authorize(deviceId, token, 'ios')
+    if (!device) return false
+    this.ctx.storage.sql.exec(
+      'UPDATE devices SET revoked_at = ?, token_hash = ? WHERE id = ?',
+      new Date().toISOString(),
+      '',
+      deviceId
+    )
+    for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
+      try { socket.close(1000, 'Device signed out') } catch { /* Already closed. */ }
+    }
+    this.broadcastPresence()
+    return true
+  }
+
+  async revokeDeviceByAuthority(deviceId: string): Promise<boolean> {
+    const device = this.ctx.storage.sql.exec<DeviceRow>(
+      `SELECT * FROM devices WHERE id = ? AND role = 'ios' AND revoked_at IS NULL`,
+      deviceId
+    ).toArray()[0]
+    if (!device) return true
+    this.ctx.storage.sql.exec(
+      'UPDATE devices SET revoked_at = ?, token_hash = ? WHERE id = ?',
+      new Date().toISOString(),
+      '',
+      deviceId
+    )
+    for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
+      try { socket.close(1000, 'Device revoked') } catch { /* Already closed. */ }
+    }
+    this.broadcastPresence()
+    return true
   }
 
   async authorize(deviceId: string, token: string, requiredRole?: CompanionDeviceRole): Promise<CompanionDevice | null> {
@@ -507,6 +610,10 @@ export class AccountRelay extends DurableObject<Env> {
 
   async revokeAccount(deviceId: string, token: string): Promise<void> {
     await this.requireAuthorization(deviceId, token, 'mac')
+    await this.revokeAccountByAuthority()
+  }
+
+  async revokeAccountByAuthority(): Promise<void> {
     const revokedAt = new Date().toISOString()
     this.ctx.storage.sql.exec('UPDATE devices SET revoked_at = ?, token_hash = ?', revokedAt, '')
     for (const socket of this.ctx.getWebSockets()) {

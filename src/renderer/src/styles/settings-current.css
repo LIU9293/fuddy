@@ -158,6 +158,13 @@
   line-height: 1.42;
 }
 
+.content-column.is-settings .settings-inline-error {
+  margin: 8px 2px 0;
+  color: #a74444;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .content-column.is-settings .settings-row-trailing {
   display: flex;
   min-width: 0;
@@ -247,11 +254,6 @@
   border-bottom: 0;
 }
 
-.content-column.is-settings .settings-pairing-panel {
-  margin-top: 13px;
-  border-radius: 13px;
-}
-
 .content-column.is-settings .settings-segmented-control {
   width: min(320px, 100%);
   margin: 0 0 30px;
@@ -310,6 +312,10 @@
 }
 
 @media (prefers-color-scheme: dark) {
+  .content-column.is-settings .settings-inline-error {
+    color: #e28a83;
+  }
+
   .content-column.is-settings .settings-segmented-control {
     border-color: rgba(255, 255, 248, .1);
     background: rgba(255, 255, 248, .045);

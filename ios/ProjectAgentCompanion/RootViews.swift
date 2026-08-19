@@ -4,6 +4,7 @@ import UIKit
 
 private let companionChatItemSpacing: CGFloat = 20
 private let companionChatHorizontalPadding: CGFloat = 20
+private let companionAgentRunChatTopSpacing: CGFloat = 16
 let companionChatLatestDistanceThreshold: CGFloat = 50
 
 enum CompanionSection: String, CaseIterable, Identifiable {
@@ -33,6 +34,7 @@ enum CompanionSection: String, CaseIterable, Identifiable {
 
 enum CompanionRoute: Hashable {
     case run(id: String, prefill: String)
+    case newRun(projectId: String?)
     case decision(id: String)
     case project(id: String)
 }
@@ -73,25 +75,6 @@ private extension EnvironmentValues {
         get { self[CompanionTopSafeAreaInsetKey.self] }
         set { self[CompanionTopSafeAreaInsetKey.self] = newValue }
     }
-}
-
-func companionClampedPageDrag(translation: CGFloat, pageWidth: CGFloat, isLeadingPage: Bool) -> CGFloat {
-    guard pageWidth > 0 else { return 0 }
-    if isLeadingPage { return min(0, max(-pageWidth, translation)) }
-    return max(0, min(pageWidth, translation))
-}
-
-func companionShouldChangePage(
-    translation: CGFloat,
-    predictedTranslation: CGFloat,
-    pageWidth: CGFloat,
-    towardTrailingPage: Bool
-) -> Bool {
-    let threshold = max(64, pageWidth * 0.18)
-    if towardTrailingPage {
-        return translation < -threshold || predictedTranslation < -pageWidth * 0.45
-    }
-    return translation > threshold || predictedTranslation > pageWidth * 0.45
 }
 
 func companionClampedDrawerReveal(
@@ -211,6 +194,7 @@ struct CompanionRootView: View {
                 .navigationDestination(for: CompanionRoute.self) { route in
                     switch route {
                     case .run(let id, let prefill): RunDetailView(runID: id, prefilledPrompt: prefill)
+                    case .newRun(let projectId): NewRunView(initialProjectID: projectId)
                     case .decision(let id): DecisionDetailView(decisionID: id)
                     case .project(let id):
                         if let project = store.state.projects.first(where: { $0.id == id }) {
@@ -307,8 +291,9 @@ struct CompanionRootView: View {
     }
 
     private var statusMessage: String? {
+        if store.isPaired, let message = store.accountEnrollmentMessage { return message }
         if let operationError = store.operationError, operationError.hasPrefix("同步失败：") { return operationError }
-        if store.connection == .offline { return "Relay 暂时不可达，当前显示本地缓存" }
+        if store.connection == .offline { return "暂时无法同步，当前显示本地内容" }
         if store.connection == .connected && !store.macOnline { return "Mac 当前离线，操作会在它上线后执行" }
         return nil
     }
@@ -410,8 +395,6 @@ private struct CompanionTwoPageContainer<Selection: Hashable, Leading: View, Tra
     let leading: Leading
     let trailing: Trailing
 
-    @GestureState private var dragOffset: CGFloat = 0
-
     init(
         selection: Binding<Selection>,
         leadingSelection: Selection,
@@ -435,9 +418,8 @@ private struct CompanionTwoPageContainer<Selection: Hashable, Leading: View, Tra
                 page(trailing, selection: trailingSelection, size: geometry.size)
             }
             .frame(width: geometry.size.width * 2, alignment: .leading)
-            .offset(x: (isLeadingPage ? 0 : -geometry.size.width) + dragOffset)
+            .offset(x: isLeadingPage ? 0 : -geometry.size.width)
             .animation(.spring(duration: 0.25, bounce: 0), value: selection)
-            .simultaneousGesture(pageGesture(pageWidth: geometry.size.width))
         }
         .clipped()
     }
@@ -448,31 +430,6 @@ private struct CompanionTwoPageContainer<Selection: Hashable, Leading: View, Tra
             .clipped()
             .allowsHitTesting(selection == pageSelection)
             .accessibilityHidden(selection != pageSelection)
-    }
-
-    private func pageGesture(pageWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 12)
-            .updating($dragOffset) { value, offset, _ in
-                guard abs(value.translation.width) > abs(value.translation.height) * 1.15 else { return }
-                offset = companionClampedPageDrag(
-                    translation: value.translation.width,
-                    pageWidth: pageWidth,
-                    isLeadingPage: isLeadingPage
-                )
-            }
-            .onEnded { value in
-                guard abs(value.translation.width) > abs(value.translation.height) * 1.15 else { return }
-                let shouldChange = companionShouldChangePage(
-                    translation: value.translation.width,
-                    predictedTranslation: value.predictedEndTranslation.width,
-                    pageWidth: pageWidth,
-                    towardTrailingPage: isLeadingPage
-                )
-                guard shouldChange else { return }
-                withAnimation(.spring(duration: 0.25, bounce: 0)) {
-                    selection = isLeadingPage ? trailingSelection : leadingSelection
-                }
-            }
     }
 }
 
@@ -491,8 +448,32 @@ private struct CompanionSidebar: View {
                         .foregroundStyle(.primary)
                         .frame(width: 92, height: 36, alignment: .leading)
                         .accessibilityLabel("Fuddy")
-                    Text(store.macOnline ? "Mac 在线" : "Mac 离线")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if store.availableAccountSyncSpaces.count > 1 {
+                        Menu {
+                            ForEach(store.availableAccountSyncSpaces) { space in
+                                Button {
+                                    store.switchAccountSyncSpace(space.id)
+                                } label: {
+                                    if store.currentAccountSyncSpace?.id == space.id {
+                                        Label(space.hostName, systemImage: "checkmark")
+                                    } else {
+                                        Text(space.hostName)
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(store.currentAccountSyncSpace?.hostName ?? "我的 Mac")
+                                Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                            }
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        }
+                        .accessibilityLabel("切换空间")
+                    } else {
+                        Text(store.currentAccountSyncSpace?.hostName ?? (store.macOnline ? "Mac 在线" : "Mac 离线"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 Button { withAnimation(.snappy) { router.drawerPresented = false } } label: {
@@ -503,29 +484,13 @@ private struct CompanionSidebar: View {
             .padding(.bottom, 22)
 
             ForEach([CompanionSection.assistant, .runs]) { section in
-                Button { withAnimation(.snappy) { router.select(section) } } label: {
-                    Label(section.title, systemImage: section.icon)
-                        .font(.body.weight(.medium))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 12)
-                        .background(router.section == section ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
+                menuButton(section)
             }
 
             Divider().padding(.vertical, 8)
 
             ForEach([CompanionSection.inbox, .projects, .settings]) { section in
-                Button { withAnimation(.snappy) { router.select(section) } } label: {
-                    Label(section.title, systemImage: section.icon)
-                        .font(.body.weight(.medium))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 12)
-                        .background(router.section == section ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
+                menuButton(section)
             }
 
             Spacer()
@@ -539,6 +504,31 @@ private struct CompanionSidebar: View {
         .background {
             Rectangle().fill(.regularMaterial).ignoresSafeArea()
         }
+    }
+
+    private func menuButton(_ section: CompanionSection) -> some View {
+        Button {
+            withAnimation(.snappy) { router.select(section) }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: section.icon)
+                    .font(.system(size: 17, weight: .medium))
+                    .frame(width: 24, height: 24, alignment: .center)
+                Text(section.title)
+                    .font(.body.weight(.medium))
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+            .padding(.horizontal, 12)
+            .contentShape(Rectangle())
+            .background(
+                router.section == section ? Color.accentColor.opacity(0.12) : .clear,
+                in: RoundedRectangle(cornerRadius: 12)
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
     }
 }
 
@@ -1033,7 +1023,12 @@ private struct MorningBriefingFullArticle: View {
 
 struct RunsListView: View {
     @EnvironmentObject private var store: CompanionStore
+    @EnvironmentObject private var router: CompanionRouter
     @Environment(\.companionTopSafeAreaInset) private var screenTopSafeAreaInset
+    @State private var archivingRunIDs: Set<String> = []
+    @State private var renamingRun: AgentRun?
+    @State private var renamedTitle = ""
+    @State private var operationError: String?
     let topContentInset: CGFloat
 
     init(topContentInset: CGFloat = 0) {
@@ -1041,29 +1036,207 @@ struct RunsListView: View {
     }
 
     var body: some View {
-        List(store.runs) { detail in
-            NavigationLink(value: CompanionRoute.run(id: detail.run.id, prefill: "")) {
-                HStack(alignment: .center, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(detail.run.title).font(.headline).lineLimit(2)
-                        Text(runMetadata(detail.run)).font(.caption).foregroundStyle(.secondary)
-                        if !detail.run.summary.isEmpty { Text(detail.run.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
+        List {
+            ForEach(groupRunDetailsByProject(store.runs, projects: store.state.projects)) { group in
+                Section {
+                    ForEach(group.runs) { detail in
+                        let active = detail.run.status == "running" || detail.run.status == "queued"
+                        NavigationLink(value: CompanionRoute.run(id: detail.run.id, prefill: "")) {
+                            HStack(alignment: .center, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(detail.run.title).font(.headline).lineLimit(2)
+                                    Text(runMetadata(detail.run)).font(.caption).foregroundStyle(.secondary)
+                                    if !detail.run.summary.isEmpty { Text(detail.run.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
+                                }
+                                Spacer(minLength: 8)
+                                if active { ProgressView().controlSize(.small) }
+                            }
+                            .padding(.vertical, 3)
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button {
+                                renamedTitle = detail.run.title
+                                renamingRun = detail.run
+                            } label: {
+                                Label("重命名", systemImage: "pencil")
+                            }
+                            .tint(.accentColor)
+
+                            Button(role: .destructive) {
+                                Task { await archive(detail.run) }
+                            } label: {
+                                Label("归档", systemImage: "archivebox")
+                            }
+                            .disabled(active || archivingRunIDs.contains(detail.run.id))
+                        }
                     }
-                    Spacer(minLength: 8)
-                    if detail.run.status == "running" || detail.run.status == "queued" { ProgressView().controlSize(.small) }
+                } header: {
+                    HStack(spacing: 6) {
+                        Text(group.title)
+                        Text("\(group.runs.count)").foregroundStyle(.tertiary)
+                        Spacer()
+                        Button {
+                            router.path.append(.newRun(projectId: group.projectId))
+                        } label: {
+                            Image(systemName: "plus")
+                                .frame(width: 28, height: 28)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("在\(group.title)中新建 Agent Run")
+                    }
                 }
-                .padding(.vertical, 3)
             }
         }
         .listStyle(.plain)
-        .contentMargins(.top, screenTopSafeAreaInset + topContentInset, for: .scrollContent)
+        .padding(.top, screenTopSafeAreaInset + topContentInset)
         .refreshable { await store.sync() }
         .overlay { if store.runs.isEmpty { ContentUnavailableView("暂无 Agent Run", systemImage: "bubble.left.and.bubble.right") } }
+        .alert(renamingRun == nil ? "操作失败" : "重命名 Session", isPresented: Binding(
+            get: { renamingRun != nil || operationError != nil },
+            set: {
+                if !$0 {
+                    renamingRun = nil
+                    operationError = nil
+                }
+            }
+        )) {
+            if renamingRun != nil {
+                TextField("Session 标题", text: $renamedTitle)
+                Button("取消", role: .cancel) { renamingRun = nil }
+                Button("保存") {
+                    guard let run = renamingRun else { return }
+                    renamingRun = nil
+                    Task { await rename(run) }
+                }
+            } else {
+                Button("好", role: .cancel) { operationError = nil }
+            }
+        } message: {
+            if let operationError { Text(operationError) }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    router.path.append(.newRun(projectId: store.state.projects.first?.id))
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("新建 Agent Run")
+            }
+        }
     }
 
     private func runMetadata(_ run: AgentRun) -> String {
-        let project = store.state.projects.first { $0.id == run.projectId }?.name ?? "无项目"
-        return "\(project) · \(run.provider) · \(relativeDate(run.updatedAt))"
+        "\(run.provider) · \(relativeDate(run.updatedAt))"
+    }
+
+    private func archive(_ run: AgentRun) async {
+        guard !archivingRunIDs.contains(run.id) else { return }
+        archivingRunIDs.insert(run.id)
+        defer { archivingRunIDs.remove(run.id) }
+        do {
+            try await store.archive(runID: run.id)
+            await store.sync()
+        } catch {
+            operationError = error.localizedDescription
+        }
+    }
+
+    private func rename(_ run: AgentRun) async {
+        do {
+            try await store.rename(runID: run.id, title: renamedTitle)
+            await store.sync()
+        } catch {
+            operationError = error.localizedDescription
+        }
+    }
+}
+
+struct RunProjectGroup: Identifiable {
+    let id: String
+    let title: String
+    let projectId: String?
+    let runs: [RunDetail]
+}
+
+func groupRunDetailsByProject(_ runs: [RunDetail], projects: [Project]) -> [RunProjectGroup] {
+    let knownProjectIDs = Set(projects.map(\.id))
+    var groups = projects.compactMap { project -> RunProjectGroup? in
+        let projectRuns = runs.filter { $0.run.projectId == project.id }
+        guard !projectRuns.isEmpty else { return nil }
+        return RunProjectGroup(id: project.id, title: project.name, projectId: project.id, runs: projectRuns)
+    }
+    let sharedRuns = runs.filter { detail in
+        guard let projectID = detail.run.projectId else { return true }
+        return !knownProjectIDs.contains(projectID)
+    }
+    if !sharedRuns.isEmpty {
+        groups.append(RunProjectGroup(id: "shared", title: "共享任务", projectId: nil, runs: sharedRuns))
+    }
+    return groups
+}
+
+struct NewRunView: View {
+    @EnvironmentObject private var store: CompanionStore
+    @EnvironmentObject private var router: CompanionRouter
+    @State private var projectID: String
+    @State private var title = ""
+    @State private var creating = false
+    @State private var error: String?
+    @FocusState private var titleFocused: Bool
+
+    init(initialProjectID: String?) {
+        _projectID = State(initialValue: initialProjectID ?? "")
+    }
+
+    var body: some View {
+        Form {
+            Section("所属项目") {
+                Picker("项目", selection: $projectID) {
+                    Text("共享任务").tag("")
+                    ForEach(store.state.projects) { project in
+                        Text(project.name).tag(project.id)
+                    }
+                }
+                if let project = store.state.projects.first(where: { $0.id == projectID }) {
+                    LabeledContent("默认 Agent", value: project.profile.defaultAgent)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("Run") {
+                TextField("例如：分析项目上线阻塞", text: $title)
+                    .focused($titleFocused)
+            }
+            if let error {
+                Section { Text(error).foregroundStyle(.red).font(.caption) }
+            }
+        }
+        .navigationTitle("新建 Agent Run")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button(creating ? "正在创建…" : "创建") { Task { await create() } }
+                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || creating)
+            }
+        }
+        .onAppear { titleFocused = true }
+    }
+
+    private func create() async {
+        guard !creating else { return }
+        creating = true
+        error = nil
+        do {
+            let runID = try await store.createRun(
+                projectID: projectID.isEmpty ? nil : projectID,
+                title: title
+            )
+            router.openRun(id: runID)
+        } catch {
+            self.error = error.localizedDescription
+            creating = false
+        }
     }
 }
 
@@ -1279,7 +1452,7 @@ struct RunDetailView: View {
                     CompanionChatTimeline(
                         page: page,
                         viewportSize: viewportSize,
-                        topInset: topInset,
+                        topInset: topInset + companionAgentRunChatTopSpacing,
                         bottomInset: bottomInset,
                         isAtLatestMessage: $isAtLatestMessage,
                         scrollToLatestRequest: scrollToLatestRequest,
@@ -2614,23 +2787,38 @@ struct CompanionSettingsView: View {
     @EnvironmentObject private var store: CompanionStore
     var body: some View {
         Form {
+            if !store.availableAccountSyncSpaces.isEmpty {
+                Section("空间") {
+                    Picker(
+                        "当前空间",
+                        selection: Binding(
+                            get: { store.selectedAccountSyncSpaceID ?? store.availableAccountSyncSpaces[0].id },
+                            set: { store.switchAccountSyncSpace($0) }
+                        )
+                    ) {
+                        ForEach(store.availableAccountSyncSpaces) { space in
+                            Text(space.hostName).tag(space.id)
+                        }
+                    }
+                }
+            }
             Section("连接") {
                 LabeledContent("状态", value: connectionLabel)
-                if let credentials = store.credentials {
-                    LabeledContent("Relay", value: URL(string: credentials.relayURL)?.host ?? credentials.relayURL)
-                    LabeledContent("设备", value: String(credentials.deviceID.prefix(8)))
-                }
                 Button("立即同步") { Task { await store.sync() } }
             }
-            Section { Button("断开 Mac", role: .destructive) { store.unpair() } }
+            Section {
+                Button("退出账户", role: .destructive) {
+                    Task { await store.signOutAccount() }
+                }
+            }
         }
     }
     private var connectionLabel: String {
         switch store.connection {
-        case .unpaired: "未配对"
+        case .unpaired: "未连接"
         case .connecting: "正在连接"
-        case .connected: store.macOnline ? "Mac 在线" : "Relay 已连接，Mac 离线"
-        case .offline: "离线，显示本地缓存"
+        case .connected: store.macOnline ? "Mac 在线" : "Mac 离线"
+        case .offline: "暂时无法同步"
         case .error(let message): message
         }
     }

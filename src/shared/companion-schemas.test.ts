@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { testProject } from '../main/test-support/project-fixtures'
 import { companionProtocolVersion } from './companion-sync'
-import { commandSchema, syncEventSchema } from './companion-schemas'
+import {
+  commandSchema,
+  companionEncryptedCommandSchema,
+  companionPendingEncryptedCommandSchema,
+  syncEventSchema
+} from './companion-schemas'
+import { companionLatestChatCursor } from './companion-chat'
 
 function projectEvent(payload: unknown): Record<string, unknown> {
   return {
@@ -62,6 +68,93 @@ describe('Companion wire schemas', () => {
     expect(commandSchema.safeParse({
       ...command,
       payload: { ...command.payload, chatKind: 'unknown' }
+    }).success).toBe(false)
+  })
+
+  it('accepts an empty lazy chat page for a compact pairing snapshot', () => {
+    const parsed = syncEventSchema.safeParse({
+      eventId: 'snapshot-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'snapshot.created',
+      entityType: 'snapshot',
+      entityId: 'current',
+      revision: 1,
+      occurredAt: '2026-08-14T15:00:00.000Z',
+      payload: {
+        generatedAt: '2026-08-14T15:00:00.000Z',
+        modelLabels: {
+          workAssistant: 'Default',
+          providers: { pi: 'Pi', codex: 'Codex', claude: 'Claude', opencode: 'OpenCode' }
+        },
+        projects: [],
+        goals: [],
+        decisions: [],
+        morningBriefings: [],
+        workAssistantMessages: [],
+        attachments: [],
+        runs: [],
+        chatPages: [{
+          chatId: 'work-assistant',
+          chatKind: 'assistant',
+          records: [],
+          hasMore: true,
+          nextBefore: companionLatestChatCursor
+        }]
+      }
+    })
+
+    expect(parsed.success).toBe(true)
+    expect(syncEventSchema.safeParse({
+      ...parsed.data,
+      payload: {
+        ...parsed.data?.payload,
+        chatPages: [{
+          chatId: 'work-assistant',
+          chatKind: 'assistant',
+          records: [],
+          hasMore: true,
+          nextBefore: 'assistant-message-oversized'
+        }]
+      }
+    }).success).toBe(true)
+  })
+
+  it('accepts a retained encrypted v3 command only through the pending-command drain schema', () => {
+    const retained = {
+      commandId: 'legacy-command',
+      protocolVersion: 3,
+      type: 'agent.send-message',
+      payload: {
+        algorithm: 'A256GCM',
+        keyId: 'abcdefghijklmnop',
+        nonce: 'abcdefghijklmnop',
+        ciphertext: 'encrypted'
+      },
+      sourceDeviceId: 'ios-1',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: '2026-08-14T15:00:00.000Z',
+      updatedAt: '2026-08-14T15:00:00.000Z'
+    }
+
+    expect(companionPendingEncryptedCommandSchema.safeParse(retained).success).toBe(true)
+    expect(companionEncryptedCommandSchema.safeParse(retained).success).toBe(false)
+  })
+
+  it('accepts a bounded project-scoped Agent Run draft command', () => {
+    const command = {
+      commandId: 'create-run-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent.create-session',
+      createdAt: '2026-08-14T15:00:00.000Z',
+      payload: { runId: 'run-1', projectId: 'project-1', title: '检查同步状态' }
+    }
+
+    expect(commandSchema.safeParse(command).success).toBe(true)
+    expect(commandSchema.safeParse({
+      ...command,
+      payload: { ...command.payload, title: '' }
     }).success).toBe(false)
   })
 })

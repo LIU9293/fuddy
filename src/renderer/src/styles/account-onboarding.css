@@ -1,0 +1,528 @@
+.account-entry-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  color: #272724;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.96) 0, rgba(250, 250, 247, 0.94) 38%, rgba(244, 244, 240, 0.95) 100%);
+}
+
+.account-entry-titlebar {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  height: 58px;
+  border-bottom: 1px solid rgba(48, 48, 43, 0.065);
+}
+
+.account-entry-titlebar .window-drag-region {
+  position: absolute;
+  inset: 0;
+}
+
+.account-entry-titlebar img {
+  width: 58px;
+  height: auto;
+  opacity: 0.84;
+}
+
+.account-entry-main {
+  display: grid;
+  place-items: center;
+  height: calc(100% - 58px);
+  overflow: auto;
+  padding: 42px 32px 64px;
+}
+
+.account-entry-panel,
+.onboarding-panel {
+  width: min(100%, 390px);
+  margin-top: -28px;
+}
+
+.account-assistant-mark,
+.onboarding-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 20px;
+  color: #fff;
+  background: #272724;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(30, 30, 27, 0.13);
+}
+
+.account-entry-panel h1,
+.onboarding-step h1 {
+  margin: 0;
+  color: #22221f;
+  font-size: 30px;
+  font-weight: 680;
+  letter-spacing: -0.035em;
+  line-height: 1.18;
+  text-align: center;
+}
+
+.account-eyebrow {
+  margin: 0 0 8px;
+  color: #777770;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.account-lede {
+  margin: 12px auto 28px;
+  max-width: 360px;
+  color: #777770;
+  font-size: 13px;
+  line-height: 1.65;
+  text-align: center;
+}
+
+.account-lede strong {
+  color: #4b4b45;
+  font-weight: 650;
+}
+
+.account-provider-button,
+.account-primary-button,
+.account-secondary-button,
+.project-folder-picker,
+.account-back-button,
+.account-user-button {
+  border: 0;
+  cursor: pointer;
+}
+
+.account-provider-button,
+.account-primary-button,
+.account-secondary-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 42px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.account-provider-button,
+.account-secondary-button {
+  color: #343430;
+  background: rgba(255, 255, 253, 0.88);
+  border: 1px solid rgba(40, 40, 35, 0.13);
+}
+
+.account-provider-button:hover:not(:disabled),
+.account-secondary-button:hover:not(:disabled) {
+  background: #fff;
+  border-color: rgba(40, 40, 35, 0.22);
+}
+
+.account-primary-button {
+  color: #fff;
+  background: var(--blue);
+  box-shadow: 0 4px 12px rgba(40, 103, 232, 0.18);
+}
+
+.account-primary-button:hover:not(:disabled) {
+  background: var(--blue-hover);
+}
+
+.account-primary-button:disabled,
+.account-provider-button:disabled,
+.account-secondary-button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.account-provider-note,
+.account-legal,
+.account-dev-code {
+  color: #888880;
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.account-provider-note {
+  margin: 8px 0 0;
+}
+
+.account-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 22px 0;
+  color: #9a9a93;
+  font-size: 10px;
+}
+
+.account-divider::before,
+.account-divider::after {
+  flex: 1;
+  height: 1px;
+  background: rgba(45, 45, 40, 0.1);
+  content: '';
+}
+
+.account-form {
+  display: grid;
+  gap: 10px;
+}
+
+.account-form > label,
+.onboarding-field > span {
+  color: #5e5e58;
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.account-input-with-icon {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 13px;
+  color: #85857e;
+  background: rgba(255, 255, 253, 0.84);
+  border: 1px solid rgba(40, 40, 35, 0.12);
+  border-radius: 10px;
+}
+
+.account-input-with-icon:focus-within {
+  border-color: rgba(40, 103, 232, 0.55);
+  box-shadow: 0 0 0 3px rgba(40, 103, 232, 0.09);
+}
+
+.account-input-with-icon input,
+.account-code-input,
+.onboarding-field input {
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  border: 0;
+}
+
+.account-code-input,
+.onboarding-field input {
+  min-height: 44px;
+  padding: 0 13px;
+  background: rgba(255, 255, 253, 0.84);
+  border: 1px solid rgba(40, 40, 35, 0.12);
+  border-radius: 10px;
+}
+
+.account-code-input {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: 0.32em;
+  text-align: center;
+}
+
+.account-code-input:focus,
+.onboarding-field input:focus {
+  border-color: rgba(40, 103, 232, 0.55);
+  box-shadow: 0 0 0 3px rgba(40, 103, 232, 0.09);
+}
+
+.account-dev-code {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin: 0;
+  color: #596e4f;
+}
+
+.account-entry-error {
+  margin: 0;
+  color: #ad3f35;
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.account-legal {
+  margin: 18px auto 0;
+}
+
+.account-back-button {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 auto 22px;
+  padding: 4px 6px;
+  color: #777770;
+  font-size: 11px;
+  background: transparent;
+}
+
+.account-user-button {
+  position: absolute;
+  z-index: 3;
+  top: 17px;
+  right: 22px;
+  max-width: 260px;
+  overflow: hidden;
+  padding: 5px 8px;
+  color: #777770;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+}
+
+.onboarding-main {
+  align-items: start;
+  padding-top: clamp(72px, 11vh, 118px);
+}
+
+.onboarding-panel {
+  display: grid;
+  gap: 54px;
+  margin-top: 0;
+}
+
+.onboarding-icon {
+  color: #2859aa;
+  background: #e9effb;
+  box-shadow: none;
+}
+
+.agent-detection-list {
+  overflow: hidden;
+  margin: 0 0 20px;
+  background: rgba(255, 255, 253, 0.72);
+  border: 1px solid rgba(40, 40, 35, 0.1);
+  border-radius: 12px;
+}
+
+.agent-detection-list > div {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 43px;
+  padding: 0 13px;
+  border-bottom: 1px solid rgba(40, 40, 35, 0.075);
+}
+
+.agent-detection-list > div:last-child {
+  border-bottom: 0;
+}
+
+.agent-detection-list strong,
+.agent-detection-list small {
+  font-size: 11px;
+}
+
+.agent-detection-list small {
+  color: #85857e;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  background: #c7c7c0;
+  border-radius: 50%;
+}
+
+.status-dot.is-ready {
+  background: #4e9b65;
+  box-shadow: 0 0 0 3px rgba(78, 155, 101, 0.1);
+}
+
+.onboarding-actions {
+  margin-top: 20px;
+}
+
+.onboarding-actions.is-split {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.onboarding-actions.is-split .account-primary-button,
+.onboarding-actions.is-split .account-secondary-button {
+  width: auto;
+  min-width: 126px;
+  padding-inline: 18px;
+}
+
+.project-folder-picker,
+.existing-projects-note {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 58px;
+  padding: 12px 14px;
+  color: #44443f;
+  text-align: left;
+  background: rgba(255, 255, 253, 0.75);
+  border: 1px solid rgba(40, 40, 35, 0.11);
+  border-radius: 12px;
+}
+
+.existing-projects-note > span {
+  display: grid;
+  gap: 3px;
+}
+
+.existing-projects-note strong {
+  color: #3f7d52;
+  font-size: 12px;
+}
+
+.existing-projects-note small {
+  color: #777770;
+  font-size: 10px;
+}
+
+.project-folder-picker span {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-folder-picker:hover {
+  border-color: rgba(40, 103, 232, 0.28);
+  background: #fff;
+}
+
+.onboarding-field {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.onboarding-progress {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-progress li {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  color: #a0a099;
+}
+
+.onboarding-progress li::before {
+  position: absolute;
+  top: 11px;
+  right: 50%;
+  left: -50%;
+  height: 1px;
+  background: rgba(40, 40, 35, 0.1);
+  content: '';
+}
+
+.onboarding-progress li:first-child::before {
+  display: none;
+}
+
+.onboarding-progress li > span {
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  font-size: 9px;
+  background: #efefeb;
+  border-radius: 50%;
+}
+
+.onboarding-progress li.is-current,
+.onboarding-progress li.is-complete {
+  color: #3b64a9;
+}
+
+.onboarding-progress li.is-current > span,
+.onboarding-progress li.is-complete > span {
+  color: #fff;
+  background: #4d74b8;
+}
+
+.onboarding-progress small {
+  font-size: 9px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .account-entry-shell {
+    color: #ededeb;
+    background: radial-gradient(circle at 50% 42%, #22231f 0, #1c1d1a 48%, #171816 100%);
+  }
+
+  .account-entry-titlebar {
+    border-bottom-color: rgba(255, 255, 248, 0.07);
+  }
+
+  .account-entry-titlebar img {
+    filter: invert(1);
+  }
+
+  .account-entry-panel h1,
+  .onboarding-step h1 {
+    color: #f2f2ef;
+  }
+
+  .account-provider-button,
+  .account-secondary-button,
+  .account-input-with-icon,
+  .account-code-input,
+  .onboarding-field input,
+  .agent-detection-list,
+  .project-folder-picker,
+  .existing-projects-note {
+    color: #e3e3df;
+    background: rgba(39, 40, 36, 0.88);
+    border-color: rgba(255, 255, 248, 0.1);
+  }
+
+  .onboarding-icon {
+    color: #a8c1ef;
+    background: #273247;
+  }
+
+  .account-divider::before,
+  .account-divider::after,
+  .agent-detection-list > div,
+  .onboarding-progress li::before {
+    border-color: rgba(255, 255, 248, 0.08);
+    background-color: rgba(255, 255, 248, 0.08);
+  }
+
+}
+
+@media (max-height: 720px) {
+  .account-entry-main {
+    place-items: start center;
+    padding-top: 40px;
+  }
+
+  .account-entry-panel,
+  .onboarding-panel {
+    margin-top: 0;
+  }
+
+  .onboarding-main {
+    padding-top: 38px;
+  }
+}

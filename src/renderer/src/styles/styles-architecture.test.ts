@@ -14,6 +14,7 @@ describe('renderer CSS architecture', () => {
     expect(imports).toEqual([
       './styles/tokens.css',
       './styles/base.css',
+      './styles/account-onboarding.css',
       './styles/page-layout.css',
       './styles/shell-settings-inbox.css',
       './styles/conversations-workspace.css',
@@ -32,6 +33,7 @@ describe('renderer CSS architecture', () => {
   it('keeps root-level design tokens in one file', () => {
     const featureFiles = [
       'base.css',
+      'account-onboarding.css',
       'page-layout.css',
       'shell-settings-inbox.css',
       'conversations-workspace.css',

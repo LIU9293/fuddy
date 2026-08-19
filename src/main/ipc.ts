@@ -32,6 +32,9 @@ import { registerWorkspaceIpc } from './ipc/workspace'
 import { registerSettingsIpc } from './ipc/settings'
 import type { IpcContext } from './ipc/context'
 import { workAssistantImageSchema } from './ipc/schemas'
+import { registerAccountIpc } from './ipc/account'
+import type { AccountService } from './services/account-service'
+import type { AccountEnrollmentCoordinator } from './services/account-enrollment-coordinator'
 
 export function registerIpc(
   database: AppDatabase,
@@ -48,7 +51,9 @@ export function registerIpc(
   workspaceFiles: WorkspaceFilesService,
   automationRuntime: AutomationRuntime,
   projectAgentIntegration: ProjectAgentIntegrationService,
-  companionSync: CompanionSyncService
+  companionSync: CompanionSyncService,
+  accountService: AccountService,
+  accountEnrollmentCoordinator: AccountEnrollmentCoordinator
 ): void {
   const persistAttachments = (
     projectId: string | null,
@@ -82,9 +87,12 @@ export function registerIpc(
     automationRuntime,
     projectAgentIntegration,
     companionSync,
+    accountService,
+    accountEnrollmentCoordinator,
     persistAttachments
   }
   registerCoreIpc(context)
+  registerAccountIpc(context)
   registerProjectIpc(context)
   registerRunIpc(context)
   registerWorkspaceIpc(context)

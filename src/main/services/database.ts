@@ -64,7 +64,11 @@ import { RunRepository } from '../features/runs/run-repository'
 import { ConnectorRepository } from '../features/connectors/connector-repository'
 import { BriefingRepository } from '../features/briefings/briefing-repository'
 import { AutomationRepository } from '../features/automations/automation-repository'
-import { CompanionRepository } from '../features/companion/companion-repository'
+import {
+  CompanionRepository,
+  compactPersistedCompanionCommandEvent,
+  companionCommandForOutbox
+} from '../features/companion/companion-repository'
 import {
   DecisionRepository,
   type DecisionInspectionInput,
@@ -187,6 +191,21 @@ export class AppDatabase {
         version: 5,
         name: 'add-companion-chat-page-indexes',
         apply: () => ensureCurrentDatabaseSchema(this.database)
+      },
+      {
+        version: 6,
+        name: 'repair-companion-outbox-delivery',
+        apply: () => this.migrateCompanionOutboxDelivery()
+      },
+      {
+        version: 7,
+        name: 'upgrade-companion-outbox-protocol-v4',
+        apply: () => this.migrateCompanionOutboxProtocolV4()
+      },
+      {
+        version: 8,
+        name: 'upgrade-companion-remote-commands-protocol-v4',
+        apply: () => this.migrateCompanionRemoteCommandsProtocolV4()
       }
     ]
     const currentVersion = databaseSchemaVersion(this.database)
@@ -604,6 +623,15 @@ export class AppDatabase {
   }
 
   enqueueCompanionSnapshot(modelLabels: AgentModelLabels = emptyAgentModelLabels): CompanionOutboxEvent {
+    return this.enqueueCompanionEvent(
+      'snapshot.created',
+      'snapshot',
+      'current',
+      this.companionSnapshotPayload(modelLabels)
+    )
+  }
+
+  private companionSnapshotPayload(modelLabels: AgentModelLabels): CompanionSnapshotPayload {
     const assistantPage = this.getCompanionChatPage('assistant', workAssistantChatId)
     const assistantCollections = workAssistantPageCollections(assistantPage)
     const runDetails = this.listRuns().map((run) => {
@@ -629,7 +657,7 @@ export class AppDatabase {
       runs: runDetails.map(({ detail }) => detail),
       chatPages: [assistantPage, ...runDetails.map(({ page }) => page)]
     }
-    return this.enqueueCompanionEvent('snapshot.created', 'snapshot', 'current', snapshot)
+    return snapshot
   }
 
   getCompanionChatPage(
@@ -687,7 +715,38 @@ export class AppDatabase {
   enqueueCompanionPairingSnapshot(modelLabels: AgentModelLabels = emptyAgentModelLabels): CompanionOutboxEvent {
     return this.companionTransaction(() => {
       this.database.prepare('DELETE FROM companion_sync_outbox WHERE published_at IS NULL').run()
-      return this.enqueueCompanionSnapshot(modelLabels)
+      const snapshot = this.companionSnapshotPayload(modelLabels)
+      const baseline = this.enqueueCompanionEvent('snapshot.created', 'snapshot', 'current', {
+        generatedAt: snapshot.generatedAt,
+        modelLabels: snapshot.modelLabels,
+        projects: [],
+        goals: [],
+        decisions: [],
+        morningBriefings: [],
+        workAssistantMessages: [],
+        attachments: [],
+        runs: [],
+        chatPages: []
+      })
+      for (const project of snapshot.projects) {
+        this.enqueueCompanionEvent('project.created', 'project', project.id, project)
+      }
+      for (const goal of snapshot.goals) {
+        this.enqueueCompanionEvent('goal.created', 'goal', goal.id, goal)
+      }
+      for (const decision of snapshot.decisions) {
+        this.enqueueCompanionEvent('decision.created', 'decision', decision.id, decision)
+      }
+      for (const detail of snapshot.runs) {
+        this.enqueueCompanionEvent('agent-run.created', 'agent-run', detail.run.id, detail.run)
+        for (const artifact of detail.artifacts) {
+          this.enqueueCompanionEvent('artifact.updated', 'artifact', artifact.id, artifact)
+        }
+      }
+      for (const page of snapshot.chatPages ?? []) {
+        this.enqueueCompanionEvent('chat-page.updated', 'chat-page', page.chatId, page)
+      }
+      return baseline
     })
   }
 
@@ -697,6 +756,10 @@ export class AppDatabase {
 
   countPendingCompanionEvents(): number {
     return this.companion.countPending()
+  }
+
+  countDeadLetterCompanionEvents(): number {
+    return this.companion.countDeadLetters()
   }
 
   markCompanionEventPublished(eventId: string, publishedAt: string): void {
@@ -709,6 +772,10 @@ export class AppDatabase {
 
   markCompanionEventFailed(eventId: string, error: string): void {
     this.companion.markFailed(eventId, error)
+  }
+
+  markCompanionEventDeadLettered(eventId: string, reason: string): void {
+    this.companion.markDeadLettered(eventId, reason)
   }
 
   getCompanionCommand(commandId: string): CompanionCommand | null {
@@ -729,18 +796,78 @@ export class AppDatabase {
   }
 
   enqueueCompanionCommandUpdate(command: CompanionCommand): CompanionOutboxEvent<'command.updated'> {
-    return this.enqueueCompanionEvent('command.updated', 'command', command.commandId, {
-      commandId: command.commandId,
-      protocolVersion: command.protocolVersion,
-      type: command.type,
-      payload: command.payload,
-      sourceDeviceId: command.sourceDeviceId,
-      status: command.status,
-      result: command.result,
-      error: command.error,
-      createdAt: command.createdAt,
-      updatedAt: command.updatedAt
-    })
+    return this.enqueueCompanionEvent(
+      'command.updated',
+      'command',
+      command.commandId,
+      companionCommandForOutbox(command)
+    )
+  }
+
+  private migrateCompanionOutboxDelivery(): void {
+    const columns = this.database.prepare('PRAGMA table_info(companion_sync_outbox)').all() as Array<{ name: string }>
+    const columnNames = new Set(columns.map((column) => column.name))
+    if (!columnNames.has('dead_lettered_at')) {
+      this.database.exec('ALTER TABLE companion_sync_outbox ADD COLUMN dead_lettered_at TEXT')
+    }
+    if (!columnNames.has('dead_letter_reason')) {
+      this.database.exec('ALTER TABLE companion_sync_outbox ADD COLUMN dead_letter_reason TEXT')
+    }
+    this.database.exec(`
+      DROP INDEX IF EXISTS companion_sync_outbox_pending_idx;
+      CREATE INDEX companion_sync_outbox_pending_idx
+      ON companion_sync_outbox(published_at, dead_lettered_at, occurred_at);
+    `)
+
+    const rows = this.database.prepare(`
+      SELECT event_id, payload_json FROM companion_sync_outbox
+      WHERE published_at IS NULL AND dead_lettered_at IS NULL AND type = 'command.updated'
+    `).all() as Array<{ event_id: string; payload_json: string }>
+    const update = this.database.prepare(`
+      UPDATE companion_sync_outbox
+      SET payload_json = ?, attempts = 0, last_error = NULL
+      WHERE event_id = ?
+    `)
+    for (const row of rows) {
+      const payload = parseJson<unknown>(row.payload_json, null)
+      update.run(JSON.stringify(compactPersistedCompanionCommandEvent(payload)), row.event_id)
+    }
+  }
+
+  private migrateCompanionOutboxProtocolV4(): void {
+    const rows = this.database.prepare(`
+      SELECT event_id, type, payload_json FROM companion_sync_outbox
+      WHERE published_at IS NULL
+        AND dead_lettered_at IS NULL
+        AND protocol_version < ?
+    `).all(companionProtocolVersion) as Array<{
+      event_id: string
+      type: CompanionEventType
+      payload_json: string
+    }>
+    const update = this.database.prepare(`
+      UPDATE companion_sync_outbox
+      SET protocol_version = ?, payload_json = ?, attempts = 0, last_error = NULL
+      WHERE event_id = ?
+    `)
+    for (const row of rows) {
+      let payload = parseJson<unknown>(row.payload_json, null)
+      if (row.type === 'command.updated') {
+        payload = compactPersistedCompanionCommandEvent(payload)
+        if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+          payload = { ...payload, protocolVersion: companionProtocolVersion }
+        }
+      }
+      update.run(companionProtocolVersion, JSON.stringify(payload), row.event_id)
+    }
+  }
+
+  private migrateCompanionRemoteCommandsProtocolV4(): void {
+    this.database.prepare(`
+      UPDATE companion_remote_commands
+      SET protocol_version = ?
+      WHERE protocol_version < ?
+    `).run(companionProtocolVersion, companionProtocolVersion)
   }
 
   private companionTransaction<T>(operation: () => T): T {

@@ -19,7 +19,10 @@ afterAll(() => {
 })
 
 function authenticatedUrl(path: string, accountId: string, deviceId: string): string {
-  const url = new URL(path, defaultCompanionRelayUrl)
+  const url = new URL(
+    path.replace(/^\/+/, ''),
+    `${defaultCompanionRelayUrl.replace(/\/+$/u, '')}/`
+  )
   url.searchParams.set('accountId', accountId)
   url.searchParams.set('deviceId', deviceId)
   return url.toString()

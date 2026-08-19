@@ -10,6 +10,8 @@ import type {
   CompanionEncryptedSyncEventInput,
   CompanionCommandType,
   CompanionCommandUpdate,
+  CompanionDeviceEnrollmentInput,
+  CompanionDeviceEnrollmentResult,
   CompanionEventBatchResult,
   CompanionMacConfiguration,
   CompanionMacStatus,
@@ -24,6 +26,7 @@ import type {
   CompanionChatKind,
   CompanionChatPage,
   CompanionRelayChatPage,
+  CompanionRelaySnapshotPayload,
   CompanionRelayWorkAssistantMessage
 } from '../../shared/companion-sync'
 import { companionProtocolVersion } from '../../shared/companion-sync'
@@ -33,11 +36,16 @@ import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../s
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { agentToolPresentation } from '../../shared/agent-activity'
 import { updateProjectSchema } from '../../shared/project-validation'
-import { companionCommandSchema, companionEncryptedCommandSchema, syncEventSchema } from '../../shared/companion-schemas'
+import { companionCommandSchema, companionPendingEncryptedCommandSchema, syncEventSchema } from '../../shared/companion-schemas'
+import { ZodError } from 'zod'
 import { AppDatabase } from './database'
 import { CredentialVault } from './credential-vault'
 import { TaskDispatcher } from './task-dispatcher'
 import type { WorkspaceFilesService } from './workspace-files'
+import {
+  compactPersistedCompanionCommandEvent,
+  companionCommandResultRequiredOnIos
+} from '../features/companion/companion-repository'
 import {
   companionAccountKeyId,
   companionAttachmentAssociatedData,
@@ -49,6 +57,8 @@ import {
   sealCompanionAttachment,
   sealCompanionJson
 } from '../../shared/companion-crypto'
+import { companionLatestChatCursor } from '../../shared/companion-chat'
+import type { AccountRelayCredentials } from './account-device-grant'
 
 const configurationKey = 'companion.mac-configuration'
 export const companionFallbackSyncIntervalMs = 60_000
@@ -57,6 +67,13 @@ export const companionRequestTimeoutMs = 30_000
 export const companionSocketHeartbeatIntervalMs = 20_000
 export const companionEventBatchMaximumCount = 100
 export const companionEventBatchMaximumBytes = 512 * 1024
+// Pairing snapshots are already bounded to one presentation-ready page per chat,
+// but an established workspace can legitimately exceed the normal batch target.
+// Keep the single baseline below the Relay's encrypted-payload ceiling instead
+// of dead-lettering it and leaving a newly paired phone without canonical state.
+export const companionSnapshotEventMaximumBytes = 1_900_000
+export const companionSnapshotChatPageMaximumBytes = 1_300_000
+export const companionCommandChatPageMaximumBytes = 320 * 1024
 export const companionToolSummaryMaximumCharacters = 600
 const companionAttachmentRequestTimeoutMs = 120_000
 const companionEventSyncDebounceMs = 500
@@ -70,6 +87,11 @@ interface AuthenticatedCompanionContext {
   configuration: CompanionMacConfiguration
   token: string
   encryptionKey: string
+}
+
+export interface AccountRelayBinding {
+  relayUrl: string
+  relayAccountId: string
 }
 
 export function companionReconnectDelayMs(attempt: number): number {
@@ -152,6 +174,51 @@ export function partitionCompanionEventBatches<T extends CompanionSyncEventInput
   return batches
 }
 
+export function companionEventFitsTransportLimit(
+  event: CompanionSyncEventInput | CompanionEncryptedSyncEventInput,
+  maximumBytes = companionEventBatchMaximumBytes
+): boolean {
+  return Buffer.byteLength(JSON.stringify({ events: [event] }), 'utf8') <= maximumBytes
+}
+
+export function compactCompanionPairingSnapshot(
+  snapshot: CompanionRelaySnapshotPayload
+): CompanionRelaySnapshotPayload {
+  return {
+    ...snapshot,
+    morningBriefings: [],
+    workAssistantMessages: [],
+    runs: snapshot.runs.map((detail) => ({ ...detail, messages: [] })),
+    chatPages: snapshot.chatPages?.map((page) => compactCompanionChatPage(page))
+  }
+}
+
+export function compactCompanionChatPage(
+  page: CompanionRelayChatPage,
+  maximumBytes = companionSnapshotChatPageMaximumBytes
+): CompanionRelayChatPage {
+  let records = page.records
+  while (records.length > 0) {
+    const hasMore = page.hasMore || records.length < page.records.length
+    const candidate = {
+      ...page,
+      records,
+      hasMore,
+      nextBefore: hasMore ? records[0]?.id ?? companionLatestChatCursor : null
+    }
+    if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') <= maximumBytes) return candidate
+    records = records.slice(Math.max(1, Math.ceil(records.length / 2)))
+  }
+  return {
+    ...page,
+    records: [],
+    hasMore: page.hasMore || page.records.length > 0,
+    nextBefore: page.hasMore || page.records.length > 0
+      ? page.records[page.records.length - 1]?.id ?? page.nextBefore ?? companionLatestChatCursor
+      : null
+  }
+}
+
 export function companionSocketHeartbeatShouldReconnect(awaitingPong: boolean): boolean {
   return awaitingPong
 }
@@ -181,10 +248,20 @@ function fetchWithTimeout(
 
 function normalizedRelayUrl(value: string): string {
   const url = new URL(value.trim())
-  if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
+  const isLocalDevelopment = url.protocol === 'http:'
+    && (url.hostname === 'localhost' || url.hostname === '127.0.0.1')
+  if (url.protocol !== 'https:' && !isLocalDevelopment) {
     throw new Error('Companion Relay 必须使用 HTTPS。')
   }
-  return url.origin
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('Companion Relay 地址不能包含凭证、查询参数或片段。')
+  }
+  const pathname = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/u, '')
+  return `${url.origin}${pathname}`
+}
+
+function relayRequestUrl(baseUrl: string, path: string): URL {
+  return new URL(path.replace(/^\/+/, ''), `${baseUrl.replace(/\/+$/u, '')}/`)
 }
 
 async function responseJson<T>(response: Response): Promise<T> {
@@ -208,8 +285,11 @@ export class CompanionSyncService {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private eventSyncTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
+  private iosDevicesOnline: number | null = null
   private activeSync: Promise<CompanionMacStatus> | null = null
+  private validatedAccountRelaySignature: string | null = null
   private readonly activeCommands = new Map<string, Promise<void>>()
+  private readonly activeRunCreations = new Map<string, Promise<void>>()
   private syncRequested = false
   private stopped = false
   private readonly listeners = new Set<(status: CompanionMacStatus) => void>()
@@ -238,7 +318,9 @@ export class CompanionSyncService {
       lastConnectedAt: this.lastConnectedAt,
       lastSyncedAt: this.lastSyncedAt,
       lastError: this.lastError,
-      pendingEvents: this.database.countPendingCompanionEvents()
+      pendingEvents: this.database.countPendingCompanionEvents(),
+      isolatedEvents: this.database.countDeadLetterCompanionEvents(),
+      iosDevicesOnline: this.iosDevicesOnline
     }
   }
 
@@ -272,11 +354,106 @@ export class CompanionSyncService {
     this.connectSocket()
   }
 
-  async beginPairing(relayUrl: string, deviceName?: string): Promise<CompanionPairingSession> {
+  async ensureAccountRelay(
+    relayUrl: string,
+    deviceName?: string,
+    syncSpaceId?: string
+  ): Promise<AccountRelayBinding> {
+    const normalizedRelay = normalizedRelayUrl(relayUrl)
+    const configurationHasKey = this.configuration?.encryptionKeyId
+      && this.credentials.get(this.encryptionKeyReference(this.configuration.accountId))
+    const belongsToAnotherSpace = Boolean(
+      syncSpaceId
+      && this.configuration?.syncSpaceId
+      && this.configuration.syncSpaceId !== syncSpaceId
+    )
+    const relayChanged = Boolean(this.configuration && this.configuration.relayUrl !== normalizedRelay)
+    if (!this.configuration || !configurationHasKey || belongsToAnotherSpace || relayChanged) {
+      await this.beginPairing(normalizedRelay, deviceName, syncSpaceId)
+    } else if (syncSpaceId && !this.configuration.syncSpaceId) {
+      this.configuration = { ...this.configuration, syncSpaceId }
+      this.database.setSetting(configurationKey, this.configuration)
+    }
+    if (!this.configuration) throw new Error('无法初始化 Companion Relay。')
+    const signature = `${this.configuration.accountId}\0${this.configuration.macDeviceId}\0${syncSpaceId ?? ''}`
+    if (this.validatedAccountRelaySignature !== signature) {
+      const context = this.authenticatedTokenContext()
+      const deviceResponse = await fetchWithTimeout(
+        this.authenticatedUrl('/v1/device', context.configuration),
+        { headers: { Authorization: `Bearer ${context.token}` } }
+      )
+      const validationResponse = deviceResponse.status === 404
+        ? await fetchWithTimeout(
+            `${this.authenticatedUrl('/v1/events', context.configuration)}&after=0&limit=1`,
+            { headers: { Authorization: `Bearer ${context.token}` } }
+          )
+        : deviceResponse
+      if (validationResponse.status === 401) {
+        this.forgetAccountRelay()
+        await this.beginPairing(normalizedRelay, deviceName, syncSpaceId)
+      } else {
+        await responseJson(validationResponse)
+      }
+      if (!this.configuration) throw new Error('无法初始化 Companion Relay。')
+      this.validatedAccountRelaySignature = `${this.configuration.accountId}\0${this.configuration.macDeviceId}\0${syncSpaceId ?? ''}`
+    }
+    return {
+      relayUrl: this.configuration.relayUrl,
+      relayAccountId: this.configuration.accountId
+    }
+  }
+
+  async enrollAccountDevice(input: CompanionDeviceEnrollmentInput): Promise<AccountRelayCredentials> {
+    const context = this.authenticatedContext()
+    const response = await fetchWithTimeout(
+      this.authenticatedUrl('/v1/devices/enroll', context.configuration),
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${context.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(input)
+      }
+    )
+    const enrollment = await responseJson<CompanionDeviceEnrollmentResult>(response)
+    if (
+      enrollment.protocolVersion !== companionProtocolVersion
+      || enrollment.accountId !== context.configuration.accountId
+      || enrollment.device.id !== input.deviceId
+    ) {
+      throw new Error('Companion Relay 返回了不兼容的设备授权。')
+    }
+    return {
+      relayURL: context.configuration.relayUrl,
+      accountID: context.configuration.accountId,
+      deviceID: enrollment.device.id,
+      deviceToken: enrollment.deviceToken,
+      encryptionKey: context.encryptionKey,
+      encryptionKeyId: context.configuration.encryptionKeyId!
+    }
+  }
+
+  async revokeAccountDevice(deviceId: string): Promise<void> {
+    const context = this.authenticatedTokenContext()
+    if (deviceId === context.configuration.macDeviceId) throw new Error('不能撤销当前 Mac Host。')
+    const response = await fetchWithTimeout(
+      this.authenticatedUrl(`/v1/devices/${encodeURIComponent(deviceId)}`, context.configuration),
+      {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${context.token}` }
+      }
+    )
+    if (response.status === 204) return
+    await responseJson(response)
+  }
+
+  async beginPairing(
+    relayUrl: string,
+    deviceName?: string,
+    syncSpaceId?: string
+  ): Promise<CompanionPairingSession> {
     const previousConfiguration = this.configuration
     const origin = normalizedRelayUrl(relayUrl)
     const macDeviceId = crypto.randomUUID()
-    const response = await fetchWithTimeout(`${origin}/v1/pairings`, {
+    const response = await fetchWithTimeout(relayRequestUrl(origin, '/v1/pairings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -291,7 +468,16 @@ export class CompanionSyncService {
       })
       throw new Error('Companion Relay 协议版本不兼容。')
     }
-    if (previousConfiguration) await this.revokeRemoteAccount()
+    if (previousConfiguration) {
+      try {
+        await this.revokeRemoteAccount()
+      } catch (error) {
+        await this.revokePairingAccount(origin, pairing).catch(() => {
+          // Preserve the replacement error if the provisional Relay also cannot be cleaned up.
+        })
+        throw error
+      }
+    }
     this.closeTransports()
     if (previousConfiguration) {
       this.credentials.delete(this.tokenReference(previousConfiguration.accountId))
@@ -304,14 +490,17 @@ export class CompanionSyncService {
       accountId: pairing.accountId,
       macDeviceId: pairing.macDeviceId,
       pairedAt: new Date().toISOString(),
+      syncSpaceId,
       encryptionKeyId
     }
     this.credentials.set(this.tokenReference(pairing.accountId), pairing.macToken)
     this.credentials.set(this.encryptionKeyReference(pairing.accountId), encryptionKey)
     this.database.setSetting(configurationKey, this.configuration)
+    this.validatedAccountRelaySignature = null
     this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
     this.state = 'connecting'
     this.lastError = null
+    this.iosDevicesOnline = null
     this.emitStatus()
     this.ensureTimer()
     this.connectSocket()
@@ -330,10 +519,16 @@ export class CompanionSyncService {
 
   async disconnect(): Promise<void> {
     if (this.configuration) await this.revokeRemoteAccount()
+    this.forgetAccountRelay()
+  }
+
+  /** Clears a Relay identity already revoked by the Account API without making another remote request. */
+  forgetAccountRelay(): void {
     if (this.configuration) this.credentials.delete(this.tokenReference(this.configuration.accountId))
     if (this.configuration) this.credentials.delete(this.encryptionKeyReference(this.configuration.accountId))
     this.database.setSetting<CompanionMacConfiguration | null>(configurationKey, null)
     this.configuration = null
+    this.validatedAccountRelaySignature = null
     this.state = 'not-configured'
     this.realtimeState = 'disconnected'
     this.lastConnectedAt = null
@@ -376,7 +571,10 @@ export class CompanionSyncService {
       await this.processPendingCommands()
       this.state = 'connected'
       this.lastSyncedAt = new Date().toISOString()
-      this.lastError = null
+      const isolatedEvents = this.database.countDeadLetterCompanionEvents()
+      this.lastError = isolatedEvents > 0
+        ? `已隔离 ${isolatedEvents} 条无法安全发送的 Companion 事件；其余事件已继续同步。`
+        : null
     } catch (error) {
       this.state = 'error'
       this.lastError = error instanceof Error ? error.message : 'Companion 同步失败。'
@@ -398,24 +596,102 @@ export class CompanionSyncService {
       if (pending.length === 0) return
       const prepared: CompanionEncryptedSyncEventInput[] = []
       for (const event of pending) {
-        const plaintext = syncEventSchema.parse({
-          eventId: event.eventId,
-          protocolVersion: event.protocolVersion,
-          type: event.type,
-          entityType: event.entityType,
-          entityId: event.entityId,
-          revision: event.revision,
-          payload: await this.prepareEventPayload(event),
-          occurredAt: event.occurredAt
-        })
-        prepared.push({
+        const payload = await this.prepareEventPayload(event)
+        let plaintext: CompanionSyncEventInput
+        try {
+          plaintext = syncEventSchema.parse({
+            eventId: event.eventId,
+            protocolVersion: event.protocolVersion,
+            type: event.type,
+            entityType: event.entityType,
+            entityId: event.entityId,
+            revision: event.revision,
+            payload,
+            occurredAt: event.occurredAt
+          })
+        } catch (error) {
+          if (!(error instanceof ZodError)) throw error
+          this.database.markCompanionEventDeadLettered(
+            event.eventId,
+            `Companion 事件契约无效，已隔离：${error.issues[0]?.message ?? '未知格式错误'}`
+          )
+          continue
+        }
+        let encrypted = {
           ...plaintext,
           payload: await sealCompanionJson(
             context.encryptionKey,
             plaintext.payload,
             companionEventAssociatedData(plaintext)
           )
-        } as CompanionEncryptedSyncEventInput)
+        } as CompanionEncryptedSyncEventInput
+        if (!companionEventFitsTransportLimit(encrypted, companionSnapshotEventMaximumBytes)
+          && event.type === 'snapshot.created') {
+          const compactPlaintext = syncEventSchema.parse({
+            ...plaintext,
+            payload: compactCompanionPairingSnapshot(plaintext.payload as CompanionRelaySnapshotPayload)
+          })
+          encrypted = {
+            ...compactPlaintext,
+            payload: await sealCompanionJson(
+              context.encryptionKey,
+              compactPlaintext.payload,
+              companionEventAssociatedData(compactPlaintext)
+            )
+          } as CompanionEncryptedSyncEventInput
+        }
+        if (!companionEventFitsTransportLimit(encrypted, companionSnapshotEventMaximumBytes)
+          && event.type === 'chat-page.updated') {
+          const compactPlaintext = syncEventSchema.parse({
+            ...plaintext,
+            payload: compactCompanionChatPage(plaintext.payload as CompanionRelayChatPage)
+          })
+          encrypted = {
+            ...compactPlaintext,
+            payload: await sealCompanionJson(
+              context.encryptionKey,
+              compactPlaintext.payload,
+              companionEventAssociatedData(compactPlaintext)
+            )
+          } as CompanionEncryptedSyncEventInput
+        }
+        if (!companionEventFitsTransportLimit(encrypted) && event.type === 'command.updated') {
+          const compact = compactPersistedCompanionCommandEvent(event.payload) as Record<string, unknown>
+          const type = compact.type as CompanionCommandType
+          const compactStatus = compact.status === 'completed' && companionCommandResultRequiredOnIos(type)
+            ? 'failed'
+            : compact.status
+          const fallbackPlaintext = syncEventSchema.parse({
+            ...plaintext,
+            payload: {
+              ...compact,
+              status: compactStatus,
+              result: null,
+              error: companionCommandResultRequiredOnIos(type)
+                ? 'Mac 返回的命令结果过大，无法安全同步到 iPhone。请缩小请求范围后重试。'
+                : compact.error
+            }
+          })
+          encrypted = {
+            ...fallbackPlaintext,
+            payload: await sealCompanionJson(
+              context.encryptionKey,
+              fallbackPlaintext.payload,
+              companionEventAssociatedData(fallbackPlaintext)
+            )
+          } as CompanionEncryptedSyncEventInput
+        }
+        const maximumEventBytes = event.type === 'snapshot.created' || event.type === 'chat-page.updated'
+          ? companionSnapshotEventMaximumBytes
+          : companionEventBatchMaximumBytes
+        if (!companionEventFitsTransportLimit(encrypted, maximumEventBytes)) {
+          this.database.markCompanionEventDeadLettered(
+            event.eventId,
+            `Companion ${event.type} 事件超过 ${maximumEventBytes} 字节传输上限，已隔离以继续同步后续事件。`
+          )
+          continue
+        }
+        prepared.push(encrypted)
       }
       for (const batch of partitionCompanionEventBatches(prepared)) {
         try {
@@ -460,6 +736,12 @@ export class CompanionSyncService {
   }
 
   private async prepareEventPayload(event: CompanionOutboxEvent): Promise<unknown> {
+    if (event.type === 'chat-page.updated') {
+      return companionChatPageForRelay(
+        event.payload as CompanionChatPage,
+        (message) => this.prepareWorkAssistantMessage(message)
+      )
+    }
     if (event.type === 'snapshot.created') {
       const snapshot = event.payload as CompanionSnapshotPayload
       const preparedWorkAssistantMessages = new Map<string, Promise<CompanionRelayWorkAssistantMessage>>()
@@ -698,20 +980,36 @@ export class CompanionSyncService {
     })
     const body = await responseJson<{ commands: unknown[] }>(response)
     const commands = await Promise.all(body.commands.map(async (value) => {
-      const encrypted = companionEncryptedCommandSchema.parse(value)
+      const encrypted = companionPendingEncryptedCommandSchema.parse(value)
       const payload = await openCompanionJson(
         context.encryptionKey,
         encrypted.payload,
         companionCommandAssociatedData(encrypted)
       )
-      return companionCommandSchema.parse({ ...encrypted, payload })
+      return companionCommandSchema.parse({
+        ...encrypted,
+        protocolVersion: companionProtocolVersion,
+        payload
+      })
     }))
-    for (const remoteCommand of commands) this.scheduleCommand(remoteCommand)
+    const createCommands = commands.filter((command) => command.type === 'agent.create-session')
+    await Promise.all(createCommands.map((command) => this.scheduleCommand(command)))
+    for (const remoteCommand of commands) {
+      if (remoteCommand.type === 'agent.create-session') continue
+      const runId = this.commandRunId(remoteCommand)
+      const activeCreation = runId ? this.activeRunCreations.get(runId) : null
+      if (activeCreation) await activeCreation
+      this.scheduleCommand(remoteCommand)
+    }
     if (commands.length >= 100) this.scheduleEventSync()
   }
 
-  private scheduleCommand(remoteCommand: CompanionCommand): void {
-    if (this.activeCommands.has(remoteCommand.commandId)) return
+  private scheduleCommand(remoteCommand: CompanionCommand): Promise<void> {
+    const active = this.activeCommands.get(remoteCommand.commandId)
+    if (active) return active
+    const createdRunId = remoteCommand.type === 'agent.create-session'
+      ? this.commandRunId(remoteCommand)
+      : null
     const operation = this.executeCommand(remoteCommand)
       .catch((error) => {
         this.lastError = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
@@ -719,9 +1017,14 @@ export class CompanionSyncService {
       })
       .finally(() => {
         this.activeCommands.delete(remoteCommand.commandId)
+        if (createdRunId && this.activeRunCreations.get(createdRunId) === operation) {
+          this.activeRunCreations.delete(createdRunId)
+        }
         this.scheduleEventSync()
       })
     this.activeCommands.set(remoteCommand.commandId, operation)
+    if (createdRunId) this.activeRunCreations.set(createdRunId, operation)
+    return operation
   }
 
   private async executeCommand(remoteCommand: CompanionCommand): Promise<void> {
@@ -736,6 +1039,24 @@ export class CompanionSyncService {
       return
     }
     if (recovery === 'fail-interrupted') {
+      if (remoteCommand.type === 'agent.create-session') {
+        const runId = this.commandRunId(remoteCommand)
+        const canonicalRun = runId ? this.database.listRuns().find((run) => run.id === runId) : null
+        if (canonicalRun) {
+          const updated = this.database.updateCompanionCommand(
+            remoteCommand.commandId,
+            'completed',
+            this.database.getAgentRunDetail(canonicalRun.id)
+          )
+          this.database.enqueueCompanionCommandUpdate(updated)
+          this.emitDataChanged()
+          await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, {
+            status: 'completed',
+            result: updated.result
+          })
+          return
+        }
+      }
       const error = 'Mac 在执行远程操作期间中断；为避免重复执行，请确认结果后重新操作。'
       const updated = this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, error)
       this.database.enqueueCompanionCommandUpdate(updated)
@@ -763,6 +1084,12 @@ export class CompanionSyncService {
     this.emitDataChanged()
     await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'completed', result })
     this.scheduleEventSync()
+  }
+
+  private commandRunId(command: CompanionCommand): string | null {
+    if (!command.payload || typeof command.payload !== 'object') return null
+    const runId = (command.payload as Record<string, unknown>).runId
+    return typeof runId === 'string' && runId.trim() ? runId.trim() : null
   }
 
   private async performCommand(remoteCommand: CompanionCommand): Promise<unknown> {
@@ -807,6 +1134,20 @@ export class CompanionSyncService {
       }
       case 'agent.stop-message':
         return await this.dispatcher.stopMessage(this.requiredString(payload, 'runId'))
+      case 'agent.create-session': {
+        const projectId = typeof payload.projectId === 'string' && payload.projectId.trim()
+          ? payload.projectId.trim()
+          : null
+        if (projectId && !this.database.listProjects().some((project) => project.id === projectId)) {
+          throw new Error('没有找到所选项目。')
+        }
+        return this.dispatcher.createDraft({
+          id: this.requiredString(payload, 'runId'),
+          projectId,
+          title: this.requiredString(payload, 'title'),
+          ...(projectId ? {} : { provider: this.defaultCodingAgent() })
+        })
+      }
       case 'agent.rename-session':
         return this.database.renameAgentRun(
           this.requiredString(payload, 'runId'),
@@ -827,13 +1168,18 @@ export class CompanionSyncService {
         if (chatKind !== 'assistant' && chatKind !== 'agent') throw new Error('聊天类型无效。')
         const limit = Number(payload.limit)
         if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('聊天历史分页大小无效。')
+        const before = typeof payload.before === 'string' ? payload.before : null
         const page = this.database.getCompanionChatPage(
           chatKind as CompanionChatKind,
           this.requiredString(payload, 'chatId'),
-          typeof payload.before === 'string' ? payload.before : null,
-          limit
+          before === companionLatestChatCursor ? null : before,
+          before === companionLatestChatCursor ? Math.min(limit, 20) : limit
         )
-        return await companionChatPageForRelay(page, (message) => this.prepareWorkAssistantMessage(message))
+        const prepared = await companionChatPageForRelay(
+          page,
+          (message) => this.prepareWorkAssistantMessage(message)
+        )
+        return compactCompanionChatPage(prepared, companionCommandChatPageMaximumBytes)
       }
       case 'artifact.request-upload': {
         const artifactId = this.requiredString(payload, 'artifactId')
@@ -971,6 +1317,10 @@ export class CompanionSyncService {
       try {
         const message = JSON.parse(payload) as CompanionSocketMessage
         this.reconnectAttempt = 0
+        if ('presence' in message) {
+          this.iosDevicesOnline = message.presence.iosDevicesOnline
+          this.emitStatus()
+        }
         if (companionSocketMessageRequestsSync(message)) void this.syncNow()
       } catch {
         // A malformed push frame must not interrupt periodic synchronization.
@@ -983,6 +1333,7 @@ export class CompanionSyncService {
     socket.on('close', () => {
       if (this.socket !== socket) return
       this.socket = null
+      this.iosDevicesOnline = null
       this.stopSocketHeartbeat()
       if (!this.stopped && this.configuration) {
         this.realtimeState = 'disconnected'
@@ -1044,7 +1395,7 @@ export class CompanionSyncService {
   }
 
   private authenticatedUrl(path: string, configuration: CompanionMacConfiguration): string {
-    const url = new URL(path, configuration.relayUrl)
+    const url = relayRequestUrl(configuration.relayUrl, path)
     url.searchParams.set('accountId', configuration.accountId)
     url.searchParams.set('deviceId', configuration.macDeviceId)
     return url.toString()
@@ -1056,7 +1407,7 @@ export class CompanionSyncService {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${context.token}` }
     })
-    if (response.status === 204) return
+    if (response.status === 204 || response.status === 401 || response.status === 404) return
     await responseJson(response)
   }
 
@@ -1126,6 +1477,7 @@ export class CompanionSyncService {
     this.reconnectAttempt = 0
     this.stopSocketHeartbeat()
     this.realtimeState = 'disconnected'
+    this.iosDevicesOnline = null
     const socket = this.socket
     this.socket = null
     closeCompanionSocket(socket)

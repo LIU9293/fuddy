@@ -192,6 +192,7 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
             codingAgentSettings={bootstrap.providerSettings.codingAgents}
             selectedRunId={nav.selectedAgentRunId}
             creating={nav.creatingAgentRun}
+            initialProjectId={nav.creatingAgentRunProjectId}
             prefill={agentRunPrefill}
             onPrefillConsumed={() => setAgentRunPrefill(null)}
             onSelectRun={(runId) => nav.setRunSelection(runId, false)}

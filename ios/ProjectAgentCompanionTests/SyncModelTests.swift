@@ -1,12 +1,155 @@
+import CryptoKit
 import SwiftUI
 import XCTest
 @testable import ProjectAgentCompanion
 
 final class SyncModelTests: XCTestCase {
+    func testPreferredAccountSyncSpaceUsesSavedHostOrMostRecentHost() {
+        let first = AccountSyncSpace(
+            id: "space-a",
+            hostId: "host-a",
+            name: "A",
+            keyVersion: 1,
+            relayUrl: "https://relay.example.com",
+            relayAccountId: "relay-a",
+            hostName: "Mac A",
+            hostLastSeenAt: "2026-08-19T00:00:00Z"
+        )
+        let second = AccountSyncSpace(
+            id: "space-b",
+            hostId: "host-b",
+            name: "B",
+            keyVersion: 1,
+            relayUrl: "https://relay.example.com",
+            relayAccountId: "relay-b",
+            hostName: "Mac B",
+            hostLastSeenAt: "2026-08-19T00:00:00Z"
+        )
+
+        XCTAssertEqual(preferredAccountSyncSpace(from: [first], preferredID: nil)?.id, "space-a")
+        XCTAssertEqual(preferredAccountSyncSpace(from: [first, second], preferredID: nil)?.id, "space-a")
+        XCTAssertEqual(preferredAccountSyncSpace(from: [first, second], preferredID: "space-b")?.id, "space-b")
+        XCTAssertEqual(preferredAccountSyncSpace(from: [first, second], preferredID: "removed-space")?.id, "space-a")
+    }
+
+    func testAccountCredentialsReenrollWhenSpaceRelayIdentityRotates() {
+        let space = AccountSyncSpace(
+            id: "space-a",
+            hostId: "host-a",
+            name: "A",
+            keyVersion: 1,
+            relayUrl: "https://fuddy.ai/api/relay/",
+            relayAccountId: "next-relay-account",
+            hostName: "Mac A",
+            hostLastSeenAt: "2026-08-19T00:00:00Z"
+        )
+        let current = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "next-relay-account",
+            deviceID: "phone-a",
+            deviceToken: "token",
+            syncSpaceID: "space-a"
+        )
+        let stale = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "old-relay-account",
+            deviceID: "phone-a",
+            deviceToken: "token",
+            syncSpaceID: "space-a"
+        )
+
+        XCTAssertFalse(accountCredentialsNeedEnrollment(
+            current,
+            accountDeviceID: "phone-a",
+            selectedSpace: space
+        ))
+        XCTAssertTrue(accountCredentialsNeedEnrollment(
+            stale,
+            accountDeviceID: "phone-a",
+            selectedSpace: space
+        ))
+    }
+
+    func testAccountDeviceGrantUsesSPKIAndOpensOnlyForTheRequestedPhone() throws {
+        let phone = P256.KeyAgreement.PrivateKey()
+        let mac = P256.KeyAgreement.PrivateKey()
+        let phoneSPKI = AccountDeviceGrant.subjectPublicKeyInfo(phone.publicKey)
+        XCTAssertEqual(phoneSPKI.count, 91)
+        XCTAssertEqual(phoneSPKI.suffix(65), phone.publicKey.x963Representation)
+
+        let salt = Data(repeating: 7, count: 32)
+        let nonceData = Data(repeating: 5, count: 12)
+        let sharedSecret = try mac.sharedSecretFromKeyAgreement(with: phone.publicKey)
+        let key = sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: salt,
+            sharedInfo: Data("fuddy-sync-space-grant-v1".utf8),
+            outputByteCount: 32
+        )
+        let credentials = CompanionCredentials(
+            relayURL: "https://relay.example.com",
+            accountID: "relay-account",
+            deviceID: "phone-1",
+            deviceToken: "secret-token",
+            encryptionKey: "secret-key",
+            encryptionKeyId: "key-id"
+        )
+        let associatedData = Data("fuddy-enrollment:grant-1:space-1:phone-1:v1".utf8)
+        let sealed = try AES.GCM.seal(
+            JSONEncoder().encode(credentials),
+            using: key,
+            nonce: AES.GCM.Nonce(data: nonceData),
+            authenticating: associatedData
+        )
+        let envelope = try JSONSerialization.data(withJSONObject: [
+            "version": 1,
+            "algorithm": "P256-HKDF-SHA256-A256GCM",
+            "senderPublicKey": AccountDeviceGrant.subjectPublicKeyInfo(mac.publicKey).base64EncodedString(),
+            "salt": salt.base64EncodedString(),
+            "nonce": nonceData.base64EncodedString(),
+            "ciphertext": sealed.ciphertext.base64EncodedString(),
+            "tag": sealed.tag.base64EncodedString()
+        ])
+        let opened = try AccountDeviceGrant.open(
+            String(decoding: envelope, as: UTF8.self),
+            enrollmentID: "grant-1",
+            spaceID: "space-1",
+            deviceID: "phone-1",
+            privateKeyData: phone.rawRepresentation
+        )
+        XCTAssertEqual(opened.deviceToken, "secret-token")
+        XCTAssertThrowsError(try AccountDeviceGrant.open(
+            String(decoding: envelope, as: UTF8.self),
+            enrollmentID: "grant-1",
+            spaceID: "space-1",
+            deviceID: "another-phone",
+            privateKeyData: phone.rawRepresentation
+        ))
+    }
+
+    func testAccountSessionDecodesMacAccountAPIResponse() throws {
+        let json = #"{"user":{"id":"user-1","email":"kai@example.com","displayName":null},"device":{"id":"device-1","platform":"ios","name":"iPhone","hostId":null,"syncSpaceId":null},"session":{"accessToken":"access","refreshToken":"refresh","accessExpiresAt":"2026-08-19T01:00:00.000Z","refreshExpiresAt":"2026-09-18T01:00:00.000Z"}}"#
+        let session = try JSONDecoder().decode(MobileAccountSession.self, from: Data(json.utf8))
+        XCTAssertEqual(session.user.email, "kai@example.com")
+        XCTAssertEqual(session.device.platform, "ios")
+        XCTAssertEqual(session.session.refreshToken, "refresh")
+    }
+
     func testCompanionContractFingerprintRejectsMixedClientBuilds() {
         XCTAssertTrue(companionContractFingerprintIsSupported(companionContractFingerprint))
         XCTAssertTrue(companionContractFingerprintIsSupported(nil))
         XCTAssertFalse(companionContractFingerprintIsSupported("different-contract"))
+    }
+
+    func testPendingCreatedRunCorrelationSurvivesCacheRoundTrip() throws {
+        var state = CachedState()
+        state.pendingCreatedRunIDs["command-1"] = "run-1"
+
+        let restored = try JSONDecoder().decode(CachedState.self, from: JSONEncoder().encode(state))
+        let legacy = try JSONDecoder().decode(CachedState.self, from: Data(#"{"lastSequence":4}"#.utf8))
+
+        XCTAssertEqual(restored.pendingCreatedRunIDs, ["command-1": "run-1"])
+        XCTAssertEqual(legacy.pendingCreatedRunIDs, [:])
     }
 
     func testGeneratedSnapshotPayloadKeepsLegacyOptionalCollectionsCompatible() throws {
@@ -40,12 +183,16 @@ final class SyncModelTests: XCTestCase {
         XCTAssertNil(parseCompanionDate("not-a-date"))
     }
 
-    func testPairingPayloadDecodesMacPayload() throws {
-        let payload = #"{"minimumProtocolVersion":2,"protocolVersion":2,"relayUrl":"https://relay.example.com","accountId":"account","pairingSecret":"secret","encryptionKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","encryptionKeyId":"test-key-id"}"#
-        let decoded = try JSONDecoder().decode(PairingPayload.self, from: Data(payload.utf8))
-        XCTAssertEqual(decoded.minimumProtocolVersion, 2)
-        XCTAssertEqual(decoded.protocolVersion, 2)
-        XCTAssertEqual(decoded.accountId, "account")
+    func testRelayURLComponentsPreserveCanonicalBasePath() throws {
+        let components = try XCTUnwrap(companionRelayURLComponents(
+            baseURL: "https://fuddy.ai/api/relay/",
+            path: "/v1/events"
+        ))
+        XCTAssertEqual(components.url?.absoluteString, "https://fuddy.ai/api/relay/v1/events")
+        XCTAssertNil(companionRelayURLComponents(
+            baseURL: "https://user:secret@fuddy.ai/api/relay",
+            path: "/v1/events"
+        ))
     }
 
     func testCompanionCryptoRoundTripsJSONAndAttachments() throws {
@@ -160,6 +307,40 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(projectIconImageData(icon), bytes)
         XCTAssertNil(projectIconImageData("🚀"))
         XCTAssertNil(projectIconImageData("data:image/svg+xml;base64,PHN2Zz4="))
+    }
+
+    func testRunListGroupsByProjectAndKeepsSharedRunsSeparate() {
+        let projects = [
+            Project(id: "project-b", name: "Project B", summary: "", focus: "", status: "active", accent: "blue"),
+            Project(id: "project-a", name: "Project A", summary: "", focus: "", status: "active", accent: "purple")
+        ]
+        func detail(_ id: String, _ projectID: String?) -> RunDetail {
+            RunDetail(
+                run: AgentRun(
+                    id: id,
+                    projectId: projectID,
+                    provider: "codex",
+                    title: id,
+                    status: "draft",
+                    workingDirectory: nil,
+                    summary: "",
+                    createdAt: "1",
+                    updatedAt: "1"
+                ),
+                messages: [],
+                artifacts: []
+            )
+        }
+
+        let groups = groupRunDetailsByProject([
+            detail("a-1", "project-a"),
+            detail("shared-1", nil),
+            detail("b-1", "project-b"),
+            detail("orphaned-1", "removed-project")
+        ], projects: projects)
+
+        XCTAssertEqual(groups.map(\.title), ["Project B", "Project A", "共享任务"])
+        XCTAssertEqual(groups.map { $0.runs.map(\.id) }, [["b-1"], ["a-1"], ["shared-1", "orphaned-1"]])
     }
 
     func testToolCallsAreGroupedIntoTheSameStagesAsMac() {
@@ -427,34 +608,6 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(companionSocketHeartbeatIntervalSeconds, 20)
         XCTAssertFalse(companionSocketHeartbeatShouldReconnect(awaitingPong: false))
         XCTAssertTrue(companionSocketHeartbeatShouldReconnect(awaitingPong: true))
-    }
-
-    func testCompanionPagingClampsAtBothOuterEdges() {
-        XCTAssertEqual(companionClampedPageDrag(translation: 90, pageWidth: 390, isLeadingPage: true), 0)
-        XCTAssertEqual(companionClampedPageDrag(translation: -500, pageWidth: 390, isLeadingPage: true), -390)
-        XCTAssertEqual(companionClampedPageDrag(translation: -90, pageWidth: 390, isLeadingPage: false), 0)
-        XCTAssertEqual(companionClampedPageDrag(translation: 500, pageWidth: 390, isLeadingPage: false), 390)
-    }
-
-    func testCompanionPagingChangesOnlyTowardTheOtherPage() {
-        XCTAssertTrue(companionShouldChangePage(
-            translation: -80,
-            predictedTranslation: -90,
-            pageWidth: 390,
-            towardTrailingPage: true
-        ))
-        XCTAssertFalse(companionShouldChangePage(
-            translation: 80,
-            predictedTranslation: 90,
-            pageWidth: 390,
-            towardTrailingPage: true
-        ))
-        XCTAssertTrue(companionShouldChangePage(
-            translation: 80,
-            predictedTranslation: 90,
-            pageWidth: 390,
-            towardTrailingPage: false
-        ))
     }
 
     func testCompanionDrawerUsesContinuousRevealAndProjectedSnap() {

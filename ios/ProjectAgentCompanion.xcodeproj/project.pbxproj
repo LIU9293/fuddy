@@ -8,22 +8,26 @@
 
 /* Begin PBXBuildFile section */
 		07F3CDC397BE47E65A5A057B /* RelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A57F13FB0BBE001DAB5DF0 /* RelayClient.swift */; };
-		0B1834AC74E0161F6B65034C /* PairingCodeScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5F5580905A2559653C6AE66 /* PairingCodeScanner.swift */; };
+		0BDA31DD60CD2A12C3027A81 /* AccountDeviceGrant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62663B3930416DDA631FBAF3 /* AccountDeviceGrant.swift */; };
 		0C2BA32FB13C17EB234F1B8B /* CompanionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */; };
 		27ACA6DC0A4F400D3B3F2523 /* ArtifactViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B47F1531E907F8945808DAC /* ArtifactViews.swift */; };
+		2F57BB8627029D3F03A75BA2 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = F69902103CEA1233DCDDAB5D /* GoogleSignInSwift */; };
 		3B7DA75E4711BC4D744CEAD5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5CD502DF6E11A245E3716F80 /* Assets.xcassets */; };
 		45B15BB7FB97DB4125B4DB42 /* SyncModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7908738597AEE67070893705 /* SyncModelTests.swift */; };
 		5429050E8D16B4FA9906DFCF /* whisper.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4512748A17A4C137A065311B /* whisper.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		5C1FC98F3F8090A21D2B0F52 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F3F5393D89089BA711CCD8A /* Models.swift */; };
 		67E70F0EB9A59223134B00A5 /* RootViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0BC51CC42E21CDCBA0EE606 /* RootViews.swift */; };
+		69B4764DDC41010FAE133D05 /* AccountClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1CC22EBB8B5CBEBDCE3CFF0 /* AccountClient.swift */; };
 		6D40CCAFB6F459CD69EA1D25 /* WhisperInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4862CB9096D1A9D2CC3D3B99 /* WhisperInputTests.swift */; };
 		8FAB7375F2E78B06CBCE0B09 /* WhisperTranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60D0BAE3551C392C4DD3FA33 /* WhisperTranscriptionService.swift */; };
 		9271BDB1930FBF2D5BCC26B1 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */; };
 		B75DCC95314F31BEE7FADF5F /* ChatHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = D855191543BDE3F7423D2CB9 /* ChatHistory.swift */; };
+		BF4A1AB219302A92E1B2EE43 /* AccountLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90C613F13D8FA312BF3502C8 /* AccountLoginView.swift */; };
+		C4E03AB2974FE96D0EF42FFF /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = CE07DAE52057D22326492397 /* GoogleSignIn */; };
 		C97FD49906356A41FE26F337 /* whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4512748A17A4C137A065311B /* whisper.xcframework */; };
 		C9E838840AF4AEFC5FA6D5E2 /* CompanionProtocol.generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E9817F585A949923395BBF3 /* CompanionProtocol.generated.swift */; };
-		CCC0EB5AD601015817B21875 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D48D6C471A7AB56D1344033 /* PairingView.swift */; };
 		CEEC8634B87722C29C13BC86 /* ggml-large-v3-turbo-q5_0.bin in Resources */ = {isa = PBXBuildFile; fileRef = 5DC48F9ABB552BBDC3D01B39 /* ggml-large-v3-turbo-q5_0.bin */; };
+		D72907235AA17CEDCDF811B5 /* AccountSyncSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8538A19087973580AAB03B5 /* AccountSyncSetupView.swift */; };
 		E10C5BCC535AA32D689C583A /* CompanionCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8625D23798C1233D38D3813A /* CompanionCrypto.swift */; };
 		F1FD298AB5A25BB1E46E7F90 /* ChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52B7088EB0EFC0E27BEF8BB5 /* ChatComposer.swift */; };
 		F9E6CDF2312ADB3376C46EA6 /* ProjectAgentCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */; };
@@ -61,16 +65,18 @@
 		5CD502DF6E11A245E3716F80 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		5DC48F9ABB552BBDC3D01B39 /* ggml-large-v3-turbo-q5_0.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "ggml-large-v3-turbo-q5_0.bin"; sourceTree = "<group>"; };
 		60D0BAE3551C392C4DD3FA33 /* WhisperTranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperTranscriptionService.swift; sourceTree = "<group>"; };
+		62663B3930416DDA631FBAF3 /* AccountDeviceGrant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountDeviceGrant.swift; sourceTree = "<group>"; };
 		7908738597AEE67070893705 /* SyncModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncModelTests.swift; sourceTree = "<group>"; };
 		7F3F5393D89089BA711CCD8A /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		8625D23798C1233D38D3813A /* CompanionCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionCrypto.swift; sourceTree = "<group>"; };
 		8B47F1531E907F8945808DAC /* ArtifactViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactViews.swift; sourceTree = "<group>"; };
-		9D48D6C471A7AB56D1344033 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		90C613F13D8FA312BF3502C8 /* AccountLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLoginView.swift; sourceTree = "<group>"; };
 		A1BA317B52DA4F0E106F6BC6 /* ProjectAgentCompanion.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ProjectAgentCompanion.entitlements; sourceTree = "<group>"; };
+		A1CC22EBB8B5CBEBDCE3CFF0 /* AccountClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountClient.swift; sourceTree = "<group>"; };
 		B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
-		B5F5580905A2559653C6AE66 /* PairingCodeScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingCodeScanner.swift; sourceTree = "<group>"; };
 		B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectAgentCompanionApp.swift; sourceTree = "<group>"; };
 		B675BF1415AFA5806E4876DC /* ProjectAgentCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ProjectAgentCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B8538A19087973580AAB03B5 /* AccountSyncSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSyncSetupView.swift; sourceTree = "<group>"; };
 		B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionStore.swift; sourceTree = "<group>"; };
 		D74F19EE816B043346AD6309 /* ProjectAgentCompanionTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ProjectAgentCompanionTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D855191543BDE3F7423D2CB9 /* ChatHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistory.swift; sourceTree = "<group>"; };
@@ -84,6 +90,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				C97FD49906356A41FE26F337 /* whisper.xcframework in Frameworks */,
+				C4E03AB2974FE96D0EF42FFF /* GoogleSignIn in Frameworks */,
+				2F57BB8627029D3F03A75BA2 /* GoogleSignInSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -145,6 +153,10 @@
 		E2BEDB7B08D3763E6B73749A /* ProjectAgentCompanion */ = {
 			isa = PBXGroup;
 			children = (
+				A1CC22EBB8B5CBEBDCE3CFF0 /* AccountClient.swift */,
+				62663B3930416DDA631FBAF3 /* AccountDeviceGrant.swift */,
+				90C613F13D8FA312BF3502C8 /* AccountLoginView.swift */,
+				B8538A19087973580AAB03B5 /* AccountSyncSetupView.swift */,
 				8B47F1531E907F8945808DAC /* ArtifactViews.swift */,
 				5CD502DF6E11A245E3716F80 /* Assets.xcassets */,
 				52B7088EB0EFC0E27BEF8BB5 /* ChatComposer.swift */,
@@ -154,8 +166,6 @@
 				B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */,
 				B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */,
 				7F3F5393D89089BA711CCD8A /* Models.swift */,
-				B5F5580905A2559653C6AE66 /* PairingCodeScanner.swift */,
-				9D48D6C471A7AB56D1344033 /* PairingView.swift */,
 				A1BA317B52DA4F0E106F6BC6 /* ProjectAgentCompanion.entitlements */,
 				B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */,
 				F5A57F13FB0BBE001DAB5DF0 /* RelayClient.swift */,
@@ -202,6 +212,8 @@
 			);
 			name = ProjectAgentCompanion;
 			packageProductDependencies = (
+				CE07DAE52057D22326492397 /* GoogleSignIn */,
+				F69902103CEA1233DCDDAB5D /* GoogleSignInSwift */,
 			);
 			productName = ProjectAgentCompanion;
 			productReference = B675BF1415AFA5806E4876DC /* ProjectAgentCompanion.app */;
@@ -234,6 +246,9 @@
 			);
 			mainGroup = A5DADBB6D3AFAF1811C79FA3;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				19772F88BA750322BDCC9F42 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9B093B03556EBE8E7123AE0A /* Products */;
 			projectDirPath = "";
@@ -262,6 +277,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				69B4764DDC41010FAE133D05 /* AccountClient.swift in Sources */,
+				0BDA31DD60CD2A12C3027A81 /* AccountDeviceGrant.swift in Sources */,
+				BF4A1AB219302A92E1B2EE43 /* AccountLoginView.swift in Sources */,
+				D72907235AA17CEDCDF811B5 /* AccountSyncSetupView.swift in Sources */,
 				27ACA6DC0A4F400D3B3F2523 /* ArtifactViews.swift in Sources */,
 				F1FD298AB5A25BB1E46E7F90 /* ChatComposer.swift in Sources */,
 				B75DCC95314F31BEE7FADF5F /* ChatHistory.swift in Sources */,
@@ -270,8 +289,6 @@
 				0C2BA32FB13C17EB234F1B8B /* CompanionStore.swift in Sources */,
 				9271BDB1930FBF2D5BCC26B1 /* KeychainStore.swift in Sources */,
 				5C1FC98F3F8090A21D2B0F52 /* Models.swift in Sources */,
-				0B1834AC74E0161F6B65034C /* PairingCodeScanner.swift in Sources */,
-				CCC0EB5AD601015817B21875 /* PairingView.swift in Sources */,
 				F9E6CDF2312ADB3376C46EA6 /* ProjectAgentCompanionApp.swift in Sources */,
 				07F3CDC397BE47E65A5A057B /* RelayClient.swift in Sources */,
 				67E70F0EB9A59223134B00A5 /* RootViews.swift in Sources */,
@@ -328,10 +345,15 @@
 					"$(inherited)",
 					"\"../.third-party-tools/whisper/v1.9.2/build-apple\"",
 				);
+				FUDDY_ACCOUNT_API_URL = "https://fuddy.ai/api/account";
+				FUDDY_GOOGLE_IOS_CLIENT_ID = "877382581311-vs5rfv70vbvsjhim8ubgkcq0vo3iarqj.apps.googleusercontent.com";
+				FUDDY_GOOGLE_IOS_REVERSED_CLIENT_ID = "com.googleusercontent.apps.877382581311-vs5rfv70vbvsjhim8ubgkcq0vo3iarqj";
+				FUDDY_GOOGLE_SERVER_CLIENT_ID = "877382581311-i6dn0r7k47ij545p7cddpa33t01oe1jd.apps.googleusercontent.com";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ProjectAgentCompanion-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Fuddy;
-				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的一次性 Companion 配对二维码。";
+				INFOPLIST_KEY_FuddyAccountAPIURL = "$(FUDDY_ACCOUNT_API_URL)";
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "将语音在 iPhone 本机转写为项目消息。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
@@ -499,10 +521,15 @@
 					"$(inherited)",
 					"\"../.third-party-tools/whisper/v1.9.2/build-apple\"",
 				);
+				FUDDY_ACCOUNT_API_URL = "";
+				FUDDY_GOOGLE_IOS_CLIENT_ID = "877382581311-vs5rfv70vbvsjhim8ubgkcq0vo3iarqj.apps.googleusercontent.com";
+				FUDDY_GOOGLE_IOS_REVERSED_CLIENT_ID = "com.googleusercontent.apps.877382581311-vs5rfv70vbvsjhim8ubgkcq0vo3iarqj";
+				FUDDY_GOOGLE_SERVER_CLIENT_ID = "877382581311-i6dn0r7k47ij545p7cddpa33t01oe1jd.apps.googleusercontent.com";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ProjectAgentCompanion-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Fuddy;
-				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的一次性 Companion 配对二维码。";
+				INFOPLIST_KEY_FuddyAccountAPIURL = "$(FUDDY_ACCOUNT_API_URL)";
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "将语音在 iPhone 本机转写为项目消息。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
@@ -547,6 +574,30 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		19772F88BA750322BDCC9F42 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		CE07DAE52057D22326492397 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 19772F88BA750322BDCC9F42 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		F69902103CEA1233DCDDAB5D /* GoogleSignInSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 19772F88BA750322BDCC9F42 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignInSwift;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E367D320E5AF630A1939D696 /* Project object */;
 }

@@ -1,4 +1,4 @@
-import { SELF, env, runDurableObjectAlarm } from 'cloudflare:test'
+import { SELF, env, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { describe, expect, it, vi } from 'vitest'
 import type {
   CompanionEncryptedCommand,
@@ -8,8 +8,8 @@ import type {
   CompanionPairingClaimResult,
   CompanionPairingStartResult,
 } from '../../../src/shared/companion-sync'
-import { companionProtocolVersion } from '../../../src/shared/companion-sync'
-import { enforceRateLimit } from '../src/index'
+import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
+import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/index'
 
 async function pairedDevices(): Promise<{
   pairing: CompanionPairingStartResult
@@ -69,17 +69,33 @@ describe('companion relay', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
       status: 'ok',
-      minimumProtocolVersion: 2,
+      minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-13.1'
+      build: '2026-08-18.1'
+    })
+  })
+
+  it('serves the canonical Relay path and keeps it in the pairing payload', async () => {
+    const health = await SELF.fetch('https://relay.test/api/relay/health')
+    expect(health.status).toBe(200)
+
+    const response = await SELF.fetch('https://relay.test/api/relay/v1/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `test-${crypto.randomUUID()}` },
+      body: JSON.stringify({ macDeviceId: 'canonical-mac', macDeviceName: 'Canonical Mac' })
+    })
+    expect(response.status).toBe(201)
+    const pairing = await response.json<CompanionPairingStartResult>()
+    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({
+      relayUrl: 'https://relay.test/api/relay'
     })
   })
 
   it('pairs devices and rejects a second claim', async () => {
     const { pairing, phone } = await pairedDevices()
-    expect(pairing.minimumProtocolVersion).toBe(2)
-    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({ minimumProtocolVersion: 2 })
-    expect(phone.minimumProtocolVersion).toBe(2)
+    expect(pairing.minimumProtocolVersion).toBe(companionMinimumProtocolVersion)
+    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({ minimumProtocolVersion: companionMinimumProtocolVersion })
+    expect(phone.minimumProtocolVersion).toBe(companionMinimumProtocolVersion)
     expect(phone.accountId).toBe(pairing.accountId)
     expect(phone.device.role).toBe('ios')
     expect(phone.deviceToken.length).toBeGreaterThan(20)
@@ -95,6 +111,100 @@ describe('companion relay', () => {
       })
     })
     expect(repeated.status).toBe(400)
+  })
+
+  it('lets an iPhone revoke its own Relay token when it signs out', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const revoke = await SELF.fetch(
+      authenticatedUrl('/v1/devices/self', pairing.accountId, phone.device.id),
+      { method: 'DELETE', headers: { Authorization: `Bearer ${phone.deviceToken}` } }
+    )
+    expect(revoke.status).toBe(204)
+
+    const rejected = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id),
+      { headers: { Authorization: `Bearer ${phone.deviceToken}` } }
+    )
+    expect(rejected.status).toBe(401)
+  })
+
+  it('lets a client validate its current Relay identity', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const response = await SELF.fetch(
+      authenticatedUrl('/v1/device', pairing.accountId, phone.device.id),
+      { headers: { Authorization: `Bearer ${phone.deviceToken}` } }
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      device: { id: phone.device.id, role: 'ios' }
+    })
+
+    const rejected = await SELF.fetch(
+      authenticatedUrl('/v1/device', pairing.accountId, phone.device.id),
+      { headers: { Authorization: 'Bearer wrong-token' } }
+    )
+    expect(rejected.status).toBe(401)
+  })
+
+  it('lets the private administration path revoke a device without a Mac bearer token', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await expect(stub.revokeDeviceByAuthority(phone.device.id)).resolves.toBe(true)
+
+    const rejected = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id),
+      { headers: { Authorization: `Bearer ${phone.deviceToken}` } }
+    )
+    expect(rejected.status).toBe(401)
+  })
+
+  it('lets an authenticated Mac enroll multiple account devices without a pairing secret', async () => {
+    const pairingResponse = await SELF.fetch('https://relay.test/v1/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `test-${crypto.randomUUID()}` },
+      body: JSON.stringify({ macDeviceId: 'account-mac', macDeviceName: 'Account Mac' })
+    })
+    const pairing = await pairingResponse.json<CompanionPairingStartResult>()
+    const enroll = (deviceId: string) => SELF.fetch(
+      authenticatedUrl('/v1/devices/enroll', pairing.accountId, pairing.macDeviceId),
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId, deviceName: `Phone ${deviceId}`, publicKey: 'account-device-public-key' })
+      }
+    )
+
+    const first = await enroll('account-ios-1')
+    const second = await enroll('account-ios-2')
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(201)
+    await expect(first.json()).resolves.toMatchObject({
+      accountId: pairing.accountId,
+      device: { id: 'account-ios-1', role: 'ios' }
+    })
+
+    const unauthorized = await SELF.fetch(
+      authenticatedUrl('/v1/devices/enroll', pairing.accountId, pairing.macDeviceId),
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer wrong-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: 'account-ios-3', deviceName: 'Unauthorized' })
+      }
+    )
+    expect(unauthorized.status).toBe(401)
+
+    const firstPayload = await (await enroll('account-ios-revoked')).json<CompanionPairingClaimResult>()
+    const revoke = await SELF.fetch(
+      authenticatedUrl('/v1/devices/account-ios-revoked', pairing.accountId, pairing.macDeviceId),
+      { method: 'DELETE', headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(revoke.status).toBe(204)
+    const rejected = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, firstPayload.device.id),
+      { headers: { Authorization: `Bearer ${firstPayload.deviceToken}` } }
+    )
+    expect(rejected.status).toBe(401)
   })
 
   it('persists ordered Mac events and replays them to iOS', async () => {
@@ -129,7 +239,7 @@ describe('companion relay', () => {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
     const page = await pageResponse.json<CompanionEncryptedEventPage>()
-    expect(page).toMatchObject({ minimumProtocolVersion: 2, protocolVersion: companionProtocolVersion })
+    expect(page).toMatchObject({ minimumProtocolVersion: companionMinimumProtocolVersion, protocolVersion: companionProtocolVersion })
     expect(page.events).toHaveLength(1)
     expect(page.events[0]).toMatchObject(input)
     expect(page.presence).toMatchObject({ macOnline: false, iosDevicesOnline: 0 })
@@ -188,6 +298,47 @@ describe('companion relay', () => {
       .filter((message) => message.type === 'sync.available')
     expect(replayHints).toEqual([{ type: 'sync.available', lastSequence: 3 }])
     socket!.close()
+  })
+
+  it('rejects oversized encrypted event values before Durable Object persistence', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const oversizedEvent = {
+      eventId: crypto.randomUUID(),
+      protocolVersion: companionProtocolVersion,
+      type: 'agent-message.created',
+      entityType: 'agent-message' as const,
+      entityId: 'oversized-message',
+      revision: 1,
+      payload: {
+        ...encryptedPayload,
+        ciphertext: 'x'.repeat(maximumEncryptedEventPayloadBytes)
+      },
+      occurredAt: new Date().toISOString()
+    }
+    const headers = {
+      Authorization: `Bearer ${pairing.macToken}`,
+      'Content-Type': 'application/json'
+    }
+
+    const single = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(oversizedEvent)
+    })
+    expect(single.status).toBe(413)
+    expect(await single.json()).toMatchObject({ error: expect.stringContaining('1900000 byte Relay limit') })
+
+    const batch = await SELF.fetch(authenticatedUrl('/v1/events/batch', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ events: [oversizedEvent] })
+    })
+    expect(batch.status).toBe(413)
+
+    const pageResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    expect((await pageResponse.json<CompanionEncryptedEventPage>()).events).toEqual([])
   })
 
   it('compacts only events behind an acknowledged snapshot and preserves reset replay', async () => {
@@ -278,6 +429,61 @@ describe('companion relay', () => {
     expect(completed.result).toBeNull()
 
     expect(JSON.stringify(completed)).not.toContain('accepted')
+  })
+
+  it('preserves retained encrypted events and commands across the protocol-v4 migration', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    const now = new Date().toISOString()
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO events (
+          event_id, protocol_version, type, entity_type, entity_id, revision,
+          payload_json, source_device_id, occurred_at
+        ) VALUES (?, 3, 'agent-run.updated', 'agent-run', ?, 1, ?, ?, ?)`,
+        'legacy-event',
+        'legacy-run',
+        JSON.stringify(encryptedPayload),
+        pairing.macDeviceId,
+        now
+      )
+      state.storage.sql.exec(
+        `INSERT INTO commands (
+          command_id, protocol_version, type, payload_json, source_device_id,
+          status, result_json, error, created_at, updated_at
+        ) VALUES (?, 3, 'agent.send-message', ?, ?, 'queued', NULL, NULL, ?, ?)`,
+        'legacy-command',
+        JSON.stringify(encryptedPayload),
+        phone.device.id,
+        now,
+        now
+      )
+      state.storage.sql.exec('DELETE FROM _sql_schema_migrations WHERE id = 5')
+    })
+    await evictDurableObject(stub)
+
+    const pendingResponse = await SELF.fetch(authenticatedUrl(
+      '/v1/commands/pending', pairing.accountId, pairing.macDeviceId
+    ), {
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
+    })
+    expect(pendingResponse.status).toBe(200)
+    expect(await pendingResponse.json<{ commands: CompanionEncryptedCommand[] }>()).toMatchObject({
+      commands: [{ commandId: 'legacy-command', protocolVersion: 3, status: 'queued' }]
+    })
+
+    const pageResponse = await SELF.fetch(authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id), {
+      headers: { Authorization: `Bearer ${phone.deviceToken}` }
+    })
+    expect(pageResponse.status).toBe(200)
+    expect((await pageResponse.json<CompanionEncryptedEventPage>()).events).toEqual([
+      expect.objectContaining({ eventId: 'legacy-event', protocolVersion: 3 })
+    ])
+    expect(await runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ id: number }>(
+        'SELECT id FROM _sql_schema_migrations WHERE id = 5'
+      ).one().id
+    ))).toBe(5)
   })
 
   it('rejects plaintext command outcomes and persists status only', async () => {
