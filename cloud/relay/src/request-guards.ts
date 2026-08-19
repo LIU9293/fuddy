@@ -1,7 +1,7 @@
 import type { CompanionEncryptedSyncEventInput } from '../../../src/shared/companion-sync'
 
 export class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly code?: string) {
     super(message)
   }
 }

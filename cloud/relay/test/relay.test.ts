@@ -11,6 +11,7 @@ import type {
 import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
 import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/request-guards'
 import {
+  commandRetryWindowMs,
   maximumAccountAttachmentBytes,
   maximumRetainedCommands,
   maximumRetainedEvents
@@ -92,7 +93,7 @@ describe('companion relay', () => {
       status: 'ok',
       minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-20.2'
+      build: '2026-08-20.3'
     })
   })
 
@@ -614,7 +615,7 @@ describe('companion relay', () => {
     expect(page.events[0]).toMatchObject({ type: 'snapshot.created', entityId: 'current' })
   })
 
-  it('rolls retained events at 5000 while preserving the latest snapshot baseline', async () => {
+  it('requires a new recovery snapshot before replacing post-snapshot increments at 5000 events', async () => {
     const { pairing, phone } = await pairedDevices()
     const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
     const now = new Date().toISOString()
@@ -639,7 +640,7 @@ describe('companion relay', () => {
          )
          SELECT 'retained-' || value, ?, 'agent-run.updated', 'agent-run',
                 'run-' || value, value, ?, ?, ? FROM retained`,
-        maximumRetainedEvents,
+        maximumRetainedEvents - 1,
         companionProtocolVersion,
         JSON.stringify(encryptedPayload),
         pairing.macDeviceId,
@@ -657,45 +658,84 @@ describe('companion relay', () => {
         payload: encryptedPayload, occurredAt: now
       })
     })
-    expect(response.status).toBe(201)
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toEqual({
+      error: '事件历史已达到上限，需要先上传新的恢复快照。',
+      code: 'snapshot-required'
+    })
     await expect(runInDurableObject(stub, (_instance, state) => ({
       count: state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM events').one().count,
       snapshot: state.storage.sql.exec<{ count: number }>(
         `SELECT COUNT(*) AS count FROM events WHERE event_id = 'retention-snapshot'`
       ).one().count,
-      oldestIncrement: state.storage.sql.exec<{ sequence: number }>(
-        `SELECT MIN(sequence) AS sequence FROM events WHERE type != 'snapshot.created'`
-      ).one().sequence,
       newest: state.storage.sql.exec<{ count: number }>(
         'SELECT COUNT(*) AS count FROM events WHERE event_id = ?', newestId
-      ).one().count,
-      trimmedThrough: state.storage.sql.exec<{ trimmed_through_sequence: number }>(
-        'SELECT trimmed_through_sequence FROM event_retention WHERE id = 1'
-      ).one().trimmed_through_sequence
+      ).one().count
     }))).resolves.toEqual({
       count: maximumRetainedEvents,
       snapshot: 1,
-      oldestIncrement: 4,
-      newest: 1,
-      trimmedThrough: 3
+      newest: 0
     })
 
-    const reset = await SELF.fetch(
-      authenticatedUrl('/v1/events?after=2', pairing.accountId, phone.device.id),
-      { headers: { Authorization: `Bearer ${phone.deviceToken}` } }
-    )
-    const resetPage = await reset.json<CompanionEncryptedEventPage>()
-    expect(resetPage.replayResetSequence).toBe(0)
-    expect(resetPage.events[0]).toMatchObject({ sequence: 1, type: 'snapshot.created' })
-    expect(resetPage.events[1]?.sequence).toBe(4)
+    const lateSnapshot = await SELF.fetch(authenticatedUrl('/v1/events/batch', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        events: [
+          {
+            eventId: crypto.randomUUID(), protocolVersion: companionProtocolVersion,
+            type: 'agent-run.updated', entityType: 'agent-run', entityId: 'unsafe-run', revision: 1,
+            payload: encryptedPayload, occurredAt: now
+          },
+          {
+            eventId: crypto.randomUUID(), protocolVersion: companionProtocolVersion,
+            type: 'snapshot.created', entityType: 'snapshot', entityId: 'current', revision: 2,
+            payload: encryptedPayload, occurredAt: now
+          }
+        ]
+      })
+    })
+    expect(lateSnapshot.status).toBe(409)
 
-    const contiguous = await SELF.fetch(
-      authenticatedUrl('/v1/events?after=3', pairing.accountId, phone.device.id),
+    const replacementSnapshotId = crypto.randomUUID()
+    const replacement = await SELF.fetch(authenticatedUrl('/v1/events/batch', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        events: [
+          {
+            eventId: replacementSnapshotId, protocolVersion: companionProtocolVersion,
+            type: 'snapshot.created', entityType: 'snapshot', entityId: 'current', revision: 2,
+            payload: encryptedPayload, occurredAt: now
+          },
+          {
+            eventId: newestId, protocolVersion: companionProtocolVersion,
+            type: 'agent-run.updated', entityType: 'agent-run', entityId: 'newest-run', revision: 1,
+            payload: encryptedPayload, occurredAt: now
+          }
+        ]
+      })
+    })
+    expect(replacement.status).toBe(201)
+    await expect(runInDurableObject(stub, (_instance, state) => ({
+      count: state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM events').one().count,
+      snapshot: state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM events WHERE event_id = ?', replacementSnapshotId
+      ).one().count,
+      newest: state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM events WHERE event_id = ?', newestId
+      ).one().count
+    }))).resolves.toEqual({ count: 2, snapshot: 1, newest: 1 })
+
+    const replay = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id),
       { headers: { Authorization: `Bearer ${phone.deviceToken}` } }
     )
-    const contiguousPage = await contiguous.json<CompanionEncryptedEventPage>()
-    expect(contiguousPage.replayResetSequence).toBeUndefined()
-    expect(contiguousPage.events[0]?.sequence).toBe(4)
+    const replayPage = await replay.json<CompanionEncryptedEventPage>()
+    expect(replayPage.events).toMatchObject([
+      { eventId: replacementSnapshotId, type: 'snapshot.created' },
+      { eventId: newestId, type: 'agent-run.updated' }
+    ])
   })
 
   it('schedules recurring Durable Object maintenance after retained data changes', async () => {
@@ -812,6 +852,80 @@ describe('companion relay', () => {
         `SELECT COUNT(*) AS count FROM commands WHERE command_id = 'terminal-1'`
       ).one().count
     ))).resolves.toBe(0)
+  })
+
+  it('rejects first-time command IDs outside the tombstone retry window', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const commandId = crypto.randomUUID()
+    const response = await SELF.fetch(authenticatedUrl('/v1/commands', pairing.accountId, phone.device.id), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.deviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        protocolVersion: companionProtocolVersion,
+        type: 'agent.send-message',
+        payload: encryptedPayload,
+        createdAt: new Date(Date.now() - commandRetryWindowMs - 60_000).toISOString()
+      })
+    })
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toEqual({ error: '远程命令已超过允许的重试窗口。' })
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await expect(runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM commands WHERE command_id = ?', commandId
+      ).one().count
+    ))).resolves.toBe(0)
+  })
+
+  it('rejects capacity reclamation instead of evicting unexpired command tombstones', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    const now = new Date().toISOString()
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `WITH RECURSIVE retained(value) AS (
+           SELECT 1 UNION ALL SELECT value + 1 FROM retained WHERE value < ?
+         )
+         INSERT INTO commands (
+           command_id, protocol_version, type, payload_json, source_device_id,
+           status, result_json, error, created_at, updated_at
+         )
+         SELECT 'blocked-terminal-' || value, ?, 'agent.send-message', ?, ?,
+                'completed', NULL, NULL, ?, ? FROM retained`,
+        maximumRetainedCommands,
+        companionProtocolVersion,
+        JSON.stringify(encryptedPayload),
+        phone.device.id,
+        now,
+        now
+      )
+      state.storage.sql.exec(
+        `WITH RECURSIVE retained(value) AS (
+           SELECT 1 UNION ALL SELECT value + 1 FROM retained WHERE value < ?
+         )
+         INSERT INTO revoked_commands (command_id, revoked_at)
+         SELECT 'durable-tombstone-' || value, ? FROM retained`,
+        maximumRetainedCommands,
+        now
+      )
+    })
+
+    const response = await SELF.fetch(authenticatedUrl('/v1/commands', pairing.accountId, phone.device.id), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.deviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId: crypto.randomUUID(), protocolVersion: companionProtocolVersion,
+        type: 'agent.send-message', payload: encryptedPayload, createdAt: now
+      })
+    })
+    expect(response.status).toBe(409)
+    await expect(runInDurableObject(stub, (_instance, state) => ({
+      commands: state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM commands').one().count,
+      tombstones: state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM revoked_commands'
+      ).one().count
+    }))).resolves.toEqual({ commands: maximumRetainedCommands, tombstones: maximumRetainedCommands })
   })
 
   it('rejects a new command with a conflict when every retained command is active', async () => {

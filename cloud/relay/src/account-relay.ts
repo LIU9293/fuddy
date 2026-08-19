@@ -99,8 +99,10 @@ export type RelayMutationResult<T> =
   | { status: 'accepted'; value: T }
   | { status: 'unauthorized' }
   | { status: 'account-unbound' }
+  | { status: 'snapshot-required' }
   | { status: 'capacity-exceeded' }
   | { status: 'command-retired' }
+  | { status: 'command-expired' }
 
 interface AccountAuthorityRow extends Record<string, SqlStorageValue> {
   generation: number
@@ -132,6 +134,9 @@ export const maximumRetainedEvents = 5_000
 export const maximumAccountAttachmentBytes = 100 * 1024 * 1024 * 1024
 export const maximumRetainedCommands = 1_000
 const terminalCommandRetentionDays = 30
+export const commandRetryWindowMs = terminalCommandRetentionDays * 24 * 60 * 60 * 1_000
+const maximumCommandClockSkewMs = 5 * 60_000
+const commandTombstoneRetentionMs = commandRetryWindowMs + maximumCommandClockSkewMs
 const maintenanceIntervalMs = 24 * 60 * 60 * 1_000
 
 export function agentTurnAlertPushRequest(event: CompanionEncryptedSyncEvent): PushRequest {
@@ -787,10 +792,10 @@ export class AccountRelay extends DurableObject<Env> {
     const device = await this.authorize(deviceId, token, 'mac')
     if (!device) return { status: 'unauthorized' }
     if (!this.hasConfirmedAccountAuthority()) return { status: 'account-unbound' }
+    if (!this.canAppendEvents([input])) return { status: 'snapshot-required' }
     const { event, inserted } = this.persistEvent(input, deviceId)
     if (inserted) {
       if (event.type === 'snapshot.created') this.compactEventsToLatestSnapshot()
-      this.trimEventRetention()
       this.notifyEventsAvailable([event])
       this.ctx.waitUntil(this.ensureMaintenanceAlarm())
     }
@@ -805,13 +810,13 @@ export class AccountRelay extends DurableObject<Env> {
     const device = await this.authorize(deviceId, token, 'mac')
     if (!device) return { status: 'unauthorized' }
     if (!this.hasConfirmedAccountAuthority()) return { status: 'account-unbound' }
+    if (!this.canAppendEvents(inputs)) return { status: 'snapshot-required' }
     const persisted = this.ctx.storage.transactionSync(() => inputs.map((input) => this.persistEvent(input, deviceId)))
     const inserted = persisted.filter((result) => result.inserted).map((result) => result.event)
     if (inserted.length > 0) {
       if (inserted.some((event) => event.type === 'snapshot.created')) {
         this.compactEventsToLatestSnapshot()
       }
-      this.trimEventRetention()
       this.notifyEventsAvailable(inserted)
       this.ctx.waitUntil(this.ensureMaintenanceAlarm())
     }
@@ -887,6 +892,8 @@ export class AccountRelay extends DurableObject<Env> {
     const device = await this.authorize(deviceId, token, 'ios')
     if (!device) return { status: 'unauthorized' }
     if (!this.hasConfirmedAccountAuthority()) return { status: 'account-unbound' }
+    const now = new Date()
+    this.pruneRevokedCommands(now)
     const revoked = this.ctx.storage.sql.exec<{ command_id: string }>(
       'SELECT command_id FROM revoked_commands WHERE command_id = ?', input.commandId
     ).toArray()[0]
@@ -895,8 +902,13 @@ export class AccountRelay extends DurableObject<Env> {
       'SELECT command_id FROM commands WHERE command_id = ?', input.commandId
     ).toArray()[0]
     if (!existing) {
-      this.pruneTerminalCommands()
-      this.pruneOldestTerminalCommandsForCapacity()
+      const createdAt = Date.parse(input.createdAt)
+      if (createdAt < now.getTime() - commandRetryWindowMs
+        || createdAt > now.getTime() + maximumCommandClockSkewMs) {
+        return { status: 'command-expired' }
+      }
+      this.pruneTerminalCommands(now)
+      this.pruneOldestTerminalCommandsForCapacity(now)
       const count = this.ctx.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM commands').one().count
       if (count >= maximumRetainedCommands) return { status: 'capacity-exceeded' }
     }
@@ -1226,22 +1238,35 @@ export class AccountRelay extends DurableObject<Env> {
        WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
       deviceId
     ).toArray().map((command) => command.command_id)
+    if (commandIds.length === 0) return
     const revokedAt = new Date().toISOString()
-    this.ctx.storage.sql.exec(
-      `INSERT OR REPLACE INTO revoked_commands (command_id, revoked_at)
-       SELECT command_id, ? FROM commands
-       WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
-      revokedAt,
-      deviceId
-    )
-    this.ctx.storage.sql.exec(
-      `DELETE FROM commands
-       WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
-      deviceId
-    )
-    if (commandIds.length > 0) {
-      this.broadcast({ type: 'commands.revoked', commandIds }, 'role:mac')
-    }
+    this.pruneRevokedCommands(new Date(revokedAt))
+    const tombstoneCount = this.ctx.storage.sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM revoked_commands'
+    ).one().count
+    const tombstonedIds = commandIds.slice(0, Math.max(0, maximumRetainedCommands - tombstoneCount))
+    const retainedIds = commandIds.slice(tombstonedIds.length)
+    this.ctx.storage.transactionSync(() => {
+      for (const commandId of tombstonedIds) {
+        this.ctx.storage.sql.exec(
+          'INSERT OR IGNORE INTO revoked_commands (command_id, revoked_at) VALUES (?, ?)',
+          commandId,
+          revokedAt
+        )
+        this.ctx.storage.sql.exec('DELETE FROM commands WHERE command_id = ?', commandId)
+      }
+      for (const commandId of retainedIds) {
+        this.ctx.storage.sql.exec(
+          `UPDATE commands
+           SET status = 'failed', result_json = NULL, error = ?, updated_at = ?
+           WHERE command_id = ?`,
+          '来源设备已撤销，命令未执行。',
+          revokedAt,
+          commandId
+        )
+      }
+    })
+    this.broadcast({ type: 'commands.revoked', commandIds }, 'role:mac')
   }
 
   private mapAttachmentRecord(row: AttachmentRow): AttachmentRecord {
@@ -1274,9 +1299,8 @@ export class AccountRelay extends DurableObject<Env> {
       return
     }
     this.compactEventsToLatestSnapshot()
-    this.trimEventRetention()
-    this.pruneTerminalCommands()
-    this.pruneRevokedCommands()
+    this.pruneTerminalCommands(now)
+    this.pruneRevokedCommands(now)
     this.pruneExpiredAttachmentUploadLeases()
     const activeDevices = this.ctx.storage.sql.exec<{ count: number }>(
       'SELECT COUNT(*) AS count FROM devices WHERE revoked_at IS NULL'
@@ -1352,6 +1376,25 @@ export class AccountRelay extends DurableObject<Env> {
     return { event: mapEvent(row), inserted: inserted !== undefined }
   }
 
+  private canAppendEvents(inputs: CompanionEncryptedSyncEventInput[]): boolean {
+    const unseenEventIds = new Set<string>()
+    let firstUnseenType: CompanionEncryptedSyncEventInput['type'] | null = null
+    for (const input of inputs) {
+      if (unseenEventIds.has(input.eventId)) continue
+      const exists = this.ctx.storage.sql.exec<{ event_id: string }>(
+        'SELECT event_id FROM events WHERE event_id = ?', input.eventId
+      ).toArray()[0]
+      if (exists) continue
+      unseenEventIds.add(input.eventId)
+      firstUnseenType ??= input.type
+    }
+    if (unseenEventIds.size === 0 || firstUnseenType === 'snapshot.created') return true
+    const retainedCount = this.ctx.storage.sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM events'
+    ).one().count
+    return retainedCount + unseenEventIds.size <= maximumRetainedEvents
+  }
+
   private compactEventsToLatestSnapshot(): void {
     const snapshot = this.ctx.storage.sql.exec<{ sequence: number }>(`
       SELECT sequence FROM events
@@ -1374,90 +1417,42 @@ export class AccountRelay extends DurableObject<Env> {
     return Math.max(0, snapshotSequence - 1)
   }
 
-  private trimEventRetention(): void {
-    let retainedCount = this.ctx.storage.sql.exec<{ count: number }>(
-      'SELECT COUNT(*) AS count FROM events'
-    ).one().count
-    if (retainedCount <= maximumRetainedEvents) return
-
-    const latestSnapshotSequence = this.ctx.storage.sql.exec<{ sequence: number }>(
-      `SELECT sequence FROM events WHERE type = 'snapshot.created' ORDER BY sequence DESC LIMIT 1`
-    ).toArray()[0]?.sequence ?? null
-    while (retainedCount > maximumRetainedEvents) {
-      const candidates = this.ctx.storage.sql.exec<{ sequence: number }>(
-        `SELECT sequence
-         FROM events WHERE (? IS NULL OR sequence != ?)
-         ORDER BY sequence ASC LIMIT 1000`,
-        latestSnapshotSequence,
-        latestSnapshotSequence
-      ).toArray()
-      if (candidates.length === 0) return
-      let cutoff = candidates[0].sequence
-      for (const candidate of candidates) {
-        cutoff = candidate.sequence
-        retainedCount -= 1
-        if (retainedCount <= maximumRetainedEvents) break
-      }
-      this.ctx.storage.transactionSync(() => {
-        const deleted = latestSnapshotSequence === null
-          ? this.ctx.storage.sql.exec('DELETE FROM events WHERE sequence <= ?', cutoff)
-          : this.ctx.storage.sql.exec(
-              'DELETE FROM events WHERE sequence <= ? AND sequence != ?',
-              cutoff,
-              latestSnapshotSequence
-            )
-        if (deleted.rowsWritten > 0) {
-          this.ctx.storage.sql.exec(
-            `INSERT INTO event_retention (id, trimmed_through_sequence) VALUES (1, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               trimmed_through_sequence = MAX(trimmed_through_sequence, excluded.trimmed_through_sequence)`,
-            cutoff
-          )
-        }
-      })
-    }
+  private pruneTerminalCommands(now = new Date()): void {
+    const cutoff = new Date(now.getTime() - commandRetryWindowMs).toISOString()
+    this.ctx.storage.sql.exec(
+      `DELETE FROM commands
+       WHERE status IN ('completed', 'failed') AND created_at < ?`,
+      cutoff
+    )
   }
 
-  private pruneTerminalCommands(): void {
-    const cutoff = new Date(Date.now() - terminalCommandRetentionDays * 86_400_000).toISOString()
-    const retiredAt = new Date().toISOString()
-    this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
-        `INSERT OR IGNORE INTO revoked_commands (command_id, revoked_at)
-         SELECT command_id, ? FROM commands
-         WHERE status IN ('completed', 'failed') AND updated_at < ?`,
-        retiredAt,
-        cutoff
-      )
-      this.ctx.storage.sql.exec(
-        `DELETE FROM commands
-         WHERE status IN ('completed', 'failed') AND updated_at < ?`,
-        cutoff
-      )
-    })
-  }
-
-  private pruneOldestTerminalCommandsForCapacity(): void {
+  private pruneOldestTerminalCommandsForCapacity(now = new Date()): void {
     const count = this.ctx.storage.sql.exec<{ count: number }>(
       'SELECT COUNT(*) AS count FROM commands'
     ).one().count
     if (count < maximumRetainedCommands) return
-    const retiredAt = new Date().toISOString()
+    const tombstoneCount = this.ctx.storage.sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM revoked_commands'
+    ).one().count
+    const availableTombstones = Math.max(0, maximumRetainedCommands - tombstoneCount)
+    if (availableTombstones === 0) return
+    const commandIds = this.ctx.storage.sql.exec<{ command_id: string }>(
+      `SELECT command_id FROM commands
+       WHERE status IN ('completed', 'failed')
+       ORDER BY updated_at ASC, command_id ASC LIMIT ?`,
+      Math.min(100, availableTombstones)
+    ).toArray().map((command) => command.command_id)
+    if (commandIds.length === 0) return
+    const retiredAt = now.toISOString()
     this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
-        `INSERT OR IGNORE INTO revoked_commands (command_id, revoked_at)
-         SELECT command_id, ? FROM commands
-         WHERE status IN ('completed', 'failed')
-         ORDER BY updated_at ASC, command_id ASC LIMIT 100`,
-        retiredAt
-      )
-      this.ctx.storage.sql.exec(
-        `DELETE FROM commands WHERE command_id IN (
-           SELECT command_id FROM commands
-           WHERE status IN ('completed', 'failed')
-           ORDER BY updated_at ASC, command_id ASC LIMIT 100
-         )`
-      )
+      for (const commandId of commandIds) {
+        this.ctx.storage.sql.exec(
+          'INSERT OR IGNORE INTO revoked_commands (command_id, revoked_at) VALUES (?, ?)',
+          commandId,
+          retiredAt
+        )
+        this.ctx.storage.sql.exec('DELETE FROM commands WHERE command_id = ?', commandId)
+      }
     })
   }
 
@@ -1468,17 +1463,11 @@ export class AccountRelay extends DurableObject<Env> {
     )
   }
 
-  private pruneRevokedCommands(): void {
+  private pruneRevokedCommands(now = new Date()): void {
+    const cutoff = new Date(now.getTime() - commandTombstoneRetentionMs).toISOString()
     this.ctx.storage.sql.exec(
-      `DELETE FROM revoked_commands WHERE revoked_at < datetime('now', ?)`,
-      `-${terminalCommandRetentionDays} days`
-    )
-    this.ctx.storage.sql.exec(
-      `DELETE FROM revoked_commands WHERE command_id IN (
-        SELECT command_id FROM revoked_commands
-        ORDER BY revoked_at DESC LIMIT -1 OFFSET ?
-      )`,
-      maximumRetainedCommands
+      'DELETE FROM revoked_commands WHERE revoked_at < ?',
+      cutoff
     )
   }
 

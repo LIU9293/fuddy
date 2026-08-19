@@ -31,7 +31,7 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 export const maximumAttachmentBytes = companionAttachmentObjectMaximumBytes
-const relayBuild = '2026-08-20.2'
+const relayBuild = '2026-08-20.3'
 const canonicalRelayPathPrefix = '/api/relay'
 
 function randomToken(byteLength = 32): string {
@@ -93,8 +93,12 @@ type AttachmentUploadCommitResult = Awaited<ReturnType<AccountRelay['commitAttac
 function relayMutationValue<T>(result: RelayMutationResult<T>): T {
   if (result.status === 'unauthorized') throw new HttpError(401, '设备认证失败。')
   if (result.status === 'account-unbound') throw new HttpError(409, 'Relay 账户尚未完成 Fuddy 账户绑定。')
+  if (result.status === 'snapshot-required') {
+    throw new HttpError(409, '事件历史已达到上限，需要先上传新的恢复快照。', 'snapshot-required')
+  }
   if (result.status === 'capacity-exceeded') throw new HttpError(409, '账户命令存储已达到上限，请等待活跃命令结束。')
   if (result.status === 'command-retired') throw new HttpError(409, '远程命令已经结束或撤销，不能重复提交。')
+  if (result.status === 'command-expired') throw new HttpError(409, '远程命令已超过允许的重试窗口。')
   return result.value
 }
 
@@ -523,7 +527,10 @@ export default {
       if (status >= 500) {
         console.error(JSON.stringify({ message: 'companion relay request failed', status, error: message }))
       }
-      return Response.json({ error: status === 500 ? 'Internal relay error.' : message }, { status })
+      return Response.json({
+        error: status === 500 ? 'Internal relay error.' : message,
+        ...(error instanceof HttpError && error.code ? { code: error.code } : {})
+      }, { status })
     }
   }
 } satisfies ExportedHandler<Env>

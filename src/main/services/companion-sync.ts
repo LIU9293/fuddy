@@ -275,9 +275,21 @@ function relayRequestUrl(baseUrl: string, path: string): URL {
   return new URL(path.replace(/^\/+/, ''), `${baseUrl.replace(/\/+$/u, '')}/`)
 }
 
+class CompanionRelayError extends Error {
+  constructor(readonly status: number, readonly code: string | null, message: string) {
+    super(message)
+  }
+}
+
 async function responseJson<T>(response: Response): Promise<T> {
-  const body = await response.json().catch(() => ({})) as { error?: string }
-  if (!response.ok) throw new Error(body.error ?? `Companion Relay 请求失败（${response.status}）。`)
+  const body = await response.json().catch(() => ({})) as { error?: string; code?: string }
+  if (!response.ok) {
+    throw new CompanionRelayError(
+      response.status,
+      typeof body.code === 'string' ? body.code : null,
+      body.error ?? `Companion Relay 请求失败（${response.status}）。`
+    )
+  }
   return body as T
 }
 
@@ -1018,16 +1030,23 @@ export class CompanionSyncService {
         }
         prepared.push(encrypted)
       }
+      let recoverySnapshotRequired = false
       for (const batch of partitionCompanionEventBatches(prepared)) {
         if (this.stopped) return
         try {
           await this.publishEventBatch(batch, context)
         } catch (error) {
+          if (error instanceof CompanionRelayError && error.code === 'snapshot-required') {
+            this.enqueueRetentionSnapshot(new Date(), true)
+            recoverySnapshotRequired = true
+            break
+          }
           const message = error instanceof Error ? error.message : '事件上传失败。'
           for (const event of batch) this.database.markCompanionEventFailed(event.eventId, message)
           throw error
         }
       }
+      if (recoverySnapshotRequired) continue
     }
   }
 
