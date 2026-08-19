@@ -210,6 +210,37 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('stops active remote Agent turns and drains every scheduled command', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-command-drain-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    let finishCommand!: () => void
+    const activeCommand = new Promise<void>((resolve) => { finishCommand = resolve })
+    const stopMessage = vi.fn(async () => undefined)
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      { stopMessage } as unknown as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    const internals = service as unknown as {
+      activeCommands: Map<string, Promise<void>>
+      activeRemoteAgentRuns: Map<string, string>
+    }
+    internals.activeCommands.set('command-1', activeCommand)
+    internals.activeRemoteAgentRuns.set('command-1', 'run-1')
+
+    let drained = false
+    const draining = service.stopAndDrain().then(() => { drained = true })
+    await vi.waitFor(() => expect(stopMessage).toHaveBeenCalledWith('run-1'))
+    expect(drained).toBe(false)
+
+    finishCommand()
+    await draining
+    expect(drained).toBe(true)
+    database.close()
+  })
+
   it('preserves Relay credentials when remote account revocation fails', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-revoke-retry-'))
     directories.push(directory)

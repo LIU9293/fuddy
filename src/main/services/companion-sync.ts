@@ -291,6 +291,7 @@ export class CompanionSyncService {
   private activeSync: Promise<CompanionMacStatus> | null = null
   private validatedAccountRelaySignature: string | null = null
   private readonly activeCommands = new Map<string, Promise<void>>()
+  private readonly activeRemoteAgentRuns = new Map<string, string>()
   private readonly activeRunCreations = new Map<string, Promise<void>>()
   private syncRequested = false
   private stopped = false
@@ -740,6 +741,13 @@ export class CompanionSyncService {
   async stopAndDrain(): Promise<void> {
     this.stop()
     await this.activeSync?.catch(() => undefined)
+    const activeRunIds = new Set(this.activeRemoteAgentRuns.values())
+    await Promise.all([...activeRunIds].map(async (runId) => {
+      await this.dispatcher.stopMessage(runId).catch(() => undefined)
+    }))
+    await Promise.all([...this.activeCommands.values()].map(async (command) => {
+      await command.catch(() => undefined)
+    }))
   }
 
   private async flushOutbox(): Promise<void> {
@@ -1165,15 +1173,20 @@ export class CompanionSyncService {
       const runId = this.commandRunId(remoteCommand)
       const activeCreation = runId ? this.activeRunCreations.get(runId) : null
       if (activeCreation) await activeCreation
+      if (this.stopped) return
       this.scheduleCommand(remoteCommand)
     }
     if (commands.length >= 100) this.scheduleEventSync()
   }
 
   private scheduleCommand(remoteCommand: CompanionCommand): Promise<void> {
+    if (this.stopped) return Promise.resolve()
     const active = this.activeCommands.get(remoteCommand.commandId)
     if (active) return active
     const createdRunId = remoteCommand.type === 'agent.create-session'
+      ? this.commandRunId(remoteCommand)
+      : null
+    const activeAgentRunId = remoteCommand.type === 'agent.send-message'
       ? this.commandRunId(remoteCommand)
       : null
     const operation = this.executeCommand(remoteCommand)
@@ -1183,12 +1196,14 @@ export class CompanionSyncService {
       })
       .finally(() => {
         this.activeCommands.delete(remoteCommand.commandId)
+        this.activeRemoteAgentRuns.delete(remoteCommand.commandId)
         if (createdRunId && this.activeRunCreations.get(createdRunId) === operation) {
           this.activeRunCreations.delete(createdRunId)
         }
         this.scheduleEventSync()
       })
     this.activeCommands.set(remoteCommand.commandId, operation)
+    if (activeAgentRunId) this.activeRemoteAgentRuns.set(remoteCommand.commandId, activeAgentRunId)
     if (createdRunId) this.activeRunCreations.set(createdRunId, operation)
     return operation
   }
