@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AccountOnboardingState } from '../../shared/account'
-import { AccountService, normalizeAccountApiUrl } from './account-service'
+import { AccountAuthorizationLostError, AccountService, normalizeAccountApiUrl } from './account-service'
 
 class FakeDatabase {
   private readonly values = new Map<string, unknown>()
@@ -396,7 +396,7 @@ describe('AccountService', () => {
         : response({}, 401)
     })
 
-    await expect(service.listDevices()).rejects.toThrow('登录状态已失效')
+    await expect(service.listDevices()).rejects.toBeInstanceOf(AccountAuthorizationLostError)
     expect(service.getState().status).toBe('signed-out')
     expect(vault.get('account.refresh-token')).toBeNull()
   })

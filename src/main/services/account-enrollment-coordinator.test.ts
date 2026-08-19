@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AccountEnrollmentCoordinator, resolveCompanionRelayUrl } from './account-enrollment-coordinator'
-import { AccountRequestError, type AccountService } from './account-service'
+import { AccountAuthorizationLostError, AccountRequestError, type AccountService } from './account-service'
 import type { CompanionSyncService } from './companion-sync'
 
 describe('AccountEnrollmentCoordinator', () => {
@@ -187,7 +187,7 @@ describe('AccountEnrollmentCoordinator', () => {
 
   it('disconnects a confirmed Relay when Account API authorization expires', async () => {
     let signedOut = false
-    const authorizationError = new Error('登录状态已失效，请重新登录。')
+    const authorizationError = new AccountAuthorizationLostError()
     const account = {
       getState: vi.fn(() => signedOut
         ? { status: 'signed-out' }

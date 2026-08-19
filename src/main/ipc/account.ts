@@ -2,6 +2,7 @@ import { BrowserWindow, dialog, ipcMain, shell, type OpenDialogOptions } from 'e
 import { z } from 'zod'
 import { createProjectSchema } from '../../shared/project-validation'
 import { getCapabilities } from '../services/capabilities'
+import { AccountAuthorizationLostError } from '../services/account-service'
 import type { IpcContext } from './context'
 
 export function registerAccountIpc(context: IpcContext): void {
@@ -36,9 +37,8 @@ export function registerAccountIpc(context: IpcContext): void {
     try {
       return await operation()
     } catch (error) {
-      const state = accountService.getState()
-      if (state.status === 'signed-out') {
-        await reconcileValidatedAccountState(state).catch(() => undefined)
+      if (error instanceof AccountAuthorizationLostError) {
+        await reconcileValidatedAccountState(accountService.getState()).catch(() => undefined)
       }
       throw error
     }
@@ -107,9 +107,8 @@ export function registerAccountIpc(context: IpcContext): void {
     try {
       await accountService.revokeDevice(input.deviceId)
     } catch (error) {
-      const state = accountService.getState()
-      if (state.status === 'signed-out') {
-        await reconcileValidatedAccountState(state).catch(() => undefined)
+      if (error instanceof AccountAuthorizationLostError) {
+        await reconcileValidatedAccountState(accountService.getState()).catch(() => undefined)
       } else if (isCurrentDevice) {
         await companionSync.start().catch(() => undefined)
         accountEnrollmentCoordinator.start()
@@ -136,10 +135,9 @@ export function registerAccountIpc(context: IpcContext): void {
     try {
       state = await accountService.logoutAll()
     } catch (error) {
-      const current = accountService.getState()
-      if (current.status === 'signed-out') {
-        await reconcileValidatedAccountState(current).catch(() => undefined)
-      } else {
+      if (error instanceof AccountAuthorizationLostError) {
+        await reconcileValidatedAccountState(accountService.getState()).catch(() => undefined)
+      } else if (accountService.getState().status === 'signed-in') {
         await companionSync.start().catch(() => undefined)
         accountEnrollmentCoordinator.start()
       }

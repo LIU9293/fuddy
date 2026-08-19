@@ -72,6 +72,13 @@ export class AccountRequestError extends Error {
   }
 }
 
+export class AccountAuthorizationLostError extends Error {
+  constructor() {
+    super('登录状态已失效，请重新登录。')
+    this.name = 'AccountAuthorizationLostError'
+  }
+}
+
 export interface AccountServiceOptions {
   apiUrl: string | null
   runtimeChannel: FuddyRuntimeChannel
@@ -414,12 +421,15 @@ export class AccountService {
       await this.refreshAuthorization(accessToken)
       if (this.authGeneration !== generation) throw new Error('账户已切换，请重试。')
       accessToken = this.credentialVault.get(accessTokenReference)
-      if (!accessToken) throw new Error('登录状态已失效，请重新登录。')
+      if (!accessToken) throw new AccountAuthorizationLostError()
       response = await this.fetchResponse(path, init, accessToken)
       if (this.authGeneration !== generation) throw new Error('账户已切换，请重试。')
       if (response.status === 401) {
-        if (this.credentialVault.get(accessTokenReference) === accessToken) this.clearLocalAuth()
-        throw new Error('登录状态已失效，请重新登录。')
+        if (this.credentialVault.get(accessTokenReference) === accessToken) {
+          this.clearLocalAuth()
+          throw new AccountAuthorizationLostError()
+        }
+        throw new Error('账户已切换，请重试。')
       }
     }
     return this.assertResponse(response)
@@ -433,7 +443,10 @@ export class AccountService {
     const generation = this.authGeneration
     if (this.refreshInFlight?.generation === generation) return this.refreshInFlight.promise
     const refreshToken = this.credentialVault.get(refreshTokenReference)
-    if (!refreshToken) throw new Error('登录状态已失效，请重新登录。')
+    if (!refreshToken) {
+      this.clearLocalAuth()
+      throw new AccountAuthorizationLostError()
+    }
     const promise = (async () => {
       let response: Response
       try {
@@ -446,8 +459,11 @@ export class AccountService {
           if (
             this.authGeneration === generation
             && this.credentialVault.get(refreshTokenReference) === refreshToken
-          ) this.clearLocalAuth()
-          throw new Error('登录状态已失效，请重新登录。')
+          ) {
+            this.clearLocalAuth()
+            throw new AccountAuthorizationLostError()
+          }
+          throw new Error('账户已切换，请重试。')
         }
         throw error
       }

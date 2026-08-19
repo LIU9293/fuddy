@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccountState } from '../../shared/account'
+import { AccountAuthorizationLostError } from '../services/account-service'
 import type { IpcContext } from './context'
 
 const electronMocks = vi.hoisted(() => ({
@@ -95,7 +96,7 @@ describe('account IPC lifecycle', () => {
 
   it('reconciles a signed-out transition from an authorized account request', async () => {
     let accountState = signedInState
-    const authorizationError = new Error('登录状态已失效，请重新登录。')
+    const authorizationError = new AccountAuthorizationLostError()
     const coordinator = {
       stop: vi.fn(),
       pauseAndDrain: vi.fn(async () => undefined)
@@ -126,6 +127,38 @@ describe('account IPC lifecycle', () => {
     expect(companionSync.stop).toHaveBeenCalledOnce()
     expect(companionSync.disconnect).toHaveBeenCalledOnce()
     expect(send).toHaveBeenCalledWith('account:state-changed', signedOutState)
+  })
+
+  it('does not revoke Relay for a request invalidated by an overlapping normal logout', async () => {
+    let accountState = signedInState
+    const sessionChangedError = new Error('账户已切换，请重试。')
+    const coordinator = {
+      stop: vi.fn(),
+      pauseAndDrain: vi.fn(async () => undefined)
+    }
+    const companionSync = {
+      stop: vi.fn(),
+      disconnect: vi.fn(async () => undefined)
+    }
+
+    registerAccountIpc({
+      accountService: {
+        getState: vi.fn(() => accountState),
+        listDevices: vi.fn(async () => {
+          accountState = signedOutState
+          throw sessionChangedError
+        })
+      },
+      accountEnrollmentCoordinator: coordinator,
+      companionSync
+    } as unknown as IpcContext)
+
+    const listDevices = electronMocks.handlers.get('account:list-devices')
+    await expect(Promise.resolve(listDevices?.())).rejects.toBe(sessionChangedError)
+
+    expect(coordinator.stop).not.toHaveBeenCalled()
+    expect(companionSync.stop).not.toHaveBeenCalled()
+    expect(companionSync.disconnect).not.toHaveBeenCalled()
   })
 
   it('drains phone commands before logout-all forgets Relay credentials', async () => {

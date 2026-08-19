@@ -1,6 +1,6 @@
 import { defaultCompanionRelayUrl } from '../../shared/companion-sync'
 import type { FuddyRuntimeChannel } from '../runtime-profile'
-import { AccountRequestError, type AccountService } from './account-service'
+import { AccountAuthorizationLostError, AccountRequestError, type AccountService } from './account-service'
 import type { CompanionSyncService } from './companion-sync'
 
 export const accountEnrollmentPollIntervalMs = 5_000
@@ -75,7 +75,7 @@ export class AccountEnrollmentCoordinator {
     if (this.paused) return
     if (this.active) return await this.active
     const operation = this.runOnce().catch(async (error: unknown) => {
-      if (this.accountService.getState().status === 'signed-out') {
+      if (error instanceof AccountAuthorizationLostError) {
         this.stop()
         await this.companionSync.disconnect().catch(() => {
           // Keep the stopped Relay identity locally so a later sign-in can
