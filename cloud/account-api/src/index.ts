@@ -971,7 +971,7 @@ function relayAccountRevocationStatements(
        next_attempt_at = excluded.next_attempt_at, last_error = NULL,
        completed_at = NULL, updated_at = excluded.updated_at`
   ).bind(
-    `account:${space.spaceId}`,
+    `account:${space.spaceId}:${space.relayAccountId}`,
     space.spaceId,
     space.relayAccountId,
     timestamp,
@@ -1021,10 +1021,16 @@ export async function processRelayRevocationJobs(
         ).bind(completedAt, completedAt, job.id),
         job.operation === 'account'
           ? env.ACCOUNT_DB.prepare(
-              'UPDATE device_grants SET relay_revoked_at = ?, updated_at = ? WHERE space_id = ?'
-            ).bind(completedAt, completedAt, job.source_id)
+              `UPDATE device_grants SET relay_revoked_at = ?, updated_at = ?
+               WHERE space_id = ? AND status = 'revoked' AND relay_revoked_at IS NULL
+                 AND EXISTS (
+                   SELECT 1 FROM sync_spaces
+                   WHERE id = ? AND relay_account_id = ?
+                 )`
+            ).bind(completedAt, completedAt, job.source_id, job.source_id, job.relay_account_id)
           : env.ACCOUNT_DB.prepare(
-              'UPDATE device_grants SET relay_revoked_at = ?, updated_at = ? WHERE id = ?'
+              `UPDATE device_grants SET relay_revoked_at = ?, updated_at = ?
+               WHERE id = ? AND status = 'revoked' AND relay_revoked_at IS NULL`
             ).bind(completedAt, completedAt, job.source_id)
       ]
       await env.ACCOUNT_DB.batch(statements)

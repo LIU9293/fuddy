@@ -197,11 +197,12 @@ describe('email authentication', () => {
     const { payload } = await signIn('remove-mac@example.com')
     const iosDeviceId = crypto.randomUUID()
     const grantId = crypto.randomUUID()
+    const relayAccountId = 'relay-account-to-revoke'
     const now = new Date().toISOString()
     await env.ACCOUNT_DB.batch([
       env.ACCOUNT_DB.prepare(
         'UPDATE sync_spaces SET relay_url = ?, relay_account_id = ?, updated_at = ? WHERE id = ?'
-      ).bind('https://fuddy.ai/api/relay', 'relay-account-to-revoke', now, payload.device.syncSpaceId),
+      ).bind('https://fuddy.ai/api/relay', relayAccountId, now, payload.device.syncSpaceId),
       env.ACCOUNT_DB.prepare(
         `INSERT INTO devices
           (id, user_id, platform, name, public_key, app_version, protocol_version, created_at, updated_at, last_seen_at)
@@ -232,10 +233,11 @@ describe('email authentication', () => {
       'SELECT status FROM device_grants WHERE id = ?'
     ).bind(grantId).first()).resolves.toMatchObject({ status: 'revoked' })
 
+    const jobId = `account:${payload.device.syncSpaceId}:${relayAccountId}`
     const pendingJob = await env.ACCOUNT_DB.prepare(
       `SELECT status, attempt_count AS attemptCount
        FROM relay_revocation_jobs WHERE id = ?`
-    ).bind(`account:${payload.device.syncSpaceId}`).first<{ status: string; attemptCount: number }>()
+    ).bind(jobId).first<{ status: string; attemptCount: number }>()
     expect(pendingJob).toEqual({ status: 'pending', attemptCount: 0 })
 
     const relayAdmin = {
@@ -252,7 +254,7 @@ describe('email authentication', () => {
     await expect(env.ACCOUNT_DB.prepare(
       `SELECT status, attempt_count AS attemptCount, last_error AS lastError
        FROM relay_revocation_jobs WHERE id = ?`
-    ).bind(`account:${payload.device.syncSpaceId}`).first()).resolves.toMatchObject({
+    ).bind(jobId).first()).resolves.toMatchObject({
       status: 'pending',
       attemptCount: 1,
       lastError: 'temporary Relay outage'
@@ -266,7 +268,7 @@ describe('email authentication', () => {
     expect(relayAdmin.revokeAccount).toHaveBeenCalledTimes(2)
     await expect(env.ACCOUNT_DB.prepare(
       'SELECT status FROM relay_revocation_jobs WHERE id = ?'
-    ).bind(`account:${payload.device.syncSpaceId}`).first()).resolves.toMatchObject({ status: 'completed' })
+    ).bind(jobId).first()).resolves.toMatchObject({ status: 'completed' })
     await expect(env.ACCOUNT_DB.prepare(
       'SELECT relay_revoked_at AS relayRevokedAt FROM device_grants WHERE id = ?'
     ).bind(grantId).first<{ relayRevokedAt: string | null }>()).resolves.toMatchObject({
