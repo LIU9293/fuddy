@@ -294,17 +294,65 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('propagates shutdown cancellation into an active confirmed Work Assistant action', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-action-drain-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    let receivedSignal: AbortSignal | null = null
+    const executeAction = vi.fn(async (_input: unknown, cancellationSignal: AbortSignal) => {
+      receivedSignal = cancellationSignal
+      await new Promise<void>((_resolve, reject) => {
+        cancellationSignal.addEventListener('abort', () => reject(cancellationSignal.reason), { once: true })
+      })
+    })
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    service.setWorkAssistantActionExecutor(executeAction)
+    const command: CompanionCommand = {
+      commandId: 'assistant-action-command-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'assistant.execute-action',
+      payload: { messageId: 'message-1', proposalId: 'proposal-1', optionId: 'send' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+    const internals = service as unknown as {
+      activeCommands: Map<string, Promise<void>>
+      activeCommandAbortControllers: Map<string, AbortController>
+      performCommand: (command: CompanionCommand, signal: AbortSignal) => Promise<unknown>
+    }
+    const controller = new AbortController()
+    const activeCommand = internals.performCommand(command, controller.signal).then(() => undefined)
+    internals.activeCommands.set(command.commandId, activeCommand)
+    internals.activeCommandAbortControllers.set(command.commandId, controller)
+    await vi.waitFor(() => expect(receivedSignal).not.toBeNull())
+
+    await service.stopAndDrain()
+
+    expect((receivedSignal as AbortSignal | null)?.aborted).toBe(true)
+    await expect(activeCommand).rejects.toThrow('账户连接已停止')
+    database.close()
+  })
+
   it('identifies account-owned Relay state for signed-out startup cleanup', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-account-identity-'))
     directories.push(directory)
     const database = createTestDatabase(join(directory, 'app.sqlite'))
-    database.setSetting('companion.mac-configuration', {
+    database.setSetting('companion.account-configurations', { 'user-1': {
       relayUrl: 'https://relay.example.com',
       accountId: 'account-relay',
       macDeviceId: 'mac-1',
       pairedAt: new Date().toISOString(),
       ownerUserId: 'user-1'
-    } satisfies CompanionMacConfiguration)
+    } satisfies CompanionMacConfiguration })
     const service = new CompanionSyncService(
       database,
       testCredentials(),
@@ -355,6 +403,66 @@ describe('Companion sync transport policy', () => {
     expect(secrets.has('companion.mac-token:retry-account')).toBe(true)
     expect(secrets.has('companion.account-key:retry-account')).toBe(true)
     expect(database.getSetting('companion.mac-configuration', null)).toEqual(configuration)
+    database.close()
+  })
+
+  it('retries a failed old-account revocation before activating a new user', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-revoke-before-switch-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const oldConfiguration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com', accountId: 'old-account', macDeviceId: 'old-mac',
+      pairedAt: new Date().toISOString(), ownerUserId: 'old-user', syncSpaceId: 'old-space'
+    }
+    const newConfiguration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com', accountId: 'new-account', macDeviceId: 'new-mac',
+      pairedAt: new Date().toISOString(), ownerUserId: 'new-user', syncSpaceId: 'new-space'
+    }
+    database.setSetting('companion.mac-configuration', oldConfiguration)
+    database.setSetting('companion.account-configurations', {
+      'old-user': oldConfiguration,
+      'new-user': newConfiguration
+    })
+    const secrets = new Map<string, string>([
+      ['companion.mac-token:old-account', 'old-token'],
+      ['companion.account-key:old-account', testEncryptionKey],
+      ['companion.mac-token:new-account', 'new-token'],
+      ['companion.account-key:new-account', testEncryptionKey]
+    ])
+    const credentials = {
+      get: (reference: string) => secrets.get(reference) ?? null,
+      set: (reference: string, value: string) => { secrets.set(reference, value) },
+      delete: (reference: string) => { secrets.delete(reference) }
+    } as unknown as CredentialVault
+    let attempts = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      expect(url.searchParams.get('accountId')).toBe('old-account')
+      expect(new Headers(init.headers).get('Authorization')).toBe('Bearer old-token')
+      attempts += 1
+      return attempts === 1
+        ? jsonResponse({ error: 'Relay unavailable' }, 503)
+        : new Response(null, { status: 204 })
+    }))
+    const service = new CompanionSyncService(
+      database,
+      credentials,
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await expect(service.disconnect()).rejects.toThrow('Relay unavailable')
+    expect(service.getStatus().configuration).toEqual(oldConfiguration)
+    await expect(service.activateAccountRelay('new-user', 'new-space')).resolves.toBeUndefined()
+
+    expect(attempts).toBe(2)
+    expect(service.getStatus().configuration).toEqual(newConfiguration)
+    expect(secrets.has('companion.mac-token:old-account')).toBe(false)
+    expect(secrets.get('companion.mac-token:new-account')).toBe('new-token')
+    expect(database.getSetting<Record<string, CompanionMacConfiguration>>(
+      'companion.account-configurations',
+      {}
+    )).toEqual({ 'new-user': newConfiguration })
     database.close()
   })
 
@@ -491,7 +599,7 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
-  it('preserves and restores each account Relay when the same Mac switches users', async () => {
+  it('revokes the current account Relay before switching to another user', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-account-switch-'))
     directories.push(directory)
     const database = createTestDatabase(join(directory, 'app.sqlite'))
@@ -537,6 +645,11 @@ describe('Companion sync transport policy', () => {
       if (url.pathname === '/v1/device' && method === 'GET') {
         expect(url.searchParams.get('accountId')).toBe('next-relay-account')
         return jsonResponse({ device: { id: 'next-mac', role: 'mac' } })
+      }
+      if (url.pathname === '/v1/account' && method === 'DELETE') {
+        expect(url.searchParams.get('accountId')).toBe('next-relay-account')
+        expect(new Headers(init.headers).get('Authorization')).toBe('Bearer next-token')
+        return new Response(null, { status: 204 })
       }
       throw new Error(`Unexpected relay request: ${method} ${url}`)
     })
@@ -596,15 +709,8 @@ describe('Companion sync transport policy', () => {
       ...previousConfiguration,
       ownerUserId: 'previous-user'
     })
-    expect(database.listPendingCompanionEvents().map((event) => event.type)).toContain('snapshot.created')
-    for (const event of database.listPendingCompanionEvents()) {
-      database.markCompanionEventPublished(event.eventId, new Date().toISOString())
-    }
-    await service.activateAccountRelay('next-user', 'next-space')
-    expect(service.getStatus().configuration).toMatchObject({
-      accountId: 'next-relay-account',
-      ownerUserId: 'next-user'
-    })
+    expect(secrets.has('companion.mac-token:next-relay-account')).toBe(false)
+    expect(secrets.has('companion.account-key:next-relay-account')).toBe(false)
     expect(database.listPendingCompanionEvents().map((event) => event.type)).toContain('snapshot.created')
     service.stop()
     database.close()

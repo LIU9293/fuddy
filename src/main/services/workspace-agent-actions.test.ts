@@ -283,6 +283,52 @@ describe('WorkspaceAgentActions native tools', () => {
     database.close()
   })
 
+  it('cancels a confirmed Agent Run send when the phone command stops', async () => {
+    const { database, actions, dispatcher } = setup()
+    const run = dispatcher.createDraft({
+      projectId: 'vows',
+      title: '可取消的 Run',
+      draftPrompt: '等待确认。'
+    })
+    let receivedSignal: AbortSignal | undefined
+    vi.spyOn(dispatcher, 'sendMessage').mockImplementation(async (...args) => {
+      receivedSignal = args[5]
+      await new Promise<void>((_resolve, reject) => {
+        receivedSignal?.addEventListener('abort', () => reject(receivedSignal?.reason), { once: true })
+      })
+      return run
+    })
+    const state = actions.createTurnState()
+    await callTool(actions, state, 'ask_user', {
+      title: '继续 Agent Run',
+      description: '向已有 Run 发送消息。',
+      options: [{
+        id: 'send',
+        label: '发送',
+        style: 'primary',
+        capability: 'agent-run.send',
+        payload: { runId: run.run.id, prompt: '继续处理。' }
+      }]
+    })
+    const message = database.createBriefingMessage({
+      id: 'assistant-cancel-run-send', briefingId: null, role: 'assistant', content: '请确认。', attachments: [],
+      taskContext: null, actions: state.proposals, createdAt: new Date().toISOString()
+    })
+    const cancellationController = new AbortController()
+
+    const executing = actions.executeProposal({
+      messageId: message.id,
+      proposalId: state.proposals[0].id,
+      optionId: 'send'
+    }, cancellationController.signal)
+    await vi.waitFor(() => expect(receivedSignal).toBe(cancellationController.signal))
+    cancellationController.abort(new Error('账户连接已停止，这次手机操作未继续执行。'))
+
+    await expect(executing).rejects.toThrow('账户连接已停止')
+    expect(database.getBriefingMessage(message.id)?.actions?.[0].status).toBe('pending')
+    database.close()
+  })
+
   it('open_agent_run only attaches a link and does not change Run or inbox state', async () => {
     const { database, actions, dispatcher } = setup()
     const decision = database.createDecision({ projectId: 'roombase', title: '处理 PR #352', summary: 'Review 待处理。' })

@@ -77,7 +77,7 @@ export class AccountEnrollmentCoordinator {
     const operation = this.runOnce().catch(async (error: unknown) => {
       if (error instanceof AccountAuthorizationLostError) {
         this.stop()
-        await this.companionSync.disconnect().catch(() => {
+        await this.companionSync.disconnectAllAccountRelays().catch(() => {
           // Keep the stopped Relay identity locally so a later sign-in can
           // retry revocation instead of losing the only cleanup credential.
         })
@@ -96,7 +96,7 @@ export class AccountEnrollmentCoordinator {
     const state = this.accountService.getState()
     if (state.status === 'signed-out') {
       this.stop()
-      await this.companionSync.disconnect().catch(() => undefined)
+      await this.companionSync.disconnectAllAccountRelays().catch(() => undefined)
       return
     }
     if (!this.relayUrl) return

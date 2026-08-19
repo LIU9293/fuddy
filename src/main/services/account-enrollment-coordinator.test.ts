@@ -208,14 +208,14 @@ describe('AccountEnrollmentCoordinator', () => {
       })),
       isAccountRelayBindingConfirmed: vi.fn(() => true),
       start: vi.fn(),
-      disconnect: vi.fn(async () => undefined)
+      disconnectAllAccountRelays: vi.fn(async () => undefined)
     } as unknown as CompanionSyncService
     const coordinator = new AccountEnrollmentCoordinator(account, companion, 'https://relay.example.com')
 
     await expect(coordinator.processOnce()).rejects.toBe(authorizationError)
 
     expect(companion.start).toHaveBeenCalledOnce()
-    expect(companion.disconnect).toHaveBeenCalledOnce()
+    expect(companion.disconnectAllAccountRelays).toHaveBeenCalledOnce()
     await coordinator.processOnce()
     expect(companion.ensureAccountRelay).toHaveBeenCalledOnce()
   })

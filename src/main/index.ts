@@ -433,7 +433,9 @@ if (!hasLock) {
         companionSync,
         companionRelayUrl
       )
-      companionSync.setWorkAssistantActionExecutor((input) => morningBriefingService.executeAction(input))
+      companionSync.setWorkAssistantActionExecutor((input, cancellationSignal) => (
+        morningBriefingService.executeAction(input, cancellationSignal)
+      ))
       companionSync.onStatusChanged((status) => {
         if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:status-changed', status)
       })
@@ -549,7 +551,7 @@ if (!hasLock) {
       } else if (companionSync.hasAccountRelayIdentity()) {
         // A cached Account session may expire while Fuddy is closed. Account-owned
         // Relay state must not survive that signed-out bootstrap path.
-        void companionSync.disconnect().catch((error: unknown) => {
+        void companionSync.disconnectAllAccountRelays().catch((error: unknown) => {
           Sentry.captureException(error, { tags: { boundary: 'account-relay-startup-revocation' } })
         })
       }

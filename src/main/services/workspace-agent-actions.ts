@@ -78,6 +78,13 @@ function requireProject(database: AppDatabase, projectId: string): Project {
   return project
 }
 
+function throwIfActionCancelled(cancellationSignal?: AbortSignal): void {
+  if (!cancellationSignal?.aborted) return
+  throw cancellationSignal.reason instanceof Error
+    ? cancellationSignal.reason
+    : new Error('这次手机操作已停止。')
+}
+
 function createProjectInput(value: unknown): CreateProjectInput {
   const input = record(value)
   const required = {
@@ -327,7 +334,11 @@ export class WorkspaceAgentActions {
     return [getContext, inspectProject, inspectProjectFiles, inspectAgentRun, openAgentRun, searchWeb, readWeb, readBriefing, askUser]
   }
 
-  async executeProposal(input: ExecuteWorkAssistantActionInput): Promise<ExecuteWorkAssistantActionResult> {
+  async executeProposal(
+    input: ExecuteWorkAssistantActionInput,
+    cancellationSignal?: AbortSignal
+  ): Promise<ExecuteWorkAssistantActionResult> {
+    throwIfActionCancelled(cancellationSignal)
     const message = this.database.getBriefingMessage(input.messageId)
     if (!message || message.role !== 'assistant') throw new Error('没有找到这条工作助理 Action。')
     const actions = message.actions ?? []
@@ -359,6 +370,7 @@ export class WorkspaceAgentActions {
       : this.database.recordPermissionEvaluation(auditIntent, evaluateAggressivePermission(auditIntent))
 
     try {
+    throwIfActionCancelled(cancellationSignal)
     if (option.capability === 'assistant.dismiss') {
       notice = '已取消。'
     } else if (option.capability === 'briefing.generate') {
@@ -436,7 +448,14 @@ export class WorkspaceAgentActions {
       notice = `已归档 Agent Run“${run.title}”。`
     } else if (option.capability === 'agent-run.send') {
       if (!this.dispatcher) throw new Error('工作助理的 Agent Run 管理能力尚未初始化。')
-      const detail = await this.dispatcher.sendMessage(text(payload.runId, 200), text(payload.prompt, 20_000))
+      const detail = await this.dispatcher.sendMessage(
+        text(payload.runId, 200),
+        text(payload.prompt, 20_000),
+        () => undefined,
+        undefined,
+        [],
+        cancellationSignal
+      )
       linkedRunId = detail.run.id
       notice = `已把消息发送给 Agent Run“${detail.run.title}”。`
     } else if (option.capability === 'goal.manage') {
@@ -459,6 +478,7 @@ export class WorkspaceAgentActions {
       throw new Error(`当前不支持执行 ${option.capability}。`)
     }
 
+    throwIfActionCancelled(cancellationSignal)
     const now = new Date().toISOString()
     const updatedActions = actions.map((item) => item.id === proposal.id ? {
       ...item,

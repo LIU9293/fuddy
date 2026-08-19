@@ -274,7 +274,10 @@ async function responseJson<T>(response: Response): Promise<T> {
 }
 
 export class CompanionSyncService {
-  private executeWorkAssistantAction: ((input: { messageId: string; proposalId: string; optionId: string }) => unknown) | null = null
+  private executeWorkAssistantAction: ((
+    input: { messageId: string; proposalId: string; optionId: string },
+    cancellationSignal: AbortSignal
+  ) => unknown) | null = null
   private configuration: CompanionMacConfiguration | null
   private accountConfigurations: Record<string, CompanionMacConfiguration>
   private state: CompanionMacStatus['state'] = 'not-configured'
@@ -345,7 +348,7 @@ export class CompanionSyncService {
   }
 
   hasAccountRelayIdentity(): boolean {
-    return Boolean(this.configuration?.ownerUserId)
+    return this.accountRelayConfigurations().length > 0
   }
 
   onStatusChanged(listener: (status: CompanionMacStatus) => void): () => void {
@@ -364,7 +367,10 @@ export class CompanionSyncService {
   }
 
   setWorkAssistantActionExecutor(
-    executor: (input: { messageId: string; proposalId: string; optionId: string }) => unknown
+    executor: (
+      input: { messageId: string; proposalId: string; optionId: string },
+      cancellationSignal: AbortSignal
+    ) => unknown
   ): void {
     this.executeWorkAssistantAction = executor
   }
@@ -381,6 +387,9 @@ export class CompanionSyncService {
 
   async activateAccountRelay(ownerUserId: string, syncSpaceId?: string): Promise<void> {
     await this.disconnecting?.catch(() => undefined)
+    await this.revokeAccountRelayConfigurations((configuration) => (
+      Boolean(configuration.ownerUserId) && configuration.ownerUserId !== ownerUserId
+    ))
     if (this.configuration && !this.configuration.ownerUserId) {
       const legacyBelongsToAccount = !this.configuration.syncSpaceId
         || !syncSpaceId
@@ -644,6 +653,22 @@ export class CompanionSyncService {
     return operation
   }
 
+  disconnectAllAccountRelays(): Promise<void> {
+    if (this.disconnecting) {
+      return this.disconnecting.then(
+        () => this.disconnectAllAccountRelays(),
+        () => this.disconnectAllAccountRelays()
+      )
+    }
+    const operation = this.revokeAccountRelayConfigurations((configuration) => Boolean(configuration.ownerUserId))
+    this.disconnecting = operation
+    const clear = (): void => {
+      if (this.disconnecting === operation) this.disconnecting = null
+    }
+    void operation.then(clear, clear)
+    return operation
+  }
+
   private async disconnectCurrentRelay(): Promise<void> {
     const configuration = this.configuration ? { ...this.configuration } : null
     const token = configuration
@@ -655,6 +680,40 @@ export class CompanionSyncService {
     const target = { configuration, token }
     await this.revokeRemoteAccount(target)
     this.forgetRelayIdentity(target.configuration)
+  }
+
+  private accountRelayConfigurations(): CompanionMacConfiguration[] {
+    const configurations = [
+      ...(this.configuration?.ownerUserId ? [this.configuration] : []),
+      ...Object.values(this.accountConfigurations).filter((configuration) => Boolean(configuration.ownerUserId))
+    ]
+    return configurations.filter((configuration, index) => (
+      configurations.findIndex((candidate) => this.sameRelayIdentity(candidate, configuration)) === index
+    ))
+  }
+
+  private async revokeAccountRelayConfigurations(
+    shouldRevoke: (configuration: CompanionMacConfiguration) => boolean
+  ): Promise<void> {
+    const configurations = this.accountRelayConfigurations().filter(shouldRevoke)
+    if (configurations.length === 0) return
+    if (this.configuration && configurations.some((configuration) => (
+      this.sameRelayIdentity(configuration, this.configuration!)
+    ))) {
+      await this.stopAndDrain()
+    }
+    const failures: Error[] = []
+    for (const configuration of configurations) {
+      try {
+        await this.revokeRemoteAccount(this.relayRevocationTarget(configuration))
+        this.forgetRelayIdentity(configuration)
+      } catch (error) {
+        failures.push(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, '部分旧账户连接尚未安全断开，请稍后重试。')
+    }
   }
 
   /** Clears a Relay identity already revoked by the Account API without making another remote request. */
@@ -1348,7 +1407,7 @@ export class CompanionSyncService {
           messageId: this.requiredString(payload, 'messageId'),
           proposalId: this.requiredString(payload, 'proposalId'),
           optionId: this.requiredString(payload, 'optionId')
-        })
+        }, cancellationSignal)
       }
       case 'agent.send-message': {
         const runId = this.requiredString(payload, 'runId')

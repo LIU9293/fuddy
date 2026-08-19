@@ -29,7 +29,7 @@ export function registerAccountIpc(context: IpcContext): void {
     companionSync.stop()
     broadcastAccountState(state)
     await accountEnrollmentCoordinator.pauseAndDrain()
-    await companionSync.disconnect()
+    await companionSync.disconnectAllAccountRelays()
   }
 
   const runAuthorizedAccountOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -121,7 +121,7 @@ export function registerAccountIpc(context: IpcContext): void {
       throw error
     }
     if (!isCurrentDevice) return
-    companionSync.forgetAccountRelay()
+    await companionSync.disconnectAllAccountRelays().catch(() => undefined)
     broadcastAccountState()
   })
 
@@ -130,7 +130,7 @@ export function registerAccountIpc(context: IpcContext): void {
     await companionSync.stopAndDrain()
     const state = await accountService.logout()
     broadcastAccountState()
-    await companionSync.disconnect().catch(() => undefined)
+    await companionSync.disconnectAllAccountRelays().catch(() => undefined)
     return state
   })
 
@@ -149,7 +149,7 @@ export function registerAccountIpc(context: IpcContext): void {
       }
       throw error
     }
-    companionSync.forgetAccountRelay()
+    await companionSync.disconnectAllAccountRelays().catch(() => undefined)
     broadcastAccountState()
     return state
   })

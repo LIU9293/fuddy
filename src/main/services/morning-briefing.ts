@@ -407,8 +407,11 @@ export class MorningBriefingService {
     return { userMessage, assistantMessage }
   }
 
-  async executeAction(input: ExecuteWorkAssistantActionInput): Promise<ExecuteWorkAssistantActionResult> {
+  async executeAction(
+    input: ExecuteWorkAssistantActionInput,
+    cancellationSignal?: AbortSignal
+  ): Promise<ExecuteWorkAssistantActionResult> {
     if (!this.workspaceAgentActions) throw new Error('工作助理能力尚未初始化。')
-    return await this.workspaceAgentActions.executeProposal(input)
+    return await this.workspaceAgentActions.executeProposal(input, cancellationSignal)
   }
 }
