@@ -27,6 +27,7 @@ import {
   AgentProviderRegistry,
   createDefaultAgentProviderRegistry
 } from './agent-provider-registry'
+import { throwIfCancelled } from './cancellation'
 
 type ResolvedDispatchTaskInput = Omit<DispatchTaskInput, 'provider'> & {
   provider: AgentRunProvider
@@ -137,11 +138,7 @@ export class TaskDispatcher {
     onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined,
     cancellationSignal?: AbortSignal
   ): Promise<DispatchTaskResult> {
-    if (cancellationSignal?.aborted) {
-      throw cancellationSignal.reason instanceof Error
-        ? cancellationSignal.reason
-        : new Error('这次操作已停止。')
-    }
+    throwIfCancelled(cancellationSignal)
     const now = new Date().toISOString()
     const project = input.projectId
       ? this.database.listProjects().find((item) => item.id === input.projectId) ?? null
@@ -187,6 +184,7 @@ export class TaskDispatcher {
     this.publishRunUpdate(run.id, createdUpdate)
     onUpdate(createdUpdate)
     const detail = await this.sendMessage(run.id, input.prompt, onUpdate, undefined, [], cancellationSignal)
+    throwIfCancelled(cancellationSignal)
     return { detail, message: detail.run.summary }
   }
 
@@ -275,7 +273,9 @@ export class TaskDispatcher {
       if (this.turnQueueTails.get(runId) === turn) this.turnQueueTails.delete(runId)
     }
     void turn.then(clearQueueTail, clearQueueTail)
-    return turn
+    const detail = await turn
+    throwIfCancelled(cancellationSignal)
+    return detail
   }
 
   async stopMessage(runId: string): Promise<AgentRunDetail> {

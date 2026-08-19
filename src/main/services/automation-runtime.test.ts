@@ -106,6 +106,30 @@ describe('AutomationRuntime', () => {
     database.close()
   })
 
+  it('persists cancellation that happens during retry backoff', async () => {
+    const runConnectors = vi.fn(async () => {
+      throw new Error('temporary failure')
+    })
+    const { database, runtime } = setup({ runConnectors })
+    const job = runtime.save(input({ maxRetries: 2, retryDelaySeconds: 60 }))
+    const controller = new AbortController()
+
+    const running = runtime.runNow(job.id, controller.signal)
+    await vi.waitFor(() => expect(runConnectors).toHaveBeenCalledOnce())
+    controller.abort(new Error('账户连接已停止，这次手机操作未继续执行。'))
+
+    await expect(running).rejects.toThrow('账户连接已停止')
+    expect(database.listAutomationRuns(job.id)[0]).toMatchObject({
+      status: 'failed',
+      error: '账户连接已停止，这次手机操作未继续执行。'
+    })
+    expect(database.getAutomation(job.id)).toMatchObject({
+      status: 'error',
+      lastError: '账户连接已停止，这次手机操作未继续执行。'
+    })
+    database.close()
+  })
+
   it('gates scheduled runs until they are approved', async () => {
     const { database, runtime, actions } = setup()
     const job = runtime.save(input({ requiresConfirmation: true }))

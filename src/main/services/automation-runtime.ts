@@ -7,7 +7,7 @@ import type {
 } from '../../shared/contracts'
 import { nextCronOccurrence } from './automation-cron'
 import { AppDatabase } from './database'
-import { throwIfCancelled } from './cancellation'
+import { cancellationError, throwIfCancelled } from './cancellation'
 
 export interface AutomationActions {
   runAgentTask(job: AutomationJob, cancellationSignal?: AbortSignal): Promise<{ summary: string; agentRunId: string }>
@@ -243,9 +243,18 @@ export class AutomationRuntime {
         return { job, run }
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error))
-        if (cancellationSignal?.aborted) break
+        const stopped = cancellationError(cancellationSignal)
+        if (stopped) {
+          lastError = stopped
+          break
+        }
         if (attempt <= job.maxRetries && job.retryDelaySeconds > 0) {
-          await wait(job.retryDelaySeconds * 1_000, cancellationSignal)
+          try {
+            await wait(job.retryDelaySeconds * 1_000, cancellationSignal)
+          } catch (backoffError) {
+            lastError = backoffError instanceof Error ? backoffError : new Error(String(backoffError))
+            break
+          }
         }
       }
     }

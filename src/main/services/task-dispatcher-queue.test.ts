@@ -102,7 +102,7 @@ describe('TaskDispatcher Agent Run turn queue', () => {
     }
   })
 
-  it('cancels an active caller-owned turn without targeting another turn by Run ID', async () => {
+  it('reports caller cancellation after the active turn has persisted its idle cleanup', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-turn-active-cancellation-'))
     let receivedSignal: AbortSignal | null = null
     const { database, dispatcher, runId } = createDispatcher(root, async (input) => {
@@ -129,11 +129,11 @@ describe('TaskDispatcher Agent Run turn queue', () => {
       await vi.waitFor(() => expect(receivedSignal).not.toBeNull())
 
       cancellation.abort(new Error('账户连接已停止'))
-      const result = await sending
+      await expect(sending).rejects.toThrow('账户连接已停止')
 
       expect((receivedSignal as AbortSignal | null)?.aborted).toBe(true)
-      expect(result.run.status).toBe('idle')
-      expect(result.messages.some((message) => message.eventType === 'error')).toBe(false)
+      expect(database.getAgentRunDetail(runId).run.status).toBe('idle')
+      expect(database.getAgentRunDetail(runId).messages.some((message) => message.eventType === 'error')).toBe(false)
     } finally {
       database.close()
       rmSync(root, { recursive: true, force: true })
