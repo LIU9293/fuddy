@@ -12,10 +12,29 @@ export function registerAccountIpc(context: IpcContext): void {
     }
   }
 
+  const reconcileValidatedAccountState = async (
+    state: Awaited<ReturnType<typeof accountService.getValidatedState>>
+  ): Promise<void> => {
+    if (state.status !== 'signed-out') {
+      broadcastAccountState(state)
+      return
+    }
+
+    // Validation can revoke the local account after Companion has already
+    // started during bootstrap. Stop both producers immediately, publish the
+    // signed-out state, then discard the now-unauthorized Relay identity once
+    // any in-flight enrollment work has settled.
+    accountEnrollmentCoordinator.stop()
+    companionSync.stop()
+    broadcastAccountState(state)
+    await accountEnrollmentCoordinator.pauseAndDrain()
+    companionSync.forgetAccountRelay()
+  }
+
   ipcMain.handle('account:get-state', () => {
     const local = accountService.getState()
     if (local.status === 'signed-in') {
-      void accountService.getValidatedState().then(broadcastAccountState).catch(() => undefined)
+      void accountService.getValidatedState().then(reconcileValidatedAccountState).catch(() => undefined)
     }
     return local
   })

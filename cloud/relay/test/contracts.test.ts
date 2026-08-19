@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import type { CompanionEncryptedSyncEvent } from '../../../src/shared/companion-sync'
 import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
+import { agentTurnAlertPushRequest } from '../src/account-relay'
 import { commandSchema, syncEventSchema } from '../src/schemas'
 
 const occurredAt = '2026-08-12T05:00:00.000Z'
@@ -71,5 +73,24 @@ describe('companion protocol contracts', () => {
       commandId: 'command-attachment', protocolVersion: companionProtocolVersion, createdAt: occurredAt,
       type: 'assistant.send-message', payload: { ...encryptedPayload, nonce: 'short' }
     }).success).toBe(false)
+  })
+
+  it('includes the completed Run identifier in Agent alert pushes', () => {
+    const event: CompanionEncryptedSyncEvent = {
+      sequence: 42,
+      eventId: 'event-agent-settled',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent-turn.settled',
+      entityType: 'agent-run',
+      entityId: 'run-42',
+      revision: 1,
+      payload: encryptedPayload,
+      sourceDeviceId: 'mac-1',
+      occurredAt
+    }
+
+    expect(agentTurnAlertPushRequest(event)).toMatchObject({
+      body: { sequence: 42, runId: 'run-42' }
+    })
   })
 })

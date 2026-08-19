@@ -1075,6 +1075,7 @@ export class CompanionSyncService {
     const response = await fetchWithTimeout(this.authenticatedUrl('/v1/commands/pending', context.configuration), {
       headers: { Authorization: `Bearer ${context.token}` }
     })
+    if (this.stopped) return
     const body = await responseJson<{ commands: unknown[] }>(response)
     const commands = await Promise.all(body.commands.map(async (value) => {
       const encrypted = companionPendingEncryptedCommandSchema.parse(value)
@@ -1089,9 +1090,11 @@ export class CompanionSyncService {
         payload
       })
     }))
+    if (this.stopped) return
     const createCommands = commands.filter((command) => command.type === 'agent.create-session')
     await Promise.all(createCommands.map((command) => this.scheduleCommand(command)))
     for (const remoteCommand of commands) {
+      if (this.stopped) return
       if (remoteCommand.type === 'agent.create-session') continue
       const runId = this.commandRunId(remoteCommand)
       const activeCreation = runId ? this.activeRunCreations.get(runId) : null

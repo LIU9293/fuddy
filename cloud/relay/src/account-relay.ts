@@ -68,11 +68,35 @@ interface PushDeviceRow extends Record<string, SqlStorageValue> {
   push_token: string
 }
 
+interface PushRequest {
+  pushType: 'alert' | 'background'
+  priority: '5' | '10'
+  collapseId: string
+  body: Record<string, unknown>
+}
+
 const lastSeenWriteIntervalMs = 5 * 60_000
 const maximumRetainedEvents = 50_000
 const maximumRetainedCommands = 5_000
 const terminalCommandRetentionDays = 30
 const maintenanceIntervalMs = 24 * 60 * 60 * 1_000
+
+export function agentTurnAlertPushRequest(event: CompanionEncryptedSyncEvent): PushRequest {
+  return {
+    pushType: 'alert',
+    priority: '10',
+    collapseId: `agent-turn-${event.entityId}`.slice(0, 64),
+    body: {
+      aps: {
+        alert: { title: 'Agent Run 已结束', body: '打开 Fuddy 查看结果' },
+        sound: 'default',
+        'content-available': 1
+      },
+      sequence: event.sequence,
+      runId: event.entityId
+    }
+  }
+}
 
 function randomToken(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength)
@@ -852,28 +876,11 @@ export class AccountRelay extends DurableObject<Env> {
   }
 
   private async sendAgentTurnAlertPush(event: CompanionEncryptedSyncEvent): Promise<void> {
-    await this.sendPush({
-      pushType: 'alert',
-      priority: '10',
-      collapseId: `agent-turn-${event.entityId}`.slice(0, 64),
-      body: {
-        aps: {
-          alert: { title: 'Agent Run 已结束', body: '打开 Fuddy 查看结果' },
-          sound: 'default',
-          'content-available': 1
-        },
-        sequence: event.sequence
-      }
-    }, true)
+    await this.sendPush(agentTurnAlertPushRequest(event), true)
   }
 
   private async sendPush(
-    request: {
-      pushType: 'alert' | 'background'
-      priority: '5' | '10'
-      collapseId: string
-      body: Record<string, unknown>
-    },
+    request: PushRequest,
     includeConnectedDevices: boolean
   ): Promise<void> {
     if (!this.env.APNS_TEAM_ID || !this.env.APNS_KEY_ID || !this.env.APNS_PRIVATE_KEY || !this.env.APNS_TOPIC) return
