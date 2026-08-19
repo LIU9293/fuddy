@@ -1041,46 +1041,60 @@ export async function reactivateRelayAccountIfNeeded(
   relayAdminOverride?: RelayAdministrationBinding
 ): Promise<number | null> {
   const pending = await env.ACCOUNT_DB.prepare(
-    `SELECT s.relay_account_id, s.relay_generation
-     FROM sync_spaces s
-     WHERE s.id = ? AND EXISTS (
-       SELECT 1 FROM relay_revocation_jobs j
-       WHERE j.operation = 'account' AND j.source_id = s.id AND j.status = 'pending'
-         AND j.relay_account_id = s.relay_account_id
-         AND j.source_generation = s.relay_generation
-     )`
-  ).bind(spaceId).first<{ relay_account_id: string; relay_generation: number }>()
+    `SELECT s.relay_account_id, s.relay_generation,
+            j.source_generation AS pending_source_generation
+     FROM sync_spaces s JOIN relay_revocation_jobs j
+       ON j.source_id = s.id AND j.operation = 'account' AND j.status = 'pending'
+       AND j.relay_account_id = s.relay_account_id
+       AND j.source_generation <= s.relay_generation
+     WHERE s.id = ?`
+  ).bind(spaceId).first<{
+    relay_account_id: string
+    relay_generation: number
+    pending_source_generation: number
+  }>()
   if (!pending) return null
-  const timestamp = isoNow()
-  await env.ACCOUNT_DB.prepare(
-    `UPDATE sync_spaces SET relay_generation = relay_generation + 1, updated_at = ?
-     WHERE id = ? AND relay_generation = ? AND EXISTS (
-       SELECT 1 FROM relay_revocation_jobs
-       WHERE operation = 'account' AND source_id = ? AND status = 'pending'
-         AND relay_account_id = ? AND source_generation = ?
-     )`
-  ).bind(
-    timestamp,
-    spaceId,
-    pending.relay_generation,
-    spaceId,
-    pending.relay_account_id,
-    pending.relay_generation
-  ).run()
-  const current = await env.ACCOUNT_DB.prepare(
-    'SELECT relay_account_id, relay_generation FROM sync_spaces WHERE id = ?'
-  ).bind(spaceId).first<{ relay_account_id: string; relay_generation: number }>()
-  if (!current) return null
   const relayAdmin = relayAdminOverride
     ?? (env.RELAY_ADMIN ? env.RELAY_ADMIN as RelayAdministrationBinding : undefined)
-  if (relayAdmin) await relayAdmin.setAccountGeneration(current.relay_account_id, current.relay_generation)
+  if (!relayAdmin) return null
+  const timestamp = isoNow()
+  let targetGeneration = pending.relay_generation
+  if (pending.pending_source_generation === pending.relay_generation) {
+    const advanced = await env.ACCOUNT_DB.prepare(
+      `UPDATE sync_spaces SET relay_generation = relay_generation + 1, updated_at = ?
+       WHERE id = ? AND relay_account_id = ? AND relay_generation = ? AND EXISTS (
+         SELECT 1 FROM relay_revocation_jobs
+         WHERE operation = 'account' AND source_id = ? AND status = 'pending'
+           AND relay_account_id = ? AND source_generation = ?
+       )
+       RETURNING relay_generation`
+    ).bind(
+      timestamp,
+      spaceId,
+      pending.relay_account_id,
+      pending.relay_generation,
+      spaceId,
+      pending.relay_account_id,
+      pending.pending_source_generation
+    ).first<{ relay_generation: number }>()
+    if (advanced) {
+      targetGeneration = advanced.relay_generation
+    } else {
+      const current = await env.ACCOUNT_DB.prepare(
+        'SELECT relay_account_id, relay_generation FROM sync_spaces WHERE id = ?'
+      ).bind(spaceId).first<{ relay_account_id: string; relay_generation: number }>()
+      if (!current || current.relay_account_id !== pending.relay_account_id) return null
+      targetGeneration = current.relay_generation
+    }
+  }
+  await relayAdmin.setAccountGeneration(pending.relay_account_id, targetGeneration)
   await env.ACCOUNT_DB.prepare(
     `UPDATE relay_revocation_jobs
      SET status = 'completed', completed_at = ?, updated_at = ?, last_error = NULL
      WHERE operation = 'account' AND source_id = ? AND relay_account_id = ?
        AND status = 'pending' AND source_generation < ?`
-  ).bind(timestamp, timestamp, spaceId, current.relay_account_id, current.relay_generation).run()
-  return current.relay_generation
+  ).bind(timestamp, timestamp, spaceId, pending.relay_account_id, targetGeneration).run()
+  return targetGeneration
 }
 
 export async function processRelayRevocationJobs(
@@ -1115,7 +1129,9 @@ export async function processRelayRevocationJobs(
         const reactivatedSameRelay = currentSpace?.relay_account_id === job.relay_account_id
           && currentSpace.relay_generation !== job.source_generation
         if (!reactivatedSameRelay) {
+          await relayAdmin.setAccountGeneration(job.relay_account_id, job.source_generation)
           relayRevoked = await relayAdmin.revokeAccount(job.relay_account_id, job.source_generation)
+          if (!relayRevoked) throw new Error('Relay account generation did not match the revocation job.')
         }
       } else {
         if (!job.device_id) throw new Error('Relay device revocation is missing a device ID.')
@@ -1262,12 +1278,19 @@ async function createEnrollment(request: Request, env: Environment, spaceId: str
   if (!membership) throw new ApiError(404, 'sync_space_not_found', '没有找到可连接的工作空间。')
   const now = new Date()
   const enrollmentId = crypto.randomUUID()
-  await env.ACCOUNT_DB.prepare(
+  const revocationPending = await env.ACCOUNT_DB.prepare(
+    `SELECT id FROM device_grants
+     WHERE space_id = ? AND device_id = ? AND status = 'revoked' AND relay_revoked_at IS NULL`
+  ).bind(spaceId, deviceId).first<{ id: string }>()
+  if (revocationPending) await processRelayRevocationJobs(env)
+  const enrollment = await env.ACCOUNT_DB.prepare(
     `INSERT INTO device_grants (id, space_id, device_id, requested_by_user_id, status, created_at, updated_at, expires_at)
      VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
      ON CONFLICT(space_id, device_id) DO UPDATE SET id = excluded.id, status = 'pending', wrapped_space_key = NULL,
        key_version = NULL, created_at = excluded.created_at, updated_at = excluded.updated_at,
-       expires_at = excluded.expires_at, activated_at = NULL, revoked_at = NULL, relay_revoked_at = NULL`
+       expires_at = excluded.expires_at, activated_at = NULL, revoked_at = NULL, relay_revoked_at = NULL
+     WHERE device_grants.status != 'revoked' OR device_grants.relay_revoked_at IS NOT NULL
+     RETURNING id`
   )
     .bind(
       enrollmentId,
@@ -1278,7 +1301,10 @@ async function createEnrollment(request: Request, env: Environment, spaceId: str
       isoNow(now),
       addSeconds(now, 10 * 60).toISOString()
     )
-    .run()
+    .first<{ id: string }>()
+  if (!enrollment) {
+    throw new ApiError(409, 'relay_revocation_pending', '正在准备安全连接，请稍后重试。')
+  }
   return json({ enrollment: { id: enrollmentId, spaceId, deviceId, status: 'pending' } }, { status: 201 })
 }
 

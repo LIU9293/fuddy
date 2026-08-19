@@ -6,7 +6,8 @@ import {
   activatePendingEnrollment,
   linkVerifiedGoogleIdentity,
   parseResendErrorDetails,
-  processRelayRevocationJobs
+  processRelayRevocationJobs,
+  reactivateRelayAccountIfNeeded
 } from '../src/index'
 import type { DeviceInput } from '../src/types'
 
@@ -323,7 +324,7 @@ describe('email authentication', () => {
     })
   })
 
-  it('cancels an old account revocation generation when the Mac signs back in', async () => {
+  it('retries Relay-generation activation before completing an old account revocation', async () => {
     const email = 'relay-reactivation@example.com'
     const installation = { ...device, id: crypto.randomUUID() }
     const first = await signIn(email, installation)
@@ -352,9 +353,28 @@ describe('email authentication', () => {
 
     const second = await signIn(email, installation)
     expect(second.verify.status).toBe(200)
+    const relayAdmin = {
+      revokeDevice: vi.fn(async () => true),
+      setAccountGeneration: vi.fn()
+        .mockRejectedValueOnce(new Error('temporary Relay outage'))
+        .mockResolvedValue(undefined),
+      revokeAccount: vi.fn(async () => true)
+    } satisfies RelayAdministrationBinding
+    await expect(reactivateRelayAccountIfNeeded(env, spaceId, relayAdmin))
+      .rejects.toThrow('temporary Relay outage')
     await expect(env.ACCOUNT_DB.prepare(
       'SELECT relay_generation AS relayGeneration FROM sync_spaces WHERE id = ?'
     ).bind(spaceId).first()).resolves.toEqual({ relayGeneration: 2 })
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT status, source_generation AS sourceGeneration
+       FROM relay_revocation_jobs WHERE id = ?`
+    ).bind(`account:${spaceId}:${relayAccountId}`).first()).resolves.toEqual({
+      status: 'pending',
+      sourceGeneration: 1
+    })
+    await expect(reactivateRelayAccountIfNeeded(env, spaceId, relayAdmin)).resolves.toBe(2)
+    expect(relayAdmin.setAccountGeneration).toHaveBeenNthCalledWith(1, relayAccountId, 2)
+    expect(relayAdmin.setAccountGeneration).toHaveBeenNthCalledWith(2, relayAccountId, 2)
     await expect(env.ACCOUNT_DB.prepare(
       `SELECT status, source_generation AS sourceGeneration
        FROM relay_revocation_jobs WHERE id = ?`
@@ -395,6 +415,12 @@ describe('email authentication', () => {
     await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
     const second = await signIn(email, installation)
     expect(second.verify.status).toBe(200)
+    const relayAdmin = {
+      revokeDevice: vi.fn(async () => true),
+      setAccountGeneration: vi.fn(async () => undefined),
+      revokeAccount: vi.fn(async () => true)
+    } satisfies RelayAdministrationBinding
+    await expect(reactivateRelayAccountIfNeeded(env, spaceId, relayAdmin)).resolves.toBe(2)
     await expect(env.ACCOUNT_DB.prepare(
       `SELECT status, source_generation AS sourceGeneration
        FROM relay_revocation_jobs WHERE id = ?`
@@ -421,11 +447,6 @@ describe('email authentication', () => {
       sourceGeneration: 2
     })
 
-    const relayAdmin = {
-      revokeDevice: vi.fn(async () => true),
-      setAccountGeneration: vi.fn(async () => undefined),
-      revokeAccount: vi.fn(async () => true)
-    } satisfies RelayAdministrationBinding
     await expect(processRelayRevocationJobs(env, {
       relayAdmin,
       now: new Date('2030-01-01T00:00:00.000Z')
@@ -601,5 +622,104 @@ describe('email authentication', () => {
       { method: 'POST', headers: { authorization: `Bearer ${accessToken}` } }
     )
     expect(acknowledged.status).toBe(204)
+  })
+
+  it('keeps a revoked device generation until its old Relay token is removed', async () => {
+    const email = 'reenrollment-revocation@example.com'
+    const mac = await signIn(email)
+    const accessToken = mac.payload.session.accessToken as string
+    const syncSpaceId = mac.payload.device.syncSpaceId as string
+    const relayAccountId = 'relay-account-reenrollment'
+    const iosInstallation = {
+      ...device,
+      id: crypto.randomUUID(),
+      platform: 'ios' as const,
+      name: '待重新连接的 iPhone',
+      publicKey: 'reenrollment-public-key'
+    }
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const phone = await signIn(email, iosInstallation)
+    const iosDeviceId = phone.payload.device.id as string
+    const oldGrantId = crypto.randomUUID()
+    const now = new Date().toISOString()
+
+    const binding = await SELF.fetch(`https://account.test/v1/sync-spaces/${syncSpaceId}/relay-binding`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ relayUrl: 'https://fuddy.ai/api/relay', relayAccountId })
+    })
+    expect(binding.status).toBe(200)
+    await env.ACCOUNT_DB.prepare(
+      `INSERT INTO device_grants
+        (id, space_id, device_id, requested_by_user_id, status, wrapped_space_key, key_version,
+         created_at, updated_at, expires_at, activated_at)
+       VALUES (?, ?, ?, ?, 'active', 'old-wrapped-key', 1, ?, ?, ?, ?)`
+    ).bind(
+      oldGrantId,
+      syncSpaceId,
+      iosDeviceId,
+      mac.payload.user.id,
+      now,
+      now,
+      new Date(Date.now() + 10 * 60_000).toISOString(),
+      now
+    ).run()
+
+    const revoked = await SELF.fetch(`https://account.test/v1/devices/${iosDeviceId}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${accessToken}` }
+    })
+    expect(revoked.status).toBe(204)
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const signedInAgain = await signIn(email, iosInstallation)
+    expect(signedInAgain.verify.status).toBe(200)
+
+    const blocked = await SELF.fetch(`https://account.test/v1/sync-spaces/${syncSpaceId}/enrollments`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${signedInAgain.payload.session.accessToken}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ deviceId: iosDeviceId })
+    })
+    expect(blocked.status).toBe(409)
+    await expect(blocked.json()).resolves.toMatchObject({ error: { code: 'relay_revocation_pending' } })
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT id, status, relay_revoked_at AS relayRevokedAt
+       FROM device_grants WHERE space_id = ? AND device_id = ?`
+    ).bind(syncSpaceId, iosDeviceId).first()).resolves.toEqual({
+      id: oldGrantId,
+      status: 'revoked',
+      relayRevokedAt: null
+    })
+
+    const relayAdmin = {
+      revokeDevice: vi.fn(async () => true),
+      setAccountGeneration: vi.fn(async () => undefined),
+      revokeAccount: vi.fn(async () => true)
+    } satisfies RelayAdministrationBinding
+    await expect(processRelayRevocationJobs(env, {
+      relayAdmin,
+      now: new Date('2030-01-01T00:00:00.000Z')
+    })).resolves.toEqual({ attempted: 1, completed: 1 })
+    expect(relayAdmin.revokeDevice).toHaveBeenCalledWith(relayAccountId, iosDeviceId, oldGrantId)
+
+    const allowed = await SELF.fetch(`https://account.test/v1/sync-spaces/${syncSpaceId}/enrollments`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${signedInAgain.payload.session.accessToken}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ deviceId: iosDeviceId })
+    })
+    expect(allowed.status).toBe(201)
+    const allowedPayload = await allowed.json<{ enrollment: { id: string } }>()
+    expect(allowedPayload.enrollment.id).not.toBe(oldGrantId)
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT id, status FROM device_grants WHERE space_id = ? AND device_id = ?'
+    ).bind(syncSpaceId, iosDeviceId).first()).resolves.toEqual({
+      id: allowedPayload.enrollment.id,
+      status: 'pending'
+    })
   })
 })
