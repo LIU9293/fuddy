@@ -338,6 +338,8 @@ describe('email authentication', () => {
     const first = await signIn(email, installation)
     const spaceId = first.payload.device.syncSpaceId as string
     const relayAccountId = 'relay-account-reactivated'
+    const revokedDeviceId = crypto.randomUUID()
+    const revokedGrantId = crypto.randomUUID()
     const timestamp = new Date().toISOString()
     await env.ACCOUNT_DB.batch([
       env.ACCOUNT_DB.prepare(
@@ -356,13 +358,41 @@ describe('email authentication', () => {
         timestamp,
         timestamp
       ),
+      env.ACCOUNT_DB.prepare(
+        `INSERT INTO devices
+          (id, user_id, platform, name, public_key, app_version, protocol_version,
+           created_at, updated_at, last_seen_at, revoked_at)
+         VALUES (?, ?, 'ios', '已撤销的 iPhone', 'revoked-public-key', '0.0.3', 1, ?, ?, ?, ?)`
+      ).bind(
+        revokedDeviceId,
+        first.payload.user.id,
+        timestamp,
+        timestamp,
+        timestamp,
+        timestamp
+      ),
+      env.ACCOUNT_DB.prepare(
+        `INSERT INTO device_grants
+          (id, space_id, device_id, requested_by_user_id, status, created_at, updated_at,
+           expires_at, revoked_at)
+         VALUES (?, ?, ?, ?, 'revoked', ?, ?, ?, ?)`
+      ).bind(
+        revokedGrantId,
+        spaceId,
+        revokedDeviceId,
+        first.payload.user.id,
+        timestamp,
+        timestamp,
+        new Date(Date.now() + 10 * 60_000).toISOString(),
+        timestamp
+      ),
       env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email)
     ])
 
     const second = await signIn(email, installation)
     expect(second.verify.status).toBe(200)
     const relayAdmin = {
-      revokeDevice: vi.fn(async () => true),
+      revokeDevice: vi.fn(async () => { throw new Error('temporary device revocation outage') }),
       setAccountGeneration: vi.fn()
         .mockRejectedValueOnce(new Error('temporary Relay outage'))
         .mockResolvedValue(undefined),
@@ -390,6 +420,17 @@ describe('email authentication', () => {
       status: 'completed',
       sourceGeneration: 1
     })
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT status, attempt_count AS attemptCount
+       FROM relay_revocation_jobs WHERE id = ?`
+    ).bind(`device:${revokedGrantId}`).first()).resolves.toEqual({
+      status: 'pending',
+      attemptCount: 1
+    })
+    expect(relayAdmin.revokeDevice).toHaveBeenCalledWith(relayAccountId, revokedDeviceId, revokedGrantId)
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT relay_revoked_at AS relayRevokedAt FROM device_grants WHERE id = ?'
+    ).bind(revokedGrantId).first()).resolves.toEqual({ relayRevokedAt: null })
   })
 
   it('durably revokes the previous Relay account when a re-signed-in Mac replaces it', async () => {

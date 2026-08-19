@@ -1099,12 +1099,21 @@ export async function reactivateRelayAccountIfNeeded(
     }
   }
   await relayAdmin.setAccountGeneration(pending.relay_account_id, targetGeneration)
-  await env.ACCOUNT_DB.prepare(
-    `UPDATE relay_revocation_jobs
-     SET status = 'completed', completed_at = ?, updated_at = ?, last_error = NULL
-     WHERE operation = 'account' AND source_id = ? AND relay_account_id = ?
-       AND status = 'pending' AND source_generation < ?`
-  ).bind(timestamp, timestamp, spaceId, pending.relay_account_id, targetGeneration).run()
+  const revokedGrants = (await env.ACCOUNT_DB.prepare(
+    `SELECT id, device_id AS deviceId, ? AS relayAccountId
+     FROM device_grants
+     WHERE space_id = ? AND status = 'revoked' AND relay_revoked_at IS NULL`
+  ).bind(pending.relay_account_id, spaceId).all<RelayDeviceRevocationTarget>()).results
+  await env.ACCOUNT_DB.batch([
+    env.ACCOUNT_DB.prepare(
+      `UPDATE relay_revocation_jobs
+       SET status = 'completed', completed_at = ?, updated_at = ?, last_error = NULL
+       WHERE operation = 'account' AND source_id = ? AND relay_account_id = ?
+         AND status = 'pending' AND source_generation < ?`
+    ).bind(timestamp, timestamp, spaceId, pending.relay_account_id, targetGeneration),
+    ...relayDeviceRevocationStatements(env, revokedGrants, timestamp)
+  ])
+  await processRelayRevocationJobs(env, { relayAdmin })
   return targetGeneration
 }
 
