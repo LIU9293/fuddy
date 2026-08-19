@@ -22,7 +22,9 @@ describe('companion application-layer encryption', () => {
     const envelope = await sealCompanionJson(key, { value: 1 }, 'event:event-1')
     await expect(openCompanionJson(generateCompanionAccountKey(), envelope, 'event:event-1')).rejects.toThrow()
     await expect(openCompanionJson(key, envelope, 'event:event-2')).rejects.toThrow()
-    await expect(openCompanionJson(key, { ...envelope, ciphertext: `${envelope.ciphertext.slice(0, -1)}A` }, 'event:event-1'))
+    const changedFirstCharacter = envelope.ciphertext[0] === 'A' ? 'B' : 'A'
+    const modifiedCiphertext = `${changedFirstCharacter}${envelope.ciphertext.slice(1)}`
+    await expect(openCompanionJson(key, { ...envelope, ciphertext: modifiedCiphertext }, 'event:event-1'))
       .rejects.toThrow()
   })
 
