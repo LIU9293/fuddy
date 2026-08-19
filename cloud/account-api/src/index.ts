@@ -1269,14 +1269,52 @@ async function completeEnrollment(
     throw new ApiError(409, 'enrollment_not_pending', '这次连接申请已失效。')
   }
   if (input.keyVersion !== grant.key_version) throw new ApiError(409, 'key_version_mismatch', '工作空间密钥版本已变化。')
-  const timestamp = isoNow()
-  await env.ACCOUNT_DB.prepare(
-    `UPDATE device_grants SET status = 'active', wrapped_space_key = ?, key_version = ?, updated_at = ?, activated_at = ?
-     WHERE id = ?`
-  )
-    .bind(input.wrappedSpaceKey, input.keyVersion, timestamp, timestamp, enrollmentId)
-    .run()
+  const activated = await activatePendingEnrollment(env, {
+    enrollmentId,
+    spaceId,
+    wrappedSpaceKey: input.wrappedSpaceKey,
+    keyVersion: input.keyVersion
+  })
+  if (!activated) throw new ApiError(409, 'enrollment_not_pending', '这次连接申请已失效。')
   return json({ enrollment: { id: enrollmentId, spaceId, deviceId: grant.device_id, status: 'active' } })
+}
+
+export async function activatePendingEnrollment(
+  env: Environment,
+  input: {
+    enrollmentId: string
+    spaceId: string
+    wrappedSpaceKey: string
+    keyVersion: number
+  },
+  now = new Date()
+): Promise<boolean> {
+  const timestamp = isoNow(now)
+  const activated = await env.ACCOUNT_DB.prepare(
+    `UPDATE device_grants
+     SET status = 'active', wrapped_space_key = ?, key_version = ?, updated_at = ?, activated_at = ?
+     WHERE id = ? AND space_id = ? AND status = 'pending' AND expires_at > ?
+       AND EXISTS (
+         SELECT 1 FROM sync_spaces s
+         WHERE s.id = ? AND s.key_version = ? AND s.revoked_at IS NULL
+       )
+       AND EXISTS (
+         SELECT 1 FROM devices d
+         WHERE d.id = device_grants.device_id AND d.revoked_at IS NULL
+       )
+     RETURNING id`
+  ).bind(
+    input.wrappedSpaceKey,
+    input.keyVersion,
+    timestamp,
+    timestamp,
+    input.enrollmentId,
+    input.spaceId,
+    timestamp,
+    input.spaceId,
+    input.keyVersion
+  ).first<{ id: string }>()
+  return Boolean(activated)
 }
 
 async function completeRelayRevocation(

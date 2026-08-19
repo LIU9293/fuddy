@@ -2,7 +2,12 @@ import { SELF, env } from 'cloudflare:test'
 import { Webhook } from 'svix'
 import { describe, expect, it, vi } from 'vitest'
 import type { RelayAdministrationBinding } from '../../relay/src/administration-contract'
-import { linkVerifiedGoogleIdentity, parseResendErrorDetails, processRelayRevocationJobs } from '../src/index'
+import {
+  activatePendingEnrollment,
+  linkVerifiedGoogleIdentity,
+  parseResendErrorDetails,
+  processRelayRevocationJobs
+} from '../src/index'
 import type { DeviceInput } from '../src/types'
 
 const device: DeviceInput = {
@@ -500,6 +505,18 @@ describe('email authentication', () => {
       headers: { authorization: `Bearer ${accessToken}` }
     })
     expect(revoke.status).toBe(204)
+    await expect(activatePendingEnrollment(env, {
+      enrollmentId,
+      spaceId: syncSpaceId,
+      wrappedSpaceKey: 'must-not-reactivate',
+      keyVersion: 1
+    })).resolves.toBe(false)
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT status, wrapped_space_key FROM device_grants WHERE id = ?'
+    ).bind(enrollmentId).first()).resolves.toEqual({
+      status: 'revoked',
+      wrapped_space_key: 'opaque-wrapped-device-grant'
+    })
     const revocations = await SELF.fetch(`https://account.test/v1/sync-spaces/${syncSpaceId}/enrollments`, {
       headers: { authorization: `Bearer ${accessToken}` }
     })
