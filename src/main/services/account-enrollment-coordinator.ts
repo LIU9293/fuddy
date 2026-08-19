@@ -74,7 +74,16 @@ export class AccountEnrollmentCoordinator {
   async processOnce(): Promise<void> {
     if (this.paused) return
     if (this.active) return await this.active
-    const operation = this.runOnce()
+    const operation = this.runOnce().catch(async (error: unknown) => {
+      if (this.accountService.getState().status === 'signed-out') {
+        this.stop()
+        await this.companionSync.disconnect().catch(() => {
+          // Keep the stopped Relay identity locally so a later sign-in can
+          // retry revocation instead of losing the only cleanup credential.
+        })
+      }
+      throw error
+    })
     this.active = operation
     try {
       await operation
@@ -84,10 +93,15 @@ export class AccountEnrollmentCoordinator {
   }
 
   private async runOnce(): Promise<void> {
-    if (!this.relayUrl) return
     const state = this.accountService.getState()
-    const spaceId = state.status === 'signed-in' ? state.device?.syncSpaceId : null
-    const ownerUserId = state.status === 'signed-in' ? state.user?.id : null
+    if (state.status === 'signed-out') {
+      this.stop()
+      await this.companionSync.disconnect().catch(() => undefined)
+      return
+    }
+    if (!this.relayUrl) return
+    const spaceId = state.device?.syncSpaceId
+    const ownerUserId = state.user?.id
     if (!spaceId || !ownerUserId) return
     const binding = await this.companionSync.ensureAccountRelay(
       this.relayUrl,

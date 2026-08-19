@@ -185,6 +185,41 @@ describe('AccountEnrollmentCoordinator', () => {
     expect(companion.confirmAccountRelayBinding).not.toHaveBeenCalled()
   })
 
+  it('disconnects a confirmed Relay when Account API authorization expires', async () => {
+    let signedOut = false
+    const authorizationError = new Error('登录状态已失效，请重新登录。')
+    const account = {
+      getState: vi.fn(() => signedOut
+        ? { status: 'signed-out' }
+        : {
+            status: 'signed-in',
+            user: { id: 'user-1' },
+            device: { syncSpaceId: 'space-1' }
+          }),
+      bindRelay: vi.fn(async () => {
+        signedOut = true
+        throw authorizationError
+      })
+    } as unknown as AccountService
+    const companion = {
+      ensureAccountRelay: vi.fn(async () => ({
+        relayUrl: 'https://relay.example.com',
+        relayAccountId: 'confirmed-relay'
+      })),
+      isAccountRelayBindingConfirmed: vi.fn(() => true),
+      start: vi.fn(),
+      disconnect: vi.fn(async () => undefined)
+    } as unknown as CompanionSyncService
+    const coordinator = new AccountEnrollmentCoordinator(account, companion, 'https://relay.example.com')
+
+    await expect(coordinator.processOnce()).rejects.toBe(authorizationError)
+
+    expect(companion.start).toHaveBeenCalledOnce()
+    expect(companion.disconnect).toHaveBeenCalledOnce()
+    await coordinator.processOnce()
+    expect(companion.ensureAccountRelay).toHaveBeenCalledOnce()
+  })
+
   it('does not create a Relay identity when no development Relay is configured', async () => {
     const account = {
       getState: vi.fn(() => ({ status: 'signed-in', device: { syncSpaceId: 'space-1' } }))
