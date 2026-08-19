@@ -199,7 +199,7 @@ describe('account IPC lifecycle', () => {
     let finishDrain: (() => void) | undefined
     let accountState = signedInState
     const stopAndDrain = vi.fn(() => new Promise<void>((resolve) => { finishDrain = resolve }))
-    const disconnectAllAccountRelays = vi.fn(async () => undefined)
+    const forgetAccountRelays = vi.fn()
     const logoutAll = vi.fn(async () => {
       accountState = signedOutState
       return signedOutState
@@ -214,20 +214,42 @@ describe('account IPC lifecycle', () => {
         logoutAll
       },
       accountEnrollmentCoordinator: coordinator,
-      companionSync: { stopAndDrain, disconnectAllAccountRelays }
+      companionSync: { stopAndDrain, forgetAccountRelays }
     } as unknown as IpcContext)
 
     const logoutAllHandler = electronMocks.handlers.get('account:logout-all')
     const loggingOut = Promise.resolve(logoutAllHandler?.())
     await vi.waitFor(() => expect(stopAndDrain).toHaveBeenCalledOnce())
     expect(logoutAll).not.toHaveBeenCalled()
-    expect(disconnectAllAccountRelays).not.toHaveBeenCalled()
+    expect(forgetAccountRelays).not.toHaveBeenCalled()
 
     finishDrain?.()
     await loggingOut
     expect(logoutAll).toHaveBeenCalledOnce()
-    expect(disconnectAllAccountRelays).toHaveBeenCalledOnce()
+    expect(forgetAccountRelays).toHaveBeenCalledWith('user-1')
     expect(send).toHaveBeenCalledWith('account:state-changed', signedOutState)
+  })
+
+  it('forgets Relay credentials after the Account API revokes the current Mac', async () => {
+    const deviceId = crypto.randomUUID()
+    const state = { ...signedInState, device: { ...signedInState.device!, id: deviceId } }
+    const forgetAccountRelays = vi.fn()
+    registerAccountIpc({
+      accountService: {
+        getState: vi.fn(() => state),
+        revokeDevice: vi.fn(async () => undefined)
+      },
+      accountEnrollmentCoordinator: { pauseAndDrain: vi.fn(async () => undefined) },
+      companionSync: {
+        stopAndDrain: vi.fn(async () => undefined),
+        forgetAccountRelays
+      }
+    } as unknown as IpcContext)
+
+    const revokeDevice = electronMocks.handlers.get('account:revoke-device')
+    await expect(Promise.resolve(revokeDevice?.({}, { deviceId }))).resolves.toBeUndefined()
+
+    expect(forgetAccountRelays).toHaveBeenCalledWith('user-1')
   })
 
   it('revokes the account Relay after a normal logout', async () => {

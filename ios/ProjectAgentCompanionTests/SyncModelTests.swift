@@ -91,6 +91,41 @@ final class SyncModelTests: XCTestCase {
         XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-c"))
     }
 
+    func testAccountLogoutDeletesCredentialsForEveryOwnedSpaceOnly() throws {
+        KeychainStore.deleteAll()
+        defer { KeychainStore.deleteAll() }
+        try KeychainStore.save(CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "relay-a",
+            deviceID: "phone-a",
+            deviceToken: "token-a",
+            syncSpaceID: "space-a",
+            ownerUserID: "user-a"
+        ))
+        try KeychainStore.save(CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "relay-b",
+            deviceID: "phone-a",
+            deviceToken: "token-b",
+            syncSpaceID: "space-b",
+            ownerUserID: "user-a"
+        ))
+        try KeychainStore.save(CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "relay-c",
+            deviceID: "phone-c",
+            deviceToken: "token-c",
+            syncSpaceID: "space-c",
+            ownerUserID: "user-c"
+        ))
+
+        KeychainStore.deleteAll(ownerUserID: "user-a")
+
+        XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-a"))
+        XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-b"))
+        XCTAssertEqual(try KeychainStore.load(syncSpaceID: "space-c")?.deviceToken, "token-c")
+    }
+
     func testAccountCredentialsReenrollWhenSpaceRelayIdentityRotates() {
         let space = AccountSyncSpace(
             id: "space-a",

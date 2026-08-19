@@ -671,6 +671,13 @@ export class CompanionSyncService {
     return operation
   }
 
+  /** Drops Relay identities whose revocation is durably owned by the Account API. */
+  forgetAccountRelays(ownerUserId: string): void {
+    for (const configuration of this.accountRelayConfigurations()) {
+      if (configuration.ownerUserId === ownerUserId) this.forgetRelayIdentity(configuration)
+    }
+  }
+
   private async disconnectCurrentRelay(): Promise<void> {
     const configuration = this.configuration ? { ...this.configuration } : null
     const token = configuration

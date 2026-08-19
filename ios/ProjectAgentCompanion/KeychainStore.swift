@@ -66,6 +66,34 @@ enum KeychainStore {
         ] as CFDictionary)
     }
 
+    static func deleteAll(ownerUserID: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return }
+        let items: [[String: Any]]
+        if let matches = result as? [[String: Any]] {
+            items = matches
+        } else if let match = result as? [String: Any] {
+            items = [match]
+        } else {
+            return
+        }
+        for item in items {
+            guard let data = item[kSecValueData as String] as? Data,
+                let account = item[kSecAttrAccount as String] as? String,
+                let credentials = try? JSONDecoder().decode(CompanionCredentials.self, from: data),
+                credentials.ownerUserID == ownerUserID
+            else { continue }
+            delete(account: account)
+        }
+    }
+
     private static func delete(account: String) {
         SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,

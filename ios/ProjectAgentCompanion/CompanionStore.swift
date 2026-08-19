@@ -381,12 +381,10 @@ final class CompanionStore: ObservableObject {
             operationError = error.localizedDescription
             return
         }
-        if let client, let credentials {
-            do {
-                try await client.revokeSelf()
-                KeychainStore.delete(syncSpaceID: credentials.syncSpaceID)
-            } catch { /* Retain the credential so remote revocation remains possible. */ }
-        }
+        // Account logout durably revokes this phone's grants in every Sync Space.
+        // Remove all local credentials covered by that successful operation instead
+        // of retrying only the currently selected Relay with an already-revoked token.
+        KeychainStore.deleteAll(ownerUserID: current.user.id)
         await unpair()
         AccountKeychainStore.deleteSession()
         accountSession = nil

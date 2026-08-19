@@ -409,6 +409,50 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('forgets only the account Relay identities already revoked by the Account API', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-authority-cleanup-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const first: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com', accountId: 'relay-1', macDeviceId: 'mac-1',
+      pairedAt: new Date().toISOString(), ownerUserId: 'user-1', syncSpaceId: 'space-1'
+    }
+    const second: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com', accountId: 'relay-2', macDeviceId: 'mac-2',
+      pairedAt: new Date().toISOString(), ownerUserId: 'user-2', syncSpaceId: 'space-2'
+    }
+    database.setSetting('companion.mac-configuration', first)
+    database.setSetting('companion.account-configurations', { 'user-1': first, 'user-2': second })
+    const secrets = new Map<string, string>([
+      ['companion.mac-token:relay-1', 'token-1'],
+      ['companion.account-key:relay-1', testEncryptionKey],
+      ['companion.mac-token:relay-2', 'token-2'],
+      ['companion.account-key:relay-2', testEncryptionKey]
+    ])
+    const credentials = {
+      get: (reference: string) => secrets.get(reference) ?? null,
+      delete: (reference: string) => { secrets.delete(reference) }
+    } as unknown as CredentialVault
+    const service = new CompanionSyncService(
+      database,
+      credentials,
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    service.forgetAccountRelays('user-1')
+
+    expect(service.getStatus().configuration).toBeNull()
+    expect(secrets.has('companion.mac-token:relay-1')).toBe(false)
+    expect(secrets.has('companion.account-key:relay-1')).toBe(false)
+    expect(secrets.get('companion.mac-token:relay-2')).toBe('token-2')
+    expect(database.getSetting<Record<string, CompanionMacConfiguration>>(
+      'companion.account-configurations',
+      {}
+    )).toEqual({ 'user-2': second })
+    database.close()
+  })
+
   it('preserves Relay credentials when remote account revocation fails', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-revoke-retry-'))
     directories.push(directory)
