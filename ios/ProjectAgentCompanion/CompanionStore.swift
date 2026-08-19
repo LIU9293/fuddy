@@ -89,8 +89,10 @@ final class CompanionStore: ObservableObject {
                 accountID: "preview-studio",
                 deviceID: "preview-device",
                 deviceToken: "preview",
-                syncSpaceID: "space-studio"
+                syncSpaceID: "space-studio",
+                ownerUserID: "preview-user"
             )
+            accountSessionValidated = true
             selectedAccountSyncSpaceID = "space-studio"
             connection = .connected
             macOnline = true
@@ -111,7 +113,8 @@ final class CompanionStore: ObservableObject {
             )
             credentials = CompanionCredentials(
                 relayURL: "https://relay.example.com", accountID: "preview", deviceID: "iphone-preview",
-                deviceToken: "preview")
+                deviceToken: "preview", ownerUserID: "preview-user")
+            accountSessionValidated = true
             connection = .connected
             macOnline = true
             seedDesignPreview()
@@ -135,12 +138,32 @@ final class CompanionStore: ObservableObject {
                 )
             }
             credentials = try KeychainStore.load(syncSpaceID: selectedAccountSyncSpaceID)
+            if let stored = credentials,
+                stored.ownerUserID == nil,
+                stored.syncSpaceID != nil,
+                let userID = accountSession?.user.id
+            {
+                let scoped = CompanionCredentials(
+                    relayURL: stored.relayURL,
+                    accountID: stored.accountID,
+                    deviceID: stored.deviceID,
+                    deviceToken: stored.deviceToken,
+                    encryptionKey: stored.encryptionKey,
+                    encryptionKeyId: stored.encryptionKeyId,
+                    syncSpaceID: stored.syncSpaceID,
+                    ownerUserID: userID
+                )
+                try KeychainStore.save(scoped)
+                credentials = scoped
+            }
             if let credentials {
                 if selectedAccountSyncSpaceID == nil, let credentialSpaceID = credentials.syncSpaceID {
                     selectedAccountSyncSpaceID = credentialSpaceID
                 }
-                configureClient(credentials)
-                connection = .offline
+                if credentials.ownerUserID == accountSession?.user.id {
+                    configureClient(credentials)
+                    connection = .offline
+                }
             }
         } catch {
             operationError = error.localizedDescription
@@ -169,7 +192,10 @@ final class CompanionStore: ObservableObject {
             })
     }
 
-    var isPaired: Bool { credentials != nil }
+    var isPaired: Bool {
+        guard accountSessionValidated, let accountSession, let credentials else { return false }
+        return credentials.ownerUserID == accountSession.user.id
+    }
     var isSignedIn: Bool { accountSession != nil }
     var currentAccountSyncSpace: AccountSyncSpace? {
         let activeID = credentials?.syncSpaceID ?? selectedAccountSyncSpaceID
@@ -336,7 +362,12 @@ final class CompanionStore: ObservableObject {
         operationError = nil
         defer { accountBusy = false }
         guard let current = accountSession else {
-            if let client { try? await client.revokeSelf() }
+            if let client, let credentials {
+                do {
+                    try await client.revokeSelf()
+                    KeychainStore.delete(syncSpaceID: credentials.syncSpaceID)
+                } catch { /* Retain the credential so remote revocation remains possible. */ }
+            }
             await unpair()
             return
         }
@@ -350,7 +381,12 @@ final class CompanionStore: ObservableObject {
             operationError = error.localizedDescription
             return
         }
-        if let client { try? await client.revokeSelf() }
+        if let client, let credentials {
+            do {
+                try await client.revokeSelf()
+                KeychainStore.delete(syncSpaceID: credentials.syncSpaceID)
+            } catch { /* Retain the credential so remote revocation remains possible. */ }
+        }
         await unpair()
         AccountKeychainStore.deleteSession()
         accountSession = nil
@@ -364,7 +400,8 @@ final class CompanionStore: ObservableObject {
     func unpair() async {
         await quiesceAccountConnections(cancelValidation: true)
         client = nil
-        KeychainStore.deleteAll()
+        // Credentials for inactive Sync Spaces stay in Keychain until their own
+        // Relay grants can be revoked; deleting them here would orphan live tokens.
         credentials = nil
         state = CachedState()
         macOnline = false
@@ -448,7 +485,8 @@ final class CompanionStore: ObservableObject {
         selectedAccountSyncSpaceID = id
         UserDefaults.standard.set(id, forKey: accountSelectedSyncSpaceKey(userID: userID))
         do {
-            credentials = try KeychainStore.load(syncSpaceID: id)
+            let storedCredentials = try KeychainStore.load(syncSpaceID: id)
+            credentials = storedCredentials?.ownerUserID == userID ? storedCredentials : nil
             client = nil
             if let credentials { configureClient(credentials) }
             state = cachedState(spaceID: id, allowLegacyMigration: false)
@@ -535,6 +573,7 @@ final class CompanionStore: ObservableObject {
                             enrollmentID: status.enrollment.id,
                             spaceID: space.id,
                             deviceID: currentSession.device.id,
+                            ownerUserID: currentSession.user.id,
                             privateKeyData: privateKey
                         )
                         await quiesceRelaySync()
@@ -577,6 +616,7 @@ final class CompanionStore: ObservableObject {
         }
         return accountCredentialsNeedEnrollment(
             credentials,
+            accountUserID: accountSession.user.id,
             accountDeviceID: accountSession.device.id,
             selectedSpace: selectedSpace
         )
@@ -618,6 +658,7 @@ final class CompanionStore: ObservableObject {
                     forKey: accountSelectedSyncSpaceKey(userID: activeSession.user.id)
                 )
             }
+            try await reconcileRelayCredentials(for: activeSession)
             accountSessionValidated = true
             restoringAccountSession = false
             start()
@@ -644,6 +685,24 @@ final class CompanionStore: ObservableObject {
         "account.selected-sync-space.\(userID)"
     }
 
+    private func reconcileRelayCredentials(for session: MobileAccountSession) async throws {
+        let selectedSpaceID = selectedAccountSyncSpaceID
+        if credentials?.ownerUserID == session.user.id,
+            credentials?.syncSpaceID == selectedSpaceID
+        {
+            return
+        }
+        await quiesceRelaySync()
+        let stored = try KeychainStore.load(syncSpaceID: selectedSpaceID)
+        credentials = stored?.ownerUserID == session.user.id ? stored : nil
+        client = nil
+        if let credentials { configureClient(credentials) }
+        state = cachedState(spaceID: selectedSpaceID, allowLegacyMigration: false)
+        reconcileChatPages()
+        macOnline = false
+        connection = credentials == nil ? .unpaired : .offline
+    }
+
     @discardableResult
     private func persistRefreshedAccountSession(_ session: MobileAccountSession) throws
         -> MobileAccountSession
@@ -656,7 +715,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func sync() async {
-        guard isSignedIn, client != nil else { return }
+        guard isPaired, client != nil else { return }
         if let activeSync {
             syncRequested = true
             await activeSync.value
@@ -684,7 +743,7 @@ final class CompanionStore: ObservableObject {
     }
 
     private func performSync() async {
-        guard let client else { return }
+        guard isPaired, let client else { return }
         do {
             var replayedOperationError: String?
             while true {
@@ -727,7 +786,7 @@ final class CompanionStore: ObservableObject {
     func sendMessage(runID: String, prompt: String, attachments: [PendingAttachment] = [])
         async throws
     {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         guard let runIndex = state.runs.firstIndex(where: { $0.run.id == runID }) else {
             throw RelayError.invalidResponse
         }
@@ -773,7 +832,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func stopMessage(runID: String) async throws {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         _ = try await client.sendCommand(
             type: .agentStopMessage,
             payload: AgentStopMessagePayload(runId: runID)
@@ -781,7 +840,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func createRun(projectID: String?, title: String) async throws -> String {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { throw RelayError.invalidResponse }
         let project = projectID.flatMap { id in state.projects.first(where: { $0.id == id }) }
@@ -836,7 +895,7 @@ final class CompanionStore: ObservableObject {
     func sendWorkAssistantMessage(_ prompt: String, attachments: [PendingAttachment] = [])
         async throws
     {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         let uploaded = try await upload(attachments, using: client)
         _ = try await client.sendCommand(
             type: .assistantSendMessage,
@@ -847,7 +906,7 @@ final class CompanionStore: ObservableObject {
     func executeWorkAssistantAction(messageID: String, proposalID: String, optionID: String)
         async throws -> String?
     {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         _ = try await client.sendCommand(
             type: .assistantExecuteAction,
             payload: AssistantExecuteActionPayload(
@@ -865,7 +924,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func handleDecision(_ decision: Decision) async throws -> String {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         if let existing = state.runs.first(where: {
             $0.run.decisionId == decision.id && $0.run.status != "completed"
                 && $0.run.status != "cancelled"
@@ -925,7 +984,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func rename(runID: String, title: String) async throws {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         _ = try await client.sendCommand(
             type: .agentRenameSession,
             payload: AgentRenameSessionPayload(runId: runID, title: title)
@@ -933,7 +992,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func updateDraftPrompt(runID: String, draftPrompt: String) async throws {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         guard let index = state.runs.firstIndex(where: { $0.run.id == runID }) else {
             throw RelayError.invalidResponse
         }
@@ -955,13 +1014,13 @@ final class CompanionStore: ObservableObject {
     }
 
     func archive(runID: String) async throws {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         _ = try await client.sendCommand(
             type: .agentArchiveSession, payload: AgentArchiveSessionPayload(runId: runID))
     }
 
     func updateDecision(id: String, status: String) async throws {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         let previousStatus = state.decisions.first(where: { $0.id == id })?.status
         if let index = state.decisions.firstIndex(where: { $0.id == id }) {
             state.decisions[index].status = status
@@ -989,7 +1048,7 @@ final class CompanionStore: ObservableObject {
             return
         }
 #endif
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         let previous = state.projects.first(where: { $0.id == project.id })
         upsert(project, in: &state.projects)
         persistCache()
@@ -1004,7 +1063,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func download(_ attachment: AttachmentDescriptor) async throws -> URL {
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         return try await client.downloadAttachment(attachment)
     }
 
@@ -1015,7 +1074,7 @@ final class CompanionStore: ObservableObject {
         guard macOnline else {
             throw RelayError.server("Mac 当前不在线，暂时无法上传这个附件。")
         }
-        guard let client else { throw RelayError.invalidResponse }
+        let client = try activeRelayClient()
         let commandID = UUID().uuidString
         commandErrors[commandID] = nil
         defer { commandErrors[commandID] = nil }
@@ -1043,7 +1102,7 @@ final class CompanionStore: ObservableObject {
     func attachment(for artifactID: String) -> AttachmentDescriptor? { state.attachments[artifactID] }
 
     private func registerPushToken(_ token: String) async {
-        guard let client else { return }
+        guard isPaired, let client else { return }
         do { try await client.registerPushToken(token) } catch {
             operationError = "推送注册失败：\(error.localizedDescription)"
         }
@@ -1071,6 +1130,11 @@ final class CompanionStore: ObservableObject {
 
     private func configureClient(_ credentials: CompanionCredentials) {
         client = RelayClient(credentials: credentials)
+    }
+
+    private func activeRelayClient() throws -> RelayClient {
+        guard isPaired, let client else { throw RelayError.invalidResponse }
+        return client
     }
 
     private func handleSocketEnvelope(_ envelope: SocketEnvelope) async {

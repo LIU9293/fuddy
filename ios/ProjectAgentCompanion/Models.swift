@@ -85,10 +85,12 @@ func normalizedAccountRelayURL(_ value: String) -> String? {
 
 func accountCredentialsNeedEnrollment(
     _ credentials: CompanionCredentials?,
+    accountUserID: String,
     accountDeviceID: String,
     selectedSpace: AccountSyncSpace?
 ) -> Bool {
     guard let credentials else { return true }
+    if credentials.ownerUserID != accountUserID { return true }
     if credentials.deviceID != accountDeviceID { return true }
     guard let selectedSpace else { return credentials.syncSpaceID == nil }
     if credentials.syncSpaceID != selectedSpace.id { return true }
@@ -144,6 +146,7 @@ struct CompanionCredentials: Codable {
     let encryptionKey: String?
     let encryptionKeyId: String?
     let syncSpaceID: String?
+    let ownerUserID: String?
 
     init(
         relayURL: String,
@@ -152,7 +155,8 @@ struct CompanionCredentials: Codable {
         deviceToken: String,
         encryptionKey: String? = nil,
         encryptionKeyId: String? = nil,
-        syncSpaceID: String? = nil
+        syncSpaceID: String? = nil,
+        ownerUserID: String? = nil
     ) {
         self.relayURL = relayURL
         self.accountID = accountID
@@ -161,6 +165,7 @@ struct CompanionCredentials: Codable {
         self.encryptionKey = encryptionKey
         self.encryptionKeyId = encryptionKeyId
         self.syncSpaceID = syncSpaceID
+        self.ownerUserID = ownerUserID
     }
 }
 

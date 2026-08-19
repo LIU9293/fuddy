@@ -27,6 +27,7 @@ enum AccountDeviceGrant {
         enrollmentID: String,
         spaceID: String,
         deviceID: String,
+        ownerUserID: String,
         privateKeyData: Data
     ) throws -> CompanionCredentials {
         guard let envelopeData = wrappedGrant.data(using: .utf8) else {
@@ -90,7 +91,8 @@ enum AccountDeviceGrant {
             deviceToken: credentials.deviceToken,
             encryptionKey: credentials.encryptionKey,
             encryptionKeyId: credentials.encryptionKeyId,
-            syncSpaceID: spaceID
+            syncSpaceID: spaceID,
+            ownerUserID: ownerUserID
         )
     }
 

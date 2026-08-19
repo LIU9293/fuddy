@@ -107,23 +107,33 @@ final class SyncModelTests: XCTestCase {
             accountID: "next-relay-account",
             deviceID: "phone-a",
             deviceToken: "token",
-            syncSpaceID: "space-a"
+            syncSpaceID: "space-a",
+            ownerUserID: "user-a"
         )
         let stale = CompanionCredentials(
             relayURL: "https://fuddy.ai/api/relay",
             accountID: "old-relay-account",
             deviceID: "phone-a",
             deviceToken: "token",
-            syncSpaceID: "space-a"
+            syncSpaceID: "space-a",
+            ownerUserID: "user-a"
         )
 
         XCTAssertFalse(accountCredentialsNeedEnrollment(
             current,
+            accountUserID: "user-a",
             accountDeviceID: "phone-a",
             selectedSpace: space
         ))
         XCTAssertTrue(accountCredentialsNeedEnrollment(
             stale,
+            accountUserID: "user-a",
+            accountDeviceID: "phone-a",
+            selectedSpace: space
+        ))
+        XCTAssertTrue(accountCredentialsNeedEnrollment(
+            current,
+            accountUserID: "user-b",
             accountDeviceID: "phone-a",
             selectedSpace: space
         ))
@@ -174,15 +184,18 @@ final class SyncModelTests: XCTestCase {
             enrollmentID: "grant-1",
             spaceID: "space-1",
             deviceID: "phone-1",
+            ownerUserID: "user-1",
             privateKeyData: phone.rawRepresentation
         )
         XCTAssertEqual(opened.deviceToken, "secret-token")
         XCTAssertEqual(opened.relayURL, "https://fuddy.ai/api/relay/")
+        XCTAssertEqual(opened.ownerUserID, "user-1")
         XCTAssertThrowsError(try AccountDeviceGrant.open(
             String(decoding: envelope, as: UTF8.self),
             enrollmentID: "grant-1",
             spaceID: "space-1",
             deviceID: "another-phone",
+            ownerUserID: "user-1",
             privateKeyData: phone.rawRepresentation
         ))
     }

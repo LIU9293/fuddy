@@ -35,7 +35,9 @@ class OfflineRuntime implements AgentRuntime {
 class TestWorkAssistantAgent implements WorkAssistantAgentRuntime {
   inputs: WorkAssistantAgentTurnInput[] = []
 
-  constructor(private readonly respond: (input: WorkAssistantAgentTurnInput) => WorkAssistantAgentTurnResult = () => ({
+  constructor(private readonly respond: (
+    input: WorkAssistantAgentTurnInput
+  ) => WorkAssistantAgentTurnResult | Promise<WorkAssistantAgentTurnResult> = () => ({
     content: '已处理。', proposals: [], linkedRunId: null
   })) {}
 
@@ -43,7 +45,7 @@ class TestWorkAssistantAgent implements WorkAssistantAgentRuntime {
 
   async runTurn(input: WorkAssistantAgentTurnInput): Promise<WorkAssistantAgentTurnResult> {
     this.inputs.push(input)
-    return this.respond(input)
+    return await this.respond(input)
   }
 }
 
@@ -127,6 +129,49 @@ describe('Work Assistant task handoff', () => {
     expect(result.userMessage.attachments).toEqual([attachment])
     expect(database.listBriefingMessages()[0]?.attachments).toEqual([attachment])
     expect(result.assistantMessage.attachments).toEqual([])
+    database.close()
+  })
+
+  it('does not persist an assistant reply after its caller cancels the turn', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'work-assistant-cancel-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
+    const runtime = new OfflineRuntime()
+    const agent = new TestWorkAssistantAgent(async (input) => {
+      await new Promise<void>((_resolve, reject) => {
+        input.cancellationSignal?.addEventListener(
+          'abort',
+          () => reject(input.cancellationSignal?.reason),
+          { once: true }
+        )
+      })
+      return { content: 'unreachable', proposals: [], linkedRunId: null }
+    })
+    const service = new MorningBriefingService(
+      database,
+      {} as DailyBriefingService,
+      runtime,
+      undefined,
+      undefined,
+      undefined,
+      agent
+    )
+    const cancellation = new AbortController()
+    const asking = service.ask(
+      null,
+      '继续处理',
+      null,
+      [],
+      () => undefined,
+      cancellation.signal
+    )
+    await Promise.resolve()
+
+    cancellation.abort(new Error('账户连接已停止'))
+
+    await expect(asking).rejects.toThrow('账户连接已停止')
+    expect(database.listBriefingMessages()).toHaveLength(1)
+    expect(database.listBriefingMessages()[0]?.role).toBe('user')
     database.close()
   })
 

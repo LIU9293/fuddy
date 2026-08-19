@@ -130,6 +130,7 @@ export function registerAccountIpc(context: IpcContext): void {
     await companionSync.stopAndDrain()
     const state = await accountService.logout()
     broadcastAccountState()
+    await companionSync.disconnect().catch(() => undefined)
     return state
   })
 

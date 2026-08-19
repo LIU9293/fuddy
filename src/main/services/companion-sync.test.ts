@@ -243,6 +243,80 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
+  it('propagates shutdown cancellation into an active phone Work Assistant turn', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-assistant-drain-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    let receivedSignal: AbortSignal | null = null
+    const askWorkAssistant = vi.fn(async (
+      _question: string,
+      _attachments: unknown[],
+      cancellationSignal: AbortSignal
+    ) => {
+      receivedSignal = cancellationSignal
+      await new Promise<void>((_resolve, reject) => {
+        cancellationSignal.addEventListener('abort', () => reject(cancellationSignal.reason), { once: true })
+      })
+    })
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      askWorkAssistant
+    )
+    const command: CompanionCommand = {
+      commandId: 'assistant-command-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'assistant.send-message',
+      payload: { prompt: '继续处理' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+    const internals = service as unknown as {
+      activeCommands: Map<string, Promise<void>>
+      activeCommandAbortControllers: Map<string, AbortController>
+      performCommand: (command: CompanionCommand, signal: AbortSignal) => Promise<unknown>
+    }
+    const controller = new AbortController()
+    const activeCommand = internals.performCommand(command, controller.signal).then(() => undefined)
+    internals.activeCommands.set(command.commandId, activeCommand)
+    internals.activeCommandAbortControllers.set(command.commandId, controller)
+    await vi.waitFor(() => expect(receivedSignal).not.toBeNull())
+
+    await service.stopAndDrain()
+
+    expect((receivedSignal as AbortSignal | null)?.aborted).toBe(true)
+    await expect(activeCommand).rejects.toThrow('账户连接已停止')
+    database.close()
+  })
+
+  it('identifies account-owned Relay state for signed-out startup cleanup', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-account-identity-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'account-relay',
+      macDeviceId: 'mac-1',
+      pairedAt: new Date().toISOString(),
+      ownerUserId: 'user-1'
+    } satisfies CompanionMacConfiguration)
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    expect(service.hasAccountRelayIdentity()).toBe(true)
+    service.stop()
+    database.close()
+  })
+
   it('preserves Relay credentials when remote account revocation fails', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-revoke-retry-'))
     directories.push(directory)

@@ -415,7 +415,14 @@ if (!hasLock) {
         database,
         credentialVault,
         dispatcher,
-        (question, attachments) => morningBriefingService.ask(null, question, null, attachments),
+        (question, attachments, cancellationSignal) => morningBriefingService.ask(
+          null,
+          question,
+          null,
+          attachments,
+          () => undefined,
+          cancellationSignal
+        ),
         join(userDataPath, 'companion-uploads'),
         () => providerSettings.getPublicSettings().codingAgents.defaultAgent,
         workspaceFiles,
@@ -538,6 +545,12 @@ if (!hasLock) {
           activeEnrollmentCoordinator.start()
         }).catch((error: unknown) => {
           Sentry.captureException(error, { tags: { boundary: 'account-relay-startup' } })
+        })
+      } else if (companionSync.hasAccountRelayIdentity()) {
+        // A cached Account session may expire while Fuddy is closed. Account-owned
+        // Relay state must not survive that signed-out bootstrap path.
+        void companionSync.disconnect().catch((error: unknown) => {
+          Sentry.captureException(error, { tags: { boundary: 'account-relay-startup-revocation' } })
         })
       }
       if (process.env.PROJECT_AGENT_SENTRY_TEST === '1') {

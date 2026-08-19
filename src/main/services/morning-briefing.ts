@@ -335,8 +335,14 @@ export class MorningBriefingService {
     question: string,
     taskReference: WorkAssistantTaskReference | null = null,
     attachments: WorkAssistantImageAttachment[] = [],
-    onUpdate: (update: AgentSessionUpdate) => void = () => undefined
+    onUpdate: (update: AgentSessionUpdate) => void = () => undefined,
+    cancellationSignal?: AbortSignal
   ): Promise<AskMorningBriefingResult> {
+    if (cancellationSignal?.aborted) {
+      throw cancellationSignal.reason instanceof Error
+        ? cancellationSignal.reason
+        : new Error('这次手机操作已停止。')
+    }
     const requestedBriefing = briefingId ? this.database.getMorningBriefingById(briefingId) : null
     if (briefingId && !requestedBriefing) throw new Error('没有找到这份每日简报。')
     const briefing = requestedBriefing ?? this.database.listMorningBriefings().find((item) => item.status === 'completed') ?? null
@@ -364,17 +370,28 @@ export class MorningBriefingService {
           attachments,
           taskContext,
           history: previousHistory,
-          onUpdate
+          onUpdate,
+          cancellationSignal
         })
         content = result.content
         proposals = result.proposals
         linkedRunId = result.linkedRunId
       } catch (error) {
+        if (cancellationSignal?.aborted) {
+          throw cancellationSignal.reason instanceof Error
+            ? cancellationSignal.reason
+            : new Error('这次手机操作已停止。')
+        }
         const reason = error instanceof Error ? error.message : '未知错误'
         content = `**工作助理 Agent 当前不可用**（${reason}）\n\n本轮没有执行任何工具或修改。`
       }
     } else {
       content = '**尚未配置可用的工作助理 Agent**\n\n本轮没有执行任何工具或修改。'
+    }
+    if (cancellationSignal?.aborted) {
+      throw cancellationSignal.reason instanceof Error
+        ? cancellationSignal.reason
+        : new Error('这次手机操作已停止。')
     }
     const assistantMessage = this.database.createBriefingMessage({
       id: randomUUID(),

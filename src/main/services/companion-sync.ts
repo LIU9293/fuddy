@@ -305,7 +305,11 @@ export class CompanionSyncService {
     private readonly database: AppDatabase,
     private readonly credentials: CredentialVault,
     private readonly dispatcher: TaskDispatcher,
-    private readonly askWorkAssistant: (question: string, attachments: WorkAssistantImageAttachment[]) => Promise<unknown>,
+    private readonly askWorkAssistant: (
+      question: string,
+      attachments: WorkAssistantImageAttachment[],
+      cancellationSignal: AbortSignal
+    ) => Promise<unknown>,
     private readonly incomingAttachmentsRoot = resolve(process.cwd(), '.companion-uploads'),
     private readonly defaultCodingAgent: () => CodingAgentProvider = () => 'codex',
     private readonly workspaceFiles?: WorkspaceFilesService,
@@ -338,6 +342,10 @@ export class CompanionSyncService {
       isolatedEvents: this.database.countDeadLetterCompanionEvents(),
       iosDevicesOnline: this.iosDevicesOnline
     }
+  }
+
+  hasAccountRelayIdentity(): boolean {
+    return Boolean(this.configuration?.ownerUserId)
   }
 
   onStatusChanged(listener: (status: CompanionMacStatus) => void): () => void {
@@ -1328,7 +1336,11 @@ export class CompanionSyncService {
             dataUrl: `data:${attachment.descriptor.mimeType};base64,${attachment.bytes.toString('base64')}`
           }))
         if (images.length !== attachments.length) throw new Error('工作助理当前只支持图片附件。')
-        return await this.askWorkAssistant(this.requiredString(payload, 'prompt'), images)
+        return await this.askWorkAssistant(
+          this.requiredString(payload, 'prompt'),
+          images,
+          cancellationSignal
+        )
       }
       case 'assistant.execute-action': {
         if (!this.executeWorkAssistantAction) throw new Error('工作助理 Action 能力尚未初始化。')

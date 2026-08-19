@@ -229,4 +229,20 @@ describe('account IPC lifecycle', () => {
     expect(forgetAccountRelay).toHaveBeenCalledOnce()
     expect(send).toHaveBeenCalledWith('account:state-changed', signedOutState)
   })
+
+  it('revokes the account Relay after a normal logout', async () => {
+    const disconnect = vi.fn(async () => undefined)
+    const logout = vi.fn(async () => signedOutState)
+    registerAccountIpc({
+      accountService: { getState: vi.fn(() => signedInState), logout },
+      accountEnrollmentCoordinator: { pauseAndDrain: vi.fn(async () => undefined) },
+      companionSync: { stopAndDrain: vi.fn(async () => undefined), disconnect }
+    } as unknown as IpcContext)
+
+    const logoutHandler = electronMocks.handlers.get('account:logout')
+    await expect(Promise.resolve(logoutHandler?.())).resolves.toEqual(signedOutState)
+
+    expect(logout).toHaveBeenCalledOnce()
+    expect(disconnect).toHaveBeenCalledOnce()
+  })
 })
