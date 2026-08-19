@@ -56,7 +56,9 @@ describe('account IPC lifecycle', () => {
     electronMocks.windows.length = 0
   })
 
-  it('stops and forgets Companion when account validation signs out', async () => {
+  it('stops and forgets Companion when account validation reports explicit authorization loss', async () => {
+    let accountState = signedInState
+    const authorizationError = new AccountAuthorizationLostError()
     let finishDrain: (() => void) | undefined
     const pauseAndDrain = vi.fn(() => new Promise<void>((resolve) => { finishDrain = resolve }))
     const coordinator = { stop: vi.fn(), pauseAndDrain }
@@ -68,8 +70,11 @@ describe('account IPC lifecycle', () => {
 
     registerAccountIpc({
       accountService: {
-        getState: vi.fn(() => signedInState),
-        getValidatedState: vi.fn(async () => signedOutState)
+        getState: vi.fn(() => accountState),
+        getValidatedState: vi.fn(async () => {
+          accountState = signedOutState
+          throw authorizationError
+        })
       },
       accountEnrollmentCoordinator: coordinator,
       companionSync
@@ -92,6 +97,35 @@ describe('account IPC lifecycle', () => {
       expect(pauseAndDrain).toHaveBeenCalledOnce()
       expect(disconnect).toHaveBeenCalledOnce()
     })
+  })
+
+  it('does not revoke Relay when background validation observes an overlapping normal logout', async () => {
+    const coordinator = { stop: vi.fn(), pauseAndDrain: vi.fn(async () => undefined) }
+    const companionSync = {
+      stop: vi.fn(),
+      disconnect: vi.fn(async () => undefined)
+    }
+    const send = vi.fn()
+    electronMocks.windows.push({ webContents: { isDestroyed: () => false, send } })
+
+    registerAccountIpc({
+      accountService: {
+        getState: vi.fn(() => signedInState),
+        getValidatedState: vi.fn(async () => signedOutState)
+      },
+      accountEnrollmentCoordinator: coordinator,
+      companionSync
+    } as unknown as IpcContext)
+
+    const getState = electronMocks.handlers.get('account:get-state')
+    expect(getState?.()).toEqual(signedInState)
+
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalledWith('account:state-changed', signedOutState)
+    })
+    expect(coordinator.stop).not.toHaveBeenCalled()
+    expect(companionSync.stop).not.toHaveBeenCalled()
+    expect(companionSync.disconnect).not.toHaveBeenCalled()
   })
 
   it('reconciles a signed-out transition from an authorized account request', async () => {

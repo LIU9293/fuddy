@@ -13,9 +13,8 @@ export function registerAccountIpc(context: IpcContext): void {
     }
   }
 
-  const reconcileValidatedAccountState = async (
-    state: Awaited<ReturnType<typeof accountService.getValidatedState>>
-  ): Promise<void> => {
+  const reconcileAccountAuthorizationLoss = async (): Promise<void> => {
+    const state = accountService.getState()
     if (state.status !== 'signed-out') {
       broadcastAccountState(state)
       return
@@ -38,7 +37,7 @@ export function registerAccountIpc(context: IpcContext): void {
       return await operation()
     } catch (error) {
       if (error instanceof AccountAuthorizationLostError) {
-        await reconcileValidatedAccountState(accountService.getState()).catch(() => undefined)
+        await reconcileAccountAuthorizationLoss().catch(() => undefined)
       }
       throw error
     }
@@ -47,7 +46,13 @@ export function registerAccountIpc(context: IpcContext): void {
   ipcMain.handle('account:get-state', () => {
     const local = accountService.getState()
     if (local.status === 'signed-in') {
-      void accountService.getValidatedState().then(reconcileValidatedAccountState).catch(() => undefined)
+      void accountService.getValidatedState()
+        .then((state) => broadcastAccountState(state))
+        .catch((error) => {
+          if (error instanceof AccountAuthorizationLostError) {
+            void reconcileAccountAuthorizationLoss().catch(() => undefined)
+          }
+        })
     }
     return local
   })
@@ -108,7 +113,7 @@ export function registerAccountIpc(context: IpcContext): void {
       await accountService.revokeDevice(input.deviceId)
     } catch (error) {
       if (error instanceof AccountAuthorizationLostError) {
-        await reconcileValidatedAccountState(accountService.getState()).catch(() => undefined)
+        await reconcileAccountAuthorizationLoss().catch(() => undefined)
       } else if (isCurrentDevice) {
         await companionSync.start().catch(() => undefined)
         accountEnrollmentCoordinator.start()
@@ -136,7 +141,7 @@ export function registerAccountIpc(context: IpcContext): void {
       state = await accountService.logoutAll()
     } catch (error) {
       if (error instanceof AccountAuthorizationLostError) {
-        await reconcileValidatedAccountState(accountService.getState()).catch(() => undefined)
+        await reconcileAccountAuthorizationLoss().catch(() => undefined)
       } else if (accountService.getState().status === 'signed-in') {
         await companionSync.start().catch(() => undefined)
         accountEnrollmentCoordinator.start()

@@ -169,7 +169,8 @@ export class AccountService {
       if (current.status !== 401) return { ...local, serviceStatus: 'offline', serviceMessage: '账户服务暂时不可用。' }
       await this.refreshAuthorization(accessToken)
       return this.getState()
-    } catch {
+    } catch (error) {
+      if (error instanceof AccountAuthorizationLostError) throw error
       if (this.authGeneration !== generation) return this.getState()
       if (this.getState().status === 'signed-out') {
         return this.signedOutState('登录状态已失效，请重新登录。')

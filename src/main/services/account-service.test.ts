@@ -400,4 +400,27 @@ describe('AccountService', () => {
     expect(service.getState().status).toBe('signed-out')
     expect(vault.get('account.refresh-token')).toBeNull()
   })
+
+  it('marks startup validation auth loss explicitly for Relay reconciliation', async () => {
+    const database = new FakeDatabase()
+    const vault = new FakeVault()
+    database.setSetting('account.cached-state', {
+      user: { id: 'user-1', email: 'kai@example.com', displayName: null },
+      device: { id: 'device-1', platform: 'macos', name: 'Mac', hostId: 'host-1', syncSpaceId: 'space-1' },
+      refreshExpiresAt: '2099-08-19T00:00:00.000Z'
+    })
+    vault.set('account.refresh-token', 'revoked-refresh')
+    vault.set('account.access-token', 'expired-access')
+    const service = new AccountService(database as never, vault, {
+      apiUrl: 'https://account.test',
+      runtimeChannel: 'development',
+      appVersion: '0.0.3',
+      fetch: async (url) => String(url).endsWith('/v1/auth/refresh')
+        ? response({ error: { code: 'invalid_session', message: '登录已失效。' } }, 401)
+        : response({}, 401)
+    })
+
+    await expect(service.getValidatedState()).rejects.toBeInstanceOf(AccountAuthorizationLostError)
+    expect(service.getState().status).toBe('signed-out')
+  })
 })
