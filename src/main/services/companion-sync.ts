@@ -294,7 +294,6 @@ export class CompanionSyncService {
   private validatedAccountRelaySignature: string | null = null
   private readonly activeCommands = new Map<string, Promise<void>>()
   private readonly activeCommandAbortControllers = new Map<string, AbortController>()
-  private readonly activeRemoteAgentRuns = new Map<string, string>()
   private readonly activeRunCreations = new Map<string, Promise<void>>()
   private disconnecting: Promise<void> | null = null
   private syncRequested = false
@@ -787,10 +786,6 @@ export class CompanionSyncService {
   async stopAndDrain(): Promise<void> {
     this.stop()
     await this.activeSync?.catch(() => undefined)
-    const activeRunIds = new Set(this.activeRemoteAgentRuns.values())
-    await Promise.all([...activeRunIds].map(async (runId) => {
-      await this.dispatcher.stopMessage(runId).catch(() => undefined)
-    }))
     await Promise.all([...this.activeCommands.values()].map(async (command) => {
       await command.catch(() => undefined)
     }))
@@ -1232,9 +1227,6 @@ export class CompanionSyncService {
     const createdRunId = remoteCommand.type === 'agent.create-session'
       ? this.commandRunId(remoteCommand)
       : null
-    const activeAgentRunId = remoteCommand.type === 'agent.send-message'
-      ? this.commandRunId(remoteCommand)
-      : null
     const abortController = new AbortController()
     const operation = this.executeCommand(remoteCommand, abortController.signal)
       .catch((error) => {
@@ -1244,7 +1236,6 @@ export class CompanionSyncService {
       .finally(() => {
         this.activeCommands.delete(remoteCommand.commandId)
         this.activeCommandAbortControllers.delete(remoteCommand.commandId)
-        this.activeRemoteAgentRuns.delete(remoteCommand.commandId)
         if (createdRunId && this.activeRunCreations.get(createdRunId) === operation) {
           this.activeRunCreations.delete(createdRunId)
         }
@@ -1252,7 +1243,6 @@ export class CompanionSyncService {
       })
     this.activeCommands.set(remoteCommand.commandId, operation)
     this.activeCommandAbortControllers.set(remoteCommand.commandId, abortController)
-    if (activeAgentRunId) this.activeRemoteAgentRuns.set(remoteCommand.commandId, activeAgentRunId)
     if (createdRunId) this.activeRunCreations.set(createdRunId, operation)
     return operation
   }

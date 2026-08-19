@@ -261,7 +261,7 @@ export class TaskDispatcher {
           ? cancellationSignal.reason
           : new Error('这次手机操作已停止。'))
       }
-      return this.executeTurn(runId, prompt, onUpdate, userMessageId, attachments)
+      return this.executeTurn(runId, prompt, onUpdate, userMessageId, attachments, cancellationSignal)
     }
     const turn = previous ? previous.then(execute, execute) : execute()
     this.turnQueueTails.set(runId, turn)
@@ -277,6 +277,12 @@ export class TaskDispatcher {
     const active = this.activeTurns.get(runId)
     if (!active) return this.database.getAgentRunDetail(runId)
     active.abortController.abort(new AgentRunStoppedError())
+    this.rejectPendingApprovals(runId)
+    await active.settled
+    return this.database.getAgentRunDetail(runId)
+  }
+
+  private rejectPendingApprovals(runId: string): void {
     for (const [requestId, approval] of this.pendingApprovals) {
       if (approval.runId !== runId) continue
       clearTimeout(approval.timer)
@@ -284,8 +290,6 @@ export class TaskDispatcher {
       this.database.updateAuditOutcome(approval.auditId, 'rejected')
       approval.resolve('deny')
     }
-    await active.settled
-    return this.database.getAgentRunDetail(runId)
   }
 
   private async executeTurn(
@@ -293,9 +297,19 @@ export class TaskDispatcher {
     prompt: string,
     onUpdate: (update: AgentRunStreamUpdate) => void,
     userMessageId?: string,
-    attachments: WorkAssistantImageAttachment[] = []
+    attachments: WorkAssistantImageAttachment[] = [],
+    cancellationSignal?: AbortSignal
   ): Promise<AgentRunDetail> {
     const abortController = new AbortController()
+    const abortForCallerCancellation = (): void => {
+      abortController.abort(new AgentRunStoppedError())
+      this.rejectPendingApprovals(runId)
+    }
+    if (cancellationSignal?.aborted) {
+      throw cancellationSignal.reason instanceof Error
+        ? cancellationSignal.reason
+        : new Error('这次手机操作已停止。')
+    }
     let settleActiveTurn = (): void => undefined
     const settled = new Promise<void>((resolve) => { settleActiveTurn = resolve })
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null
@@ -471,6 +485,8 @@ export class TaskDispatcher {
       }
     }
 
+    cancellationSignal?.addEventListener('abort', abortForCallerCancellation, { once: true })
+    if (cancellationSignal?.aborted) abortForCallerCancellation()
     try {
       const result = await runWithAbort(this.providerRegistry.runTurn(run.provider, {
         runId,
@@ -561,6 +577,7 @@ export class TaskDispatcher {
       return this.database.getAgentRunDetail(run.id)
     } finally {
       if (inactivityTimer) clearTimeout(inactivityTimer)
+      cancellationSignal?.removeEventListener('abort', abortForCallerCancellation)
       if (this.activeTurns.get(runId)?.abortController === abortController) this.activeTurns.delete(runId)
       settleActiveTurn()
     }

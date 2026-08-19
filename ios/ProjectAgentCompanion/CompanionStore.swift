@@ -298,7 +298,7 @@ final class CompanionStore: ObservableObject {
                 challengeID: emailChallenge.challengeId, code: code)
             try AccountKeychainStore.saveSession(session)
             accountSession = session
-            accountSessionValidated = true
+            accountSessionValidated = false
             self.emailChallenge = nil
             start()
         } catch {
@@ -318,7 +318,7 @@ final class CompanionStore: ObservableObject {
             let session = try await client.acceptGoogleIDToken(idToken)
             try AccountKeychainStore.saveSession(session)
             accountSession = session
-            accountSessionValidated = true
+            accountSessionValidated = false
             emailChallenge = nil
             start()
         } catch {
@@ -362,6 +362,16 @@ final class CompanionStore: ObservableObject {
     }
 
     func unpair() async {
+        await quiesceAccountConnections(cancelValidation: true)
+        client = nil
+        KeychainStore.deleteAll()
+        credentials = nil
+        state = CachedState()
+        macOnline = false
+        connection = .unpaired
+    }
+
+    private func quiesceAccountConnections(cancelValidation: Bool) async {
         let enrollmentTask = accountEnrollmentTask
         enrollmentTask?.cancel()
         accountEnrollmentTask = nil
@@ -372,17 +382,15 @@ final class CompanionStore: ObservableObject {
         spaceSwitchTask = nil
         spaceSwitchTaskID = nil
         await switchTask?.value
-        accountValidationTask?.cancel()
-        accountValidationTask = nil
+        if cancelValidation {
+            accountValidationTask?.cancel()
+            accountValidationTask = nil
+        }
         accountEnrollmentInProgress = false
         accountEnrollmentMessage = nil
         await quiesceRelaySync()
-        client = nil
-        KeychainStore.deleteAll()
-        credentials = nil
-        state = CachedState()
         macOnline = false
-        connection = .unpaired
+        connection = credentials == nil ? .unpaired : .offline
     }
 
     private func beginAccountEnrollmentIfNeeded() {
@@ -614,11 +622,15 @@ final class CompanionStore: ObservableObject {
             restoringAccountSession = false
             start()
         } catch AccountClientError.authenticationRequired {
-            await unpair()
+            // The Account session and Relay grant have independent lifetimes. Keep the
+            // Relay credential in Keychain so a later sign-in can validate or revoke it;
+            // deleting it here would leave an unreachable bearer grant active remotely.
+            await quiesceAccountConnections(cancelValidation: false)
             AccountKeychainStore.deleteSession()
             accountSession = nil
             accountSessionValidated = false
             restoringAccountSession = false
+            availableAccountSyncSpaces = []
             operationError = AccountClientError.authenticationRequired.localizedDescription
         } catch {
             accountSessionValidated = true

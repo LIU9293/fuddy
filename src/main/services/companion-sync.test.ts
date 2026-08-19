@@ -210,7 +210,7 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
-  it('stops active remote Agent turns and drains every scheduled command', async () => {
+  it('aborts and drains scheduled phone commands without stopping another Agent turn by Run ID', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-command-drain-'))
     directories.push(directory)
     const database = createTestDatabase(join(directory, 'app.sqlite'))
@@ -225,14 +225,16 @@ describe('Companion sync transport policy', () => {
     )
     const internals = service as unknown as {
       activeCommands: Map<string, Promise<void>>
-      activeRemoteAgentRuns: Map<string, string>
+      activeCommandAbortControllers: Map<string, AbortController>
     }
+    const commandAbortController = new AbortController()
     internals.activeCommands.set('command-1', activeCommand)
-    internals.activeRemoteAgentRuns.set('command-1', 'run-1')
+    internals.activeCommandAbortControllers.set('command-1', commandAbortController)
 
     let drained = false
     const draining = service.stopAndDrain().then(() => { drained = true })
-    await vi.waitFor(() => expect(stopMessage).toHaveBeenCalledWith('run-1'))
+    expect(commandAbortController.signal.aborted).toBe(true)
+    expect(stopMessage).not.toHaveBeenCalled()
     expect(drained).toBe(false)
 
     finishCommand()

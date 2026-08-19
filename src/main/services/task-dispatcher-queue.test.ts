@@ -70,8 +70,10 @@ describe('TaskDispatcher Agent Run turn queue', () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-turn-cancelled-queue-'))
     let releaseFirst!: () => void
     const startedPrompts: string[] = []
+    let firstSignal: AbortSignal | null = null
     const { database, dispatcher, runId } = createDispatcher(root, async (input) => {
       startedPrompts.push(input.prompt)
+      firstSignal ??= input.abortController.signal
       await new Promise<void>((resolve) => { releaseFirst = resolve })
       return { text: '完成', sessionId: 'queue-session' }
     })
@@ -89,10 +91,49 @@ describe('TaskDispatcher Agent Run turn queue', () => {
       )
       cancellation.abort(new Error('账户连接已停止'))
 
+      expect((firstSignal as AbortSignal | null)?.aborted).toBe(false)
       releaseFirst()
       await first
       await expect(second).rejects.toThrow('账户连接已停止')
       expect(startedPrompts).toHaveLength(1)
+    } finally {
+      database.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('cancels an active caller-owned turn without targeting another turn by Run ID', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'project-agent-turn-active-cancellation-'))
+    let receivedSignal: AbortSignal | null = null
+    const { database, dispatcher, runId } = createDispatcher(root, async (input) => {
+      receivedSignal = input.abortController.signal
+      await new Promise<void>((_resolve, reject) => {
+        input.abortController.signal.addEventListener(
+          'abort',
+          () => reject(input.abortController.signal.reason),
+          { once: true }
+        )
+      })
+      return { text: 'unreachable', sessionId: null }
+    })
+    try {
+      const cancellation = new AbortController()
+      const sending = dispatcher.sendMessage(
+        runId,
+        '来自手机的长任务',
+        () => undefined,
+        undefined,
+        [],
+        cancellation.signal
+      )
+      await vi.waitFor(() => expect(receivedSignal).not.toBeNull())
+
+      cancellation.abort(new Error('账户连接已停止'))
+      const result = await sending
+
+      expect((receivedSignal as AbortSignal | null)?.aborted).toBe(true)
+      expect(result.run.status).toBe('idle')
+      expect(result.messages.some((message) => message.eventType === 'error')).toBe(false)
     } finally {
       database.close()
       rmSync(root, { recursive: true, force: true })
