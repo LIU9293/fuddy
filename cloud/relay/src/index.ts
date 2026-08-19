@@ -90,6 +90,16 @@ function relay(env: Env, accountId: string): DurableObjectStub<AccountRelay> {
   return env.ACCOUNT_RELAY.getByName(accountId)
 }
 
+type AttachmentUploadCommitResult = Awaited<ReturnType<AccountRelay['commitAttachmentUploadLease']>>
+
+export function shouldDeleteUploadedAttachmentObject(
+  storageKey: string,
+  commit: AttachmentUploadCommitResult
+): boolean {
+  return commit.status === 'unauthorized'
+    || (commit.status === 'existing' && commit.attachment.storageKey !== storageKey)
+}
+
 async function deleteAccountAttachments(env: Env, accountId: string): Promise<void> {
   let cursor: string | undefined
   do {
@@ -446,8 +456,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       if (commit.status === 'committed') {
         return Response.json({ id: attachmentId, size: contentLength }, { status: 201 })
       }
-      await env.ATTACHMENTS.delete(storageKey)
-      if (commit.status === 'unauthorized') throw new HttpError(401, '设备认证已失效。')
+      if (shouldDeleteUploadedAttachmentObject(storageKey, commit)) {
+        await env.ATTACHMENTS.delete(storageKey)
+      }
+      if (commit.status === 'unauthorized') {
+        throw new HttpError(401, '设备认证已失效。')
+      }
       const identicalRetry = commit.attachment.uploadedBy === context.deviceId
         && commit.attachment.sha256 === sha256
         && commit.attachment.size === contentLength
