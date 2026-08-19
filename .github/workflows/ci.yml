@@ -38,6 +38,23 @@ jobs:
       - run: npm run relay:typecheck
       - run: npm run relay:test
 
+  account-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            cloud/account-api/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix cloud/account-api ci
+      - run: npm run account:typecheck
+      - run: npm run account:test
+      - run: npm run account:deploy:production:dry-run
+
   ios:
     runs-on: macos-15
     steps:
