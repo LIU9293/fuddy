@@ -231,6 +231,12 @@ export class AccountRelay extends DurableObject<Env> {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         generation INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS account_cleanup (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        device_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE,
@@ -330,6 +336,9 @@ export class AccountRelay extends DurableObject<Env> {
     `)
     this.ctx.storage.sql.exec(`
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (9, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (10, datetime('now'));
     `)
   }
 
@@ -781,9 +790,54 @@ export class AccountRelay extends DurableObject<Env> {
     }
   }
 
-  async revokeAccount(deviceId: string, token: string): Promise<void> {
-    await this.requireAuthorization(deviceId, token, 'mac')
-    await this.revokeAccountByAuthority()
+  async revokeAccount(deviceId: string, token: string): Promise<boolean> {
+    const suppliedHash = await secretHash(token)
+    const cleanup = this.ctx.storage.sql.exec<{ device_id: string; token_hash: string }>(
+      'SELECT device_id, token_hash FROM account_cleanup WHERE id = 1'
+    ).toArray()[0]
+    if (cleanup) {
+      return cleanup.device_id === deviceId && secretsEqual(cleanup.token_hash, suppliedHash)
+    }
+    const mac = this.ctx.storage.sql.exec<DeviceRow>(
+      `SELECT * FROM devices WHERE id = ? AND role = 'mac' AND revoked_at IS NULL`,
+      deviceId
+    ).toArray()[0]
+    if (!mac || !secretsEqual(mac.token_hash, suppliedHash)) return false
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO account_cleanup (id, device_id, token_hash, created_at)
+       VALUES (1, ?, ?, ?)`,
+      deviceId,
+      suppliedHash,
+      new Date().toISOString()
+    )
+    return this.revokeAccountState(undefined, true)
+  }
+
+  async authorizeAccountRevocation(deviceId: string, token: string): Promise<boolean> {
+    const suppliedHash = await secretHash(token)
+    const cleanup = this.ctx.storage.sql.exec<{ device_id: string; token_hash: string }>(
+      'SELECT device_id, token_hash FROM account_cleanup WHERE id = 1'
+    ).toArray()[0]
+    if (cleanup) {
+      return cleanup.device_id === deviceId && secretsEqual(cleanup.token_hash, suppliedHash)
+    }
+    const mac = this.ctx.storage.sql.exec<DeviceRow>(
+      `SELECT * FROM devices WHERE id = ? AND role = 'mac' AND revoked_at IS NULL`,
+      deviceId
+    ).toArray()[0]
+    return Boolean(mac && secretsEqual(mac.token_hash, suppliedHash))
+  }
+
+  async completeAccountRevocationCleanup(deviceId: string, token: string): Promise<boolean> {
+    const suppliedHash = await secretHash(token)
+    const cleanup = this.ctx.storage.sql.exec<{ device_id: string; token_hash: string }>(
+      'SELECT device_id, token_hash FROM account_cleanup WHERE id = 1'
+    ).toArray()[0]
+    if (!cleanup || cleanup.device_id !== deviceId || !secretsEqual(cleanup.token_hash, suppliedHash)) {
+      return false
+    }
+    this.ctx.storage.sql.exec('DELETE FROM account_cleanup WHERE id = 1')
+    return true
   }
 
   setAccountGeneration(generation: number): void {
@@ -799,6 +853,10 @@ export class AccountRelay extends DurableObject<Env> {
   }
 
   async revokeAccountByAuthority(generation?: number): Promise<boolean> {
+    return this.revokeAccountState(generation, false)
+  }
+
+  private revokeAccountState(generation: number | undefined, preserveDirectCleanup: boolean): boolean {
     const currentGeneration = this.ctx.storage.sql.exec<{ generation: number }>(
       'SELECT generation FROM account_authority WHERE id = 1'
     ).toArray()[0]?.generation
@@ -816,6 +874,7 @@ export class AccountRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM pairing')
     this.ctx.storage.sql.exec('DELETE FROM attachments')
     this.ctx.storage.sql.exec('DELETE FROM devices')
+    if (!preserveDirectCleanup) this.ctx.storage.sql.exec('DELETE FROM account_cleanup')
     return true
   }
 

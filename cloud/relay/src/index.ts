@@ -415,9 +415,13 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === 'DELETE' && url.pathname === '/v1/account') {
-    const context = await authenticatedContext(request, env, url, 'mac')
-    await context.stub.revokeAccount(context.deviceId, context.token)
+    const context = relayRequestContext(request, env, url)
+    const canRevoke = await context.stub.authorizeAccountRevocation(context.deviceId, context.token)
+    if (!canRevoke) throw new HttpError(401, '设备认证失败。')
+    const authorized = await context.stub.revokeAccount(context.deviceId, context.token)
+    if (!authorized) throw new HttpError(401, '设备认证失败。')
     await deleteAccountAttachments(env, context.accountId)
+    await context.stub.completeAccountRevocationCleanup(context.deviceId, context.token)
     return new Response(null, { status: 204 })
   }
 

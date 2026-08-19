@@ -804,6 +804,7 @@ describe('companion relay', () => {
 
     const midpoint = Math.floor(content.byteLength / 2)
     await writer.write(content.slice(0, midpoint))
+    await new Promise((resolve) => setTimeout(resolve, 0))
     const revoke = await SELF.fetch(
       authenticatedUrl('/v1/account', pairing.accountId, pairing.macDeviceId),
       { method: 'DELETE', headers: { Authorization: `Bearer ${pairing.macToken}` } }
@@ -913,6 +914,7 @@ describe('companion relay', () => {
 
   it('lets the Mac revoke the paired account and rejects old device tokens', async () => {
     const { pairing, phone } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
     const revoke = await SELF.fetch(authenticatedUrl('/v1/account', pairing.accountId, pairing.macDeviceId), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${pairing.macToken}` }
@@ -922,5 +924,29 @@ describe('companion relay', () => {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
     expect(oldPhone.status).toBe(401)
+    await expect(runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM account_cleanup'
+      ).one().count
+    ))).resolves.toBe(0)
+  })
+
+  it('keeps direct account cleanup retryable until attachment deletion completes', async () => {
+    const { pairing } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+
+    await expect(stub.revokeAccount(pairing.macDeviceId, pairing.macToken)).resolves.toBe(true)
+    const rejected = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, pairing.macDeviceId),
+      { headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(rejected.status).toBe(401)
+
+    await expect(stub.revokeAccount(pairing.macDeviceId, pairing.macToken)).resolves.toBe(true)
+    await expect(stub.completeAccountRevocationCleanup(
+      pairing.macDeviceId,
+      pairing.macToken
+    )).resolves.toBe(true)
+    await expect(stub.revokeAccount(pairing.macDeviceId, pairing.macToken)).resolves.toBe(false)
   })
 })
