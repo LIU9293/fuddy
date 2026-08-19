@@ -1142,13 +1142,21 @@ export async function processRelayRevocationJobs(
   for (const job of jobs) {
     try {
       let relayRevoked = false
+      let reactivatedDeviceCleanup: RelayDeviceRevocationTarget[] = []
       if (job.operation === 'account') {
         const currentSpace = await env.ACCOUNT_DB.prepare(
           `SELECT relay_account_id, relay_generation FROM sync_spaces WHERE id = ?`
         ).bind(job.source_id).first<{ relay_account_id: string; relay_generation: number }>()
         const reactivatedSameRelay = currentSpace?.relay_account_id === job.relay_account_id
-          && currentSpace.relay_generation !== job.source_generation
-        if (!reactivatedSameRelay) {
+          && currentSpace.relay_generation > job.source_generation
+        if (reactivatedSameRelay) {
+          await relayAdmin.setAccountGeneration(job.relay_account_id, currentSpace.relay_generation)
+          reactivatedDeviceCleanup = (await env.ACCOUNT_DB.prepare(
+            `SELECT id, device_id AS deviceId, ? AS relayAccountId
+             FROM device_grants
+             WHERE space_id = ? AND status = 'revoked' AND relay_revoked_at IS NULL`
+          ).bind(job.relay_account_id, job.source_id).all<RelayDeviceRevocationTarget>()).results
+        } else {
           await relayAdmin.setAccountGeneration(job.relay_account_id, job.source_generation)
           relayRevoked = await relayAdmin.revokeAccount(job.relay_account_id, job.source_generation)
           if (!relayRevoked) throw new Error('Relay account generation did not match the revocation job.')
@@ -1175,6 +1183,7 @@ export async function processRelayRevocationJobs(
                last_error = NULL, completed_at = ?, updated_at = ?
            WHERE id = ? AND status = 'pending'`
         ).bind(completedAt, completedAt, job.id),
+        ...relayDeviceRevocationStatements(env, reactivatedDeviceCleanup, completedAt),
         relayRevoked && job.operation === 'account'
           ? env.ACCOUNT_DB.prepare(
               `UPDATE device_grants SET relay_revoked_at = ?, updated_at = ?

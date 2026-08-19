@@ -410,7 +410,10 @@ describe('email authentication', () => {
       status: 'pending',
       sourceGeneration: 1
     })
-    await expect(reactivateRelayAccountIfNeeded(env, spaceId, relayAdmin)).resolves.toBe(2)
+    await expect(processRelayRevocationJobs(env, {
+      relayAdmin,
+      now: new Date('2030-01-01T00:00:00.000Z')
+    })).resolves.toEqual({ attempted: 1, completed: 1 })
     expect(relayAdmin.setAccountGeneration).toHaveBeenNthCalledWith(1, relayAccountId, 2)
     expect(relayAdmin.setAccountGeneration).toHaveBeenNthCalledWith(2, relayAccountId, 2)
     await expect(env.ACCOUNT_DB.prepare(
@@ -425,9 +428,9 @@ describe('email authentication', () => {
        FROM relay_revocation_jobs WHERE id = ?`
     ).bind(`device:${revokedGrantId}`).first()).resolves.toEqual({
       status: 'pending',
-      attemptCount: 1
+      attemptCount: 0
     })
-    expect(relayAdmin.revokeDevice).toHaveBeenCalledWith(relayAccountId, revokedDeviceId, revokedGrantId)
+    expect(relayAdmin.revokeDevice).not.toHaveBeenCalled()
     await expect(env.ACCOUNT_DB.prepare(
       'SELECT relay_revoked_at AS relayRevokedAt FROM device_grants WHERE id = ?'
     ).bind(revokedGrantId).first()).resolves.toEqual({ relayRevokedAt: null })
