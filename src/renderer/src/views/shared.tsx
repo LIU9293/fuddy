@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import type {
+  AgentRun,
   CodingAgentProvider,
   ConnectorInstance,
   DecisionItem,
@@ -75,6 +76,16 @@ export const connectorStatusLabels: Record<ConnectorInstance['status'], string> 
   running: '巡检中',
   error: '需要处理',
   disabled: '已停用'
+}
+
+export const agentRunStatusLabels: Record<AgentRun['status'], string> = {
+  draft: '草稿',
+  queued: '等待中',
+  running: '运行中',
+  completed: '已完成',
+  idle: '已完成',
+  failed: '失败',
+  cancelled: '已取消'
 }
 
 export function formatRelativeTime(value: string): string {

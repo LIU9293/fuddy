@@ -14,6 +14,8 @@ import type { WorkspaceFilesService } from '../services/workspace-files'
 import type { AutomationRuntime } from '../services/automation-runtime'
 import type { ProjectAgentIntegrationService } from '../services/project-agent-integration'
 import type { CompanionSyncService } from '../services/companion-sync'
+import type { AccountService } from '../services/account-service'
+import type { AccountEnrollmentCoordinator } from '../services/account-enrollment-coordinator'
 import type { workAssistantImageSchema } from './schemas'
 
 export type PersistAttachments = (
@@ -38,5 +40,7 @@ export interface IpcContext {
   automationRuntime: AutomationRuntime
   projectAgentIntegration: ProjectAgentIntegrationService
   companionSync: CompanionSyncService
+  accountService: AccountService
+  accountEnrollmentCoordinator: AccountEnrollmentCoordinator
   persistAttachments: PersistAttachments
 }

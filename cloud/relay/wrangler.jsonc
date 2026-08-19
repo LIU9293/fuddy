@@ -4,6 +4,14 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-07",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "fuddy.ai/api/relay/*",
+      "zone_name": "fuddy.ai"
+    }
+  ],
   "vars": {
     "APNS_TEAM_ID": "5PR3342M58",
     "APNS_KEY_ID": "N768DXSCY3",

@@ -1,0 +1,4 @@
+OTP_PEPPER=replace-with-a-long-random-development-value
+SESSION_TOKEN_PEPPER=replace-with-a-different-long-random-development-value
+RESEND_API_KEY=replace-with-a-resend-development-key
+RESEND_WEBHOOK_SECRET=whsec_replace-with-a-resend-webhook-signing-secret

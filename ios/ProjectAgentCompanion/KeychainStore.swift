@@ -3,10 +3,16 @@ import Security
 
 enum KeychainStore {
     private static let service = "dev.ainative.projectagent.companion"
-    private static let account = "relay-credentials"
+    private static let legacyAccount = "relay-credentials"
+
+    private static func account(syncSpaceID: String?) -> String {
+        guard let syncSpaceID else { return legacyAccount }
+        return "relay-credentials:\(syncSpaceID)"
+    }
 
     static func save(_ credentials: CompanionCredentials) throws {
         let data = try JSONEncoder().encode(credentials)
+        let account = account(syncSpaceID: credentials.syncSpaceID)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -18,9 +24,23 @@ enum KeychainStore {
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(item as CFDictionary, nil)
         guard status == errSecSuccess else { throw KeychainError.status(status) }
+        if credentials.syncSpaceID != nil {
+            delete(account: legacyAccount)
+        }
     }
 
-    static func load() throws -> CompanionCredentials? {
+    static func load(syncSpaceID: String? = nil) throws -> CompanionCredentials? {
+        let account = account(syncSpaceID: syncSpaceID)
+        if let credentials = try load(account: account) { return credentials }
+        guard let syncSpaceID,
+            let legacy = try load(account: legacyAccount),
+            legacy.syncSpaceID == syncSpaceID
+        else { return nil }
+        try save(legacy)
+        return legacy
+    }
+
+    private static func load(account: String) throws -> CompanionCredentials? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -35,7 +55,128 @@ enum KeychainStore {
         return try JSONDecoder().decode(CompanionCredentials.self, from: data)
     }
 
-    static func delete() {
+    static func delete(syncSpaceID: String? = nil) {
+        delete(account: account(syncSpaceID: syncSpaceID))
+    }
+
+    static func loadAll() throws -> [CompanionCredentials] {
+        try storedItems().map(\.credentials)
+    }
+
+    static func deleteIfMatching(_ credentials: CompanionCredentials) {
+        let storedAccount = account(syncSpaceID: credentials.syncSpaceID)
+        guard (try? load(account: storedAccount)) == credentials else { return }
+        delete(account: storedAccount)
+    }
+
+    static func deleteAll() {
+        SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service
+        ] as CFDictionary)
+    }
+
+    static func deleteAll(ownerUserID: String) {
+        guard let items = try? storedItems() else { return }
+        for item in items where item.credentials.ownerUserID == ownerUserID {
+            delete(account: item.account)
+        }
+    }
+
+    private static func storedItems() throws -> [(account: String, credentials: CompanionCredentials)] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess else { throw KeychainError.status(status) }
+        let items: [[String: Any]]
+        if let matches = result as? [[String: Any]] {
+            items = matches
+        } else if let match = result as? [String: Any] {
+            items = [match]
+        } else {
+            return []
+        }
+        return items.compactMap { item in
+            guard let data = item[kSecValueData as String] as? Data,
+                let account = item[kSecAttrAccount as String] as? String,
+                let credentials = try? JSONDecoder().decode(CompanionCredentials.self, from: data)
+            else { return nil }
+            return (account, credentials)
+        }
+    }
+
+    private static func delete(account: String) {
+        SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ] as CFDictionary)
+    }
+}
+
+enum AccountKeychainStore {
+    private static let service = "dev.ainative.projectagent.companion.account"
+    private static let sessionAccount = "account-session"
+    private static let deviceKeyAccount = "account-device-private-key"
+
+    static func saveSession(_ session: MobileAccountSession) throws {
+        try save(JSONEncoder().encode(session), account: sessionAccount)
+    }
+
+    static func loadSession() throws -> MobileAccountSession? {
+        guard let data = try load(account: sessionAccount) else { return nil }
+        return try JSONDecoder().decode(MobileAccountSession.self, from: data)
+    }
+
+    static func deleteSession() {
+        delete(account: sessionAccount)
+    }
+
+    static func loadDevicePrivateKey() throws -> Data? {
+        try load(account: deviceKeyAccount)
+    }
+
+    static func saveDevicePrivateKey(_ data: Data) throws {
+        try save(data, account: deviceKeyAccount)
+    }
+
+    private static func save(_ data: Data, account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(query as CFDictionary)
+        var item = query
+        item[kSecValueData as String] = data
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(item as CFDictionary, nil)
+        guard status == errSecSuccess else { throw KeychainError.status(status) }
+    }
+
+    private static func load(account: String) throws -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data else { throw KeychainError.status(status) }
+        return data
+    }
+
+    private static func delete(account: String) {
         SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

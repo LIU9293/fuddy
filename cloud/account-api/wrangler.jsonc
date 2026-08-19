@@ -1,0 +1,76 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "project-agent-account-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "ENVIRONMENT": "development",
+    "EMAIL_DELIVERY_MODE": "test",
+    "RESEND_FROM": "Fuddy <onboarding@resend.dev>",
+    "GOOGLE_CLIENT_IDS": ""
+  },
+  "secrets": {
+    "required": ["OTP_PEPPER", "SESSION_TOKEN_PEPPER", "RESEND_API_KEY", "RESEND_WEBHOOK_SECRET"]
+  },
+  "d1_databases": [
+    {
+      "binding": "ACCOUNT_DB",
+      "database_name": "project-agent-account",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "env": {
+    "production": {
+      "name": "project-agent-account-api",
+      "workers_dev": false,
+      "preview_urls": false,
+      "vars": {
+        "ENVIRONMENT": "production",
+        "EMAIL_DELIVERY_MODE": "live",
+        "RESEND_FROM": "Fuddy <login@fuddy.ai>",
+        "GOOGLE_CLIENT_IDS": "877382581311-dt2ln9r81lqe8i0d6svknfs1dfi1s889.apps.googleusercontent.com,877382581311-i6dn0r7k47ij545p7cddpa33t01oe1jd.apps.googleusercontent.com"
+      },
+      "secrets": {
+        "required": ["OTP_PEPPER", "SESSION_TOKEN_PEPPER", "RESEND_API_KEY", "RESEND_WEBHOOK_SECRET"]
+      },
+      "d1_databases": [
+        {
+          "binding": "ACCOUNT_DB",
+          "database_name": "project-agent-account-production",
+          "database_id": "309dbd71-817d-42da-97a6-36ff7c0d1688",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "services": [
+        {
+          "binding": "RELAY_ADMIN",
+          "service": "project-agent-companion-relay",
+          "entrypoint": "RelayAdministration"
+        }
+      ],
+      "routes": [
+        {
+          "pattern": "fuddy.ai/api/account/*",
+          "zone_name": "fuddy.ai"
+        }
+      ],
+      "triggers": {
+        "crons": ["*/5 * * * *"]
+      }
+    }
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": false
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.01
+    }
+  }
+}

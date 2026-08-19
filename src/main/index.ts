@@ -40,6 +40,11 @@ import { startAutoUpdateService } from './services/auto-update-service'
 import { resolveFuddyRuntimeProfile } from './runtime-profile'
 import { registerWorkspaceFileProtocol } from './services/workspace-file-protocol'
 import { workspaceFilePreviewScheme } from '../shared/workspace-file-preview'
+import { AccountService, normalizeAccountApiUrl } from './services/account-service'
+import {
+  AccountEnrollmentCoordinator,
+  resolveCompanionRelayUrl
+} from './services/account-enrollment-coordinator'
 
 protocol.registerSchemesAsPrivileged([{
   scheme: workspaceFilePreviewScheme,
@@ -91,6 +96,7 @@ let agentToolsMcp: ThirdPartyMcpRuntime | null = null
 let shutdownPromise: Promise<void> | null = null
 let shutdownComplete = false
 let companionSync: CompanionSyncService | null = null
+let accountEnrollmentCoordinator: AccountEnrollmentCoordinator | null = null
 let pendingAgentRunNavigationId: string | null = null
 let stopAutoUpdates: (() => void) | null = null
 
@@ -302,6 +308,27 @@ if (!hasLock) {
       const databasePath = join(userDataPath, 'project-agent.sqlite')
       database = new AppDatabase(databasePath)
       const credentialVault = new CredentialVault(join(userDataPath, 'credentials.enc'))
+      const configuredAccountApiUrl = process.env.FUDDY_ACCOUNT_API_URL?.trim()
+      const defaultAccountApiUrl = runtimeProfile.channel === 'development'
+        ? 'http://127.0.0.1:8788'
+        : 'https://fuddy.ai/api/account'
+      const accountApiUrl = normalizeAccountApiUrl(
+        configuredAccountApiUrl || defaultAccountApiUrl,
+        runtimeProfile.channel
+      )
+      const accountService = new AccountService(database, credentialVault, {
+        apiUrl: accountApiUrl,
+        runtimeChannel: runtimeProfile.channel,
+        appVersion: app.getVersion(),
+        googleClientId: process.env.FUDDY_GOOGLE_CLIENT_ID?.trim()
+          || (runtimeProfile.channel === 'production'
+            ? '877382581311-dt2ln9r81lqe8i0d6svknfs1dfi1s889.apps.googleusercontent.com'
+            : null)
+      })
+      const companionRelayUrl = resolveCompanionRelayUrl(
+        process.env.FUDDY_COMPANION_RELAY_URL,
+        runtimeProfile.channel
+      )
       const providerSettings = new ProviderSettingsService(database, credentialVault)
       const whisperRoot = app.isPackaged
         ? join(process.resourcesPath, 'third-party', 'whisper')
@@ -383,18 +410,34 @@ if (!hasLock) {
         decisionRemediationService,
         workAssistantAgent
       )
-      workspaceAgentActions.setMorningBriefingGenerator(() => morningBriefingService.generate())
+      workspaceAgentActions.setMorningBriefingGenerator((cancellationSignal) => (
+        morningBriefingService.generate(cancellationSignal)
+      ))
       companionSync = new CompanionSyncService(
         database,
         credentialVault,
         dispatcher,
-        (question, attachments) => morningBriefingService.ask(null, question, null, attachments),
+        (question, attachments, cancellationSignal) => morningBriefingService.ask(
+          null,
+          question,
+          null,
+          attachments,
+          () => undefined,
+          cancellationSignal
+        ),
         join(userDataPath, 'companion-uploads'),
         () => providerSettings.getPublicSettings().codingAgents.defaultAgent,
         workspaceFiles,
         () => buildAgentModelLabels(providerSettings.getPublicSettings())
       )
-      companionSync.setWorkAssistantActionExecutor((input) => morningBriefingService.executeAction(input))
+      accountEnrollmentCoordinator = new AccountEnrollmentCoordinator(
+        accountService,
+        companionSync,
+        companionRelayUrl
+      )
+      companionSync.setWorkAssistantActionExecutor((input, cancellationSignal) => (
+        morningBriefingService.executeAction(input, cancellationSignal)
+      ))
       companionSync.onStatusChanged((status) => {
         if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:status-changed', status)
       })
@@ -403,30 +446,30 @@ if (!hasLock) {
       })
       const ttsService = new TtsService(database, providerSettings)
       const automationRuntime = new AutomationRuntime(database, {
-        runAgentTask: async (job) => {
+        runAgentTask: async (job, cancellationSignal) => {
           const result = await dispatcher.dispatch({
             projectId: job.projectId,
             provider: job.agentProvider,
             title: `${job.name} · 自动运行`,
             prompt: job.prompt
-          })
+          }, () => undefined, cancellationSignal)
           return { summary: result.message, agentRunId: result.detail.run.id }
         },
-        runConnectors: async (projectId) => {
-          const result = await connectorRuntime.runConnectors(projectId)
-          const remediation = await decisionRemediationService.sync(projectId)
+        runConnectors: async (projectId, cancellationSignal) => {
+          const result = await connectorRuntime.runConnectors(projectId, cancellationSignal)
+          const remediation = await decisionRemediationService.sync(projectId, cancellationSignal)
           return `Connector 巡检完成：${result.succeeded} 成功，${result.failed} 失败；核验 ${remediation.remediations.length} 条修复进度。`
         },
-        checkGoals: async (projectId) => {
-          const results = await goalTrackingService.checkDueGoals(projectId ?? undefined)
+        checkGoals: async (projectId, cancellationSignal) => {
+          const results = await goalTrackingService.checkDueGoals(projectId ?? undefined, cancellationSignal)
           return results.length > 0 ? `已检查 ${results.length} 个到期目标。` : '当前没有到期目标。'
         },
-        generateBriefing: async (projectId) => {
+        generateBriefing: async (projectId, cancellationSignal) => {
           if (projectId) {
-            const result = await dailyBriefingService.generate(projectId)
+            const result = await dailyBriefingService.generate(projectId, cancellationSignal)
             return result.briefing.headline
           }
-          const result = await morningBriefingService.generate()
+          const result = await morningBriefingService.generate(cancellationSignal)
           return result.briefing.headline
         }
       })
@@ -478,7 +521,9 @@ if (!hasLock) {
         workspaceFiles,
         automationRuntime,
         projectAgentIntegration,
-        companionSync
+        companionSync,
+        accountService,
+        accountEnrollmentCoordinator
       )
       createWindow()
       const updateConfigurationExists = existsSync(join(process.resourcesPath, 'app-update.yml'))
@@ -493,7 +538,25 @@ if (!hasLock) {
         .catch((error: unknown) => {
           Sentry.captureException(error, { tags: { boundary: 'decision-remediation-startup' } })
         })
-      void companionSync.start()
+      const accountState = accountService.getState()
+      if (accountState.status === 'signed-in' && accountState.user) {
+        const activeCompanionSync = companionSync
+        const activeEnrollmentCoordinator = accountEnrollmentCoordinator
+        void activeCompanionSync.activateAccountRelay(
+          accountState.user.id,
+          accountState.device?.syncSpaceId ?? undefined
+        ).then(() => {
+          activeEnrollmentCoordinator.start()
+        }).catch((error: unknown) => {
+          Sentry.captureException(error, { tags: { boundary: 'account-relay-startup' } })
+        })
+      } else if (companionSync.hasAccountRelayIdentity()) {
+        // A cached Account session may expire while Fuddy is closed. Account-owned
+        // Relay state must not survive that signed-out bootstrap path.
+        void companionSync.disconnectAllAccountRelays().catch((error: unknown) => {
+          Sentry.captureException(error, { tags: { boundary: 'account-relay-startup-revocation' } })
+        })
+      }
       if (process.env.PROJECT_AGENT_SENTRY_TEST === '1') {
         setTimeout(() => {
           Sentry.captureException(new Error('Fuddy main-process Sentry integration test'))
@@ -530,8 +593,13 @@ async function shutdown(): Promise<void> {
     automationScheduler = null
     stopAutoUpdates?.()
     stopAutoUpdates = null
-    companionSync?.stop()
+    const activeEnrollmentCoordinator = accountEnrollmentCoordinator
+    accountEnrollmentCoordinator = null
+    activeEnrollmentCoordinator?.stop()
+    await activeEnrollmentCoordinator?.pauseAndDrain()
+    const activeCompanionSync = companionSync
     companionSync = null
+    await activeCompanionSync?.stopAndDrain()
     await agentToolsMcp?.stop()
     agentToolsMcp = null
     database?.close()

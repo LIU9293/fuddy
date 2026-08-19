@@ -23,7 +23,7 @@ import type { CompanionEncryptedEnvelope } from './companion-crypto'
 
 export const companionProtocolVersion = companionProtocol.currentVersion
 export const companionMinimumProtocolVersion = companionProtocol.minimumVersion
-export const defaultCompanionRelayUrl = 'https://project-agent-companion-relay.moghub.workers.dev'
+export const defaultCompanionRelayUrl = 'https://fuddy.ai/api/relay'
 export { companionCommandTypes, companionEventDefinitions }
 export type { CompanionCommandType, CompanionEntityType, CompanionEventType }
 
@@ -72,6 +72,16 @@ export interface CompanionPairingClaimResult {
   device: CompanionDevice
   deviceToken: string
 }
+
+export interface CompanionDeviceEnrollmentInput {
+  deviceId: string
+  deviceName: string
+  publicKey?: string | null
+  /** Account API enrollment generation used to fence delayed revocations. */
+  grantId?: string | null
+}
+
+export type CompanionDeviceEnrollmentResult = CompanionPairingClaimResult
 
 interface CompanionSyncEventBase {
   eventId: string
@@ -180,6 +190,7 @@ export type CompanionSocketMessage =
   | { type: 'sync.event'; event: CompanionSyncEvent }
   | { type: 'command.created'; command: CompanionCommand }
   | { type: 'command.updated'; command: CompanionCommand }
+  | { type: 'commands.revoked'; commandIds: string[] }
   | { type: 'presence.updated'; presence: CompanionPresence }
   | { type: 'error'; message: string }
 
@@ -189,6 +200,7 @@ export type CompanionEncryptedSocketMessage =
   | { type: 'sync.event'; event: CompanionEncryptedSyncEvent }
   | { type: 'command.created'; command: CompanionEncryptedCommand }
   | { type: 'command.updated'; command: CompanionEncryptedCommand }
+  | { type: 'commands.revoked'; commandIds: string[] }
   | { type: 'presence.updated'; presence: CompanionPresence }
   | { type: 'error'; message: string }
 
@@ -215,6 +227,12 @@ export interface CompanionMacConfiguration {
   accountId: string
   macDeviceId: string
   pairedAt: string
+  /** Fuddy account that owns this Relay identity. Absent on legacy pairings. */
+  ownerUserId?: string
+  /** Account sync space that owns this Relay identity. Absent on legacy pairings. */
+  syncSpaceId?: string
+  /** Set only after the Account API durably records this exact Relay identity. */
+  accountBindingConfirmedAt?: string
   /** Key material is stored in the credential vault; only its identifier is persisted here. */
   encryptionKeyId?: string
 }
@@ -231,6 +249,8 @@ export interface CompanionMacStatus {
   lastError: string | null
   pendingEvents: number
   isolatedEvents: number
+  /** Known only while the realtime Relay connection is active. */
+  iosDevicesOnline: number | null
 }
 
 export interface CompanionPairingSession {

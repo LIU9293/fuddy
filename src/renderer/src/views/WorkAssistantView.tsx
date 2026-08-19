@@ -88,6 +88,7 @@ import { normalizeWorkspaceRoots } from '../../../shared/project-workspaces'
 import type { CompanionMacStatus, CompanionPairingSession } from '../../../shared/companion-sync'
 import { defaultCompanionRelayUrl } from '../../../shared/companion-sync'
 import { formatAgentProviderName } from '../../../shared/model-display'
+import { agentRunStatusLabels } from './shared'
 import {
   codingAgentOptions,
   connectorStatusLabels,
@@ -434,7 +435,7 @@ export function WorkAssistantRunLink({ run, onOpen }: { run: AgentRun; onOpen: (
       <Bot size={17} />
       <span>
         <strong>{run.title}</strong>
-        <small>{run.status === 'draft' ? '草稿 · 首条消息尚未发送' : `${formatAgentProviderName(run.provider)} · ${run.status}`}</small>
+        <small>{run.status === 'draft' ? '草稿 · 首条消息尚未发送' : `${formatAgentProviderName(run.provider)} · ${agentRunStatusLabels[run.status]}`}</small>
       </span>
       <ChevronRight size={16} />
     </button>

@@ -112,7 +112,7 @@ describe('Companion sync transport policy', () => {
       get: (reference: string) => secrets.get(reference) ?? null,
       delete: (reference: string) => { secrets.delete(reference) }
     } as unknown as CredentialVault
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+    const fetchMock = vi.fn(async (_input: string | URL) => jsonResponse({
       minimumProtocolVersion: companionProtocolVersion,
       protocolVersion: companionProtocolVersion,
       accountId: 'new-account',
@@ -122,12 +122,13 @@ describe('Companion sync transport policy', () => {
       pairingPayload: JSON.stringify({
         minimumProtocolVersion: companionProtocolVersion,
         protocolVersion: companionProtocolVersion,
-        relayUrl: 'https://relay.example.com',
+        relayUrl: 'https://relay.example.com/api/relay',
         accountId: 'new-account',
         pairingSecret: 'new-secret'
       }),
       expiresAt: new Date(Date.now() + 60_000).toISOString()
-    }, 201)))
+    }, 201))
+    vi.stubGlobal('fetch', fetchMock)
     const service = new CompanionSyncService(
       database,
       credentials,
@@ -138,9 +139,11 @@ describe('Companion sync transport policy', () => {
     const syncNow = vi.spyOn(service, 'syncNow').mockReturnValue(pendingSync)
     ;(service as unknown as { connectSocket: () => void }).connectSocket = vi.fn()
 
-    const pairing = await service.beginPairing('https://relay.example.com')
+    await expect(service.beginPairing('ftp://localhost/api/relay')).rejects.toThrow('必须使用 HTTPS')
+    const pairing = await service.beginPairing('https://relay.example.com/api/relay/')
 
     expect(syncNow).toHaveBeenCalledOnce()
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://relay.example.com/api/relay/v1/pairings')
     expect(JSON.parse(pairing.pairingPayload)).toMatchObject({
       accountId: 'new-account',
       pairingSecret: 'new-secret',
@@ -149,6 +152,520 @@ describe('Companion sync transport policy', () => {
       encryptionKeyId: expect.any(String)
     })
     service.stop()
+    database.close()
+  })
+
+  it('drains an active upload without marking it delivered after sync stops', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-stop-drain-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'drain-account',
+      macDeviceId: 'drain-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    database.createBriefingMessage({
+      id: 'drain-message',
+      briefingId: null,
+      role: 'assistant',
+      content: 'Keep this pending after sign-out.',
+      attachments: [],
+      taskContext: null,
+      createdAt: now
+    })
+    let uploadStarted!: () => void
+    let finishUpload!: () => void
+    const started = new Promise<void>((resolve) => { uploadStarted = resolve })
+    const blocked = new Promise<void>((resolve) => { finishUpload = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/v1/events/batch') {
+        uploadStarted()
+        await blocked
+        return jsonResponse({ accepted: [], lastSequence: 1 }, 201)
+      }
+      throw new Error(`Unexpected relay request: ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const syncing = service.syncNow()
+    await started
+    let drained = false
+    const draining = service.stopAndDrain().then(() => { drained = true })
+    await Promise.resolve()
+    expect(drained).toBe(false)
+
+    finishUpload()
+    await Promise.all([syncing, draining])
+    expect(service.getStatus().state).toBe('disconnected')
+    expect(database.countPendingCompanionEvents()).toBe(1)
+    database.close()
+  })
+
+  it('aborts and drains scheduled phone commands without stopping another Agent turn by Run ID', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-command-drain-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    let finishCommand!: () => void
+    const activeCommand = new Promise<void>((resolve) => { finishCommand = resolve })
+    const stopMessage = vi.fn(async () => undefined)
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      { stopMessage } as unknown as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    const internals = service as unknown as {
+      activeCommands: Map<string, Promise<void>>
+      activeCommandAbortControllers: Map<string, AbortController>
+    }
+    const commandAbortController = new AbortController()
+    internals.activeCommands.set('command-1', activeCommand)
+    internals.activeCommandAbortControllers.set('command-1', commandAbortController)
+
+    let drained = false
+    const draining = service.stopAndDrain().then(() => { drained = true })
+    expect(commandAbortController.signal.aborted).toBe(true)
+    expect(stopMessage).not.toHaveBeenCalled()
+    expect(drained).toBe(false)
+
+    finishCommand()
+    await draining
+    expect(drained).toBe(true)
+    database.close()
+  })
+
+  it('aborts commands from a revoked phone and fences a command fetched before revocation', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-command-revocation-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    const command: CompanionCommand = {
+      commandId: 'revoked-command-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'agent.rename-session',
+      payload: { runId: 'run-1', title: 'Should not run' },
+      sourceDeviceId: 'revoked-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+    const executeCommand = vi.fn(async () => undefined)
+    const internals = service as unknown as {
+      activeCommandAbortControllers: Map<string, AbortController>
+      cancelRevokedCommands: (commandIds: string[]) => void
+      executeCommand: typeof executeCommand
+      scheduleCommand: (command: CompanionCommand) => Promise<void>
+    }
+    const controller = new AbortController()
+    internals.activeCommandAbortControllers.set(command.commandId, controller)
+    internals.executeCommand = executeCommand
+
+    internals.cancelRevokedCommands([command.commandId])
+
+    expect(controller.signal.aborted).toBe(true)
+    expect(controller.signal.reason).toMatchObject({
+      message: '发起操作的 iPhone 已退出登录，这次操作已取消。'
+    })
+    await internals.scheduleCommand(command)
+    expect(executeCommand).not.toHaveBeenCalled()
+    database.close()
+  })
+
+  it('replays revoked command fences through polling when realtime delivery was missed', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-command-revocation-poll-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'poll-account',
+      macDeviceId: 'poll-mac',
+      pairedAt: new Date().toISOString(),
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      expect(new URL(String(input)).pathname).toBe('/v1/commands/pending')
+      return jsonResponse({ commands: [], revokedCommandIds: ['polled-revoked-command'] })
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    const internals = service as unknown as {
+      activeCommandAbortControllers: Map<string, AbortController>
+      processPendingCommands: () => Promise<void>
+      scheduleCommand: (command: CompanionCommand) => Promise<void>
+    }
+    const controller = new AbortController()
+    internals.activeCommandAbortControllers.set('polled-revoked-command', controller)
+
+    await internals.processPendingCommands()
+
+    expect(controller.signal.aborted).toBe(true)
+    expect(controller.signal.reason).toMatchObject({
+      message: '发起操作的 iPhone 已退出登录，这次操作已取消。'
+    })
+    database.close()
+  })
+
+  it('propagates shutdown cancellation into an active phone Work Assistant turn', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-assistant-drain-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    let receivedSignal: AbortSignal | null = null
+    const askWorkAssistant = vi.fn(async (
+      _question: string,
+      _attachments: unknown[],
+      cancellationSignal: AbortSignal
+    ) => {
+      receivedSignal = cancellationSignal
+      await new Promise<void>((_resolve, reject) => {
+        cancellationSignal.addEventListener('abort', () => reject(cancellationSignal.reason), { once: true })
+      })
+    })
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      askWorkAssistant
+    )
+    const command: CompanionCommand = {
+      commandId: 'assistant-command-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'assistant.send-message',
+      payload: { prompt: '继续处理' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+    const internals = service as unknown as {
+      activeCommands: Map<string, Promise<void>>
+      activeCommandAbortControllers: Map<string, AbortController>
+      performCommand: (command: CompanionCommand, signal: AbortSignal) => Promise<unknown>
+    }
+    const controller = new AbortController()
+    const activeCommand = internals.performCommand(command, controller.signal).then(() => undefined)
+    internals.activeCommands.set(command.commandId, activeCommand)
+    internals.activeCommandAbortControllers.set(command.commandId, controller)
+    await vi.waitFor(() => expect(receivedSignal).not.toBeNull())
+
+    await service.stopAndDrain()
+
+    expect((receivedSignal as AbortSignal | null)?.aborted).toBe(true)
+    await expect(activeCommand).rejects.toThrow('账户连接已停止')
+    database.close()
+  })
+
+  it('propagates shutdown cancellation into an active confirmed Work Assistant action', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-action-drain-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    let receivedSignal: AbortSignal | null = null
+    const executeAction = vi.fn(async (_input: unknown, cancellationSignal: AbortSignal) => {
+      receivedSignal = cancellationSignal
+      await new Promise<void>((_resolve, reject) => {
+        cancellationSignal.addEventListener('abort', () => reject(cancellationSignal.reason), { once: true })
+      })
+    })
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    service.setWorkAssistantActionExecutor(executeAction)
+    const command: CompanionCommand = {
+      commandId: 'assistant-action-command-1',
+      protocolVersion: companionProtocolVersion,
+      type: 'assistant.execute-action',
+      payload: { messageId: 'message-1', proposalId: 'proposal-1', optionId: 'send' },
+      sourceDeviceId: 'test-phone',
+      status: 'queued',
+      result: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+    const internals = service as unknown as {
+      activeCommands: Map<string, Promise<void>>
+      activeCommandAbortControllers: Map<string, AbortController>
+      performCommand: (command: CompanionCommand, signal: AbortSignal) => Promise<unknown>
+    }
+    const controller = new AbortController()
+    const activeCommand = internals.performCommand(command, controller.signal).then(() => undefined)
+    internals.activeCommands.set(command.commandId, activeCommand)
+    internals.activeCommandAbortControllers.set(command.commandId, controller)
+    await vi.waitFor(() => expect(receivedSignal).not.toBeNull())
+
+    await service.stopAndDrain()
+
+    expect((receivedSignal as AbortSignal | null)?.aborted).toBe(true)
+    await expect(activeCommand).rejects.toThrow('账户连接已停止')
+    database.close()
+  })
+
+  it('identifies account-owned Relay state for signed-out startup cleanup', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-account-identity-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    database.setSetting('companion.account-configurations', { 'user-1': {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'account-relay',
+      macDeviceId: 'mac-1',
+      pairedAt: new Date().toISOString(),
+      ownerUserId: 'user-1'
+    } satisfies CompanionMacConfiguration })
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    expect(service.hasAccountRelayIdentity()).toBe(true)
+    service.stop()
+    database.close()
+  })
+
+  it('forgets only the account Relay identities already revoked by the Account API', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-authority-cleanup-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const first: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com', accountId: 'relay-1', macDeviceId: 'mac-1',
+      pairedAt: new Date().toISOString(), ownerUserId: 'user-1', syncSpaceId: 'space-1'
+    }
+    const second: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com', accountId: 'relay-2', macDeviceId: 'mac-2',
+      pairedAt: new Date().toISOString(), ownerUserId: 'user-2', syncSpaceId: 'space-2'
+    }
+    database.setSetting('companion.mac-configuration', first)
+    database.setSetting('companion.account-configurations', { 'user-1': first, 'user-2': second })
+    const secrets = new Map<string, string>([
+      ['companion.mac-token:relay-1', 'token-1'],
+      ['companion.account-key:relay-1', testEncryptionKey],
+      ['companion.mac-token:relay-2', 'token-2'],
+      ['companion.account-key:relay-2', testEncryptionKey]
+    ])
+    const credentials = {
+      get: (reference: string) => secrets.get(reference) ?? null,
+      delete: (reference: string) => { secrets.delete(reference) }
+    } as unknown as CredentialVault
+    const service = new CompanionSyncService(
+      database,
+      credentials,
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    service.forgetAccountRelays('user-1')
+
+    expect(service.getStatus().configuration).toBeNull()
+    expect(secrets.has('companion.mac-token:relay-1')).toBe(false)
+    expect(secrets.has('companion.account-key:relay-1')).toBe(false)
+    expect(secrets.get('companion.mac-token:relay-2')).toBe('token-2')
+    expect(database.getSetting<Record<string, CompanionMacConfiguration>>(
+      'companion.account-configurations',
+      {}
+    )).toEqual({ 'user-2': second })
+    database.close()
+  })
+
+  it('preserves Relay credentials when remote account revocation fails', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-revoke-retry-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const configuration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'retry-account',
+      macDeviceId: 'retry-mac',
+      pairedAt: new Date().toISOString(),
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', configuration)
+    const secrets = new Map<string, string>([
+      ['companion.mac-token:retry-account', 'retry-token'],
+      ['companion.account-key:retry-account', testEncryptionKey]
+    ])
+    const credentials = {
+      get: (reference: string) => secrets.get(reference) ?? null,
+      set: (reference: string, value: string) => { secrets.set(reference, value) },
+      delete: (reference: string) => { secrets.delete(reference) }
+    } as unknown as CredentialVault
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'Relay unavailable' }, 503)))
+    const service = new CompanionSyncService(
+      database,
+      credentials,
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await expect(service.disconnect()).rejects.toThrow('Relay unavailable')
+
+    expect(service.getStatus()).toMatchObject({
+      state: 'disconnected',
+      configuration: { accountId: 'retry-account' }
+    })
+    expect(secrets.has('companion.mac-token:retry-account')).toBe(true)
+    expect(secrets.has('companion.account-key:retry-account')).toBe(true)
+    expect(database.getSetting('companion.mac-configuration', null)).toEqual(configuration)
+    database.close()
+  })
+
+  it('retries a failed old-account revocation before activating a new user', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-revoke-before-switch-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const oldConfiguration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com', accountId: 'old-account', macDeviceId: 'old-mac',
+      pairedAt: new Date().toISOString(), ownerUserId: 'old-user', syncSpaceId: 'old-space'
+    }
+    const newConfiguration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com', accountId: 'new-account', macDeviceId: 'new-mac',
+      pairedAt: new Date().toISOString(), ownerUserId: 'new-user', syncSpaceId: 'new-space'
+    }
+    database.setSetting('companion.mac-configuration', oldConfiguration)
+    database.setSetting('companion.account-configurations', {
+      'old-user': oldConfiguration,
+      'new-user': newConfiguration
+    })
+    const secrets = new Map<string, string>([
+      ['companion.mac-token:old-account', 'old-token'],
+      ['companion.account-key:old-account', testEncryptionKey],
+      ['companion.mac-token:new-account', 'new-token'],
+      ['companion.account-key:new-account', testEncryptionKey]
+    ])
+    const credentials = {
+      get: (reference: string) => secrets.get(reference) ?? null,
+      set: (reference: string, value: string) => { secrets.set(reference, value) },
+      delete: (reference: string) => { secrets.delete(reference) }
+    } as unknown as CredentialVault
+    let attempts = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      expect(url.searchParams.get('accountId')).toBe('old-account')
+      expect(new Headers(init.headers).get('Authorization')).toBe('Bearer old-token')
+      attempts += 1
+      return attempts === 1
+        ? jsonResponse({ error: 'Relay unavailable' }, 503)
+        : new Response(null, { status: 204 })
+    }))
+    const service = new CompanionSyncService(
+      database,
+      credentials,
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await expect(service.disconnect()).rejects.toThrow('Relay unavailable')
+    expect(service.getStatus().configuration).toEqual(oldConfiguration)
+    await expect(service.activateAccountRelay('new-user', 'new-space')).resolves.toBeUndefined()
+
+    expect(attempts).toBe(2)
+    expect(service.getStatus().configuration).toEqual(newConfiguration)
+    expect(secrets.has('companion.mac-token:old-account')).toBe(false)
+    expect(secrets.get('companion.mac-token:new-account')).toBe('new-token')
+    expect(database.getSetting<Record<string, CompanionMacConfiguration>>(
+      'companion.account-configurations',
+      {}
+    )).toEqual({ 'new-user': newConfiguration })
+    database.close()
+  })
+
+  it('cannot erase a newly activated account while an old Relay revoke is in flight', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-revoke-switch-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const oldConfiguration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'old-account',
+      macDeviceId: 'old-mac',
+      pairedAt: new Date().toISOString(),
+      ownerUserId: 'old-user',
+      syncSpaceId: 'old-space',
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    const newConfiguration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'new-account',
+      macDeviceId: 'new-mac',
+      pairedAt: new Date().toISOString(),
+      ownerUserId: 'new-user',
+      syncSpaceId: 'new-space',
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', oldConfiguration)
+    database.setSetting('companion.account-configurations', {
+      'old-user': oldConfiguration,
+      'new-user': newConfiguration
+    })
+    const secrets = new Map<string, string>([
+      ['companion.mac-token:old-account', 'old-token'],
+      ['companion.account-key:old-account', testEncryptionKey],
+      ['companion.mac-token:new-account', 'new-token'],
+      ['companion.account-key:new-account', testEncryptionKey]
+    ])
+    const credentials = {
+      get: (reference: string) => secrets.get(reference) ?? null,
+      set: (reference: string, value: string) => { secrets.set(reference, value) },
+      delete: (reference: string) => { secrets.delete(reference) }
+    } as unknown as CredentialVault
+    let revokeStarted!: () => void
+    let finishRevoke!: () => void
+    const started = new Promise<void>((resolve) => { revokeStarted = resolve })
+    const blocked = new Promise<void>((resolve) => { finishRevoke = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      expect(url.searchParams.get('accountId')).toBe('old-account')
+      expect(new Headers(init.headers).get('Authorization')).toBe('Bearer old-token')
+      revokeStarted()
+      await blocked
+      return new Response(null, { status: 204 })
+    }))
+    const service = new CompanionSyncService(
+      database,
+      credentials,
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const disconnecting = service.disconnect()
+    await started
+    const activating = service.activateAccountRelay('new-user', 'new-space')
+    await Promise.resolve()
+    expect(service.getStatus().configuration).toEqual(oldConfiguration)
+
+    finishRevoke()
+    await Promise.all([disconnecting, activating])
+    expect(service.getStatus().configuration).toEqual(newConfiguration)
+    expect(secrets.has('companion.mac-token:old-account')).toBe(false)
+    expect(secrets.has('companion.account-key:old-account')).toBe(false)
+    expect(secrets.get('companion.mac-token:new-account')).toBe('new-token')
+    expect(secrets.get('companion.account-key:new-account')).toBe(testEncryptionKey)
+    expect(database.getSetting<Record<string, CompanionMacConfiguration>>(
+      'companion.account-configurations',
+      {}
+    )).toEqual({ 'new-user': newConfiguration })
     database.close()
   })
 
@@ -204,6 +721,172 @@ describe('Companion sync transport policy', () => {
       expect.stringContaining('existing-account'),
       expect.objectContaining({ method: 'DELETE' })
     )
+    service.stop()
+    database.close()
+  })
+
+  it('revokes the current account Relay before switching to another user', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-account-switch-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const previousConfiguration: CompanionMacConfiguration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'previous-relay-account',
+      macDeviceId: 'previous-mac',
+      pairedAt: new Date().toISOString(),
+      syncSpaceId: 'previous-space',
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    }
+    database.setSetting('companion.mac-configuration', previousConfiguration)
+    const secrets = new Map<string, string>([
+      ['companion.mac-token:previous-relay-account', 'previous-token'],
+      ['companion.account-key:previous-relay-account', testEncryptionKey]
+    ])
+    const credentials = {
+      set: (reference: string, value: string) => { secrets.set(reference, value) },
+      get: (reference: string) => secrets.get(reference) ?? null,
+      delete: (reference: string) => { secrets.delete(reference) }
+    } as unknown as CredentialVault
+    const fetchMock = vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/pairings' && method === 'POST') {
+        return jsonResponse({
+          minimumProtocolVersion: companionProtocolVersion,
+          protocolVersion: companionProtocolVersion,
+          accountId: 'next-relay-account',
+          macDeviceId: 'next-mac',
+          macToken: 'next-token',
+          pairingSecret: 'next-secret',
+          pairingPayload: JSON.stringify({
+            minimumProtocolVersion: companionProtocolVersion,
+            protocolVersion: companionProtocolVersion,
+            relayUrl: 'https://relay.example.com',
+            accountId: 'next-relay-account',
+            pairingSecret: 'next-secret'
+          }),
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        }, 201)
+      }
+      if (url.pathname === '/v1/device' && method === 'GET') {
+        expect(url.searchParams.get('accountId')).toBe('next-relay-account')
+        return jsonResponse({ device: { id: 'next-mac', role: 'mac' } })
+      }
+      if (url.pathname === '/v1/account' && method === 'DELETE') {
+        expect(url.searchParams.get('accountId')).toBe('next-relay-account')
+        expect(new Headers(init.headers).get('Authorization')).toBe('Bearer next-token')
+        return new Response(null, { status: 204 })
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const service = new CompanionSyncService(
+      database,
+      credentials,
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+    const syncNow = vi.spyOn(service, 'syncNow').mockResolvedValue(service.getStatus())
+    ;(service as unknown as { connectSocket: () => void }).connectSocket = vi.fn()
+
+    await expect(service.ensureAccountRelay(
+      'https://relay.example.com',
+      'Test Mac',
+      'next-space',
+      'next-user'
+    )).resolves.toEqual({
+      relayUrl: 'https://relay.example.com',
+      relayAccountId: 'next-relay-account'
+    })
+    expect(service.getStatus().configuration).toMatchObject({
+      accountId: 'next-relay-account',
+      ownerUserId: 'next-user',
+      syncSpaceId: 'next-space'
+    })
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/v1/account'),
+      expect.objectContaining({ method: 'DELETE' })
+    )
+    expect(secrets.has('companion.mac-token:previous-relay-account')).toBe(true)
+    expect(secrets.has('companion.account-key:previous-relay-account')).toBe(true)
+    expect(syncNow).not.toHaveBeenCalled()
+    const binding = {
+      ownerUserId: 'next-user',
+      syncSpaceId: 'next-space',
+      relayUrl: 'https://relay.example.com',
+      relayAccountId: 'next-relay-account'
+    }
+    expect(service.isAccountRelayBindingConfirmed(binding)).toBe(false)
+
+    service.confirmAccountRelayBinding(binding)
+    expect(service.isAccountRelayBindingConfirmed(binding)).toBe(true)
+    expect(database.getSetting<CompanionMacConfiguration | null>(
+      'companion.mac-configuration',
+      null
+    )?.accountBindingConfirmedAt).toEqual(expect.any(String))
+    await service.start()
+    expect(syncNow).toHaveBeenCalledOnce()
+
+    for (const event of database.listPendingCompanionEvents()) {
+      database.markCompanionEventPublished(event.eventId, new Date().toISOString())
+    }
+    await service.activateAccountRelay('previous-user', 'previous-space')
+    expect(service.getStatus().configuration).toEqual({
+      ...previousConfiguration,
+      ownerUserId: 'previous-user'
+    })
+    expect(secrets.has('companion.mac-token:next-relay-account')).toBe(false)
+    expect(secrets.has('companion.account-key:next-relay-account')).toBe(false)
+    expect(database.listPendingCompanionEvents().map((event) => event.type)).toContain('snapshot.created')
+    service.stop()
+    database.close()
+  })
+
+  it('validates an existing account Relay through event replay during a rolling Relay upgrade', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-relay-upgrade-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://legacy-relay.example.com',
+      accountId: 'existing-account',
+      macDeviceId: 'existing-mac',
+      pairedAt: new Date().toISOString(),
+      syncSpaceId: 'space-a',
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration)
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/v1/device') return jsonResponse({ error: 'not found' }, 404)
+      if (url.pathname === '/v1/events') {
+        expect(url.searchParams.get('after')).toBe('0')
+        expect(url.searchParams.get('limit')).toBe('1')
+        return jsonResponse({
+          minimumProtocolVersion: companionProtocolVersion,
+          protocolVersion: companionProtocolVersion,
+          events: [],
+          lastSequence: 0,
+          presence: { macOnline: true, iosDevicesOnline: 0 }
+        })
+      }
+      throw new Error(`Unexpected relay request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    await expect(service.ensureAccountRelay(
+      'https://legacy-relay.example.com',
+      'Test Mac',
+      'space-a'
+    )).resolves.toEqual({
+      relayUrl: 'https://legacy-relay.example.com',
+      relayAccountId: 'existing-account'
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
     service.stop()
     database.close()
   })
@@ -379,7 +1062,7 @@ describe('Companion sync transport policy', () => {
     const status = await service.syncNow()
 
     expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 1 })
-    expect(status.lastError).toContain('已隔离 1 条')
+    expect(status.lastError).toContain('有 1 条内容无法发送')
     expect(publishedEntityIds).toEqual(['later-message'])
     service.stop()
     database.close()
@@ -751,7 +1434,9 @@ describe('Companion sync transport policy', () => {
         'run-from-phone',
         '请继续分析',
         expect.any(Function),
-        'phone-message-id'
+        'phone-message-id',
+        [],
+        expect.any(AbortSignal)
       )
       expect(database.getCompanionCommand(command.commandId)?.status).toBe('executing')
     })
@@ -824,7 +1509,14 @@ describe('Companion sync transport policy', () => {
     await service.syncNow()
     await vi.waitFor(() => expect(database.getCompanionCommand(legacyCommand.commandId)?.status).toBe('completed'))
 
-    expect(sendMessage).toHaveBeenCalledWith('legacy-run', 'Preserve this action', expect.any(Function), undefined)
+    expect(sendMessage).toHaveBeenCalledWith(
+      'legacy-run',
+      'Preserve this action',
+      expect.any(Function),
+      undefined,
+      [],
+      expect.any(AbortSignal)
+    )
     expect(database.getCompanionCommand(legacyCommand.commandId)?.protocolVersion).toBe(companionProtocolVersion)
     service.stop()
     database.close()

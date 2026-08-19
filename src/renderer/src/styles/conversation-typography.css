@@ -110,6 +110,11 @@
   .agent-session-rename-dialog input { border-color: rgba(255, 255, 248, .14); color: #ededeb; background: #1f201e; }
   .agent-session-rename-dialog button { color: #c8c8c3; background: rgba(255, 255, 248, .08); }
   .agent-session-rename-dialog button[type="submit"] { color: #20211f; background: #ededeb; }
+  .confirmation-dialog { border-color: rgba(255, 255, 248, .1); color: #ededeb; background: #252623; box-shadow: 0 24px 70px rgba(0, 0, 0, .42); }
+  .confirmation-dialog::backdrop { background: rgba(0, 0, 0, .38); }
+  .confirmation-dialog p { color: #aaa9a3; }
+  .confirmation-dialog button { color: #c8c8c3; background: rgba(255, 255, 248, .08); }
+  .confirmation-dialog button.is-danger { color: #fff; background: #c6524c; }
   .agent-run-info-sidebar { border-left-color: rgba(255, 255, 248, .09); background: rgba(35, 36, 33, .98); }
   .agent-run-info-header,
   .agent-run-info-tabs,

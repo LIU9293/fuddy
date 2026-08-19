@@ -10,6 +10,8 @@ import type {
   CompanionEncryptedSyncEventInput,
   CompanionCommandType,
   CompanionCommandUpdate,
+  CompanionDeviceEnrollmentInput,
+  CompanionDeviceEnrollmentResult,
   CompanionEventBatchResult,
   CompanionMacConfiguration,
   CompanionMacStatus,
@@ -56,8 +58,10 @@ import {
   sealCompanionJson
 } from '../../shared/companion-crypto'
 import { companionLatestChatCursor } from '../../shared/companion-chat'
+import type { AccountRelayCredentials } from './account-device-grant'
 
 const configurationKey = 'companion.mac-configuration'
+const accountConfigurationsKey = 'companion.account-configurations'
 export const companionFallbackSyncIntervalMs = 60_000
 export const companionConnectedFallbackSyncIntervalMs = 5 * 60_000
 export const companionRequestTimeoutMs = 30_000
@@ -75,6 +79,7 @@ export const companionToolSummaryMaximumCharacters = 600
 const companionAttachmentRequestTimeoutMs = 120_000
 const companionEventSyncDebounceMs = 500
 const reconnectDelaysMs = [5_000, 15_000, 60_000] as const
+const maximumRevokedCommandFences = 5_000
 
 export function companionAttachmentStorageId(artifactId: string, sha256: string): string {
   return createHash('sha256').update(`${artifactId}\0${sha256.toLowerCase()}`).digest('hex')
@@ -84,6 +89,13 @@ interface AuthenticatedCompanionContext {
   configuration: CompanionMacConfiguration
   token: string
   encryptionKey: string
+}
+
+type RelayRevocationTarget = Omit<AuthenticatedCompanionContext, 'encryptionKey'>
+
+export interface AccountRelayBinding {
+  relayUrl: string
+  relayAccountId: string
 }
 
 export function companionReconnectDelayMs(attempt: number): number {
@@ -240,10 +252,20 @@ function fetchWithTimeout(
 
 function normalizedRelayUrl(value: string): string {
   const url = new URL(value.trim())
-  if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
+  const isLocalDevelopment = url.protocol === 'http:'
+    && (url.hostname === 'localhost' || url.hostname === '127.0.0.1')
+  if (url.protocol !== 'https:' && !isLocalDevelopment) {
     throw new Error('Companion Relay 必须使用 HTTPS。')
   }
-  return url.origin
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('Companion Relay 地址不能包含凭证、查询参数或片段。')
+  }
+  const pathname = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/u, '')
+  return `${url.origin}${pathname}`
+}
+
+function relayRequestUrl(baseUrl: string, path: string): URL {
+  return new URL(path.replace(/^\/+/, ''), `${baseUrl.replace(/\/+$/u, '')}/`)
 }
 
 async function responseJson<T>(response: Response): Promise<T> {
@@ -253,8 +275,12 @@ async function responseJson<T>(response: Response): Promise<T> {
 }
 
 export class CompanionSyncService {
-  private executeWorkAssistantAction: ((input: { messageId: string; proposalId: string; optionId: string }) => unknown) | null = null
+  private executeWorkAssistantAction: ((
+    input: { messageId: string; proposalId: string; optionId: string },
+    cancellationSignal: AbortSignal
+  ) => unknown) | null = null
   private configuration: CompanionMacConfiguration | null
+  private accountConfigurations: Record<string, CompanionMacConfiguration>
   private state: CompanionMacStatus['state'] = 'not-configured'
   private realtimeState: CompanionRealtimeConnectionState = 'disconnected'
   private lastConnectedAt: string | null = null
@@ -267,9 +293,14 @@ export class CompanionSyncService {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private eventSyncTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
+  private iosDevicesOnline: number | null = null
   private activeSync: Promise<CompanionMacStatus> | null = null
+  private validatedAccountRelaySignature: string | null = null
   private readonly activeCommands = new Map<string, Promise<void>>()
+  private readonly activeCommandAbortControllers = new Map<string, AbortController>()
+  private readonly revokedCommandIds = new Set<string>()
   private readonly activeRunCreations = new Map<string, Promise<void>>()
+  private disconnecting: Promise<void> | null = null
   private syncRequested = false
   private stopped = false
   private readonly listeners = new Set<(status: CompanionMacStatus) => void>()
@@ -279,13 +310,27 @@ export class CompanionSyncService {
     private readonly database: AppDatabase,
     private readonly credentials: CredentialVault,
     private readonly dispatcher: TaskDispatcher,
-    private readonly askWorkAssistant: (question: string, attachments: WorkAssistantImageAttachment[]) => Promise<unknown>,
+    private readonly askWorkAssistant: (
+      question: string,
+      attachments: WorkAssistantImageAttachment[],
+      cancellationSignal: AbortSignal
+    ) => Promise<unknown>,
     private readonly incomingAttachmentsRoot = resolve(process.cwd(), '.companion-uploads'),
     private readonly defaultCodingAgent: () => CodingAgentProvider = () => 'codex',
     private readonly workspaceFiles?: WorkspaceFilesService,
     private readonly modelLabels: () => AgentModelLabels = () => emptyAgentModelLabels
   ) {
     this.configuration = database.getSetting<CompanionMacConfiguration | null>(configurationKey, null)
+    this.accountConfigurations = database.getSetting<Record<string, CompanionMacConfiguration>>(
+      accountConfigurationsKey,
+      {}
+    )
+    if (this.configuration?.ownerUserId) {
+      this.accountConfigurations[this.configuration.ownerUserId] = this.configuration
+    }
+    // Account-owned Relay identities restart closed. The enrollment coordinator
+    // opens them only after the Account API durably accepts the Relay binding.
+    this.stopped = Boolean(this.configuration?.ownerUserId)
     this.state = this.configuration ? 'disconnected' : 'not-configured'
     database.onCompanionEventEnqueued(() => this.scheduleEventSync())
   }
@@ -299,8 +344,13 @@ export class CompanionSyncService {
       lastSyncedAt: this.lastSyncedAt,
       lastError: this.lastError,
       pendingEvents: this.database.countPendingCompanionEvents(),
-      isolatedEvents: this.database.countDeadLetterCompanionEvents()
+      isolatedEvents: this.database.countDeadLetterCompanionEvents(),
+      iosDevicesOnline: this.iosDevicesOnline
     }
+  }
+
+  hasAccountRelayIdentity(): boolean {
+    return this.accountRelayConfigurations().length > 0
   }
 
   onStatusChanged(listener: (status: CompanionMacStatus) => void): () => void {
@@ -319,25 +369,218 @@ export class CompanionSyncService {
   }
 
   setWorkAssistantActionExecutor(
-    executor: (input: { messageId: string; proposalId: string; optionId: string }) => unknown
+    executor: (
+      input: { messageId: string; proposalId: string; optionId: string },
+      cancellationSignal: AbortSignal
+    ) => unknown
   ): void {
     this.executeWorkAssistantAction = executor
   }
 
   async start(): Promise<void> {
-    this.stopped = false
     if (!this.configuration) return
+    if (!this.stopped) return
+    this.stopped = false
     this.publishModelLabels()
     this.ensureTimer()
     await this.syncNow()
     this.connectSocket()
   }
 
-  async beginPairing(relayUrl: string, deviceName?: string): Promise<CompanionPairingSession> {
+  async activateAccountRelay(ownerUserId: string, syncSpaceId?: string): Promise<void> {
+    await this.disconnecting?.catch(() => undefined)
+    await this.revokeAccountRelayConfigurations((configuration) => (
+      Boolean(configuration.ownerUserId) && configuration.ownerUserId !== ownerUserId
+    ))
+    if (this.configuration && !this.configuration.ownerUserId) {
+      const legacyBelongsToAccount = !this.configuration.syncSpaceId
+        || !syncSpaceId
+        || this.configuration.syncSpaceId === syncSpaceId
+      if (legacyBelongsToAccount) {
+        this.stopped = true
+        this.closeTransports()
+        if (this.activeSync) await this.activeSync
+        this.configuration = {
+          ...this.configuration,
+          ownerUserId,
+          syncSpaceId: this.configuration.syncSpaceId ?? syncSpaceId
+        }
+        this.persistActiveConfiguration()
+        return
+      }
+      this.accountConfigurations[this.legacyConfigurationKey(this.configuration)] = this.configuration
+      this.database.setSetting(accountConfigurationsKey, this.accountConfigurations)
+    }
+    if (this.configuration?.ownerUserId === ownerUserId) return
+
+    this.stopped = true
+    this.closeTransports()
+    if (this.activeSync) await this.activeSync
+    this.configuration = this.takeAccountConfiguration(ownerUserId, syncSpaceId)
+    this.database.setSetting(configurationKey, this.configuration)
+    if (this.configuration) {
+      // Delivery markers are local to this Mac database. Rebuild an authoritative
+      // baseline whenever a previously detached Relay becomes active again so it
+      // catches up on mutations published while another account was selected.
+      this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
+    }
+    this.validatedAccountRelaySignature = null
+    this.state = this.configuration ? 'disconnected' : 'not-configured'
+    this.realtimeState = 'disconnected'
+    this.lastConnectedAt = null
+    this.lastSyncedAt = null
+    this.lastError = null
+    this.iosDevicesOnline = null
+    this.emitStatus()
+  }
+
+  async ensureAccountRelay(
+    relayUrl: string,
+    deviceName?: string,
+    syncSpaceId?: string,
+    ownerUserId?: string
+  ): Promise<AccountRelayBinding> {
+    if (ownerUserId) await this.activateAccountRelay(ownerUserId, syncSpaceId)
+    const normalizedRelay = normalizedRelayUrl(relayUrl)
+    const configurationHasKey = this.configuration?.encryptionKeyId
+      && this.credentials.get(this.encryptionKeyReference(this.configuration.accountId))
+    const belongsToAnotherSpace = Boolean(
+      syncSpaceId
+      && this.configuration?.syncSpaceId
+      && this.configuration.syncSpaceId !== syncSpaceId
+    )
+    const relayChanged = Boolean(this.configuration && this.configuration.relayUrl !== normalizedRelay)
+    if (!this.configuration || !configurationHasKey || belongsToAnotherSpace || relayChanged) {
+      await this.beginPairing(normalizedRelay, deviceName, syncSpaceId, ownerUserId)
+    } else if (syncSpaceId && !this.configuration.syncSpaceId) {
+      this.configuration = { ...this.configuration, syncSpaceId }
+      this.persistActiveConfiguration()
+    }
+    if (!this.configuration) throw new Error('无法初始化 Companion Relay。')
+    const signature = `${this.configuration.accountId}\0${this.configuration.macDeviceId}\0${syncSpaceId ?? ''}`
+    if (this.validatedAccountRelaySignature !== signature) {
+      const context = this.authenticatedTokenContext()
+      const deviceResponse = await fetchWithTimeout(
+        this.authenticatedUrl('/v1/device', context.configuration),
+        { headers: { Authorization: `Bearer ${context.token}` } }
+      )
+      const validationResponse = deviceResponse.status === 404
+        ? await fetchWithTimeout(
+            `${this.authenticatedUrl('/v1/events', context.configuration)}&after=0&limit=1`,
+            { headers: { Authorization: `Bearer ${context.token}` } }
+          )
+        : deviceResponse
+      if (validationResponse.status === 401) {
+        this.forgetAccountRelay()
+        await this.beginPairing(normalizedRelay, deviceName, syncSpaceId, ownerUserId)
+      } else {
+        await responseJson(validationResponse)
+      }
+      if (!this.configuration) throw new Error('无法初始化 Companion Relay。')
+      this.validatedAccountRelaySignature = `${this.configuration.accountId}\0${this.configuration.macDeviceId}\0${syncSpaceId ?? ''}`
+    }
+    return {
+      relayUrl: this.configuration.relayUrl,
+      relayAccountId: this.configuration.accountId
+    }
+  }
+
+  isAccountRelayBindingConfirmed(input: {
+    ownerUserId: string
+    syncSpaceId: string
+    relayUrl: string
+    relayAccountId: string
+  }): boolean {
+    return Boolean(
+      this.configuration?.accountBindingConfirmedAt
+      && this.configuration.ownerUserId === input.ownerUserId
+      && this.configuration.syncSpaceId === input.syncSpaceId
+      && this.configuration.relayUrl === normalizedRelayUrl(input.relayUrl)
+      && this.configuration.accountId === input.relayAccountId
+    )
+  }
+
+  confirmAccountRelayBinding(input: {
+    ownerUserId: string
+    syncSpaceId: string
+    relayUrl: string
+    relayAccountId: string
+  }): void {
+    if (!this.configuration
+      || this.configuration.ownerUserId !== input.ownerUserId
+      || this.configuration.syncSpaceId !== input.syncSpaceId
+      || this.configuration.relayUrl !== normalizedRelayUrl(input.relayUrl)
+      || this.configuration.accountId !== input.relayAccountId) {
+      throw new Error('账户服务确认的 Relay 与当前本机身份不一致。')
+    }
+    this.configuration = {
+      ...this.configuration,
+      accountBindingConfirmedAt: new Date().toISOString()
+    }
+    this.persistActiveConfiguration()
+  }
+
+  async enrollAccountDevice(input: CompanionDeviceEnrollmentInput): Promise<AccountRelayCredentials> {
+    const context = this.authenticatedContext()
+    const response = await fetchWithTimeout(
+      this.authenticatedUrl('/v1/devices/enroll', context.configuration),
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${context.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(input)
+      }
+    )
+    const enrollment = await responseJson<CompanionDeviceEnrollmentResult>(response)
+    if (
+      enrollment.protocolVersion !== companionProtocolVersion
+      || enrollment.accountId !== context.configuration.accountId
+      || enrollment.device.id !== input.deviceId
+    ) {
+      throw new Error('Companion Relay 返回了不兼容的设备授权。')
+    }
+    return {
+      relayURL: context.configuration.relayUrl,
+      accountID: context.configuration.accountId,
+      deviceID: enrollment.device.id,
+      deviceToken: enrollment.deviceToken,
+      encryptionKey: context.encryptionKey,
+      encryptionKeyId: context.configuration.encryptionKeyId!
+    }
+  }
+
+  async revokeAccountDevice(deviceId: string, grantId?: string): Promise<void> {
+    const context = this.authenticatedTokenContext()
+    if (deviceId === context.configuration.macDeviceId) throw new Error('不能撤销当前 Mac Host。')
+    const url = new URL(this.authenticatedUrl(
+      `/v1/devices/${encodeURIComponent(deviceId)}`,
+      context.configuration
+    ))
+    if (grantId) url.searchParams.set('grantId', grantId)
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${context.token}` }
+      }
+    )
+    if (response.status === 204) return
+    await responseJson(response)
+  }
+
+  async beginPairing(
+    relayUrl: string,
+    deviceName?: string,
+    syncSpaceId?: string,
+    ownerUserId?: string
+  ): Promise<CompanionPairingSession> {
+    await this.disconnecting?.catch(() => undefined)
     const previousConfiguration = this.configuration
+    const previousRevocationTarget = previousConfiguration
+      ? this.relayRevocationTarget(previousConfiguration)
+      : null
     const origin = normalizedRelayUrl(relayUrl)
     const macDeviceId = crypto.randomUUID()
-    const response = await fetchWithTimeout(`${origin}/v1/pairings`, {
+    const response = await fetchWithTimeout(relayRequestUrl(origin, '/v1/pairings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -352,7 +595,17 @@ export class CompanionSyncService {
       })
       throw new Error('Companion Relay 协议版本不兼容。')
     }
-    if (previousConfiguration) await this.revokeRemoteAccount()
+    if (previousConfiguration) {
+      try {
+        await this.revokeRemoteAccount(previousRevocationTarget!)
+      } catch (error) {
+        await this.revokePairingAccount(origin, pairing).catch(() => {
+          // Preserve the replacement error if the provisional Relay also cannot be cleaned up.
+        })
+        throw error
+      }
+    }
+    this.stopped = true
     this.closeTransports()
     if (previousConfiguration) {
       this.credentials.delete(this.tokenReference(previousConfiguration.accountId))
@@ -365,18 +618,20 @@ export class CompanionSyncService {
       accountId: pairing.accountId,
       macDeviceId: pairing.macDeviceId,
       pairedAt: new Date().toISOString(),
+      ownerUserId,
+      syncSpaceId,
       encryptionKeyId
     }
     this.credentials.set(this.tokenReference(pairing.accountId), pairing.macToken)
     this.credentials.set(this.encryptionKeyReference(pairing.accountId), encryptionKey)
-    this.database.setSetting(configurationKey, this.configuration)
+    this.persistActiveConfiguration()
+    this.validatedAccountRelaySignature = null
     this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
-    this.state = 'connecting'
+    this.state = ownerUserId ? 'disconnected' : 'connecting'
     this.lastError = null
+    this.iosDevicesOnline = null
     this.emitStatus()
-    this.ensureTimer()
-    this.connectSocket()
-    void this.syncNow()
+    if (!ownerUserId) void this.start()
     return {
       pairingPayload: JSON.stringify({
         ...(JSON.parse(pairing.pairingPayload) as Record<string, unknown>),
@@ -389,12 +644,110 @@ export class CompanionSyncService {
     }
   }
 
-  async disconnect(): Promise<void> {
-    if (this.configuration) await this.revokeRemoteAccount()
-    if (this.configuration) this.credentials.delete(this.tokenReference(this.configuration.accountId))
-    if (this.configuration) this.credentials.delete(this.encryptionKeyReference(this.configuration.accountId))
+  disconnect(): Promise<void> {
+    if (this.disconnecting) return this.disconnecting
+    const operation = this.disconnectCurrentRelay()
+    this.disconnecting = operation
+    const clear = (): void => {
+      if (this.disconnecting === operation) this.disconnecting = null
+    }
+    void operation.then(clear, clear)
+    return operation
+  }
+
+  disconnectAllAccountRelays(): Promise<void> {
+    if (this.disconnecting) {
+      return this.disconnecting.then(
+        () => this.disconnectAllAccountRelays(),
+        () => this.disconnectAllAccountRelays()
+      )
+    }
+    const operation = this.revokeAccountRelayConfigurations((configuration) => Boolean(configuration.ownerUserId))
+    this.disconnecting = operation
+    const clear = (): void => {
+      if (this.disconnecting === operation) this.disconnecting = null
+    }
+    void operation.then(clear, clear)
+    return operation
+  }
+
+  /** Drops Relay identities whose revocation is durably owned by the Account API. */
+  forgetAccountRelays(ownerUserId: string): void {
+    for (const configuration of this.accountRelayConfigurations()) {
+      if (configuration.ownerUserId === ownerUserId) this.forgetRelayIdentity(configuration)
+    }
+  }
+
+  private async disconnectCurrentRelay(): Promise<void> {
+    const configuration = this.configuration ? { ...this.configuration } : null
+    const token = configuration
+      ? this.credentials.get(this.tokenReference(configuration.accountId))
+      : null
+    await this.stopAndDrain()
+    if (!configuration) return
+    if (!token) throw new Error('Mac Companion 凭证不存在，请重新配对。')
+    const target = { configuration, token }
+    await this.revokeRemoteAccount(target)
+    this.forgetRelayIdentity(target.configuration)
+  }
+
+  private accountRelayConfigurations(): CompanionMacConfiguration[] {
+    const configurations = [
+      ...(this.configuration?.ownerUserId ? [this.configuration] : []),
+      ...Object.values(this.accountConfigurations).filter((configuration) => Boolean(configuration.ownerUserId))
+    ]
+    return configurations.filter((configuration, index) => (
+      configurations.findIndex((candidate) => this.sameRelayIdentity(candidate, configuration)) === index
+    ))
+  }
+
+  private async revokeAccountRelayConfigurations(
+    shouldRevoke: (configuration: CompanionMacConfiguration) => boolean
+  ): Promise<void> {
+    const configurations = this.accountRelayConfigurations().filter(shouldRevoke)
+    if (configurations.length === 0) return
+    if (this.configuration && configurations.some((configuration) => (
+      this.sameRelayIdentity(configuration, this.configuration!)
+    ))) {
+      await this.stopAndDrain()
+    }
+    const failures: Error[] = []
+    for (const configuration of configurations) {
+      try {
+        await this.revokeRemoteAccount(this.relayRevocationTarget(configuration))
+        this.forgetRelayIdentity(configuration)
+      } catch (error) {
+        failures.push(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, '部分旧账户连接尚未安全断开，请稍后重试。')
+    }
+  }
+
+  /** Clears a Relay identity already revoked by the Account API without making another remote request. */
+  forgetAccountRelay(): void {
+    if (!this.configuration) return
+    this.forgetRelayIdentity(this.configuration)
+  }
+
+  private forgetRelayIdentity(target: CompanionMacConfiguration): void {
+    this.credentials.delete(this.tokenReference(target.accountId))
+    this.credentials.delete(this.encryptionKeyReference(target.accountId))
+    let storedConfigurationChanged = false
+    for (const [key, configuration] of Object.entries(this.accountConfigurations)) {
+      if (!this.sameRelayIdentity(configuration, target)) continue
+      delete this.accountConfigurations[key]
+      storedConfigurationChanged = true
+    }
+    if (storedConfigurationChanged) {
+      this.database.setSetting(accountConfigurationsKey, this.accountConfigurations)
+    }
+    if (!this.configuration || !this.sameRelayIdentity(this.configuration, target)) return
     this.database.setSetting<CompanionMacConfiguration | null>(configurationKey, null)
     this.configuration = null
+    this.stopped = true
+    this.validatedAccountRelaySignature = null
     this.state = 'not-configured'
     this.realtimeState = 'disconnected'
     this.lastConnectedAt = null
@@ -402,6 +755,46 @@ export class CompanionSyncService {
     this.lastError = null
     this.closeTransports()
     this.emitStatus()
+  }
+
+  private sameRelayIdentity(left: CompanionMacConfiguration, right: CompanionMacConfiguration): boolean {
+    return left.relayUrl === right.relayUrl
+      && left.accountId === right.accountId
+      && left.macDeviceId === right.macDeviceId
+  }
+
+  private persistActiveConfiguration(): void {
+    this.database.setSetting(configurationKey, this.configuration)
+    if (!this.configuration?.ownerUserId) return
+    this.accountConfigurations[this.configuration.ownerUserId] = this.configuration
+    this.database.setSetting(accountConfigurationsKey, this.accountConfigurations)
+  }
+
+  private legacyConfigurationKey(configuration: CompanionMacConfiguration): string {
+    return `legacy:${configuration.syncSpaceId ?? configuration.accountId}`
+  }
+
+  private takeAccountConfiguration(
+    ownerUserId: string,
+    syncSpaceId?: string
+  ): CompanionMacConfiguration | null {
+    const owned = this.accountConfigurations[ownerUserId]
+    if (owned) return owned
+    const legacy = Object.entries(this.accountConfigurations).find(([, configuration]) => (
+      !configuration.ownerUserId
+      && (!configuration.syncSpaceId || !syncSpaceId || configuration.syncSpaceId === syncSpaceId)
+    ))
+    if (!legacy) return null
+    const [legacyKey, configuration] = legacy
+    delete this.accountConfigurations[legacyKey]
+    const claimed = {
+      ...configuration,
+      ownerUserId,
+      syncSpaceId: configuration.syncSpaceId ?? syncSpaceId
+    }
+    this.accountConfigurations[ownerUserId] = claimed
+    this.database.setSetting(accountConfigurationsKey, this.accountConfigurations)
+    return claimed
   }
 
   async syncNow(): Promise<CompanionMacStatus> {
@@ -434,16 +827,20 @@ export class CompanionSyncService {
     this.emitStatus()
     try {
       await this.flushOutbox()
+      if (this.stopped) return this.getStatus()
       await this.processPendingCommands()
+      if (this.stopped) return this.getStatus()
       this.state = 'connected'
       this.lastSyncedAt = new Date().toISOString()
       const isolatedEvents = this.database.countDeadLetterCompanionEvents()
       this.lastError = isolatedEvents > 0
-        ? `已隔离 ${isolatedEvents} 条无法安全发送的 Companion 事件；其余事件已继续同步。`
+        ? `有 ${isolatedEvents} 条内容无法发送，其他内容已继续同步。`
         : null
     } catch (error) {
-      this.state = 'error'
-      this.lastError = error instanceof Error ? error.message : 'Companion 同步失败。'
+      if (!this.stopped) {
+        this.state = 'error'
+        this.lastError = error instanceof Error ? error.message : 'Companion 同步失败。'
+      }
     } finally {
       this.emitStatus()
     }
@@ -452,17 +849,36 @@ export class CompanionSyncService {
 
   stop(): void {
     this.stopped = true
+    for (const controller of this.activeCommandAbortControllers.values()) {
+      controller.abort(new Error('账户连接已停止，这次手机操作未继续执行。'))
+    }
     this.closeTransports()
+    this.state = this.configuration ? 'disconnected' : 'not-configured'
+    this.realtimeState = 'disconnected'
+    this.iosDevicesOnline = null
+    this.emitStatus()
+  }
+
+  async stopAndDrain(): Promise<void> {
+    this.stop()
+    await this.activeSync?.catch(() => undefined)
+    await Promise.all([...this.activeCommands.values()].map(async (command) => {
+      await command.catch(() => undefined)
+    }))
   }
 
   private async flushOutbox(): Promise<void> {
+    if (this.stopped) return
     const context = this.authenticatedContext()
     while (true) {
+      if (this.stopped) return
       const pending = this.database.listPendingCompanionEvents(companionEventBatchMaximumCount)
       if (pending.length === 0) return
       const prepared: CompanionEncryptedSyncEventInput[] = []
       for (const event of pending) {
+        if (this.stopped) return
         const payload = await this.prepareEventPayload(event)
+        if (this.stopped) return
         let plaintext: CompanionSyncEventInput
         try {
           plaintext = syncEventSchema.parse({
@@ -560,6 +976,7 @@ export class CompanionSyncService {
         prepared.push(encrypted)
       }
       for (const batch of partitionCompanionEventBatches(prepared)) {
+        if (this.stopped) return
         try {
           await this.publishEventBatch(batch, context)
         } catch (error) {
@@ -584,19 +1001,24 @@ export class CompanionSyncService {
       headers,
       body: JSON.stringify({ events })
     })
+    if (this.stopped) return
     if (response.status === 404 || response.status === 405) {
       for (const event of events) {
+        if (this.stopped) return
         const fallback = await fetchWithTimeout(this.authenticatedUrl('/v1/events', context.configuration), {
           method: 'POST',
           headers,
           body: JSON.stringify(event)
         })
+        if (this.stopped) return
         await responseJson(fallback)
+        if (this.stopped) return
         this.database.markCompanionEventPublished(event.eventId, new Date().toISOString())
       }
       return
     }
     await responseJson<CompanionEventBatchResult>(response)
+    if (this.stopped) return
     const publishedAt = new Date().toISOString()
     for (const event of events) this.database.markCompanionEventPublished(event.eventId, publishedAt)
   }
@@ -844,7 +1266,14 @@ export class CompanionSyncService {
     const response = await fetchWithTimeout(this.authenticatedUrl('/v1/commands/pending', context.configuration), {
       headers: { Authorization: `Bearer ${context.token}` }
     })
-    const body = await responseJson<{ commands: unknown[] }>(response)
+    if (this.stopped) return
+    const body = await responseJson<{ commands: unknown[]; revokedCommandIds?: unknown }>(response)
+    if (Array.isArray(body.revokedCommandIds)) {
+      this.cancelRevokedCommands(body.revokedCommandIds
+        .filter((commandId): commandId is string => typeof commandId === 'string')
+        .slice(0, maximumRevokedCommandFences))
+    }
+    if (this.stopped) return
     const commands = await Promise.all(body.commands.map(async (value) => {
       const encrypted = companionPendingEncryptedCommandSchema.parse(value)
       const payload = await openCompanionJson(
@@ -858,42 +1287,50 @@ export class CompanionSyncService {
         payload
       })
     }))
+    if (this.stopped) return
     const createCommands = commands.filter((command) => command.type === 'agent.create-session')
     await Promise.all(createCommands.map((command) => this.scheduleCommand(command)))
     for (const remoteCommand of commands) {
+      if (this.stopped) return
       if (remoteCommand.type === 'agent.create-session') continue
       const runId = this.commandRunId(remoteCommand)
       const activeCreation = runId ? this.activeRunCreations.get(runId) : null
       if (activeCreation) await activeCreation
+      if (this.stopped) return
       this.scheduleCommand(remoteCommand)
     }
     if (commands.length >= 100) this.scheduleEventSync()
   }
 
   private scheduleCommand(remoteCommand: CompanionCommand): Promise<void> {
+    if (this.stopped || this.revokedCommandIds.has(remoteCommand.commandId)) return Promise.resolve()
     const active = this.activeCommands.get(remoteCommand.commandId)
     if (active) return active
     const createdRunId = remoteCommand.type === 'agent.create-session'
       ? this.commandRunId(remoteCommand)
       : null
-    const operation = this.executeCommand(remoteCommand)
+    const abortController = new AbortController()
+    const operation = this.executeCommand(remoteCommand, abortController.signal)
       .catch((error) => {
         this.lastError = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
         this.emitStatus()
       })
       .finally(() => {
         this.activeCommands.delete(remoteCommand.commandId)
+        this.activeCommandAbortControllers.delete(remoteCommand.commandId)
         if (createdRunId && this.activeRunCreations.get(createdRunId) === operation) {
           this.activeRunCreations.delete(createdRunId)
         }
         this.scheduleEventSync()
       })
     this.activeCommands.set(remoteCommand.commandId, operation)
+    this.activeCommandAbortControllers.set(remoteCommand.commandId, abortController)
     if (createdRunId) this.activeRunCreations.set(createdRunId, operation)
     return operation
   }
 
-  private async executeCommand(remoteCommand: CompanionCommand): Promise<void> {
+  private async executeCommand(remoteCommand: CompanionCommand, cancellationSignal: AbortSignal): Promise<void> {
+    if (this.revokedCommandIds.has(remoteCommand.commandId)) return
     const existing = this.database.getCompanionCommand(remoteCommand.commandId)
     const recovery = companionCommandRecovery(existing?.status ?? null)
     if (recovery === 'ack-terminal' && existing) {
@@ -936,12 +1373,16 @@ export class CompanionSyncService {
     await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'executing' })
     let result: unknown
     try {
-      result = await this.performCommand(remoteCommand)
+      result = await this.performCommand(remoteCommand, cancellationSignal)
+      if (this.revokedCommandIds.has(remoteCommand.commandId) || cancellationSignal.aborted) {
+        throw cancellationSignal.reason ?? new Error('发起操作的 iPhone 已退出登录，这次操作已取消。')
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
       const updated = this.database.updateCompanionCommand(remoteCommand.commandId, 'failed', null, message)
       this.database.enqueueCompanionCommandUpdate(updated)
       this.emitDataChanged()
+      if (this.revokedCommandIds.has(remoteCommand.commandId)) return
       await this.updateRemoteCommand(remoteCommand.commandId, remoteCommand.type, { status: 'failed', error: message })
       return
     }
@@ -958,11 +1399,13 @@ export class CompanionSyncService {
     return typeof runId === 'string' && runId.trim() ? runId.trim() : null
   }
 
-  private async performCommand(remoteCommand: CompanionCommand): Promise<unknown> {
+  private async performCommand(remoteCommand: CompanionCommand, cancellationSignal: AbortSignal): Promise<unknown> {
+    if (cancellationSignal.aborted) throw cancellationSignal.reason
     const payload = remoteCommand.payload as Record<string, unknown>
     switch (remoteCommand.type) {
       case 'assistant.send-message': {
         const attachments = await this.materializeIncomingAttachments(remoteCommand.commandId, payload)
+        if (cancellationSignal.aborted) throw cancellationSignal.reason
         const images = attachments
           .filter((attachment) => ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(attachment.descriptor.mimeType))
           .map((attachment): WorkAssistantImageAttachment => ({
@@ -972,7 +1415,11 @@ export class CompanionSyncService {
             dataUrl: `data:${attachment.descriptor.mimeType};base64,${attachment.bytes.toString('base64')}`
           }))
         if (images.length !== attachments.length) throw new Error('工作助理当前只支持图片附件。')
-        return await this.askWorkAssistant(this.requiredString(payload, 'prompt'), images)
+        return await this.askWorkAssistant(
+          this.requiredString(payload, 'prompt'),
+          images,
+          cancellationSignal
+        )
       }
       case 'assistant.execute-action': {
         if (!this.executeWorkAssistantAction) throw new Error('工作助理 Action 能力尚未初始化。')
@@ -980,7 +1427,7 @@ export class CompanionSyncService {
           messageId: this.requiredString(payload, 'messageId'),
           proposalId: this.requiredString(payload, 'proposalId'),
           optionId: this.requiredString(payload, 'optionId')
-        })
+        }, cancellationSignal)
       }
       case 'agent.send-message': {
         const runId = this.requiredString(payload, 'runId')
@@ -988,6 +1435,7 @@ export class CompanionSyncService {
           ? payload.clientMessageId.trim()
           : undefined
         const attachments = await this.materializeIncomingAttachments(remoteCommand.commandId, payload)
+        if (cancellationSignal.aborted) throw cancellationSignal.reason
         const attachmentContext = attachments.length > 0
           ? `\n\n用户从 iPhone 附加了以下本机文件，请按需读取：\n${attachments.map((attachment) => `- ${attachment.path}`).join('\n')}`
           : ''
@@ -995,7 +1443,9 @@ export class CompanionSyncService {
           runId,
           `${this.requiredString(payload, 'prompt')}${attachmentContext}`,
           () => this.scheduleEventSync(),
-          clientMessageId
+          clientMessageId,
+          [],
+          cancellationSignal
         )
       }
       case 'agent.stop-message':
@@ -1183,6 +1633,11 @@ export class CompanionSyncService {
       try {
         const message = JSON.parse(payload) as CompanionSocketMessage
         this.reconnectAttempt = 0
+        if ('presence' in message) {
+          this.iosDevicesOnline = message.presence.iosDevicesOnline
+          this.emitStatus()
+        }
+        if (message.type === 'commands.revoked') this.cancelRevokedCommands(message.commandIds)
         if (companionSocketMessageRequestsSync(message)) void this.syncNow()
       } catch {
         // A malformed push frame must not interrupt periodic synchronization.
@@ -1195,6 +1650,7 @@ export class CompanionSyncService {
     socket.on('close', () => {
       if (this.socket !== socket) return
       this.socket = null
+      this.iosDevicesOnline = null
       this.stopSocketHeartbeat()
       if (!this.stopped && this.configuration) {
         this.realtimeState = 'disconnected'
@@ -1210,6 +1666,21 @@ export class CompanionSyncService {
         this.reconnectTimer.unref?.()
       }
     })
+  }
+
+  private cancelRevokedCommands(commandIds: string[]): void {
+    for (const commandId of commandIds) {
+      if (typeof commandId !== 'string' || !commandId) continue
+      this.revokedCommandIds.add(commandId)
+      this.activeCommandAbortControllers.get(commandId)?.abort(
+        new Error('发起操作的 iPhone 已退出登录，这次操作已取消。')
+      )
+    }
+    while (this.revokedCommandIds.size > maximumRevokedCommandFences) {
+      const oldest = this.revokedCommandIds.values().next().value
+      if (typeof oldest !== 'string') break
+      this.revokedCommandIds.delete(oldest)
+    }
   }
 
   private startSocketHeartbeat(socket: WebSocket): void {
@@ -1256,19 +1727,24 @@ export class CompanionSyncService {
   }
 
   private authenticatedUrl(path: string, configuration: CompanionMacConfiguration): string {
-    const url = new URL(path, configuration.relayUrl)
+    const url = relayRequestUrl(configuration.relayUrl, path)
     url.searchParams.set('accountId', configuration.accountId)
     url.searchParams.set('deviceId', configuration.macDeviceId)
     return url.toString()
   }
 
-  private async revokeRemoteAccount(): Promise<void> {
-    const context = this.authenticatedTokenContext()
-    const response = await fetchWithTimeout(this.authenticatedUrl('/v1/account', context.configuration), {
+  private relayRevocationTarget(configuration: CompanionMacConfiguration): RelayRevocationTarget {
+    const token = this.credentials.get(this.tokenReference(configuration.accountId))
+    if (!token) throw new Error('Mac Companion 凭证不存在，请重新配对。')
+    return { configuration: { ...configuration }, token }
+  }
+
+  private async revokeRemoteAccount(target: RelayRevocationTarget): Promise<void> {
+    const response = await fetchWithTimeout(this.authenticatedUrl('/v1/account', target.configuration), {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${context.token}` }
+      headers: { Authorization: `Bearer ${target.token}` }
     })
-    if (response.status === 204) return
+    if (response.status === 204 || response.status === 404) return
     await responseJson(response)
   }
 
@@ -1338,6 +1814,7 @@ export class CompanionSyncService {
     this.reconnectAttempt = 0
     this.stopSocketHeartbeat()
     this.realtimeState = 'disconnected'
+    this.iosDevicesOnline = null
     const socket = this.socket
     this.socket = null
     closeCompanionSocket(socket)

@@ -207,10 +207,6 @@
   font-size: 11px;
 }
 
-.settings-pairing-panel {
-  margin-top: 16px;
-}
-
 .settings-recovery-alert {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

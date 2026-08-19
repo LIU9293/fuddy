@@ -1,9 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto'
 
-const relayUrl = process.env.COMPANION_RELAY_URL ?? 'https://project-agent-companion-relay.moghub.workers.dev'
+const relayUrl = process.env.COMPANION_RELAY_URL ?? 'https://fuddy.ai/api/relay'
+
+function relayEndpoint(path) {
+  return new URL(path.replace(/^\/+/, ''), `${relayUrl.replace(/\/+$/, '')}/`)
+}
 
 function authenticatedUrl(path, accountId, deviceId) {
-  const url = new URL(path, relayUrl)
+  const url = relayEndpoint(path)
   url.searchParams.set('accountId', accountId)
   url.searchParams.set('deviceId', deviceId)
   return url
@@ -15,17 +19,17 @@ async function json(response) {
   return body
 }
 
-const health = await json(await fetch(`${relayUrl}/health`))
+const health = await json(await fetch(relayEndpoint('/health')))
 if (health.protocolVersion !== 1) throw new Error('Unexpected protocol version')
 
 const macDeviceId = randomUUID()
-const pairing = await json(await fetch(`${relayUrl}/v1/pairings`, {
+const pairing = await json(await fetch(relayEndpoint('/v1/pairings'), {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ macDeviceId, macDeviceName: 'Relay Smoke Test Mac' })
 }))
 
-const phone = await json(await fetch(`${relayUrl}/v1/pairings/claim`, {
+const phone = await json(await fetch(relayEndpoint('/v1/pairings/claim'), {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({

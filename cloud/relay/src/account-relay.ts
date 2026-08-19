@@ -8,6 +8,8 @@ import type {
   CompanionEncryptedSyncEventInput,
   CompanionCommandUpdate,
   CompanionDevice,
+  CompanionDeviceEnrollmentInput,
+  CompanionDeviceEnrollmentResult,
   CompanionDeviceRole,
   CompanionEventBatchResult,
   CompanionPairingClaimInput,
@@ -23,6 +25,7 @@ interface DeviceRow extends Record<string, SqlStorageValue> {
   name: string
   token_hash: string
   public_key: string | null
+  grant_generation: string | null
   created_at: string
   last_seen_at: string | null
   revoked_at: string | null
@@ -55,6 +58,28 @@ interface CommandRow extends Record<string, SqlStorageValue> {
   updated_at: string
 }
 
+interface AttachmentRow extends Record<string, SqlStorageValue> {
+  attachment_id: string
+  storage_key: string
+  uploaded_by: string
+  sha256: string
+  size: number
+  account_generation: number | null
+  created_at: string
+}
+
+interface AttachmentRecord {
+  storageKey: string
+  uploadedBy: string
+  sha256: string
+  size: number
+}
+
+type AttachmentCommitResult =
+  | { status: 'committed' }
+  | { status: 'unauthorized' }
+  | { status: 'existing'; attachment: AttachmentRecord }
+
 interface SocketAttachment {
   deviceId: string
   role: CompanionDeviceRole
@@ -65,11 +90,35 @@ interface PushDeviceRow extends Record<string, SqlStorageValue> {
   push_token: string
 }
 
+interface PushRequest {
+  pushType: 'alert' | 'background'
+  priority: '5' | '10'
+  collapseId: string
+  body: Record<string, unknown>
+}
+
 const lastSeenWriteIntervalMs = 5 * 60_000
 const maximumRetainedEvents = 50_000
 const maximumRetainedCommands = 5_000
 const terminalCommandRetentionDays = 30
 const maintenanceIntervalMs = 24 * 60 * 60 * 1_000
+
+export function agentTurnAlertPushRequest(event: CompanionEncryptedSyncEvent): PushRequest {
+  return {
+    pushType: 'alert',
+    priority: '10',
+    collapseId: `agent-turn-${event.entityId}`.slice(0, 64),
+    body: {
+      aps: {
+        alert: { title: 'Agent Run 已结束', body: '打开 Fuddy 查看结果' },
+        sound: 'default',
+        'content-available': 1
+      },
+      sequence: event.sequence,
+      runId: event.entityId
+    }
+  }
+}
 
 function randomToken(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength)
@@ -173,9 +222,20 @@ export class AccountRelay extends DurableObject<Env> {
         name TEXT NOT NULL,
         token_hash TEXT NOT NULL,
         public_key TEXT,
+        grant_generation TEXT,
         created_at TEXT NOT NULL,
         last_seen_at TEXT,
         revoked_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS account_authority (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        generation INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS account_cleanup (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        device_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,6 +263,20 @@ export class AccountRelay extends DurableObject<Env> {
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS commands_status_idx ON commands(status, created_at);
+      CREATE TABLE IF NOT EXISTS revoked_commands (
+        command_id TEXT PRIMARY KEY,
+        revoked_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS revoked_commands_time_idx ON revoked_commands(revoked_at);
+      CREATE TABLE IF NOT EXISTS attachments (
+        attachment_id TEXT PRIMARY KEY,
+        storage_key TEXT NOT NULL UNIQUE,
+        uploaded_by TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        account_generation INTEGER,
+        created_at TEXT NOT NULL
+      );
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (1, datetime('now'));
     `)
     const deviceColumns = this.ctx.storage.sql.exec<{ name: string }>('PRAGMA table_info(devices)').toArray()
@@ -248,6 +322,24 @@ export class AccountRelay extends DurableObject<Env> {
         `INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (5, datetime('now'))`
       )
     }
+    if (!deviceColumns.some((column) => column.name === 'grant_generation')) {
+      this.ctx.storage.sql.exec('ALTER TABLE devices ADD COLUMN grant_generation TEXT')
+    }
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (6, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (7, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (8, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (9, datetime('now'));
+    `)
+    this.ctx.storage.sql.exec(`
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (10, datetime('now'));
+    `)
   }
 
   async initializePairing(input: {
@@ -317,6 +409,109 @@ export class AccountRelay extends DurableObject<Env> {
     }
   }
 
+  async enrollDevice(
+    macDeviceId: string,
+    macToken: string,
+    accountId: string,
+    input: CompanionDeviceEnrollmentInput
+  ): Promise<CompanionDeviceEnrollmentResult | null> {
+    const mac = await this.authorize(macDeviceId, macToken, 'mac')
+    if (!mac) return null
+    const now = new Date().toISOString()
+    const deviceToken = randomToken()
+    const tokenHash = await secretHash(deviceToken)
+    this.ctx.storage.sql.exec(
+      `INSERT INTO devices (
+        id, role, platform, name, token_hash, public_key, grant_generation,
+        created_at, last_seen_at, revoked_at
+      ) VALUES (?, 'ios', 'ios', ?, ?, ?, ?, ?, NULL, NULL)
+      ON CONFLICT(id) DO UPDATE SET
+        role = 'ios', platform = 'ios', name = excluded.name, token_hash = excluded.token_hash,
+        public_key = excluded.public_key, grant_generation = excluded.grant_generation,
+        last_seen_at = NULL, revoked_at = NULL`,
+      input.deviceId,
+      input.deviceName,
+      tokenHash,
+      input.publicKey ?? null,
+      input.grantId ?? null,
+      now
+    )
+    const row = this.ctx.storage.sql.exec<DeviceRow>('SELECT * FROM devices WHERE id = ?', input.deviceId).one()
+    return {
+      minimumProtocolVersion: companionMinimumProtocolVersion,
+      protocolVersion: companionProtocolVersion,
+      accountId,
+      device: mapDevice(row),
+      deviceToken
+    }
+  }
+
+  async revokeDevice(
+    macDeviceId: string,
+    macToken: string,
+    deviceId: string,
+    grantId?: string
+  ): Promise<boolean> {
+    const mac = await this.authorize(macDeviceId, macToken, 'mac')
+    if (!mac || deviceId === macDeviceId) return false
+    const device = this.ctx.storage.sql.exec<DeviceRow>(
+      `SELECT * FROM devices WHERE id = ? AND role = 'ios' AND revoked_at IS NULL`,
+      deviceId
+    ).toArray()[0]
+    if (!device) return true
+    if (grantId && device.grant_generation && device.grant_generation !== grantId) return true
+    this.ctx.storage.sql.exec(
+      'UPDATE devices SET revoked_at = ?, token_hash = ? WHERE id = ?',
+      new Date().toISOString(),
+      '',
+      deviceId
+    )
+    this.discardPendingCommandsFromDevice(deviceId)
+    for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
+      try { socket.close(1000, 'Device revoked') } catch { /* Already closed. */ }
+    }
+    this.broadcastPresence()
+    return true
+  }
+
+  async revokeSelfDevice(deviceId: string, token: string): Promise<boolean> {
+    const device = await this.authorize(deviceId, token, 'ios')
+    if (!device) return false
+    this.ctx.storage.sql.exec(
+      'UPDATE devices SET revoked_at = ?, token_hash = ? WHERE id = ?',
+      new Date().toISOString(),
+      '',
+      deviceId
+    )
+    this.discardPendingCommandsFromDevice(deviceId)
+    for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
+      try { socket.close(1000, 'Device signed out') } catch { /* Already closed. */ }
+    }
+    this.broadcastPresence()
+    return true
+  }
+
+  async revokeDeviceByAuthority(deviceId: string, grantId?: string): Promise<boolean> {
+    const device = this.ctx.storage.sql.exec<DeviceRow>(
+      `SELECT * FROM devices WHERE id = ? AND role = 'ios' AND revoked_at IS NULL`,
+      deviceId
+    ).toArray()[0]
+    if (!device) return true
+    if (grantId && device.grant_generation && device.grant_generation !== grantId) return false
+    this.ctx.storage.sql.exec(
+      'UPDATE devices SET revoked_at = ?, token_hash = ? WHERE id = ?',
+      new Date().toISOString(),
+      '',
+      deviceId
+    )
+    this.discardPendingCommandsFromDevice(deviceId)
+    for (const socket of this.ctx.getWebSockets(`device:${deviceId}`)) {
+      try { socket.close(1000, 'Device revoked') } catch { /* Already closed. */ }
+    }
+    this.broadcastPresence()
+    return true
+  }
+
   async authorize(deviceId: string, token: string, requiredRole?: CompanionDeviceRole): Promise<CompanionDevice | null> {
     const suppliedHash = await secretHash(token)
     const row = this.ctx.storage.sql.exec<DeviceRow>(
@@ -331,6 +526,72 @@ export class AccountRelay extends DurableObject<Env> {
     const lastSeenAt = new Date().toISOString()
     this.ctx.storage.sql.exec('UPDATE devices SET last_seen_at = ? WHERE id = ?', lastSeenAt, deviceId)
     return { ...mapDevice(row), lastSeenAt }
+  }
+
+  async createAttachmentUploadLease(
+    deviceId: string,
+    token: string,
+    attachmentId: string
+  ): Promise<{ accountGeneration: number | null; existing: AttachmentRecord | null } | null> {
+    const device = await this.authorize(deviceId, token)
+    if (!device) return null
+    const existing = this.ctx.storage.sql.exec<AttachmentRow>(
+      'SELECT * FROM attachments WHERE attachment_id = ?',
+      attachmentId
+    ).toArray()[0]
+    return {
+      accountGeneration: this.getAccountGeneration(),
+      existing: existing ? this.mapAttachmentRecord(existing) : null
+    }
+  }
+
+  async commitAttachmentUploadLease(
+    deviceId: string,
+    token: string,
+    input: {
+      attachmentId: string
+      storageKey: string
+      sha256: string
+      size: number
+      accountGeneration: number | null
+    }
+  ): Promise<AttachmentCommitResult> {
+    const device = await this.authorize(deviceId, token)
+    if (!device || this.getAccountGeneration() !== input.accountGeneration) {
+      return { status: 'unauthorized' }
+    }
+    const existing = this.ctx.storage.sql.exec<AttachmentRow>(
+      'SELECT * FROM attachments WHERE attachment_id = ?',
+      input.attachmentId
+    ).toArray()[0]
+    if (existing) return { status: 'existing', attachment: this.mapAttachmentRecord(existing) }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO attachments (
+        attachment_id, storage_key, uploaded_by, sha256, size, account_generation, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      input.attachmentId,
+      input.storageKey,
+      deviceId,
+      input.sha256,
+      input.size,
+      input.accountGeneration,
+      new Date().toISOString()
+    )
+    return { status: 'committed' }
+  }
+
+  async resolveAttachmentStorageKey(
+    deviceId: string,
+    token: string,
+    attachmentId: string
+  ): Promise<{ storageKey: string | null } | null> {
+    const device = await this.authorize(deviceId, token)
+    if (!device) return null
+    const row = this.ctx.storage.sql.exec<AttachmentRow>(
+      'SELECT * FROM attachments WHERE attachment_id = ?',
+      attachmentId
+    ).toArray()[0]
+    return { storageKey: row?.storage_key ?? null }
   }
 
   async appendEvent(
@@ -423,6 +684,10 @@ export class AccountRelay extends DurableObject<Env> {
 
   async createCommand(deviceId: string, token: string, input: CompanionEncryptedCommandInput): Promise<CompanionEncryptedCommand> {
     await this.requireAuthorization(deviceId, token, 'ios')
+    const revoked = this.ctx.storage.sql.exec<{ command_id: string }>(
+      'SELECT command_id FROM revoked_commands WHERE command_id = ?', input.commandId
+    ).toArray()[0]
+    if (revoked) throw new Error('远程命令已被撤销，不能重复提交。')
     const existing = this.ctx.storage.sql.exec<{ command_id: string }>(
       'SELECT command_id FROM commands WHERE command_id = ?', input.commandId
     ).toArray()[0]
@@ -460,12 +725,21 @@ export class AccountRelay extends DurableObject<Env> {
     ).toArray().map(mapCommand)
   }
 
-  async pendingCommands(deviceId: string, token: string): Promise<CompanionEncryptedCommand[] | null> {
+  async pendingCommands(
+    deviceId: string,
+    token: string
+  ): Promise<{ commands: CompanionEncryptedCommand[]; revokedCommandIds: string[] } | null> {
     const device = await this.authorize(deviceId, token, 'mac')
     if (!device) return null
-    return this.ctx.storage.sql.exec<CommandRow>(
-      `SELECT * FROM commands WHERE status IN ('queued', 'delivered', 'executing') ORDER BY created_at ASC LIMIT 100`
-    ).toArray().map(mapCommand)
+    return {
+      commands: this.ctx.storage.sql.exec<CommandRow>(
+        `SELECT * FROM commands WHERE status IN ('queued', 'delivered', 'executing') ORDER BY created_at ASC LIMIT 100`
+      ).toArray().map(mapCommand),
+      revokedCommandIds: this.ctx.storage.sql.exec<{ command_id: string }>(
+        'SELECT command_id FROM revoked_commands ORDER BY revoked_at DESC LIMIT ?',
+        maximumRetainedCommands
+      ).toArray().map((command) => command.command_id)
+    }
   }
 
   async updateCommand(
@@ -516,17 +790,92 @@ export class AccountRelay extends DurableObject<Env> {
     }
   }
 
-  async revokeAccount(deviceId: string, token: string): Promise<void> {
-    await this.requireAuthorization(deviceId, token, 'mac')
+  async revokeAccount(deviceId: string, token: string): Promise<boolean> {
+    const suppliedHash = await secretHash(token)
+    const cleanup = this.ctx.storage.sql.exec<{ device_id: string; token_hash: string }>(
+      'SELECT device_id, token_hash FROM account_cleanup WHERE id = 1'
+    ).toArray()[0]
+    if (cleanup) {
+      return cleanup.device_id === deviceId && secretsEqual(cleanup.token_hash, suppliedHash)
+    }
+    const mac = this.ctx.storage.sql.exec<DeviceRow>(
+      `SELECT * FROM devices WHERE id = ? AND role = 'mac' AND revoked_at IS NULL`,
+      deviceId
+    ).toArray()[0]
+    if (!mac || !secretsEqual(mac.token_hash, suppliedHash)) return false
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO account_cleanup (id, device_id, token_hash, created_at)
+       VALUES (1, ?, ?, ?)`,
+      deviceId,
+      suppliedHash,
+      new Date().toISOString()
+    )
+    return this.revokeAccountState(undefined, true)
+  }
+
+  async authorizeAccountRevocation(deviceId: string, token: string): Promise<boolean> {
+    const suppliedHash = await secretHash(token)
+    const cleanup = this.ctx.storage.sql.exec<{ device_id: string; token_hash: string }>(
+      'SELECT device_id, token_hash FROM account_cleanup WHERE id = 1'
+    ).toArray()[0]
+    if (cleanup) {
+      return cleanup.device_id === deviceId && secretsEqual(cleanup.token_hash, suppliedHash)
+    }
+    const mac = this.ctx.storage.sql.exec<DeviceRow>(
+      `SELECT * FROM devices WHERE id = ? AND role = 'mac' AND revoked_at IS NULL`,
+      deviceId
+    ).toArray()[0]
+    return Boolean(mac && secretsEqual(mac.token_hash, suppliedHash))
+  }
+
+  async completeAccountRevocationCleanup(deviceId: string, token: string): Promise<boolean> {
+    const suppliedHash = await secretHash(token)
+    const cleanup = this.ctx.storage.sql.exec<{ device_id: string; token_hash: string }>(
+      'SELECT device_id, token_hash FROM account_cleanup WHERE id = 1'
+    ).toArray()[0]
+    if (!cleanup || cleanup.device_id !== deviceId || !secretsEqual(cleanup.token_hash, suppliedHash)) {
+      return false
+    }
+    this.ctx.storage.sql.exec('DELETE FROM account_cleanup WHERE id = 1')
+    return true
+  }
+
+  setAccountGeneration(generation: number): void {
+    if (!Number.isSafeInteger(generation) || generation < 1) {
+      throw new Error('Relay account generation must be a positive integer.')
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO account_authority (id, generation) VALUES (1, ?)
+       ON CONFLICT(id) DO UPDATE SET generation = excluded.generation
+       WHERE excluded.generation > account_authority.generation`,
+      generation
+    )
+  }
+
+  async revokeAccountByAuthority(generation?: number): Promise<boolean> {
+    return this.revokeAccountState(generation, false)
+  }
+
+  private revokeAccountState(generation: number | undefined, preserveDirectCleanup: boolean): boolean {
+    const currentGeneration = this.ctx.storage.sql.exec<{ generation: number }>(
+      'SELECT generation FROM account_authority WHERE id = 1'
+    ).toArray()[0]?.generation
+    if (generation !== undefined && currentGeneration !== undefined && generation !== currentGeneration) {
+      return false
+    }
     const revokedAt = new Date().toISOString()
     this.ctx.storage.sql.exec('UPDATE devices SET revoked_at = ?, token_hash = ?', revokedAt, '')
     for (const socket of this.ctx.getWebSockets()) {
       try { socket.close(1000, 'Account disconnected') } catch { /* Already closed. */ }
     }
     this.ctx.storage.sql.exec('DELETE FROM commands')
+    this.ctx.storage.sql.exec('DELETE FROM revoked_commands')
     this.ctx.storage.sql.exec('DELETE FROM events')
     this.ctx.storage.sql.exec('DELETE FROM pairing')
+    this.ctx.storage.sql.exec('DELETE FROM attachments')
     this.ctx.storage.sql.exec('DELETE FROM devices')
+    if (!preserveDirectCleanup) this.ctx.storage.sql.exec('DELETE FROM account_cleanup')
+    return true
   }
 
   getLastSequence(): number {
@@ -535,9 +884,49 @@ export class AccountRelay extends DurableObject<Env> {
     ).one().sequence ?? 0
   }
 
+  private getAccountGeneration(): number | null {
+    return this.ctx.storage.sql.exec<{ generation: number }>(
+      'SELECT generation FROM account_authority WHERE id = 1'
+    ).toArray()[0]?.generation ?? null
+  }
+
+  private discardPendingCommandsFromDevice(deviceId: string): void {
+    const commandIds = this.ctx.storage.sql.exec<{ command_id: string }>(
+      `SELECT command_id FROM commands
+       WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
+      deviceId
+    ).toArray().map((command) => command.command_id)
+    const revokedAt = new Date().toISOString()
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO revoked_commands (command_id, revoked_at)
+       SELECT command_id, ? FROM commands
+       WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
+      revokedAt,
+      deviceId
+    )
+    this.ctx.storage.sql.exec(
+      `DELETE FROM commands
+       WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
+      deviceId
+    )
+    if (commandIds.length > 0) {
+      this.broadcast({ type: 'commands.revoked', commandIds }, 'role:mac')
+    }
+  }
+
+  private mapAttachmentRecord(row: AttachmentRow): AttachmentRecord {
+    return {
+      storageKey: row.storage_key,
+      uploadedBy: row.uploaded_by,
+      sha256: row.sha256,
+      size: row.size
+    }
+  }
+
   async alarm(): Promise<void> {
     this.compactAcknowledgedEvents()
     this.pruneTerminalCommands()
+    this.pruneRevokedCommands()
     const activeDevices = this.ctx.storage.sql.exec<{ count: number }>(
       'SELECT COUNT(*) AS count FROM devices WHERE revoked_at IS NULL'
     ).one().count
@@ -650,6 +1039,20 @@ export class AccountRelay extends DurableObject<Env> {
     `, `-${terminalCommandRetentionDays} days`)
   }
 
+  private pruneRevokedCommands(): void {
+    this.ctx.storage.sql.exec(
+      `DELETE FROM revoked_commands WHERE revoked_at < datetime('now', ?)`,
+      `-${terminalCommandRetentionDays} days`
+    )
+    this.ctx.storage.sql.exec(
+      `DELETE FROM revoked_commands WHERE command_id IN (
+        SELECT command_id FROM revoked_commands
+        ORDER BY revoked_at DESC LIMIT -1 OFFSET ?
+      )`,
+      maximumRetainedCommands
+    )
+  }
+
   private async ensureMaintenanceAlarm(): Promise<void> {
     if (await this.ctx.storage.getAlarm() === null) {
       await this.ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
@@ -712,28 +1115,11 @@ export class AccountRelay extends DurableObject<Env> {
   }
 
   private async sendAgentTurnAlertPush(event: CompanionEncryptedSyncEvent): Promise<void> {
-    await this.sendPush({
-      pushType: 'alert',
-      priority: '10',
-      collapseId: `agent-turn-${event.entityId}`.slice(0, 64),
-      body: {
-        aps: {
-          alert: { title: 'Agent Run 已结束', body: '打开 Fuddy 查看结果' },
-          sound: 'default',
-          'content-available': 1
-        },
-        sequence: event.sequence
-      }
-    }, true)
+    await this.sendPush(agentTurnAlertPushRequest(event), true)
   }
 
   private async sendPush(
-    request: {
-      pushType: 'alert' | 'background'
-      priority: '5' | '10'
-      collapseId: string
-      body: Record<string, unknown>
-    },
+    request: PushRequest,
     includeConnectedDevices: boolean
   ): Promise<void> {
     if (!this.env.APNS_TEAM_ID || !this.env.APNS_KEY_ID || !this.env.APNS_PRIVATE_KEY || !this.env.APNS_TOPIC) return

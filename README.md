@@ -2,7 +2,7 @@
 
 > 面向自由职业者与个人开发者的多项目 AI 助理。当前仓库已进入 Electron 桌面端 MVP 开发阶段。
 
-## 当前实现状态（2026-08-13）
+## 当前实现状态（2026-08-19）
 
 当前版本已经跑通从项目上下文、决策事项到真实 Agent Session 的桌面端主链路：
 
@@ -19,12 +19,13 @@
 - Mac 主区域统一使用纯色页面背景和全宽顶部 Header；项目列表是独立页面，Agent Run Session 按项目分组常驻主侧边栏且只在运行时显示加载图标，列表总标题和项目分组标题都可直接新建 Run；主侧边栏支持拖拽调整宽度；临时成功和错误提示会在 5 秒后自动消失；
 - Renderer App Shell 使用单一的 route 状态机表达页面、项目 Section、Settings 返回路径和 Run 选择，领域数据通过可按 Projects、Goals、Decisions、Runs 等 key 独立订阅的 store 更新；Sidebar、Route Outlet、Goal Composer 与跨页面 Workflow 均有独立边界，`App.tsx` 只负责应用装配。
 - 主进程、Renderer 未处理异常及 Electron 子进程异常已接入 Sentry 崩溃报告。
+- 账户改造已进入可运行首版：独立 `cloud/account-api` Worker 使用 D1 管理 Email / Google Identity、短期 access token、完整历史重放检测的原子 refresh token 轮换、Device、Mac Host、默认 Sync Space 与 enrollment；生产 Worker 已部署到 `https://fuddy.ai/api/account`，邮箱验证码通过已验证的 Resend `fuddy.ai` 域名发送，发送冷却和校验次数都由 D1 原子占位，签名 Webhook 会幂等记录投递结果并抑制退信/投诉地址。Mac 必须先登录，随后按“检测 Coding Agent → 添加第一个项目（可跳过）”完成两步 onboarding；手机连接不再是设置步骤。Fuddy session 与设备私钥只进入 credential vault。一个账户可以同时登录多台 Mac，每台 Mac 对应独立同步空间；iPhone 登录同一账户后直接恢复上次空间，否则自动进入最近在线的空间，在线 Mac 会自动授权并开始有序回放，不要求扫码或手动选择，并可从侧边栏或设置随时切换。每台 iPhone、每个空间都有独立 grant、Relay Token、Space Data Key 与本地缓存，切换不会混合内容。Account API 会把设备/空间撤销与账户状态变更原子写入 D1，再通过私有 Cloudflare Service Binding 立即执行；失败任务由 Cron 持久重试，账户与设备撤销都携带 enrollment generation，旧任务不能撤销重新登录或重新授权后的 Relay。Mac 轮询保留为恢复路径。在线 Mac 使用设备 P-256 公钥和 ECDH/HKDF/AES-GCM 封装授权，账户服务器只保存密文 grant。安全提醒邮件、完整账户删除、分段 baseline v2、主动 wake-up、密钥轮换与 Sign in with Apple 仍是正式多用户发布前的未完成项。
 - SQLite 使用递增版本和逐步事务执行迁移；迁移失败不会推进版本。领域读写已按 Projects、Goals、Runs、Connectors、Briefings、Automations、Companion 与 Decisions 拆成独立 Repository，`AppDatabase` 只负责连接、迁移与组合。已发布的 Companion outbox 事件默认保留 30 天并分批清理，避免本地同步历史无限增长；无法满足契约或传输上限的单条事件会进入可见的本地隔离状态，不会阻塞其后的有序队列。
-- Companion 的事件、实体和 Payload，以及远程命令与 Payload 使用同一套强类型协议；本地 outbox DTO 与 Relay wire DTO 明确分型，Relay 在写入前执行完整嵌套 Zod 校验并移除已知协议版本中的未知字段。Swift 事件/命令枚举、命令 Payload、Snapshot 和非实体 Event Payload 由共享 manifest 生成。生成器还为核心同步 DTO 生成协议指纹，配对时由 iOS 校验，避免同一协议版本的 Mac / iOS 构建在数据结构漂移后静默互通；未知未来事件类型仍可被安全忽略。
+- Companion 的事件、实体和 Payload，以及远程命令与 Payload 使用同一套强类型协议；本地 outbox DTO 与 Relay wire DTO 明确分型，Relay 在写入前执行完整嵌套 Zod 校验并移除已知协议版本中的未知字段。Swift 事件/命令枚举、命令 Payload、Snapshot 和非实体 Event Payload 由共享 manifest 生成。生成器还为核心同步 DTO 生成协议指纹，构建检查会阻止 Mac / iOS DTO 漂移后发布；未知未来事件类型仍可被安全忽略。
 - Agent Run 通过 Provider Registry 调度。Pi、Codex、Claude Code 与 OpenCode 分别注册 Adapter 和能力声明；Task Dispatcher 不再包含 Provider-specific 执行分支，Renderer 的 Bootstrap 订阅与主进程事件重试也已从 App Shell 抽离。
 - 所有聊天输入框已支持语音输入。Mac 首次录音会明确请求系统麦克风权限；已拒绝时打开“隐私与安全性 → 麦克风”供用户恢复授权。Mac 默认使用可选下载的 Whisper `large-v3-turbo Q5` 本地模型，未安装或本地失败时可回退到 OpenAI-compatible `/audio/transcriptions`；iPhone Release 构建通过准备脚本把同一模型预置进 App，并始终在设备上转写。录音只填入输入框，不会自动发送。
-- 已加入原生 SwiftUI iOS Companion 工程。Mac 可显示一次性配对二维码，iPhone 使用 VisionKit 原生扫码连接；本地 SQLite outbox 会把项目、目标、决策、每日总结、工作助理、Agent Run、消息和产物增量同步到 Cloudflare Relay。outbox 仍逐条落盘，但网络层按最多 100 条 / 512 KiB 批量提交；配对 baseline 使用轻量快照加按实体 / 聊天页有序事件，大型历史页会保留能安全传输的最新记录与续传游标，极端页面从较小窗口恢复，不会让大量 Run 或附件阻塞首次同步。协议升级时 Relay 保留仍待回放的加密事件，Mac 会用原版本关联数据排空既有加密命令并以当前协议回传终态，避免静默丢失用户操作。命令状态不重复携带原始输入，只有历史分页和附件上传保留 iPhone 真正消费的结果，超限结果会降级为可恢复失败。工具完整输出只留在 Mac，Relay 与 iPhone 只接收工具类别、完成 / 失败状态、可读摘要和最多 600 字的细节。手机以顶部“助理 / Runs”切换和侧边栏组织导航，Run 列表按项目分组，列表总标题和分组标题均可创建由 Mac 落库的 Draft Run；工作助理与 Agent Run 共用同一种 Chat Record、100 个展示 Block 的初始窗口、默认落在最新消息的滚动逻辑，以及向上滚动触发的受约束历史分页；差异只保留 Agent、预置 Prompt、附件能力和特殊卡片。两类聊天共用支持照片 / 文件上传的输入组件，但隐藏 Mac 专属的 Agent / 模型 / Reasoning 选择入口；每日总结直接进入助理时间线，Agent 的思考摘要与工具操作在运行中实时显示，完成后按同一阶段结构整体折叠。项目详情提供与 Mac 对齐的概览 / 设置，可编辑基本信息、产品上下文、一个或多个 Workspace、主 Workspace、默认 Agent、入口与数据源，并通过受约束的 `project.update` 命令交由 Mac 落库。Session 聊天不再内嵌产物列表，右上角“信息与文件”Modal 集中展示基本信息和文件；缺少云端副本时，iPhone 会通过受约束的命令请求在线 Mac 实时上传，再进行大小与 SHA-256 校验并用 Quick Look 打开。手机也支持离线缓存、收件箱处理和 Session 重命名 / 归档，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
-- Companion Relay 默认地址为 [`project-agent-companion-relay.moghub.workers.dev`](https://project-agent-companion-relay.moghub.workers.dev)，使用 Durable Objects、Hibernation WebSocket 和私有 R2。事件、命令结果与附件使用配对时本地交换的账户密钥进行 AES-256-GCM 端到端加密；Relay 只保存密文、路由元数据和状态，不持有解密密钥。配对密钥一次有效、设备 Token 只保存哈希，Mac 解除绑定会撤销设备并清理 Relay 数据。每批事件在 DO 内一次授权并通过 SQLite 同步事务幂等写入，随后只发送一个 `sync.available(lastSequence)` 唤醒提示；Mac 与 iPhone 收到提示后仍以 ordered replay 为准。Relay 对配对、事件与命令实施独立限流和存储配额，并根据设备 ACK 压缩已被快照覆盖的历史。APNs 只携带通用唤醒/完成提醒，不包含业务正文；Release 配置默认使用 production APNs，开发命令显式覆盖为 development。
+- 已加入原生 SwiftUI iOS Companion 工程。iPhone 登录 Fuddy 后会自动发现同账户的 Sync Space，由在线 Mac 完成设备授权并开始同步；新版界面不再提供二维码扫描或手动配对。本地 SQLite outbox 会把项目、目标、决策、每日总结、工作助理、Agent Run、消息和产物增量同步到 Cloudflare Relay。outbox 仍逐条落盘，但网络层按最多 100 条 / 512 KiB 批量提交；首次 baseline 使用轻量快照加按实体 / 聊天页有序事件，大型历史页会保留能安全传输的最新记录与续传游标，极端页面从较小窗口恢复，不会让大量 Run 或附件阻塞首次同步。协议升级时 Relay 保留仍待回放的加密事件，Mac 会用原版本关联数据排空既有加密命令并以当前协议回传终态，避免静默丢失用户操作。命令状态不重复携带原始输入，只有历史分页和附件上传保留 iPhone 真正消费的结果，超限结果会降级为可恢复失败。工具完整输出只留在 Mac，Relay 与 iPhone 只接收工具类别、完成 / 失败状态、可读摘要和最多 600 字的细节。手机以顶部“助理 / Runs”切换和侧边栏组织导航，Run 列表按项目分组，列表总标题和分组标题均可创建由 Mac 落库的 Draft Run；工作助理与 Agent Run 共用同一种 Chat Record、100 个展示 Block 的初始窗口、默认落在最新消息的滚动逻辑，以及向上滚动触发的受约束历史分页；差异只保留 Agent、预置 Prompt、附件能力和特殊卡片。两类聊天共用支持照片 / 文件上传的输入组件，但隐藏 Mac 专属的 Agent / 模型 / Reasoning 选择入口；每日总结直接进入助理时间线，Agent 的思考摘要与工具操作在运行中实时显示，完成后按同一阶段结构整体折叠。项目详情提供与 Mac 对齐的概览 / 设置，可编辑基本信息、产品上下文、一个或多个 Workspace、主 Workspace、默认 Agent、入口与数据源，并通过受约束的 `project.update` 命令交由 Mac 落库。Session 聊天不再内嵌产物列表，右上角“信息与文件”Modal 集中展示基本信息和文件；缺少云端副本时，iPhone 会通过受约束的命令请求在线 Mac 实时上传，再进行大小与 SHA-256 校验并用 Quick Look 打开。手机也支持离线缓存、收件箱处理和 Session 重命名 / 归档，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
+- Companion Relay 默认地址为 [`fuddy.ai/api/relay`](https://fuddy.ai/api/relay/health)，使用 Durable Objects、Hibernation WebSocket 和私有 R2；旧 [`workers.dev`](https://project-agent-companion-relay.moghub.workers.dev) 入口与旧的一次性配对协议继续保留，供已安装版本无损升级，但新版客户端只走账户授权。事件、命令结果与附件使用在线 Mac 为设备封装的 Space Data Key 进行 AES-256-GCM 端到端加密；Relay 只保存密文、路由元数据和状态，不持有解密密钥。设备 Token 只保存哈希，账户设备撤销会同步撤销 Relay 访问。每批事件在 DO 内一次授权并通过 SQLite 同步事务幂等写入，随后只发送一个 `sync.available(lastSequence)` 唤醒提示；Mac 与 iPhone 收到提示后仍以 ordered replay 为准。Relay 对旧配对入口、事件与命令实施独立限流和存储配额，并根据设备 ACK 压缩已被快照覆盖的历史。APNs 只携带通用唤醒/完成提醒，不包含业务正文；Release 配置默认使用 production APNs，开发命令显式覆盖为 development。
 
 目前仍属于本机 / 个人设备 MVP。仓库已提供 macOS Developer ID 签名、公证、自动更新、Relay 部署与 iOS Simulator XCTest 的 CI / Release 门禁；真正公开分发前仍需在 GitHub 环境中配置 Apple、Cloudflare 和 APNs 凭证，并完成真实签名包、TestFlight 与生产 Relay 的端到端验收。
 
@@ -554,6 +555,17 @@ npm run prepare:whisper
 npm run dev
 ```
 
+首次开发账户流程时，在另一个终端准备本地 Account API。复制 `cloud/account-api/.dev.vars.example` 为不受版本控制的 `.dev.vars`，填入仅供开发的值，然后执行：
+
+```bash
+cd cloud/account-api
+npm install
+npx wrangler d1 migrations apply project-agent-account --local
+npm run dev
+```
+
+Fuddy Dev 默认连接 `http://127.0.0.1:8788`。Production 默认连接 `https://fuddy.ai/api/account`，可通过 `FUDDY_ACCOUNT_API_URL` 显式覆盖；Mac 与 iOS Release 已内置公开的 Google OAuth Client ID，开发构建仍保持本地 Account API 隔离。Account API 的 `GOOGLE_CLIENT_IDS` 必须包含 Mac Client ID 与 iOS 使用的 Server Client ID。生产 Resend Key、OAuth Secret、OTP pepper 与 session pepper 只能放部署环境或 Cloudflare Secrets，不能提交到仓库。
+
 `npm run dev` 始终启动隔离的 **Fuddy Dev**，使用 `~/Library/Application Support/ai-native-project-agent-dev`。它与 `/Applications/Fuddy.app` 的 production 数据库、凭证、Companion 配对、Agent Session、自动化调度和单实例锁完全分离，因此两者可以同时运行。开发与 QA 不得把 production Fuddy 当作测试目标；需要测试打包形态时使用 `npm run package:smoke` 或 `npm run dist:mac:dev`，产物拥有独立的 `dev.ainative.projectagent.dev` Bundle ID 且禁用自动更新。production Fuddy 继续使用 `~/Library/Application Support/ai-native-project-agent`，保证现有安装升级后仍能读取原数据。
 
 验证：
@@ -564,6 +576,10 @@ npm test
 npm run build
 npm run relay:typecheck
 npm run relay:test
+npm run account:typecheck
+npm run account:test
+npm run account:deploy:dry-run
+npm run account:deploy:production:dry-run
 npm run ios:generate
 npm run ios:typecheck
 RUN_AGENT_TOOLS_SMOKE=1 npx vitest run src/main/services/third-party-mcp-runtime.integration.test.ts

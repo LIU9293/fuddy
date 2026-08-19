@@ -1,6 +1,7 @@
 import type { EvidenceRef } from '../../shared/contracts'
 import { CredentialVault } from '../services/credential-vault'
 import type { ConnectorAdapter, ConnectorCollection, ConnectorContext, ConnectorProbe, ConnectorSignal } from './types'
+import { timeoutSignal } from '../services/cancellation'
 
 type FetchLike = typeof fetch
 type JsonRecord = Record<string, unknown>
@@ -105,7 +106,7 @@ export class CloudflareConnector implements ConnectorAdapter {
   private async request(path: string, context: ConnectorContext): Promise<JsonRecord> {
     const response = await this.fetchImpl(`https://api.cloudflare.com/client/v4${path}`, {
       headers: { Authorization: `Bearer ${this.token(context)}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout(20_000)
+      signal: timeoutSignal(20_000, context.cancellationSignal)
     })
     const body = await response.json() as JsonRecord
     if (!response.ok || body.success === false) {
@@ -133,7 +134,7 @@ export class CloudflareConnector implements ConnectorAdapter {
         Accept: 'application/json'
       },
       body: JSON.stringify({ query, variables: { zoneTag: zoneId } }),
-      signal: AbortSignal.timeout(20_000)
+      signal: timeoutSignal(20_000, context.cancellationSignal)
     })
     const body = await response.json() as JsonRecord
     if (!response.ok || Array.isArray(body.errors)) throw new Error(`Cloudflare Analytics API 请求失败（${response.status}）。`)

@@ -48,6 +48,26 @@ ipcRenderer.on('navigation:open-agent-run', (_event, runId: unknown) => {
 })
 
 const api: DesktopApi = {
+  getAccountState: () => ipcRenderer.invoke('account:get-state'),
+  startEmailSignIn: (email: string) => ipcRenderer.invoke('account:start-email-sign-in', { email }),
+  verifyEmailSignIn: (input) => ipcRenderer.invoke('account:verify-email-sign-in', input),
+  signInWithGoogle: () => ipcRenderer.invoke('account:sign-in-google'),
+  listAccountIdentities: () => ipcRenderer.invoke('account:list-identities'),
+  linkGoogleAccount: () => ipcRenderer.invoke('account:link-google'),
+  unlinkGoogleAccount: () => ipcRenderer.invoke('account:unlink-google'),
+  listAccountDevices: () => ipcRenderer.invoke('account:list-devices'),
+  revokeAccountDevice: (deviceId: string) => ipcRenderer.invoke('account:revoke-device', { deviceId }),
+  logoutAccount: () => ipcRenderer.invoke('account:logout'),
+  logoutAllAccounts: () => ipcRenderer.invoke('account:logout-all'),
+  onAccountStateChanged: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: import('../shared/account').AccountState): void => callback(state)
+    ipcRenderer.on('account:state-changed', listener)
+    return () => ipcRenderer.removeListener('account:state-changed', listener)
+  },
+  detectCodingAgents: () => ipcRenderer.invoke('onboarding:detect-coding-agents'),
+  completeAgentDetection: () => ipcRenderer.invoke('onboarding:complete-agent-detection'),
+  selectOnboardingProjectFolder: () => ipcRenderer.invoke('onboarding:select-project-folder'),
+  completeProjectOnboarding: (input) => ipcRenderer.invoke('onboarding:complete-project', input),
   getBootstrap: () => ipcRenderer.invoke('app:get-bootstrap'),
   getBootstrapPatch: (keys: AppBootstrapDataKey[]) => ipcRenderer.invoke('app:get-bootstrap-patch', keys),
   requestComputerUsePermissions: () => ipcRenderer.invoke('capability:request-computer-permissions'),
@@ -107,8 +127,7 @@ const api: DesktopApi = {
     ipcRenderer.invoke('agent-run:update-execution-settings', input),
   archiveAgentRun: (id: string) => ipcRenderer.invoke('agent-run:archive', id),
   getCompanionStatus: () => ipcRenderer.invoke('companion:get-status'),
-  beginCompanionPairing: (relayUrl: string) => ipcRenderer.invoke('companion:begin-pairing', relayUrl),
-  disconnectCompanion: () => ipcRenderer.invoke('companion:disconnect'),
+  getCompanionRelayConfiguration: () => ipcRenderer.invoke('companion:get-relay-configuration'),
   syncCompanionNow: () => ipcRenderer.invoke('companion:sync-now'),
   onCompanionStatusChanged: (callback: (status: CompanionMacStatus) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, status: CompanionMacStatus): void => callback(status)

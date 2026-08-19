@@ -112,14 +112,14 @@ enum CompanionCrypto {
 
     private static func symmetricKey(_ encoded: String) throws -> SymmetricKey {
         guard let bytes = Data(base64URLEncoded: encoded), bytes.count == 32 else {
-            throw RelayError.integrity("Companion 端到端加密密钥无效，请重新配对。")
+            throw RelayError.integrity("同步密钥无效，请退出 Fuddy 后重新登录。")
         }
         return SymmetricKey(data: bytes)
     }
 
     private static func keyIdentifier(_ encoded: String) throws -> String {
         guard let bytes = Data(base64URLEncoded: encoded), bytes.count == 32 else {
-            throw RelayError.integrity("Companion 端到端加密密钥无效，请重新配对。")
+            throw RelayError.integrity("同步密钥无效，请退出 Fuddy 后重新登录。")
         }
         return Data(SHA256.hash(data: bytes)).base64URLEncodedString().prefix(16).description
     }

@@ -40,14 +40,6 @@ export function getCapabilities(providerSettings?: ProviderSettings): Capability
     agentEndpointReady(providerSettings.agent.primary) ||
     (providerSettings.agent.backupEnabled && agentEndpointReady(providerSettings.agent.backup))
   ))
-  const effectiveAgent = providerSettings && agentEndpointReady(providerSettings.agent.primary)
-    ? providerSettings.agent.primary
-    : providerSettings?.agent.backupEnabled && agentEndpointReady(providerSettings.agent.backup)
-      ? providerSettings.agent.backup
-      : providerSettings?.agent.primary
-  const agentLabel = effectiveAgent?.mode === 'cc-switch-codex-oauth'
-    ? 'CC Switch · Codex OAuth'
-    : 'OpenAI Compatible Provider'
   const primaryTts = providerSettings?.tts.primary
   const ttsEndpointReady = (endpoint: ProviderSettings['tts']['primary']): boolean =>
     endpoint.mode === 'system' || endpoint.apiKeyConfigured
@@ -67,42 +59,42 @@ export function getCapabilities(providerSettings?: ProviderSettings): Capability
   return [
     {
       id: 'pi',
-      label: 'Agent Runtime',
+      label: 'Fuddy Agent',
       status: hasAgentProvider ? 'ready' : 'needs-setup',
-      detail: hasAgentProvider ? `已连接 ${agentLabel}` : '等待模型 Provider 配置'
+      detail: hasAgentProvider ? '已连接，可用于工作助理' : '选择一个可用模型后即可使用'
     },
     {
       id: 'browser',
-      label: 'Browser Use',
+      label: '浏览网页',
       status: 'ready',
-      detail: 'Browser Use 0.13.7 · Headless 独立 Profile · Agent MCP'
+      detail: '可以在独立浏览器中查找和读取网页'
     },
     {
       id: 'computer',
-      label: 'Computer Use',
+      label: '操作 Mac 应用',
       status: screenAccess === 'granted' && accessibilityAccess ? 'ready' : 'needs-setup',
       detail:
         screenAccess === 'granted' && accessibilityAccess
-          ? 'CUA Driver 0.19.0 · Embedded MCP · 后台窗口操作'
-          : `屏幕录制：${screenAccess} · 辅助功能：${accessibilityAccess ? '已授权' : '未授权'}`
+          ? '可以操作已允许的 Mac 应用'
+          : '需要开启屏幕录制与辅助功能权限'
     },
     {
       id: 'codex',
       label: 'Codex',
       status: codex.available ? 'ready' : 'needs-setup',
-      detail: codex.available ? codex.version ?? 'CLI 已检测' : '未检测到 Codex CLI'
+      detail: codex.available ? '已安装' : '未安装'
     },
     {
       id: 'claude',
       label: 'Claude',
       status: claude.available ? 'ready' : 'needs-setup',
-      detail: claude.available ? claude.version ?? 'CLI 已检测' : '未检测到 Claude CLI'
+      detail: claude.available ? '已安装' : '未安装'
     },
     {
       id: 'opencode',
       label: 'OpenCode',
       status: opencode.available ? 'ready' : 'needs-setup',
-      detail: opencode.available ? opencode.version ?? 'CLI 已检测' : '未检测到 OpenCode CLI'
+      detail: opencode.available ? '已安装' : '未安装'
     },
     {
       id: 'tts',

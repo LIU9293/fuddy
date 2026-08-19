@@ -1,6 +1,7 @@
+import { WorkerEntrypoint } from 'cloudflare:workers'
 import type {
   CompanionDevice,
-  CompanionEncryptedSyncEventInput,
+  CompanionDeviceEnrollmentResult,
   CompanionEventBatchResult,
   CompanionEncryptedEventPage,
   CompanionPairingStartResult,
@@ -11,25 +12,25 @@ import { AccountRelay } from './account-relay'
 import {
   commandSchema,
   commandUpdateSchema,
+  deviceEnrollmentSchema,
   pairingClaimSchema,
   pairingStartSchema,
   pushRegistrationSchema,
   syncEventBatchSchema,
   syncEventSchema
 } from './schemas'
+import {
+  assertEncryptedEventPayloadSizes,
+  enforceRateLimit,
+  HttpError
+} from './request-guards'
 
 export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 const maximumAttachmentBytes = 100 * 1024 * 1024 + 32
-export const maximumEncryptedEventPayloadBytes = 1_900_000
 const relayBuild = '2026-08-18.1'
-
-class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message)
-  }
-}
+const canonicalRelayPathPrefix = '/api/relay'
 
 function randomToken(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength)
@@ -67,20 +68,47 @@ function requiredSearchParam(url: URL, name: string): string {
   return value
 }
 
-export function assertEncryptedEventPayloadSizes(inputs: CompanionEncryptedSyncEventInput[]): void {
-  for (const input of inputs) {
-    const payloadBytes = new TextEncoder().encode(JSON.stringify(input.payload)).byteLength
-    if (payloadBytes > maximumEncryptedEventPayloadBytes) {
-      throw new HttpError(
-        413,
-        `Encrypted event payload exceeds the ${maximumEncryptedEventPayloadBytes} byte Relay limit.`
-      )
-    }
+function publicRelayUrl(url: URL): string {
+  return url.pathname === canonicalRelayPathPrefix || url.pathname.startsWith(`${canonicalRelayPathPrefix}/`)
+    ? `${url.origin}${canonicalRelayPathPrefix}`
+    : url.origin
+}
+
+function routedRelayPath(pathname: string): string {
+  if (pathname === canonicalRelayPathPrefix) return '/'
+  if (pathname.startsWith(`${canonicalRelayPathPrefix}/`)) {
+    return pathname.slice(canonicalRelayPathPrefix.length)
   }
+  return pathname
 }
 
 function relay(env: Env, accountId: string): DurableObjectStub<AccountRelay> {
   return env.ACCOUNT_RELAY.getByName(accountId)
+}
+
+async function deleteAccountAttachments(env: Env, accountId: string): Promise<void> {
+  let cursor: string | undefined
+  do {
+    const page = await env.ATTACHMENTS.list({ prefix: `${accountId}/`, cursor })
+    if (page.objects.length > 0) await env.ATTACHMENTS.delete(page.objects.map((object) => object.key))
+    cursor = page.truncated ? page.cursor : undefined
+  } while (cursor)
+}
+
+export class RelayAdministration extends WorkerEntrypoint<Env> {
+  async revokeDevice(accountId: string, deviceId: string, grantId?: string): Promise<boolean> {
+    return await relay(this.env, accountId).revokeDeviceByAuthority(deviceId, grantId)
+  }
+
+  async setAccountGeneration(accountId: string, generation: number): Promise<void> {
+    await relay(this.env, accountId).setAccountGeneration(generation)
+  }
+
+  async revokeAccount(accountId: string, generation?: number): Promise<boolean> {
+    const revoked = await relay(this.env, accountId).revokeAccountByAuthority(generation)
+    if (revoked) await deleteAccountAttachments(this.env, accountId)
+    return revoked
+  }
 }
 
 function relayRequestContext(request: Request, env: Env, url: URL): {
@@ -117,6 +145,8 @@ async function authenticatedContext(
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url)
+  const relayUrl = publicRelayUrl(url)
+  url.pathname = routedRelayPath(url.pathname)
   if (request.method === 'GET' && url.pathname === '/health') {
     return Response.json({
       status: 'ok',
@@ -146,7 +176,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const pairingPayload = JSON.stringify({
       minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
-      relayUrl: url.origin,
+      relayUrl,
       accountId,
       pairingSecret
     })
@@ -216,6 +246,45 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return Response.json(await context.stub.createCommand(context.deviceId, context.token, input), { status: 201 })
   }
 
+  if (request.method === 'POST' && url.pathname === '/v1/devices/enroll') {
+    const context = await authenticatedContext(request, env, url, 'mac')
+    const input = deviceEnrollmentSchema.parse(await readJson(request))
+    if (input.deviceId === context.deviceId) throw new HttpError(409, '不能把 Mac 设备覆盖为 iOS 设备。')
+    const enrollment = await context.stub.enrollDevice(
+      context.deviceId,
+      context.token,
+      context.accountId,
+      input
+    ) as CompanionDeviceEnrollmentResult | null
+    if (!enrollment) throw new HttpError(401, '设备认证失败。')
+    return Response.json(enrollment, { status: 201 })
+  }
+
+  if (request.method === 'GET' && url.pathname === '/v1/device') {
+    const context = await authenticatedContext(request, env, url)
+    return Response.json({ device: context.device })
+  }
+
+  if (request.method === 'DELETE' && url.pathname === '/v1/devices/self') {
+    const context = await authenticatedContext(request, env, url, 'ios')
+    const revoked = await context.stub.revokeSelfDevice(context.deviceId, context.token)
+    if (!revoked) throw new HttpError(401, '设备认证失败。')
+    return new Response(null, { status: 204 })
+  }
+
+  const deviceMatch = url.pathname.match(/^\/v1\/devices\/([^/]+)$/)
+  if (request.method === 'DELETE' && deviceMatch) {
+    const context = await authenticatedContext(request, env, url, 'mac')
+    const revoked = await context.stub.revokeDevice(
+      context.deviceId,
+      context.token,
+      decodeURIComponent(deviceMatch[1]),
+      url.searchParams.get('grantId') ?? undefined
+    )
+    if (!revoked) throw new HttpError(409, '不能通过设备接口撤销 Mac Host。')
+    return new Response(null, { status: 204 })
+  }
+
   if (request.method === 'PUT' && url.pathname === '/v1/devices/push-token') {
     const context = await authenticatedContext(request, env, url, 'ios')
     const input = pushRegistrationSchema.parse(await readJson(request))
@@ -225,9 +294,9 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
   if (request.method === 'GET' && url.pathname === '/v1/commands/pending') {
     const context = relayRequestContext(request, env, url)
-    const commands = await context.stub.pendingCommands(context.deviceId, context.token)
-    if (!commands) throw new HttpError(401, '设备认证失败。')
-    return Response.json({ commands })
+    const page = await context.stub.pendingCommands(context.deviceId, context.token)
+    if (!page) throw new HttpError(401, '设备认证失败。')
+    return Response.json(page)
   }
 
   const commandMatch = url.pathname.match(/^\/v1\/commands\/([^/]+)$/)
@@ -246,8 +315,14 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (attachmentMatch) {
     const context = await authenticatedContext(request, env, url)
     const attachmentId = attachmentMatch[1]
-    const key = `${context.accountId}/${attachmentId}`
+    const legacyKey = `${context.accountId}/${attachmentId}`
     if (request.method === 'PUT') {
+      const uploadLease = await context.stub.createAttachmentUploadLease(
+        context.deviceId,
+        context.token,
+        attachmentId
+      )
+      if (!uploadLease) throw new HttpError(401, '设备认证失败。')
       if (request.headers.get('X-Companion-Encryption') !== 'A256GCM') {
         throw new HttpError(400, 'End-to-end encrypted attachment envelope is required.')
       }
@@ -259,15 +334,29 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       if (!/^[a-f0-9]{64}$/.test(sha256)) {
         throw new HttpError(400, 'Attachment SHA-256 is required.')
       }
-      const existing = await env.ATTACHMENTS.head(key)
-      if (existing) {
-        const identicalRetry = existing.customMetadata?.uploadedBy === context.deviceId
-          && existing.customMetadata?.sha256 === sha256
-          && existing.size === contentLength
+      if (uploadLease.existing) {
+        const existing = await env.ATTACHMENTS.head(uploadLease.existing.storageKey)
+        if (!existing) throw new HttpError(503, 'Attachment storage is temporarily unavailable.')
+        const identicalRetry = uploadLease.existing.uploadedBy === context.deviceId
+          && uploadLease.existing.sha256 === sha256
+          && uploadLease.existing.size === contentLength
         if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
         return Response.json({ id: attachmentId, size: existing.size }, { status: 200 })
       }
-      await env.ATTACHMENTS.put(key, request.body, {
+
+      // Existing deployments stored attachments directly at accountId/attachmentId.
+      // Keep those immutable objects readable while all new uploads use unique keys.
+      const legacyObject = await env.ATTACHMENTS.head(legacyKey)
+      if (legacyObject) {
+        const identicalRetry = legacyObject.customMetadata?.uploadedBy === context.deviceId
+          && legacyObject.customMetadata?.sha256 === sha256
+          && legacyObject.size === contentLength
+        if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
+        return Response.json({ id: attachmentId, size: legacyObject.size }, { status: 200 })
+      }
+
+      const storageKey = `${context.accountId}/objects/${attachmentId}/${crypto.randomUUID()}`
+      await env.ATTACHMENTS.put(storageKey, request.body, {
         httpMetadata: {
           contentType: request.headers.get('Content-Type') ?? 'application/octet-stream'
         },
@@ -278,9 +367,42 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
           encryption: 'A256GCM'
         }
       })
-      return Response.json({ id: attachmentId, size: contentLength }, { status: 201 })
+      let commit: Awaited<ReturnType<typeof context.stub.commitAttachmentUploadLease>>
+      try {
+        commit = await context.stub.commitAttachmentUploadLease(
+          context.deviceId,
+          context.token,
+          {
+            attachmentId,
+            storageKey,
+            sha256,
+            size: contentLength,
+            accountGeneration: uploadLease.accountGeneration
+          }
+        )
+      } catch (error) {
+        await env.ATTACHMENTS.delete(storageKey)
+        throw error
+      }
+      if (commit.status === 'committed') {
+        return Response.json({ id: attachmentId, size: contentLength }, { status: 201 })
+      }
+      await env.ATTACHMENTS.delete(storageKey)
+      if (commit.status === 'unauthorized') throw new HttpError(401, '设备认证已失效。')
+      const identicalRetry = commit.attachment.uploadedBy === context.deviceId
+        && commit.attachment.sha256 === sha256
+        && commit.attachment.size === contentLength
+      if (!identicalRetry) throw new HttpError(409, 'Attachment IDs are immutable and already in use.')
+      return Response.json({ id: attachmentId, size: commit.attachment.size }, { status: 200 })
     }
     if (request.method === 'GET' || request.method === 'HEAD') {
+      const resolved = await context.stub.resolveAttachmentStorageKey(
+        context.deviceId,
+        context.token,
+        attachmentId
+      )
+      if (!resolved) throw new HttpError(401, '设备认证已失效。')
+      const key = resolved.storageKey ?? legacyKey
       const object = await env.ATTACHMENTS.get(key)
       if (!object) throw new HttpError(404, 'Attachment not found.')
       const headers = new Headers()
@@ -293,24 +415,17 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === 'DELETE' && url.pathname === '/v1/account') {
-    const context = await authenticatedContext(request, env, url, 'mac')
-    await context.stub.revokeAccount(context.deviceId, context.token)
-    let cursor: string | undefined
-    do {
-      const page = await env.ATTACHMENTS.list({ prefix: `${context.accountId}/`, cursor })
-      if (page.objects.length > 0) await env.ATTACHMENTS.delete(page.objects.map((object) => object.key))
-      cursor = page.truncated ? page.cursor : undefined
-    } while (cursor)
+    const context = relayRequestContext(request, env, url)
+    const canRevoke = await context.stub.authorizeAccountRevocation(context.deviceId, context.token)
+    if (!canRevoke) throw new HttpError(401, '设备认证失败。')
+    const authorized = await context.stub.revokeAccount(context.deviceId, context.token)
+    if (!authorized) throw new HttpError(401, '设备认证失败。')
+    await deleteAccountAttachments(env, context.accountId)
+    await context.stub.completeAccountRevocationCleanup(context.deviceId, context.token)
     return new Response(null, { status: 204 })
   }
 
   throw new HttpError(404, 'Route not found.')
-}
-
-export async function enforceRateLimit(binding: RateLimit, request: Request, scope: string): Promise<void> {
-  const client = request.headers.get('CF-Connecting-IP')?.trim() || 'unknown-client'
-  const outcome = await binding.limit({ key: `${scope}:${client}` })
-  if (!outcome.success) throw new HttpError(429, '请求过于频繁，请稍后重试。')
 }
 
 export default {

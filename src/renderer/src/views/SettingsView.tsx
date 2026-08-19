@@ -5,10 +5,8 @@ import {
   Bot,
   Check,
   ChevronDown,
-  ChevronRight,
   CircleAlert,
   CircleCheck,
-  Copy,
   Clock3,
   Database,
   Folder,
@@ -17,6 +15,7 @@ import {
   Inbox,
   Lightbulb,
   LayoutGrid,
+  Laptop,
   LoaderCircle,
   Mic2,
   MoreHorizontal,
@@ -34,12 +33,12 @@ import {
   Target,
   Workflow,
   X,
-  Trash2
+  Trash2,
+  UserRound
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { QRCodeSVG } from 'qrcode.react'
 import { ChatComposer } from '../components/ChatComposer'
 import { AgentRunsView } from '../components/AgentRunsView'
 import { ConversationMessageActions } from '../components/ConversationMessageActions'
@@ -88,16 +87,16 @@ import type {
   WorkAssistantTaskReference
 } from '../../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../../shared/project-workspaces'
-import type { CompanionMacStatus, CompanionPairingSession } from '../../../shared/companion-sync'
-import { defaultCompanionRelayUrl } from '../../../shared/companion-sync'
+import type { CompanionMacStatus } from '../../../shared/companion-sync'
 import { buildAgentModelLabels } from '../../../shared/model-display'
 import { agentProviderDefinitions, codingAgentProviders } from '../../../shared/agent-providers'
+import type { AccountDeviceSummary, AccountIdentity, AccountState } from '../../../shared/account'
+import { userFacingErrorMessage } from '../user-facing-error'
 import {
   codingAgentOptions,
   connectorStatusLabels,
   decisionWaitingReasonLabels,
   formatDecisionSource,
-  formatExpiryLabel,
   formatRelativeTime,
   kindIcons,
   kindLabels,
@@ -165,11 +164,14 @@ export function SettingsView({
   const [requestingComputerPermissions, setRequestingComputerPermissions] = useState(false)
   const [projectAgentBusy, setProjectAgentBusy] = useState<string | null>(null)
   const [companionStatus, setCompanionStatus] = useState<CompanionMacStatus | null>(null)
-  const [companionRelayUrl, setCompanionRelayUrl] = useState(defaultCompanionRelayUrl)
-  const [companionPairing, setCompanionPairing] = useState<CompanionPairingSession | null>(null)
-  const [companionBusy, setCompanionBusy] = useState<'pair' | 'sync' | 'disconnect' | null>(null)
+  const [companionRelayAvailable, setCompanionRelayAvailable] = useState(false)
+  const [companionBusy, setCompanionBusy] = useState<'sync' | null>(null)
   const [companionError, setCompanionError] = useState<string | null>(null)
-  const [showCompanionTechnicalDetails, setShowCompanionTechnicalDetails] = useState(false)
+  const [accountState, setAccountState] = useState<AccountState | null>(null)
+  const [accountIdentities, setAccountIdentities] = useState<AccountIdentity[]>([])
+  const [accountDevices, setAccountDevices] = useState<AccountDeviceSummary[]>([])
+  const [accountBusy, setAccountBusy] = useState(false)
+  const [accountError, setAccountError] = useState<string | null>(null)
   const [modelSettingsTab, setModelSettingsTab] = useState<'assistant' | 'coding'>('assistant')
   const [editingAgentSlot, setEditingAgentSlot] = useState<'primary' | 'backup' | null>(null)
   const [expandedCodingAgent, setExpandedCodingAgent] = useState<CodingAgentProvider | null>(null)
@@ -180,6 +182,7 @@ export function SettingsView({
   useAutoDismissMessage(connectorSetupError, () => setConnectorSetupError(null))
   useAutoDismissMessage(providerError, () => setProviderError(null))
   useAutoDismissMessage(companionError, () => setCompanionError(null))
+  useAutoDismissMessage(accountError, () => setAccountError(null))
   const visibleConnectors = bootstrap.connectors.filter((connector) => !projectId || connector.projectId === projectId)
   const catalogConnectors = bootstrap.connectorCatalog.filter(
     (item) => item.kind !== 'repo' && (item.kind === 'postgres' || item.availability === 'built-in')
@@ -188,6 +191,28 @@ export function SettingsView({
   const selectedPostgres = bootstrap.connectors.find(
     (connector) => connector.projectId === projectId && connector.kind === 'postgres'
   )
+
+  useEffect(() => {
+    if (section !== 'general') return
+    let active = true
+    void window.projectAgent.getAccountState().then(async (state) => {
+      if (!active) return
+      setAccountState(state)
+      if (state.status !== 'signed-in') return
+      try {
+        const [identities, devices] = await Promise.all([
+          window.projectAgent.listAccountIdentities(),
+          window.projectAgent.listAccountDevices()
+        ])
+        if (!active) return
+        setAccountIdentities(identities)
+        setAccountDevices(devices)
+      } catch (error) {
+        if (active) setAccountError(userFacingErrorMessage(error, '无法读取账户设备。'))
+      }
+    })
+    return () => { active = false }
+  }, [section])
 
   useEffect(() => {
     setAgentPrimary(bootstrap.providerSettings.agent.primary)
@@ -199,6 +224,86 @@ export function SettingsView({
     setTtsBackup(bootstrap.providerSettings.tts.backup)
     setTtsBackupEnabled(bootstrap.providerSettings.tts.backupEnabled)
   }, [bootstrap.providerSettings])
+
+  async function logoutAccount(): Promise<void> {
+    if (accountBusy) return
+    setAccountBusy(true)
+    setAccountError(null)
+    try {
+      setAccountState(await window.projectAgent.logoutAccount())
+    } catch (error) {
+      setAccountError(userFacingErrorMessage(error, '退出账户失败。'))
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
+  async function logoutAllAccounts(): Promise<void> {
+    if (accountBusy) return
+    setAccountBusy(true)
+    setAccountError(null)
+    try {
+      setAccountState(await window.projectAgent.logoutAllAccounts())
+    } catch (error) {
+      setAccountError(userFacingErrorMessage(error, '退出所有设备失败。'))
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
+  async function toggleGoogleIdentity(): Promise<void> {
+    if (accountBusy) return
+    setAccountBusy(true)
+    setAccountError(null)
+    try {
+      const linked = accountIdentities.some((identity) => identity.provider === 'google')
+      setAccountIdentities(
+        linked
+          ? await window.projectAgent.unlinkGoogleAccount()
+          : await window.projectAgent.linkGoogleAccount()
+      )
+    } catch (error) {
+      setAccountError(userFacingErrorMessage(error, 'Google 账户连接失败。'))
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
+  async function revokeAccountDevice(deviceId: string): Promise<void> {
+    if (accountBusy) return
+    setAccountBusy(true)
+    setAccountError(null)
+    try {
+      await window.projectAgent.revokeAccountDevice(deviceId)
+      setAccountDevices(await window.projectAgent.listAccountDevices())
+      onNotice('设备访问已撤销。')
+    } catch (error) {
+      setAccountError(userFacingErrorMessage(error, '设备撤销失败。'))
+    } finally {
+      setAccountBusy(false)
+    }
+  }
+
+  async function retryAccountDetails(): Promise<void> {
+    if (accountBusy) return
+    setAccountBusy(true)
+    setAccountError(null)
+    try {
+      const state = await window.projectAgent.getAccountState()
+      setAccountState(state)
+      if (state.status !== 'signed-in') return
+      const [identities, devices] = await Promise.all([
+        window.projectAgent.listAccountIdentities(),
+        window.projectAgent.listAccountDevices()
+      ])
+      setAccountIdentities(identities)
+      setAccountDevices(devices)
+    } catch (error) {
+      setAccountError(userFacingErrorMessage(error, '暂时无法读取账户信息。'))
+    } finally {
+      setAccountBusy(false)
+    }
+  }
 
   useEffect(() => {
     if (section !== 'voice') return
@@ -229,12 +334,14 @@ export function SettingsView({
 
   useEffect(() => {
     let active = true
-    void window.projectAgent
-      .getCompanionStatus()
-      .then((status) => {
+    void Promise.all([
+      window.projectAgent.getCompanionStatus(),
+      window.projectAgent.getCompanionRelayConfiguration()
+    ])
+      .then(([status, relay]) => {
         if (!active) return
         setCompanionStatus(status)
-        if (status.configuration) setCompanionRelayUrl(status.configuration.relayUrl)
+        setCompanionRelayAvailable(relay.available)
       })
       .catch((error: unknown) => {
         if (active) setCompanionError(error instanceof Error ? error.message : '无法读取 iPhone Companion 状态。')
@@ -419,11 +526,11 @@ export function SettingsView({
       await onRefresh()
       onNotice(
         computer?.status === 'ready'
-          ? 'Computer Use 所需的屏幕录制与辅助功能权限已就绪。'
-          : '已打开 macOS 权限设置。完成授权后请重启 Fuddy，使 CUA Driver 继承新的权限。'
+          ? '操作 Mac 应用所需的权限已开启。'
+          : '已打开 macOS 系统设置。完成授权后，请重新打开 Fuddy。'
       )
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : '无法请求 Computer Use 权限。')
+      onNotice(error instanceof Error ? error.message : '无法打开权限设置，请稍后重试。')
     } finally {
       setRequestingComputerPermissions(false)
     }
@@ -454,57 +561,18 @@ export function SettingsView({
     }
   }
 
-  async function beginCompanionPairing(): Promise<void> {
-    if (companionBusy) return
-    setCompanionBusy('pair')
-    setCompanionError(null)
-    setCompanionPairing(null)
-    try {
-      const pairing = await window.projectAgent.beginCompanionPairing(companionRelayUrl.trim())
-      setCompanionPairing(pairing)
-      setCompanionStatus(pairing.status)
-      onNotice('已创建一次性 iPhone 配对信息，请在 10 分钟内扫描或粘贴到手机。')
-    } catch (error) {
-      setCompanionError(error instanceof Error ? error.message : '创建 iPhone 配对失败。')
-    } finally {
-      setCompanionBusy(null)
-    }
-  }
-
   async function syncCompanionNow(): Promise<void> {
     if (companionBusy) return
     setCompanionBusy('sync')
     setCompanionError(null)
     try {
       setCompanionStatus(await window.projectAgent.syncCompanionNow())
-      onNotice('iPhone Companion 已同步。')
+      onNotice('已检查 iPhone 同步状态。')
     } catch (error) {
       setCompanionError(error instanceof Error ? error.message : '同步失败。')
     } finally {
       setCompanionBusy(null)
     }
-  }
-
-  async function disconnectCompanion(): Promise<void> {
-    if (companionBusy) return
-    setCompanionBusy('disconnect')
-    setCompanionError(null)
-    try {
-      await window.projectAgent.disconnectCompanion()
-      setCompanionPairing(null)
-      setCompanionStatus(await window.projectAgent.getCompanionStatus())
-      onNotice('已断开 iPhone Companion。')
-    } catch (error) {
-      setCompanionError(error instanceof Error ? error.message : '断开 Companion 失败。')
-    } finally {
-      setCompanionBusy(null)
-    }
-  }
-
-  async function copyCompanionPairing(): Promise<void> {
-    if (!companionPairing) return
-    await navigator.clipboard.writeText(companionPairing.pairingPayload)
-    onNotice('配对信息已复制。')
   }
 
   async function runProjectAgent(projectProfileId: string): Promise<void> {
@@ -633,7 +701,7 @@ export function SettingsView({
       onNotice('模型配置已保存；默认配置失败时会自动切换到备用配置。')
       await onRefresh()
     } catch (error) {
-      setProviderError(error instanceof Error ? error.message : 'Agent Provider 保存失败。')
+      setProviderError(error instanceof Error ? error.message : '模型设置保存失败。')
     } finally {
       setProviderBusy(null)
     }
@@ -644,10 +712,10 @@ export function SettingsView({
     setProviderError(null)
     try {
       await window.projectAgent.configureCodingAgents(codingAgents)
-      onNotice('默认 Coding Agent、模型与 Reasoning Effort 配置已保存。')
+      onNotice('默认 Coding Agent、模型与思考深度已保存。')
       await onRefresh()
     } catch (error) {
-      setProviderError(error instanceof Error ? error.message : 'Coding Agent 配置保存失败。')
+      setProviderError(error instanceof Error ? error.message : 'Coding Agent 设置保存失败。')
     } finally {
       setProviderBusy(null)
     }
@@ -659,9 +727,9 @@ export function SettingsView({
     try {
       const [, catalog] = await Promise.all([onRefresh(), window.projectAgent.listCodingAgentModels()])
       setCodingAgentModels(catalog)
-      onNotice('已重新检测 Coding Agent，并读取可用模型与 Reasoning Effort。')
+      onNotice('已重新检查 Coding Agent，并更新了可用模型和思考深度。')
     } catch (error) {
-      setProviderError(error instanceof Error ? error.message : 'Coding Agent 检测失败。')
+      setProviderError(error instanceof Error ? error.message : '无法检查 Coding Agent，请重试。')
     } finally {
       setProviderBusy(null)
     }
@@ -700,7 +768,7 @@ export function SettingsView({
       }
       await onRefresh()
     } catch (error) {
-      setProviderError(error instanceof Error ? error.message : 'TTS Provider 请求失败。')
+      setProviderError(error instanceof Error ? error.message : '语音输出设置没有完成，请重试。')
     } finally {
       setProviderBusy(null)
     }
@@ -721,7 +789,7 @@ export function SettingsView({
       onNotice('语音输入配置已保存。')
       await onRefresh()
     } catch (error) {
-      setProviderError(error instanceof Error ? error.message : 'ASR 配置保存失败。')
+      setProviderError(error instanceof Error ? error.message : '语音输入设置没有保存，请重试。')
     } finally {
       setProviderBusy(null)
     }
@@ -923,21 +991,24 @@ export function SettingsView({
   }
 
   const companionIssue = companionError ?? companionStatus?.lastError ?? null
+  const companionPhoneCount = companionStatus?.iosDevicesOnline ?? 0
   const companionStatusLabel = !companionStatus?.configuration
-    ? '未配对'
-    : companionStatus.realtimeState === 'connected'
-      ? '实时在线'
+    ? companionRelayAvailable ? '正在准备' : '暂不可用'
+    : companionPhoneCount > 0
+      ? `${companionPhoneCount} 台已连接`
       : companionStatus.realtimeState === 'connecting'
         ? '正在连接'
-        : companionStatus.state === 'connected'
-          ? '仅同步在线'
-          : '离线'
+        : companionStatus.realtimeState === 'connected' || companionStatus.state === 'connected'
+          ? '等待 iPhone'
+          : '暂时离线'
   const asrModelLabel =
     asrModelStatus?.state === 'installed'
       ? '已下载 · 547 MiB'
       : asrModelStatus?.state === 'downloading'
         ? '正在下载'
         : '未下载 · 547 MiB'
+  const googleIdentity = accountIdentities.find((identity) => identity.provider === 'google')
+  const canUnlinkGoogle = Boolean(googleIdentity) && accountIdentities.length > 1
 
   return (
     <div className={`settings-view settings-view-${section}`}>
@@ -946,7 +1017,7 @@ export function SettingsView({
           <h1>{settingsSectionTitles[section]}</h1>
           <p>
             {section === 'general'
-              ? '管理设备连接与本机 Agent 能力。'
+              ? '管理账户、iPhone 同步和这台 Mac 可以使用的功能。'
               : section === 'models'
                 ? '选择工作助理与 Coding Agent 使用的模型。'
                 : section === 'voice'
@@ -958,14 +1029,101 @@ export function SettingsView({
 
       {section === 'general' && (
         <section className="settings-list-page">
-          <div className="settings-group-label">设备连接</div>
+          <div className="settings-group-label">账户</div>
+          <div className="settings-flat-list">
+            <article>
+              <div className="settings-row-main">
+                <span className="settings-row-icon is-accent"><UserRound size={16} /></span>
+                <div className="settings-row-copy">
+                  <strong>{accountState?.user?.email ?? 'Fuddy 账户'}</strong>
+                  <p>管理登录方式和已登录设备。</p>
+                </div>
+              </div>
+              <button className="settings-row-link-action is-warning" type="button" disabled={accountBusy} onClick={() => void logoutAccount()}>
+                {accountBusy && <LoaderCircle className="spin" size={13} />} 退出
+              </button>
+            </article>
+            {(accountState?.availableProviders.google || googleIdentity) && <article>
+              <div className="settings-row-main">
+                <span className="settings-row-icon is-accent"><ShieldCheck size={16} /></span>
+                <div className="settings-row-copy">
+                  <strong>Google</strong>
+                  <p>
+                    {googleIdentity
+                      ? `已连接 ${googleIdentity.email}`
+                      : '连接后可直接使用 Google 登录同一个 Fuddy 账户。'}
+                  </p>
+                </div>
+              </div>
+              <button
+                className={`settings-row-link-action ${googleIdentity ? 'is-warning' : ''}`}
+                type="button"
+                disabled={accountBusy || (!googleIdentity && !accountState?.availableProviders.google) || (Boolean(googleIdentity) && !canUnlinkGoogle)}
+                title={googleIdentity && !canUnlinkGoogle ? '请先验证邮箱，再断开唯一登录方式' : undefined}
+                onClick={() => void toggleGoogleIdentity()}
+              >
+                {googleIdentity ? '断开' : '连接'}
+              </button>
+            </article>}
+            <article>
+              <div className="settings-row-main">
+                <span className="settings-row-icon"><ShieldCheck size={16} /></span>
+                <div className="settings-row-copy">
+                  <strong>退出所有设备</strong>
+                  <p>撤销这个账户的全部登录状态与手机授权，本机也会退出。</p>
+                </div>
+              </div>
+              <button className="settings-row-link-action is-warning" type="button" disabled={accountBusy} onClick={() => void logoutAllAccounts()}>
+                全部退出
+              </button>
+            </article>
+          </div>
+
+          <div className="settings-group-label">登录设备</div>
+          <div className="settings-flat-list">
+            {accountDevices.map((device) => (
+              <article key={device.id}>
+                <div className="settings-row-main">
+                  <span className="settings-row-icon is-accent">
+                    {device.platform === 'ios' ? <Smartphone size={16} /> : <Laptop size={16} />}
+                  </span>
+                  <div className="settings-row-copy">
+                    <strong>{device.name}{device.isCurrent ? ' · 当前设备' : ''}</strong>
+                    <p>{device.platform === 'ios' ? 'iPhone' : 'Mac'} · Fuddy {device.appVersion} · {formatRelativeTime(device.lastSeenAt)}</p>
+                  </div>
+                </div>
+                {device.isCurrent ? (
+                  <span className="settings-value-pill is-ready">当前</span>
+                ) : (
+                  <button className="settings-row-link-action is-warning" type="button" disabled={accountBusy} onClick={() => void revokeAccountDevice(device.id)}>
+                    撤销
+                  </button>
+                )}
+              </article>
+            ))}
+            {accountDevices.length === 0 && (
+              <article>
+                <div className="settings-row-copy"><p>暂时无法读取设备列表。</p></div>
+                <button className="settings-row-link-action" type="button" disabled={accountBusy} onClick={() => void retryAccountDetails()}>
+                  {accountBusy && <LoaderCircle className="spin" size={13} />} 重试
+                </button>
+              </article>
+            )}
+          </div>
+          {accountError && <p className="settings-inline-error" role="alert">{accountError}</p>}
+
+          <div className="settings-group-label">iPhone 同步</div>
           <div className="settings-flat-list settings-companion-list">
             <article className="settings-summary-row">
               <div className="settings-row-main">
                 <span className="settings-row-icon is-accent"><Smartphone size={17} /></span>
                 <div className="settings-row-copy">
-                  <strong>iPhone Companion</strong>
-                  <p>手机只作为安全客户端；Agent、工具和项目文件仍在这台 Mac 上运行。</p>
+                  <strong>iPhone 自动同步</strong>
+                  <p>
+                    {!companionStatus?.configuration && !companionRelayAvailable
+                      ? '暂时无法连接 iPhone，服务恢复后会自动重试。'
+                      : '在 iPhone 登录同一账户，即可安全连接这台 Mac。'}
+                  </p>
                 </div>
               </div>
               <div className="settings-heading-actions">
@@ -974,49 +1132,10 @@ export function SettingsView({
                 >
                   {companionStatusLabel}
                 </span>
-                {companionStatus?.configuration && (
-                  <ActionMenu
-                    ariaLabel="iPhone Companion 操作"
-                    trigger={
-                      companionBusy === 'disconnect' ? (
-                        <LoaderCircle className="spin" size={15} />
-                      ) : (
-                        <MoreHorizontal size={16} />
-                      )
-                    }
-                    options={[{ value: 'disconnect', label: '断开 iPhone', icon: <X size={13} />, danger: true }]}
-                    onSelect={() => void disconnectCompanion()}
-                  />
-                )}
               </div>
             </article>
 
             {companionStatus?.configuration ? (
-              <>
-              <article>
-                <div className="settings-row-main">
-                  <span className="settings-row-icon"><Smartphone size={16} /></span>
-                  <div className="settings-row-copy">
-                    <strong>Mac 配对身份</strong>
-                    <p>用于连接 Relay 的本机设备</p>
-                  </div>
-                </div>
-                <div className="settings-row-trailing">
-                  <span className="settings-row-value">
-                    Mac · {companionStatus.configuration.macDeviceId.slice(0, 8)}
-                  </span>
-                </div>
-              </article>
-              <article>
-                <div className="settings-row-main">
-                  <span className="settings-row-icon"><Plug size={16} /></span>
-                  <div className="settings-row-copy">
-                    <strong>Cloudflare Relay</strong>
-                    <p>{companionStatus.configuration.relayUrl.replace(/^https?:\/\//, '')}</p>
-                  </div>
-                </div>
-                <span className="settings-row-status is-ready">已连接</span>
-              </article>
               <article>
                 <div className="settings-row-main">
                   <span className="settings-row-icon"><RefreshCw size={16} /></span>
@@ -1026,7 +1145,7 @@ export function SettingsView({
                       {companionStatus.pendingEvents > 0
                         ? `${companionStatus.pendingEvents} 条待同步`
                         : companionStatus.isolatedEvents > 0
-                          ? `${companionStatus.isolatedEvents} 条已隔离`
+                          ? `${companionStatus.isolatedEvents} 条需要处理`
                           : '已同步'}
                       {companionStatus.lastSyncedAt
                         ? ` · 最近同步 ${formatRelativeTime(companionStatus.lastSyncedAt)}`
@@ -1043,65 +1162,21 @@ export function SettingsView({
                   同步
                 </button>
               </article>
-              <article>
-                <div className="settings-row-main">
-                  <span className="settings-row-icon"><Smartphone size={16} /></span>
-                  <div className="settings-row-copy">
-                    <strong>重新配对 iPhone</strong>
-                    <p>生成新的单次二维码，并替换当前 Companion 连接。</p>
-                  </div>
-                </div>
-                <button
-                  className="settings-row-link-action"
-                  onClick={() => void beginCompanionPairing()}
-                  disabled={Boolean(companionBusy)}
-                >
-                  {companionBusy === 'pair' ? <LoaderCircle className="spin" size={13} /> : null}
-                  重新配对
-                </button>
-              </article>
-              </>
-            ) : (
-              <article className="settings-setup-row">
-                <div className="settings-row-main">
-                  <span className="settings-row-icon"><Smartphone size={16} /></span>
-                  <div className="settings-row-copy">
-                    <strong>配对新的 iPhone</strong>
-                    <p>连接安全 Relay 后，手机可以查看状态并提交受约束的操作。</p>
-                  </div>
-                </div>
-                <input
-                  type="url"
-                  value={companionRelayUrl}
-                  onChange={(event) => setCompanionRelayUrl(event.target.value)}
-                  placeholder={defaultCompanionRelayUrl}
-                  aria-label="Cloudflare Relay"
-                />
-                <button
-                  className="provider-save-button"
-                  onClick={() => void beginCompanionPairing()}
-                  disabled={Boolean(companionBusy) || !companionRelayUrl.trim()}
-                >
-                  {companionBusy === 'pair' ? <LoaderCircle className="spin" size={13} /> : <Smartphone size={13} />}
-                  配对 iPhone
-                </button>
-              </article>
-            )}
+            ) : null}
 
             {companionIssue && (
               <article className="settings-alert-row" role="alert">
                 <div className="settings-row-main">
                   <span className="settings-row-icon is-warning"><CircleAlert size={17} /></span>
                   <div className="settings-row-copy">
-                    <strong>部分事件暂未同步</strong>
+                    <strong>部分内容暂未同步</strong>
                     <p>
                       {companionStatus?.isolatedEvents
-                        ? `有 ${companionStatus.isolatedEvents} 条异常事件已隔离，其他事件不会被阻塞。`
+                        ? `有 ${companionStatus.isolatedEvents} 条内容发送失败，其他内容仍在正常同步。`
                         : companionStatus?.pendingEvents
-                        ? `有 ${companionStatus.pendingEvents} 条事件仍在等待发送，修复后会继续同步。`
+                        ? `有 ${companionStatus.pendingEvents} 条内容仍在等待发送，稍后会自动重试。`
                         : '同步服务遇到问题，请重试。'}
                     </p>
-                    {showCompanionTechnicalDetails && <code>{companionIssue}</code>}
                   </div>
                 </div>
                 <div className="settings-row-trailing">
@@ -1111,37 +1186,14 @@ export function SettingsView({
                     disabled={Boolean(companionBusy)}
                   >
                     {companionBusy === 'sync' ? <LoaderCircle className="spin" size={13} /> : null}
-                    处理
-                  </button>
-                  <button
-                    className="settings-row-disclosure"
-                    onClick={() => setShowCompanionTechnicalDetails((value) => !value)}
-                    aria-label={showCompanionTechnicalDetails ? '收起技术详情' : '查看技术详情'}
-                  >
-                    <ChevronRight size={17} />
+                    重试
                   </button>
                 </div>
               </article>
             )}
           </div>
 
-          {companionPairing && (
-            <div className="companion-pairing-payload settings-pairing-panel">
-              <div className="companion-pairing-qr" aria-label="iPhone Companion 配对二维码">
-                <QRCodeSVG value={companionPairing.pairingPayload} size={132} marginSize={2} level="M" />
-              </div>
-              <div className="companion-pairing-copy">
-                <strong>使用 iPhone 扫描</strong>
-                <p>{formatExpiryLabel(companionPairing.expiresAt)}，也可以通过通用剪贴板复制。</p>
-                <code>{companionPairing.pairingPayload}</code>
-                <button type="button" onClick={() => void copyCompanionPairing()}>
-                  <Copy size={13} /> 复制配对信息
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="settings-group-label settings-list-section-spacing">本机能力</div>
+          <div className="settings-group-label settings-list-section-spacing">这台 Mac 可以做什么</div>
           <div className="settings-flat-list">
             {bootstrap.capabilities
               .filter((item) => item.id === 'browser' || item.id === 'computer')
@@ -1286,7 +1338,7 @@ export function SettingsView({
               <div className="settings-list-section-heading">
                 <div>
                   <h2>Coding Agents</h2>
-                  <p>选择默认 Agent；各 Agent 的模型和 Reasoning Effort 按需展开。</p>
+                  <p>选择默认 Agent，并按需设置模型和思考深度。</p>
                 </div>
                 <button
                   className="settings-row-button"
@@ -1348,7 +1400,7 @@ export function SettingsView({
                     (effort) => effort.id === savedReasoningEffort
                   )
                   const reasoningEffortOptions = [
-                    { value: '', label: `使用 ${option.label} 默认 Effort` },
+                    { value: '', label: `使用 ${option.label} 默认思考深度` },
                     ...reasoningEfforts.map((effort) => ({
                       value: effort.id,
                       label: `${effort.label}${effort.id === defaultReasoningEffort ? ' · Agent 推荐' : ''}`
@@ -1410,7 +1462,7 @@ export function SettingsView({
                             />
                           </label>
                           <label>
-                            <span>Reasoning Effort</span>
+                            <span>思考深度</span>
                             <SelectMenu
                               value={savedReasoningEffort}
                               options={reasoningEffortOptions}
@@ -1420,7 +1472,7 @@ export function SettingsView({
                                   [option.id]: { ...current[option.id], defaultReasoningEffort: value }
                                 }))
                               }
-                              ariaLabel={`${option.label} Reasoning Effort`}
+                              ariaLabel={`${option.label} 思考深度`}
                               disabled={
                                 (codingModelsLoading && !catalog) ||
                                 (reasoningEfforts.length === 0 && !savedReasoningEffort)
@@ -1778,14 +1830,14 @@ export function SettingsView({
             <article>
               <div>
                 <strong>网络与浏览器</strong>
-                <p>可通过 Browser Use 访问网页</p>
+                <p>可以查找和读取网页</p>
               </div>
               <span className="settings-row-status">已允许</span>
             </article>
             <article>
               <div>
                 <strong>应用操作</strong>
-                <p>可通过 Computer Use 操作已授权的 Mac 应用</p>
+                <p>可以操作已允许的 Mac 应用</p>
               </div>
               <span className="settings-row-status">需系统授权</span>
             </article>

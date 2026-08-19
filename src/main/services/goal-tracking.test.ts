@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRun, AgentSessionUpdate } from '../../shared/contracts'
 import { AppDatabase } from './database'
 import { createTestDatabase } from '../test-support/project-fixtures'
@@ -91,6 +91,38 @@ describe('GoalTrackingService', () => {
     expect(goalSignals).toHaveLength(1)
     expect(goalSignals[0].status).toBe('resolved')
     expect(goalSignals[0].resolutionSummary).toContain('风险解除')
+    database.close()
+  })
+
+  it('cancels an Agent-backed check before it writes a new check-in', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-goal-cancel-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'test.sqlite'))
+    const goal = await new GoalTrackingService(database, new StubRuntime([JSON.stringify({
+      title: '验证取消',
+      description: '验证手机停止后不再写入结果。',
+      milestones: []
+    })])).createFromPrompt('vows', '验证取消')
+    let receivedSignal: AbortSignal | undefined
+    const cancellableRuntime: AgentRuntime = {
+      isConfigured: () => true,
+      run: async (_prompt, _images, cancellationSignal) => {
+        receivedSignal = cancellationSignal
+        return await new Promise<string>((_resolve, reject) => {
+          cancellationSignal?.addEventListener('abort', () => reject(cancellationSignal.reason), { once: true })
+        })
+      },
+      runStream: async () => '{}'
+    }
+    const service = new GoalTrackingService(database, cancellableRuntime)
+    const controller = new AbortController()
+
+    const checking = service.check(goal.id, controller.signal)
+    await vi.waitFor(() => expect(receivedSignal).toBe(controller.signal))
+    controller.abort(new Error('账户连接已停止，这次手机操作未继续执行。'))
+
+    await expect(checking).rejects.toThrow('账户连接已停止')
+    expect(database.getGoal(goal.id).checkIns).toHaveLength(1)
     database.close()
   })
 

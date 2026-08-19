@@ -26,6 +26,7 @@ export interface WorkAssistantAgentTurnInput {
   taskContext: WorkAssistantTaskContext | null
   history: BriefingMessage[]
   onUpdate: (update: AgentSessionUpdate) => void
+  cancellationSignal?: AbortSignal
 }
 
 export interface WorkAssistantAgentTurnResult {
@@ -37,6 +38,10 @@ export interface WorkAssistantAgentTurnResult {
 export interface WorkAssistantAgentRuntime {
   isConfigured(): boolean
   runTurn(input: WorkAssistantAgentTurnInput): Promise<WorkAssistantAgentTurnResult>
+}
+
+function cancellationError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('这次手机操作已停止。')
 }
 
 function assistantText(message: AssistantMessage): string {
@@ -103,7 +108,13 @@ export class PiWorkAssistantAgent implements WorkAssistantAgentRuntime {
   }
 
   runTurn(input: WorkAssistantAgentTurnInput): Promise<WorkAssistantAgentTurnResult> {
-    const turn = this.turnQueue.then(() => this.runTurnNow(input))
+    const execute = (): Promise<WorkAssistantAgentTurnResult> => {
+      if (input.cancellationSignal?.aborted) {
+        return Promise.reject(cancellationError(input.cancellationSignal))
+      }
+      return this.runTurnNow(input)
+    }
+    const turn = this.turnQueue.then(execute, execute)
     this.turnQueue = turn.then(() => undefined, () => undefined)
     return turn
   }
@@ -115,9 +126,13 @@ export class PiWorkAssistantAgent implements WorkAssistantAgentRuntime {
 
     for (const [index, endpoint] of endpoints.entries()) {
       let session: AgentSession | null = null
+      const abortSession = (): void => { void session?.abort() }
+      input.cancellationSignal?.addEventListener('abort', abortSession, { once: true })
       const turnState = this.actions.createTurnState()
       try {
+        if (input.cancellationSignal?.aborted) throw cancellationError(input.cancellationSignal)
         const { modelRuntime, model } = await createPiModelRuntimeForEndpoint(endpoint)
+        if (input.cancellationSignal?.aborted) throw cancellationError(input.cancellationSignal)
         const sessionManager = SessionManager.continueRecent(this.workingDirectory, this.sessionDirectory)
         if (sessionManager.getEntries().length === 0) {
           for (const message of input.history) sessionManager.appendMessage(historyMessage(message))
@@ -146,6 +161,10 @@ export class PiWorkAssistantAgent implements WorkAssistantAgentRuntime {
           tools: customTools.map((tool) => tool.name)
         })
         session = created.session
+        if (input.cancellationSignal?.aborted) {
+          await session.abort()
+          throw cancellationError(input.cancellationSignal)
+        }
         const messageId = `work-assistant-${Date.now()}`
         let lastAssistant: AssistantMessage | null = null
         let streamedText = ''
@@ -182,6 +201,9 @@ export class PiWorkAssistantAgent implements WorkAssistantAgentRuntime {
           linkedRunId: turnState.linkedRunId
         }
       } catch (error) {
+        if (input.cancellationSignal?.aborted) {
+          throw cancellationError(input.cancellationSignal)
+        }
         const message = error instanceof Error ? error.message : '未知错误'
         failures.push(`${index === 0 ? 'Primary' : 'Backup'}: ${message}`)
         if (turnState.proposals.length > 0) {
@@ -192,6 +214,7 @@ export class PiWorkAssistantAgent implements WorkAssistantAgentRuntime {
           }
         }
       } finally {
+        input.cancellationSignal?.removeEventListener('abort', abortSession)
         session?.dispose()
       }
     }

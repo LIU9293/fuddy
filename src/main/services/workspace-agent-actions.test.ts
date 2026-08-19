@@ -190,13 +190,14 @@ describe('WorkspaceAgentActions native tools', () => {
       createdAt: new Date().toISOString()
     })
 
+    const cancellationController = new AbortController()
     const result = await actions.executeProposal({
       messageId: message.id,
       proposalId: state.proposals[0].id,
       optionId: 'generate'
-    })
+    }, cancellationController.signal)
 
-    expect(generate).toHaveBeenCalledOnce()
+    expect(generate).toHaveBeenCalledWith(cancellationController.signal)
     expect(result.notice).toContain('新的每日简报')
     expect(result.message.actions?.[0]).toMatchObject({ status: 'accepted', acceptedOptionId: 'generate' })
     expect(recordAudit).toHaveBeenCalledWith(
@@ -280,6 +281,52 @@ describe('WorkspaceAgentActions native tools', () => {
     expect(result.navigation).toMatchObject({ kind: 'agent-run', id: existing.run.id })
     expect(result.notice).toContain('避免重复创建')
     expect(database.listRuns()).toHaveLength(1)
+    database.close()
+  })
+
+  it('cancels a confirmed Agent Run send when the phone command stops', async () => {
+    const { database, actions, dispatcher } = setup()
+    const run = dispatcher.createDraft({
+      projectId: 'vows',
+      title: '可取消的 Run',
+      draftPrompt: '等待确认。'
+    })
+    let receivedSignal: AbortSignal | undefined
+    vi.spyOn(dispatcher, 'sendMessage').mockImplementation(async (...args) => {
+      receivedSignal = args[5]
+      await new Promise<void>((_resolve, reject) => {
+        receivedSignal?.addEventListener('abort', () => reject(receivedSignal?.reason), { once: true })
+      })
+      return run
+    })
+    const state = actions.createTurnState()
+    await callTool(actions, state, 'ask_user', {
+      title: '继续 Agent Run',
+      description: '向已有 Run 发送消息。',
+      options: [{
+        id: 'send',
+        label: '发送',
+        style: 'primary',
+        capability: 'agent-run.send',
+        payload: { runId: run.run.id, prompt: '继续处理。' }
+      }]
+    })
+    const message = database.createBriefingMessage({
+      id: 'assistant-cancel-run-send', briefingId: null, role: 'assistant', content: '请确认。', attachments: [],
+      taskContext: null, actions: state.proposals, createdAt: new Date().toISOString()
+    })
+    const cancellationController = new AbortController()
+
+    const executing = actions.executeProposal({
+      messageId: message.id,
+      proposalId: state.proposals[0].id,
+      optionId: 'send'
+    }, cancellationController.signal)
+    await vi.waitFor(() => expect(receivedSignal).toBe(cancellationController.signal))
+    cancellationController.abort(new Error('账户连接已停止，这次手机操作未继续执行。'))
+
+    await expect(executing).rejects.toThrow('账户连接已停止')
+    expect(database.getBriefingMessage(message.id)?.actions?.[0].status).toBe('pending')
     database.close()
   })
 

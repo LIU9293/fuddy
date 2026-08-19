@@ -1,31 +1,141 @@
 import Foundation
 
-let defaultCompanionRelayURL = "https://project-agent-companion-relay.moghub.workers.dev"
+let defaultCompanionRelayURL = "https://fuddy.ai/api/relay"
+
+func companionCacheFileName(spaceID: String?) -> String {
+    guard let spaceID else { return "state.json" }
+    let encoded = Data(spaceID.utf8).base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+    return "space-\(encoded).json"
+}
+
+struct AccountUser: Codable, Equatable {
+    let id: String
+    let email: String
+    let displayName: String?
+}
+
+struct AccountDevice: Codable, Equatable {
+    let id: String
+    let platform: String
+    let name: String
+    let hostId: String?
+    let syncSpaceId: String?
+}
+
+struct AccountSessionTokens: Codable, Equatable {
+    let accessToken: String
+    let refreshToken: String
+    let accessExpiresAt: String
+    let refreshExpiresAt: String
+}
+
+struct MobileAccountSession: Codable, Equatable {
+    let user: AccountUser
+    let device: AccountDevice
+    let session: AccountSessionTokens
+}
+
+struct EmailSignInChallenge: Codable, Equatable {
+    let challengeId: String
+    let expiresAt: String
+    let retryAfterSeconds: Int
+    let debugCode: String?
+    let email: String?
+}
+
+struct AccountSyncSpace: Codable, Equatable, Identifiable {
+    let id: String
+    let hostId: String
+    let name: String
+    let keyVersion: Int
+    let relayUrl: String?
+    let relayAccountId: String?
+    let hostName: String
+    let hostLastSeenAt: String
+}
+
+struct AccountSyncSpacesResponse: Codable, Equatable {
+    let syncSpaces: [AccountSyncSpace]
+}
+
+func preferredAccountSyncSpace(
+    from spaces: [AccountSyncSpace],
+    preferredID: String?
+) -> AccountSyncSpace? {
+    if let preferredID, let preferred = spaces.first(where: { $0.id == preferredID }) {
+        return preferred
+    }
+    return spaces.first
+}
+
+func normalizedAccountRelayURL(_ value: String) -> String? {
+    guard var components = URLComponents(string: value), components.scheme != nil,
+        components.host != nil, components.user == nil, components.password == nil,
+        components.query == nil, components.fragment == nil
+    else { return nil }
+    while components.path.count > 1 && components.path.hasSuffix("/") {
+        components.path.removeLast()
+    }
+    if components.path == "/" { components.path = "" }
+    return components.string
+}
+
+func accountCredentialsNeedEnrollment(
+    _ credentials: CompanionCredentials?,
+    accountUserID: String,
+    accountDeviceID: String,
+    selectedSpace: AccountSyncSpace?
+) -> Bool {
+    guard let credentials else { return true }
+    if credentials.ownerUserID != accountUserID { return true }
+    if credentials.deviceID != accountDeviceID { return true }
+    guard let selectedSpace else { return credentials.syncSpaceID == nil }
+    if credentials.syncSpaceID != selectedSpace.id { return true }
+    if let relayAccountID = selectedSpace.relayAccountId,
+        credentials.accountID != relayAccountID
+    {
+        return true
+    }
+    if let relayURL = selectedSpace.relayUrl,
+        normalizedAccountRelayURL(credentials.relayURL) != normalizedAccountRelayURL(relayURL)
+    {
+        return true
+    }
+    return false
+}
+
+func accountRelayCredentialsRequiringCleanup(
+    _ credentials: [CompanionCredentials],
+    activeOwnerUserID: String?
+) -> [CompanionCredentials] {
+    credentials.filter { credential in
+        guard let ownerUserID = credential.ownerUserID else { return false }
+        return ownerUserID != activeOwnerUserID
+    }
+}
+
+struct AccountDeviceEnrollment: Codable, Equatable {
+    let id: String
+    let spaceId: String
+    let deviceId: String
+    let status: String
+    let wrappedSpaceKey: String?
+    let keyVersion: Int?
+    let expiresAt: String?
+}
+
+struct AccountEnrollmentResponse: Codable, Equatable {
+    let enrollment: AccountDeviceEnrollment
+}
 
 func parseCompanionDate(_ value: String) -> Date? {
     let fractionalFormatter = ISO8601DateFormatter()
     fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     if let date = fractionalFormatter.date(from: value) { return date }
     return ISO8601DateFormatter().date(from: value)
-}
-
-struct PairingPayload: Codable {
-    let minimumProtocolVersion: Int?
-    let protocolVersion: Int
-    let contractFingerprint: String?
-    let relayUrl: String
-    let accountId: String
-    let pairingSecret: String
-    let encryptionKey: String
-    let encryptionKeyId: String
-}
-
-struct PairingClaimResult: Codable {
-    let minimumProtocolVersion: Int?
-    let protocolVersion: Int
-    let accountId: String
-    let device: CompanionDevice
-    let deviceToken: String
 }
 
 struct CompanionDevice: Codable {
@@ -38,13 +148,15 @@ struct CompanionDevice: Codable {
     let lastSeenAt: String?
 }
 
-struct CompanionCredentials: Codable {
+struct CompanionCredentials: Codable, Equatable {
     let relayURL: String
     let accountID: String
     let deviceID: String
     let deviceToken: String
     let encryptionKey: String?
     let encryptionKeyId: String?
+    let syncSpaceID: String?
+    let ownerUserID: String?
 
     init(
         relayURL: String,
@@ -52,7 +164,9 @@ struct CompanionCredentials: Codable {
         deviceID: String,
         deviceToken: String,
         encryptionKey: String? = nil,
-        encryptionKeyId: String? = nil
+        encryptionKeyId: String? = nil,
+        syncSpaceID: String? = nil,
+        ownerUserID: String? = nil
     ) {
         self.relayURL = relayURL
         self.accountID = accountID
@@ -60,6 +174,8 @@ struct CompanionCredentials: Codable {
         self.deviceToken = deviceToken
         self.encryptionKey = encryptionKey
         self.encryptionKeyId = encryptionKeyId
+        self.syncSpaceID = syncSpaceID
+        self.ownerUserID = ownerUserID
     }
 }
 

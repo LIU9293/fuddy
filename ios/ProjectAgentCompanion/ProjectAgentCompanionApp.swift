@@ -1,5 +1,8 @@
 import SwiftUI
 import UIKit
+#if canImport(GoogleSignIn)
+import GoogleSignIn
+#endif
 @preconcurrency import UserNotifications
 
 extension Notification.Name {
@@ -114,16 +117,28 @@ struct ProjectAgentCompanionApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if store.isPaired { CompanionRootView() }
-                else { PairingView() }
+                if store.restoringAccountSession {
+                    ProgressView("正在打开 Fuddy…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color(uiColor: .systemGroupedBackground))
+                } else if !store.isSignedIn { AccountLoginView() }
+                else if store.isPaired { CompanionRootView() }
+                else { AccountSyncSetupView() }
             }
             .environmentObject(store)
+            .onOpenURL { url in
+#if canImport(GoogleSignIn)
+                GIDSignIn.sharedInstance.handle(url)
+#endif
+            }
             .task {
-                if companionShouldRunForegroundTransport(for: scenePhase) { store.start() }
+                if companionShouldRunForegroundTransport(for: scenePhase) {
+                    store.start(validateAccountSession: true)
+                }
             }
             .onChange(of: scenePhase) { _, phase in
                 if companionShouldRunForegroundTransport(for: phase) {
-                    store.start()
+                    store.start(validateAccountSession: true)
                 } else if phase == .background {
                     store.suspendForegroundTransport()
                 }

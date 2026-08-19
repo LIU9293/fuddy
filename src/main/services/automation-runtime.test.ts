@@ -63,7 +63,7 @@ describe('AutomationRuntime', () => {
     const { database, runtime, actions } = setup()
     const job = runtime.save(input())
     const result = await runtime.runNow(job.id)
-    expect(actions.runConnectors).toHaveBeenCalledWith('vows')
+    expect(actions.runConnectors).toHaveBeenCalledWith('vows', undefined)
     expect(result.run).toMatchObject({ status: 'completed', attempt: 1, summary: '巡检完成' })
     expect(database.listAutomationRuns(job.id)).toHaveLength(1)
     database.close()
@@ -77,6 +77,56 @@ describe('AutomationRuntime', () => {
     const result = await runtime.runNow(job.id)
     expect(result.run).toMatchObject({ status: 'failed', attempt: 3, error: 'network down' })
     expect(result.job).toMatchObject({ status: 'error', lastError: 'network down' })
+    database.close()
+  })
+
+  it('passes cancellation into a running action and persists a stopped result', async () => {
+    let receivedSignal: AbortSignal | undefined
+    const runAgentTask = vi.fn(async (_job, cancellationSignal?: AbortSignal) => {
+      receivedSignal = cancellationSignal
+      await new Promise<void>((_resolve, reject) => {
+        cancellationSignal?.addEventListener('abort', () => reject(cancellationSignal.reason), { once: true })
+      })
+      return { summary: '不应完成', agentRunId: 'run-1' }
+    })
+    const { database, runtime } = setup({ runAgentTask })
+    const job = runtime.save(input({ action: 'agent-task', prompt: '继续任务' }))
+    const controller = new AbortController()
+
+    const running = runtime.runNow(job.id, controller.signal)
+    await vi.waitFor(() => expect(receivedSignal).toBe(controller.signal))
+    controller.abort(new Error('账户连接已停止，这次手机操作未继续执行。'))
+
+    await expect(running).rejects.toThrow('账户连接已停止')
+    expect(database.listAutomationRuns(job.id)[0]).toMatchObject({
+      status: 'failed',
+      error: '账户连接已停止，这次手机操作未继续执行。'
+    })
+    expect(database.getAutomation(job.id).status).toBe('error')
+    database.close()
+  })
+
+  it('persists cancellation that happens during retry backoff', async () => {
+    const runConnectors = vi.fn(async () => {
+      throw new Error('temporary failure')
+    })
+    const { database, runtime } = setup({ runConnectors })
+    const job = runtime.save(input({ maxRetries: 2, retryDelaySeconds: 60 }))
+    const controller = new AbortController()
+
+    const running = runtime.runNow(job.id, controller.signal)
+    await vi.waitFor(() => expect(runConnectors).toHaveBeenCalledOnce())
+    controller.abort(new Error('账户连接已停止，这次手机操作未继续执行。'))
+
+    await expect(running).rejects.toThrow('账户连接已停止')
+    expect(database.listAutomationRuns(job.id)[0]).toMatchObject({
+      status: 'failed',
+      error: '账户连接已停止，这次手机操作未继续执行。'
+    })
+    expect(database.getAutomation(job.id)).toMatchObject({
+      status: 'error',
+      lastError: '账户连接已停止，这次手机操作未继续执行。'
+    })
     database.close()
   })
 

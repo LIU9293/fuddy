@@ -15,6 +15,7 @@ import { AppDatabase } from './database'
 import type { AgentRuntime } from './pi-runtime'
 import { collectProjectRepoContext, type ProjectRepoContext } from './project-repo-context'
 import { evaluateAggressivePermission } from '../../shared/permissions'
+import { throwIfCancelled } from './cancellation'
 
 type GoalDraft = {
   title?: unknown
@@ -215,8 +216,10 @@ export class GoalTrackingService {
       status?: Extract<GoalStatus, 'planned' | 'active'>
       attachments?: WorkAssistantImageAttachment[]
       evidenceRefs?: EvidenceRef[]
+      cancellationSignal?: AbortSignal
     } = {}
   ): Promise<ProjectGoal> {
+    throwIfCancelled(options.cancellationSignal)
     const project = this.database.listProjects().find((item) => item.id === projectId)
     if (!project) throw new Error('没有找到这个项目。')
 
@@ -233,6 +236,7 @@ export class GoalTrackingService {
       throw new Error(`读取项目上下文需要确认：${permission.reason}`)
     }
     const repoContext = await collectProjectRepoContext(project.profile.repoPath)
+    throwIfCancelled(options.cancellationSignal)
     const connectorEvidence = this.database.listConnectorRuns()
       .filter((item) => item.projectId === projectId)
       .slice(0, 8)
@@ -262,14 +266,18 @@ export class GoalTrackingService {
       try {
         const response = await this.agentRuntime.run(
           creationPrompt(project, prompt, repoContext, connectorEvidence),
-          options.attachments ?? []
+          options.attachments ?? [],
+          options.cancellationSignal
         )
         draft = jsonObject(response) ?? {}
         generatedByAgent = Boolean(draft.title)
       } catch {
+        throwIfCancelled(options.cancellationSignal)
         // A deterministic goal is still useful when the configured provider is temporarily unavailable.
       }
     }
+
+    throwIfCancelled(options.cancellationSignal)
 
     const now = new Date()
     const nowIso = now.toISOString()
@@ -343,7 +351,8 @@ export class GoalTrackingService {
     return this.database.createGoal(goal)
   }
 
-  async check(goalId: string): Promise<CheckGoalResult> {
+  async check(goalId: string, cancellationSignal?: AbortSignal): Promise<CheckGoalResult> {
+    throwIfCancelled(cancellationSignal)
     const goal = this.database.getGoal(goalId)
     if (goal.status === 'planned') throw new Error('这个目标还在 Roadmap 中，请先设为进行中。')
     if (goal.status === 'paused') throw new Error('这个目标已暂停，请先恢复后再检查。')
@@ -380,13 +389,16 @@ export class GoalTrackingService {
             data: item.data,
             completedAt: item.completedAt
           }))
-        }))
+        }), [], cancellationSignal)
         draft = jsonObject(response) ?? {}
         generation = Object.keys(draft).length > 0 ? 'agent' : 'deterministic'
       } catch {
+        throwIfCancelled(cancellationSignal)
         // Continue with the evidence-only check below.
       }
     }
+
+    throwIfCancelled(cancellationSignal)
 
     const requestedUpdates = Array.isArray(draft.milestoneUpdates)
       ? draft.milestoneUpdates.map(record).flatMap((item) => {
@@ -498,14 +510,18 @@ export class GoalTrackingService {
     }
   }
 
-  async checkDueGoals(projectId?: string): Promise<CheckGoalResult[]> {
+  async checkDueGoals(projectId?: string, cancellationSignal?: AbortSignal): Promise<CheckGoalResult[]> {
+    throwIfCancelled(cancellationSignal)
     const now = Date.now()
     const due = this.database.listGoals(projectId).filter((goal) =>
       (goal.status === 'active' || goal.status === 'at-risk') &&
       Boolean(goal.nextCheckInAt && new Date(goal.nextCheckInAt).getTime() <= now)
     )
     const results: CheckGoalResult[] = []
-    for (const goal of due.slice(0, 5)) results.push(await this.check(goal.id))
+    for (const goal of due.slice(0, 5)) {
+      results.push(await this.check(goal.id, cancellationSignal))
+      throwIfCancelled(cancellationSignal)
+    }
     return results
   }
 }

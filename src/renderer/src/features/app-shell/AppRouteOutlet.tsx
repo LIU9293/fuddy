@@ -1,10 +1,11 @@
-import { ArrowLeft, CircleCheck, Inbox, PanelLeft, Settings2, Sparkles, Target, X } from 'lucide-react'
+import { ArrowLeft, CircleCheck, Inbox, PanelLeft, Settings2, Target } from 'lucide-react'
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import type { AppBootstrap, AppBootstrapDataKey, DecisionStatus } from '../../../../shared/contracts'
 import { buildAgentModelLabels } from '../../../../shared/model-display'
 import { AgentRunsView } from '../../components/AgentRunsView'
 import { AutomationsView } from '../../components/AutomationsView'
 import { ChatComposer } from '../../components/ChatComposer'
+import { NoticeToast } from '../../components/NoticeToast'
 import { ProjectIcon } from '../../components/ProjectIcon'
 import { SelectMenu } from '../../components/SelectMenu'
 import { WorkspaceFilesView } from '../../components/WorkspaceFilesView'
@@ -224,7 +225,7 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
 
       {(nav.navigation === 'settings' || (nav.navigation === 'inbox' && nav.projectSection === 'goals')) && (
         <div className={`composer-area ${nav.navigation === 'settings' ? 'is-settings' : ''}`}>
-          {props.notice && <Notice notice={props.notice} onClose={() => props.onNotice(null)} />}
+          {props.notice && <NoticeToast notice={props.notice} onClose={() => props.onNotice(null)} />}
           {nav.navigation !== 'settings' && (
             <ChatComposer
               value={composer.text}
@@ -258,7 +259,7 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
         </div>
       )}
       {props.notice && nav.navigation !== 'settings' && !(nav.navigation === 'inbox' && nav.projectSection === 'goals') && (
-        <Notice className="notice-toast global-notice-toast" notice={props.notice} onClose={() => props.onNotice(null)} />
+        <NoticeToast className="notice-toast global-notice-toast" notice={props.notice} onClose={() => props.onNotice(null)} />
       )}
     </main>
   )
@@ -340,14 +341,5 @@ function DecisionList(props: {
         detail={props.status === 'inbox' ? '新的项目变化会继续投递到决策收件箱。' : '事项状态发生变化后会显示在这里。'}
       />}
     </section>
-  )
-}
-
-function Notice(props: { notice: string; onClose: () => void; className?: string }): React.JSX.Element {
-  return (
-    <div className={props.className ?? 'notice-toast'}>
-      <Sparkles size={15} /><span>{props.notice}</span>
-      <button onClick={props.onClose} aria-label="关闭提示"><X size={14} /></button>
-    </div>
   )
 }

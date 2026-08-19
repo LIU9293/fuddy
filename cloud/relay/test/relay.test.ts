@@ -9,7 +9,7 @@ import type {
   CompanionPairingStartResult,
 } from '../../../src/shared/companion-sync'
 import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
-import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/index'
+import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/request-guards'
 
 async function pairedDevices(): Promise<{
   pairing: CompanionPairingStartResult
@@ -24,7 +24,7 @@ async function pairedDevices(): Promise<{
   const pairing = await pairingResponse.json<CompanionPairingStartResult>()
   const claimResponse = await SELF.fetch('https://relay.test/v1/pairings/claim', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `test-${crypto.randomUUID()}` },
     body: JSON.stringify({
       accountId: pairing.accountId,
       pairingSecret: pairing.pairingSecret,
@@ -75,6 +75,22 @@ describe('companion relay', () => {
     })
   })
 
+  it('serves the canonical Relay path and keeps it in the pairing payload', async () => {
+    const health = await SELF.fetch('https://relay.test/api/relay/health')
+    expect(health.status).toBe(200)
+
+    const response = await SELF.fetch('https://relay.test/api/relay/v1/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `test-${crypto.randomUUID()}` },
+      body: JSON.stringify({ macDeviceId: 'canonical-mac', macDeviceName: 'Canonical Mac' })
+    })
+    expect(response.status).toBe(201)
+    const pairing = await response.json<CompanionPairingStartResult>()
+    expect(JSON.parse(pairing.pairingPayload)).toMatchObject({
+      relayUrl: 'https://relay.test/api/relay'
+    })
+  })
+
   it('pairs devices and rejects a second claim', async () => {
     const { pairing, phone } = await pairedDevices()
     expect(pairing.minimumProtocolVersion).toBe(companionMinimumProtocolVersion)
@@ -95,6 +111,226 @@ describe('companion relay', () => {
       })
     })
     expect(repeated.status).toBe(400)
+  })
+
+  it('lets an iPhone revoke its own Relay token when it signs out', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const revoke = await SELF.fetch(
+      authenticatedUrl('/v1/devices/self', pairing.accountId, phone.device.id),
+      { method: 'DELETE', headers: { Authorization: `Bearer ${phone.deviceToken}` } }
+    )
+    expect(revoke.status).toBe(204)
+
+    const rejected = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id),
+      { headers: { Authorization: `Bearer ${phone.deviceToken}` } }
+    )
+    expect(rejected.status).toBe(401)
+  })
+
+  it('lets a client validate its current Relay identity', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const response = await SELF.fetch(
+      authenticatedUrl('/v1/device', pairing.accountId, phone.device.id),
+      { headers: { Authorization: `Bearer ${phone.deviceToken}` } }
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      device: { id: phone.device.id, role: 'ios' }
+    })
+
+    const rejected = await SELF.fetch(
+      authenticatedUrl('/v1/device', pairing.accountId, phone.device.id),
+      { headers: { Authorization: 'Bearer wrong-token' } }
+    )
+    expect(rejected.status).toBe(401)
+  })
+
+  it('lets the private administration path revoke a device without a Mac bearer token', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await expect(stub.revokeDeviceByAuthority(phone.device.id)).resolves.toBe(true)
+
+    const rejected = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, phone.device.id),
+      { headers: { Authorization: `Bearer ${phone.deviceToken}` } }
+    )
+    expect(rejected.status).toBe(401)
+  })
+
+  it('discards nonterminal commands queued by a revoked device', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const connect = await SELF.fetch(authenticatedUrl('/v1/connect', pairing.accountId, pairing.macDeviceId), {
+      headers: { Authorization: `Bearer ${pairing.macToken}`, Upgrade: 'websocket' }
+    })
+    expect(connect.status).toBe(101)
+    const socket = connect.webSocket
+    expect(socket).toBeDefined()
+    socket!.accept()
+    const messages: string[] = []
+    socket!.addEventListener('message', (event) => { messages.push(String(event.data)) })
+    const commandId = crypto.randomUUID()
+    const queued = await SELF.fetch(authenticatedUrl('/v1/commands', pairing.accountId, phone.device.id), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.deviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        protocolVersion: companionProtocolVersion,
+        type: 'agent.send-message',
+        payload: encryptedPayload,
+        createdAt: new Date().toISOString()
+      })
+    })
+    expect(queued.status).toBe(201)
+
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await expect(stub.revokeDeviceByAuthority(phone.device.id)).resolves.toBe(true)
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(messages.map((value) => JSON.parse(value) as unknown)).toContainEqual({
+      type: 'commands.revoked',
+      commandIds: [commandId]
+    })
+    socket!.close()
+    await evictDurableObject(stub)
+
+    const pending = await SELF.fetch(
+      authenticatedUrl('/v1/commands/pending', pairing.accountId, pairing.macDeviceId),
+      { headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(pending.status).toBe(200)
+    await expect(pending.json<{
+      commands: CompanionEncryptedCommand[]
+      revokedCommandIds: string[]
+    }>()).resolves.toEqual({ commands: [], revokedCommandIds: [commandId] })
+    await expect(runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM commands WHERE command_id = ?',
+        commandId
+      ).one().count
+    ))).resolves.toBe(0)
+  })
+
+  it('lets an authenticated Mac enroll multiple account devices without a pairing secret', async () => {
+    const pairingResponse = await SELF.fetch('https://relay.test/v1/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `test-${crypto.randomUUID()}` },
+      body: JSON.stringify({ macDeviceId: 'account-mac', macDeviceName: 'Account Mac' })
+    })
+    const pairing = await pairingResponse.json<CompanionPairingStartResult>()
+    const enroll = (deviceId: string) => SELF.fetch(
+      authenticatedUrl('/v1/devices/enroll', pairing.accountId, pairing.macDeviceId),
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId, deviceName: `Phone ${deviceId}`, publicKey: 'account-device-public-key' })
+      }
+    )
+
+    const first = await enroll('account-ios-1')
+    const second = await enroll('account-ios-2')
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(201)
+    await expect(first.json()).resolves.toMatchObject({
+      accountId: pairing.accountId,
+      device: { id: 'account-ios-1', role: 'ios' }
+    })
+
+    const unauthorized = await SELF.fetch(
+      authenticatedUrl('/v1/devices/enroll', pairing.accountId, pairing.macDeviceId),
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer wrong-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: 'account-ios-3', deviceName: 'Unauthorized' })
+      }
+    )
+    expect(unauthorized.status).toBe(401)
+
+    const firstPayload = await (await enroll('account-ios-revoked')).json<CompanionPairingClaimResult>()
+    const revoke = await SELF.fetch(
+      authenticatedUrl('/v1/devices/account-ios-revoked', pairing.accountId, pairing.macDeviceId),
+      { method: 'DELETE', headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(revoke.status).toBe(204)
+    const rejected = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, firstPayload.device.id),
+      { headers: { Authorization: `Bearer ${firstPayload.deviceToken}` } }
+    )
+    expect(rejected.status).toBe(401)
+  })
+
+  it('does not let a delayed grant revocation revoke a newer phone enrollment', async () => {
+    const pairingResponse = await SELF.fetch('https://relay.test/v1/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `test-${crypto.randomUUID()}` },
+      body: JSON.stringify({ macDeviceId: 'generation-mac', macDeviceName: 'Generation Mac' })
+    })
+    const pairing = await pairingResponse.json<CompanionPairingStartResult>()
+    const enroll = async (grantId: string): Promise<CompanionPairingClaimResult> => {
+      const response = await SELF.fetch(
+        authenticatedUrl('/v1/devices/enroll', pairing.accountId, pairing.macDeviceId),
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deviceId: 'generation-phone',
+            deviceName: 'Generation Phone',
+            publicKey: 'account-device-public-key',
+            grantId
+          })
+        }
+      )
+      expect(response.status).toBe(201)
+      return response.json<CompanionPairingClaimResult>()
+    }
+
+    await enroll('grant-old')
+    const replacement = await enroll('grant-new')
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await expect(stub.revokeDeviceByAuthority('generation-phone', 'grant-old')).resolves.toBe(false)
+    const staleMacRevocation = await SELF.fetch(
+      `${authenticatedUrl(
+        '/v1/devices/generation-phone',
+        pairing.accountId,
+        pairing.macDeviceId
+      )}&grantId=grant-old`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(staleMacRevocation.status).toBe(204)
+    const stillAuthorized = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, 'generation-phone'),
+      { headers: { Authorization: `Bearer ${replacement.deviceToken}` } }
+    )
+    expect(stillAuthorized.status).toBe(200)
+
+    await expect(stub.revokeDeviceByAuthority('generation-phone', 'grant-new')).resolves.toBe(true)
+    const revoked = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, 'generation-phone'),
+      { headers: { Authorization: `Bearer ${replacement.deviceToken}` } }
+    )
+    expect(revoked.status).toBe(401)
+  })
+
+  it('does not let an old account revocation delete a reactivated Relay generation', async () => {
+    const { pairing } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await stub.setAccountGeneration(1)
+    await stub.setAccountGeneration(2)
+
+    await expect(stub.revokeAccountByAuthority(1)).resolves.toBe(false)
+    const stillAuthorized = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, pairing.macDeviceId),
+      { headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(stillAuthorized.status).toBe(200)
+
+    await expect(stub.revokeAccountByAuthority(2)).resolves.toBe(true)
+    const revoked = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, pairing.macDeviceId),
+      { headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(revoked.status).toBe(401)
   })
 
   it('persists ordered Mac events and replays them to iOS', async () => {
@@ -542,6 +778,114 @@ describe('companion relay', () => {
     expect(await refreshed.text()).toBe(content)
   })
 
+  it('does not commit an attachment upload that races account revocation', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const attachmentId = crypto.randomUUID()
+    const content = new TextEncoder().encode('attachment racing account revocation')
+    const sha256 = await crypto.subtle.digest('SHA-256', content)
+      .then((digest) => Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join(''))
+    const body = new FixedLengthStream(content.byteLength)
+    const writer = body.writable.getWriter()
+    const upload = SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      phone.device.id
+    ), {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${phone.deviceToken}`,
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(content.byteLength),
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
+      },
+      body: body.readable
+    })
+
+    const midpoint = Math.floor(content.byteLength / 2)
+    await writer.write(content.slice(0, midpoint))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const revoke = await SELF.fetch(
+      authenticatedUrl('/v1/account', pairing.accountId, pairing.macDeviceId),
+      { method: 'DELETE', headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(revoke.status).toBe(204)
+    await writer.write(content.slice(midpoint))
+    await writer.close()
+
+    await expect(upload).resolves.toMatchObject({ status: 401 })
+    await expect(env.ATTACHMENTS.list({ prefix: `${pairing.accountId}/` }))
+      .resolves.toMatchObject({ objects: [] })
+  })
+
+  it('cleans up only a revoked device upload when another device commits the same attachment', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const attachmentId = crypto.randomUUID()
+    const content = new TextEncoder().encode('attachment committed by the remaining device')
+    const sha256 = await crypto.subtle.digest('SHA-256', content)
+      .then((digest) => Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join(''))
+    const body = new FixedLengthStream(content.byteLength)
+    const writer = body.writable.getWriter()
+    const staleUpload = SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      phone.device.id
+    ), {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${phone.deviceToken}`,
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(content.byteLength),
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
+      },
+      body: body.readable
+    })
+
+    const midpoint = Math.floor(content.byteLength / 2)
+    await writer.write(content.slice(0, midpoint))
+    const revoke = await SELF.fetch(authenticatedUrl(
+      `/v1/devices/${phone.device.id}`,
+      pairing.accountId,
+      pairing.macDeviceId
+    ), {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
+    })
+    expect(revoke.status).toBe(204)
+
+    const winningUpload = await SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      pairing.macDeviceId
+    ), {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${pairing.macToken}`,
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(content.byteLength),
+        'X-Content-SHA256': sha256,
+        'X-Companion-Encryption': 'A256GCM'
+      },
+      body: content
+    })
+    expect(winningUpload.status).toBe(201)
+
+    await writer.write(content.slice(midpoint))
+    await writer.close()
+    await expect(staleUpload).resolves.toMatchObject({ status: 401 })
+
+    const download = await SELF.fetch(authenticatedUrl(
+      `/v1/attachments/${attachmentId}`,
+      pairing.accountId,
+      pairing.macDeviceId
+    ), {
+      headers: { Authorization: `Bearer ${pairing.macToken}` }
+    })
+    expect(download.status).toBe(200)
+    expect(new Uint8Array(await download.arrayBuffer())).toEqual(content)
+  })
+
   it('rejects malformed JSON and oversized bodies without relying on Content-Length', async () => {
     const invalid = await SELF.fetch('https://relay.test/v1/pairings', {
       method: 'POST',
@@ -570,6 +914,7 @@ describe('companion relay', () => {
 
   it('lets the Mac revoke the paired account and rejects old device tokens', async () => {
     const { pairing, phone } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
     const revoke = await SELF.fetch(authenticatedUrl('/v1/account', pairing.accountId, pairing.macDeviceId), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${pairing.macToken}` }
@@ -579,5 +924,29 @@ describe('companion relay', () => {
       headers: { Authorization: `Bearer ${phone.deviceToken}` }
     })
     expect(oldPhone.status).toBe(401)
+    await expect(runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM account_cleanup'
+      ).one().count
+    ))).resolves.toBe(0)
+  })
+
+  it('keeps direct account cleanup retryable until attachment deletion completes', async () => {
+    const { pairing } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+
+    await expect(stub.revokeAccount(pairing.macDeviceId, pairing.macToken)).resolves.toBe(true)
+    const rejected = await SELF.fetch(
+      authenticatedUrl('/v1/events?after=0', pairing.accountId, pairing.macDeviceId),
+      { headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    expect(rejected.status).toBe(401)
+
+    await expect(stub.revokeAccount(pairing.macDeviceId, pairing.macToken)).resolves.toBe(true)
+    await expect(stub.completeAccountRevocationCleanup(
+      pairing.macDeviceId,
+      pairing.macToken
+    )).resolves.toBe(true)
+    await expect(stub.revokeAccount(pairing.macDeviceId, pairing.macToken)).resolves.toBe(false)
   })
 })

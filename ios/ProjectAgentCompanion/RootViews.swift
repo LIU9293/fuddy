@@ -77,25 +77,6 @@ private extension EnvironmentValues {
     }
 }
 
-func companionClampedPageDrag(translation: CGFloat, pageWidth: CGFloat, isLeadingPage: Bool) -> CGFloat {
-    guard pageWidth > 0 else { return 0 }
-    if isLeadingPage { return min(0, max(-pageWidth, translation)) }
-    return max(0, min(pageWidth, translation))
-}
-
-func companionShouldChangePage(
-    translation: CGFloat,
-    predictedTranslation: CGFloat,
-    pageWidth: CGFloat,
-    towardTrailingPage: Bool
-) -> Bool {
-    let threshold = max(64, pageWidth * 0.18)
-    if towardTrailingPage {
-        return translation < -threshold || predictedTranslation < -pageWidth * 0.45
-    }
-    return translation > threshold || predictedTranslation > pageWidth * 0.45
-}
-
 func companionClampedDrawerReveal(
     origin: CGFloat,
     translation: CGFloat,
@@ -310,8 +291,9 @@ struct CompanionRootView: View {
     }
 
     private var statusMessage: String? {
+        if store.isPaired, let message = store.accountEnrollmentMessage { return message }
         if let operationError = store.operationError, operationError.hasPrefix("同步失败：") { return operationError }
-        if store.connection == .offline { return "Relay 暂时不可达，当前显示本地缓存" }
+        if store.connection == .offline { return "暂时无法同步，当前显示本地内容" }
         if store.connection == .connected && !store.macOnline { return "Mac 当前离线，操作会在它上线后执行" }
         return nil
     }
@@ -413,8 +395,6 @@ private struct CompanionTwoPageContainer<Selection: Hashable, Leading: View, Tra
     let leading: Leading
     let trailing: Trailing
 
-    @GestureState private var dragOffset: CGFloat = 0
-
     init(
         selection: Binding<Selection>,
         leadingSelection: Selection,
@@ -438,9 +418,8 @@ private struct CompanionTwoPageContainer<Selection: Hashable, Leading: View, Tra
                 page(trailing, selection: trailingSelection, size: geometry.size)
             }
             .frame(width: geometry.size.width * 2, alignment: .leading)
-            .offset(x: (isLeadingPage ? 0 : -geometry.size.width) + dragOffset)
+            .offset(x: isLeadingPage ? 0 : -geometry.size.width)
             .animation(.spring(duration: 0.25, bounce: 0), value: selection)
-            .simultaneousGesture(pageGesture(pageWidth: geometry.size.width))
         }
         .clipped()
     }
@@ -451,31 +430,6 @@ private struct CompanionTwoPageContainer<Selection: Hashable, Leading: View, Tra
             .clipped()
             .allowsHitTesting(selection == pageSelection)
             .accessibilityHidden(selection != pageSelection)
-    }
-
-    private func pageGesture(pageWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 12)
-            .updating($dragOffset) { value, offset, _ in
-                guard abs(value.translation.width) > abs(value.translation.height) * 1.15 else { return }
-                offset = companionClampedPageDrag(
-                    translation: value.translation.width,
-                    pageWidth: pageWidth,
-                    isLeadingPage: isLeadingPage
-                )
-            }
-            .onEnded { value in
-                guard abs(value.translation.width) > abs(value.translation.height) * 1.15 else { return }
-                let shouldChange = companionShouldChangePage(
-                    translation: value.translation.width,
-                    predictedTranslation: value.predictedEndTranslation.width,
-                    pageWidth: pageWidth,
-                    towardTrailingPage: isLeadingPage
-                )
-                guard shouldChange else { return }
-                withAnimation(.spring(duration: 0.25, bounce: 0)) {
-                    selection = isLeadingPage ? trailingSelection : leadingSelection
-                }
-            }
     }
 }
 
@@ -494,8 +448,32 @@ private struct CompanionSidebar: View {
                         .foregroundStyle(.primary)
                         .frame(width: 92, height: 36, alignment: .leading)
                         .accessibilityLabel("Fuddy")
-                    Text(store.macOnline ? "Mac 在线" : "Mac 离线")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if store.availableAccountSyncSpaces.count > 1 {
+                        Menu {
+                            ForEach(store.availableAccountSyncSpaces) { space in
+                                Button {
+                                    store.switchAccountSyncSpace(space.id)
+                                } label: {
+                                    if store.currentAccountSyncSpace?.id == space.id {
+                                        Label(space.hostName, systemImage: "checkmark")
+                                    } else {
+                                        Text(space.hostName)
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(store.currentAccountSyncSpace?.hostName ?? "我的 Mac")
+                                Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                            }
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        }
+                        .accessibilityLabel("切换空间")
+                    } else {
+                        Text(store.currentAccountSyncSpace?.hostName ?? (store.macOnline ? "Mac 在线" : "Mac 离线"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 Button { withAnimation(.snappy) { router.drawerPresented = false } } label: {
@@ -673,7 +651,7 @@ private struct CompanionConversationMessage<Supplement: View>: View {
 
     private var messageContent: some View {
         VStack(alignment: .leading, spacing: 7) {
-            MarkdownText(content)
+            MarkdownText(content, expandsHorizontally: role != "user")
                 .font(role == "system" ? .caption : .subheadline)
             supplement()
         }
@@ -718,7 +696,11 @@ private struct AssistantMessageView: View {
                             Image(systemName: "bubble.left.and.text.bubble.right")
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(run.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                Text(run.status == "draft" ? "草稿 · 首条消息尚未发送" : "\(run.provider) · \(run.status)")
+                                Text(
+                                    run.status == "draft"
+                                        ? "草稿 · 首条消息尚未发送"
+                                        : "\(companionAgentProviderLabel(run.provider)) · \(companionRunStatusLabel(run.status))"
+                                )
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -1123,7 +1105,7 @@ struct RunsListView: View {
             }
         }
         .listStyle(.plain)
-        .contentMargins(.top, screenTopSafeAreaInset + topContentInset, for: .scrollContent)
+        .padding(.top, screenTopSafeAreaInset + topContentInset)
         .refreshable { await store.sync() }
         .overlay { if store.runs.isEmpty { ContentUnavailableView("暂无 Agent Run", systemImage: "bubble.left.and.bubble.right") } }
         .alert(renamingRun == nil ? "操作失败" : "重命名 Session", isPresented: Binding(
@@ -1162,7 +1144,7 @@ struct RunsListView: View {
     }
 
     private func runMetadata(_ run: AgentRun) -> String {
-        "\(run.provider) · \(relativeDate(run.updatedAt))"
+        "\(companionAgentProviderLabel(run.provider)) · \(relativeDate(run.updatedAt))"
     }
 
     private func archive(_ run: AgentRun) async {
@@ -1501,7 +1483,7 @@ struct RunDetailView: View {
                            page.records.last?.agentMessages.last?.role == "user" {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
-                                Text("\(detail.run.provider) 正在处理")
+                                Text("\(companionAgentProviderLabel(detail.run.provider)) 正在处理")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -1519,7 +1501,7 @@ struct RunDetailView: View {
                         CompanionChatComposer(
                             text: $prompt,
                             attachments: $attachments,
-                            placeholder: "给 \(detail.run.provider) 发送消息",
+                            placeholder: "给 \(companionAgentProviderLabel(detail.run.provider)) 发送消息",
                             sending: sending,
                             active: ["running", "queued"].contains(detail.run.status),
                             onSend: { Task { await send() } },
@@ -2074,7 +2056,12 @@ private func normalizeMarkdownTableRow(_ cells: [String], columnCount: Int) -> [
 
 struct MarkdownText: View {
     let content: String
-    init(_ content: String) { self.content = content }
+    let expandsHorizontally: Bool
+
+    init(_ content: String, expandsHorizontally: Bool = true) {
+        self.content = content
+        self.expandsHorizontally = expandsHorizontally
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -2082,7 +2069,7 @@ struct MarkdownText: View {
                 blockView(block)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: expandsHorizontally ? .infinity : nil, alignment: .leading)
     }
 
     @ViewBuilder
@@ -2821,23 +2808,38 @@ struct CompanionSettingsView: View {
     @EnvironmentObject private var store: CompanionStore
     var body: some View {
         Form {
+            if !store.availableAccountSyncSpaces.isEmpty {
+                Section("空间") {
+                    Picker(
+                        "当前空间",
+                        selection: Binding(
+                            get: { store.selectedAccountSyncSpaceID ?? store.availableAccountSyncSpaces[0].id },
+                            set: { store.switchAccountSyncSpace($0) }
+                        )
+                    ) {
+                        ForEach(store.availableAccountSyncSpaces) { space in
+                            Text(space.hostName).tag(space.id)
+                        }
+                    }
+                }
+            }
             Section("连接") {
                 LabeledContent("状态", value: connectionLabel)
-                if let credentials = store.credentials {
-                    LabeledContent("Relay", value: URL(string: credentials.relayURL)?.host ?? credentials.relayURL)
-                    LabeledContent("设备", value: String(credentials.deviceID.prefix(8)))
-                }
                 Button("立即同步") { Task { await store.sync() } }
             }
-            Section { Button("断开 Mac", role: .destructive) { store.unpair() } }
+            Section {
+                Button("退出账户", role: .destructive) {
+                    Task { await store.signOutAccount() }
+                }
+            }
         }
     }
     private var connectionLabel: String {
         switch store.connection {
-        case .unpaired: "未配对"
+        case .unpaired: "未连接"
         case .connecting: "正在连接"
-        case .connected: store.macOnline ? "Mac 在线" : "Relay 已连接，Mac 离线"
-        case .offline: "离线，显示本地缓存"
+        case .connected: store.macOnline ? "Mac 在线" : "Mac 离线"
+        case .offline: "暂时无法同步"
         case .error(let message): message
         }
     }

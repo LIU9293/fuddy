@@ -1,8 +1,406 @@
+import CryptoKit
 import SwiftUI
 import XCTest
 @testable import ProjectAgentCompanion
 
+private final class AccountClientURLProtocolStub: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            if !data.isEmpty { client?.urlProtocol(self, didLoad: data) }
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
 final class SyncModelTests: XCTestCase {
+    func testPreferredAccountSyncSpaceUsesSavedHostOrMostRecentHost() {
+        let first = AccountSyncSpace(
+            id: "space-a",
+            hostId: "host-a",
+            name: "A",
+            keyVersion: 1,
+            relayUrl: "https://relay.example.com",
+            relayAccountId: "relay-a",
+            hostName: "Mac A",
+            hostLastSeenAt: "2026-08-19T00:00:00Z"
+        )
+        let second = AccountSyncSpace(
+            id: "space-b",
+            hostId: "host-b",
+            name: "B",
+            keyVersion: 1,
+            relayUrl: "https://relay.example.com",
+            relayAccountId: "relay-b",
+            hostName: "Mac B",
+            hostLastSeenAt: "2026-08-19T00:00:00Z"
+        )
+
+        XCTAssertEqual(preferredAccountSyncSpace(from: [first], preferredID: nil)?.id, "space-a")
+        XCTAssertEqual(preferredAccountSyncSpace(from: [first, second], preferredID: nil)?.id, "space-a")
+        XCTAssertEqual(preferredAccountSyncSpace(from: [first, second], preferredID: "space-b")?.id, "space-b")
+        XCTAssertEqual(preferredAccountSyncSpace(from: [first, second], preferredID: "removed-space")?.id, "space-a")
+    }
+
+    func testAccountSpacesUseDistinctCacheFiles() {
+        XCTAssertEqual(companionCacheFileName(spaceID: nil), "state.json")
+        XCTAssertNotEqual(
+            companionCacheFileName(spaceID: "space-a"),
+            companionCacheFileName(spaceID: "space-b")
+        )
+        XCTAssertFalse(companionCacheFileName(spaceID: "space/a").contains("/"))
+    }
+
+    func testRelayCredentialsRemainIsolatedPerAccountSpace() throws {
+        KeychainStore.deleteAll()
+        defer { KeychainStore.deleteAll() }
+        let first = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "relay-a",
+            deviceID: "phone-a",
+            deviceToken: "token-a",
+            syncSpaceID: "space-a"
+        )
+        let second = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "relay-b",
+            deviceID: "phone-a",
+            deviceToken: "token-b",
+            syncSpaceID: "space-b"
+        )
+
+        try KeychainStore.save(first)
+        try KeychainStore.save(second)
+
+        XCTAssertEqual(try KeychainStore.load(syncSpaceID: "space-a")?.accountID, "relay-a")
+        XCTAssertEqual(try KeychainStore.load(syncSpaceID: "space-b")?.accountID, "relay-b")
+        XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-c"))
+    }
+
+    func testAccountLogoutDeletesCredentialsForEveryOwnedSpaceOnly() throws {
+        KeychainStore.deleteAll()
+        defer { KeychainStore.deleteAll() }
+        try KeychainStore.save(CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "relay-a",
+            deviceID: "phone-a",
+            deviceToken: "token-a",
+            syncSpaceID: "space-a",
+            ownerUserID: "user-a"
+        ))
+        try KeychainStore.save(CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "relay-b",
+            deviceID: "phone-a",
+            deviceToken: "token-b",
+            syncSpaceID: "space-b",
+            ownerUserID: "user-a"
+        ))
+        let otherAccount = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "relay-c",
+            deviceID: "phone-c",
+            deviceToken: "token-c",
+            syncSpaceID: "space-c",
+            ownerUserID: "user-c"
+        )
+        try KeychainStore.save(otherAccount)
+
+        XCTAssertEqual(try KeychainStore.loadAll().count, 3)
+
+        KeychainStore.deleteAll(ownerUserID: "user-a")
+
+        XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-a"))
+        XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-b"))
+        XCTAssertEqual(try KeychainStore.load(syncSpaceID: "space-c")?.deviceToken, "token-c")
+
+        let replacement = CompanionCredentials(
+            relayURL: otherAccount.relayURL,
+            accountID: otherAccount.accountID,
+            deviceID: otherAccount.deviceID,
+            deviceToken: "replacement-token",
+            syncSpaceID: otherAccount.syncSpaceID,
+            ownerUserID: otherAccount.ownerUserID
+        )
+        try KeychainStore.save(replacement)
+        KeychainStore.deleteIfMatching(otherAccount)
+        XCTAssertEqual(try KeychainStore.load(syncSpaceID: "space-c"), replacement)
+        KeychainStore.deleteIfMatching(replacement)
+        XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-c"))
+    }
+
+    func testExpiredAccountCleanupTargetsOnlyOrphanedOwnedCredentials() {
+        let active = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay", accountID: "active", deviceID: "phone",
+            deviceToken: "active-token", syncSpaceID: "space-a", ownerUserID: "user-a"
+        )
+        let expired = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay", accountID: "expired", deviceID: "phone",
+            deviceToken: "expired-token", syncSpaceID: "space-b", ownerUserID: "user-b"
+        )
+        let legacy = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay", accountID: "legacy", deviceID: "phone",
+            deviceToken: "legacy-token"
+        )
+
+        XCTAssertEqual(
+            accountRelayCredentialsRequiringCleanup(
+                [active, expired, legacy], activeOwnerUserID: "user-a"),
+            [expired]
+        )
+        XCTAssertEqual(
+            accountRelayCredentialsRequiringCleanup(
+                [active, expired, legacy], activeOwnerUserID: nil),
+            [active, expired]
+        )
+    }
+
+    func testAccountCredentialsReenrollWhenSpaceRelayIdentityRotates() {
+        let space = AccountSyncSpace(
+            id: "space-a",
+            hostId: "host-a",
+            name: "A",
+            keyVersion: 1,
+            relayUrl: "https://fuddy.ai/api/relay/",
+            relayAccountId: "next-relay-account",
+            hostName: "Mac A",
+            hostLastSeenAt: "2026-08-19T00:00:00Z"
+        )
+        let current = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "next-relay-account",
+            deviceID: "phone-a",
+            deviceToken: "token",
+            syncSpaceID: "space-a",
+            ownerUserID: "user-a"
+        )
+        let stale = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "old-relay-account",
+            deviceID: "phone-a",
+            deviceToken: "token",
+            syncSpaceID: "space-a",
+            ownerUserID: "user-a"
+        )
+
+        XCTAssertFalse(accountCredentialsNeedEnrollment(
+            current,
+            accountUserID: "user-a",
+            accountDeviceID: "phone-a",
+            selectedSpace: space
+        ))
+        XCTAssertTrue(accountCredentialsNeedEnrollment(
+            stale,
+            accountUserID: "user-a",
+            accountDeviceID: "phone-a",
+            selectedSpace: space
+        ))
+        XCTAssertTrue(accountCredentialsNeedEnrollment(
+            current,
+            accountUserID: "user-b",
+            accountDeviceID: "phone-a",
+            selectedSpace: space
+        ))
+    }
+
+    func testAccountDeviceGrantUsesSPKIAndOpensOnlyForTheRequestedPhone() throws {
+        let phone = P256.KeyAgreement.PrivateKey()
+        let mac = P256.KeyAgreement.PrivateKey()
+        let phoneSPKI = AccountDeviceGrant.subjectPublicKeyInfo(phone.publicKey)
+        XCTAssertEqual(phoneSPKI.count, 91)
+        XCTAssertEqual(phoneSPKI.suffix(65), phone.publicKey.x963Representation)
+
+        let salt = Data(repeating: 7, count: 32)
+        let nonceData = Data(repeating: 5, count: 12)
+        let sharedSecret = try mac.sharedSecretFromKeyAgreement(with: phone.publicKey)
+        let key = sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: salt,
+            sharedInfo: Data("fuddy-sync-space-grant-v1".utf8),
+            outputByteCount: 32
+        )
+        let credentials = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay/",
+            accountID: "relay-account",
+            deviceID: "phone-1",
+            deviceToken: "secret-token",
+            encryptionKey: "secret-key",
+            encryptionKeyId: "key-id"
+        )
+        let associatedData = Data("fuddy-enrollment:grant-1:space-1:phone-1:v1".utf8)
+        let sealed = try AES.GCM.seal(
+            JSONEncoder().encode(credentials),
+            using: key,
+            nonce: AES.GCM.Nonce(data: nonceData),
+            authenticating: associatedData
+        )
+        let envelope = try JSONSerialization.data(withJSONObject: [
+            "version": 1,
+            "algorithm": "P256-HKDF-SHA256-A256GCM",
+            "senderPublicKey": AccountDeviceGrant.subjectPublicKeyInfo(mac.publicKey).base64EncodedString(),
+            "salt": salt.base64EncodedString(),
+            "nonce": nonceData.base64EncodedString(),
+            "ciphertext": sealed.ciphertext.base64EncodedString(),
+            "tag": sealed.tag.base64EncodedString()
+        ])
+        let opened = try AccountDeviceGrant.open(
+            String(decoding: envelope, as: UTF8.self),
+            enrollmentID: "grant-1",
+            spaceID: "space-1",
+            deviceID: "phone-1",
+            ownerUserID: "user-1",
+            privateKeyData: phone.rawRepresentation
+        )
+        XCTAssertEqual(opened.deviceToken, "secret-token")
+        XCTAssertEqual(opened.relayURL, "https://fuddy.ai/api/relay/")
+        XCTAssertEqual(opened.ownerUserID, "user-1")
+        XCTAssertThrowsError(try AccountDeviceGrant.open(
+            String(decoding: envelope, as: UTF8.self),
+            enrollmentID: "grant-1",
+            spaceID: "space-1",
+            deviceID: "another-phone",
+            ownerUserID: "user-1",
+            privateKeyData: phone.rawRepresentation
+        ))
+    }
+
+    func testAccountSessionDecodesMacAccountAPIResponse() throws {
+        let json = #"{"user":{"id":"user-1","email":"kai@example.com","displayName":null},"device":{"id":"device-1","platform":"ios","name":"iPhone","hostId":null,"syncSpaceId":null},"session":{"accessToken":"access","refreshToken":"refresh","accessExpiresAt":"2026-08-19T01:00:00.000Z","refreshExpiresAt":"2026-09-18T01:00:00.000Z"}}"#
+        let session = try JSONDecoder().decode(MobileAccountSession.self, from: Data(json.utf8))
+        XCTAssertEqual(session.user.email, "kai@example.com")
+        XCTAssertEqual(session.device.platform, "ios")
+        XCTAssertEqual(session.session.refreshToken, "refresh")
+    }
+
+    @MainActor
+    func testAccountRefreshesAreCoalescedAndLateStaleCallersReuseTheRotation() async throws {
+        let coordinator = AccountRefreshCoordinator()
+        let stale = MobileAccountSession(
+            user: AccountUser(id: "user-1", email: "kai@example.com", displayName: nil),
+            device: AccountDevice(
+                id: "phone-1",
+                platform: "ios",
+                name: "iPhone",
+                hostId: nil,
+                syncSpaceId: nil
+            ),
+            session: AccountSessionTokens(
+                accessToken: "old-access",
+                refreshToken: "old-refresh",
+                accessExpiresAt: "2026-08-19T00:00:00.000Z",
+                refreshExpiresAt: "2099-08-19T00:00:00.000Z"
+            )
+        )
+        let refreshed = MobileAccountSession(
+            user: stale.user,
+            device: stale.device,
+            session: AccountSessionTokens(
+                accessToken: "new-access",
+                refreshToken: "new-refresh",
+                accessExpiresAt: "2099-08-19T00:15:00.000Z",
+                refreshExpiresAt: "2099-09-18T00:00:00.000Z"
+            )
+        )
+        var refreshCount = 0
+        let operation: @MainActor (MobileAccountSession) async throws -> MobileAccountSession = { _ in
+            refreshCount += 1
+            try await Task.sleep(for: .milliseconds(20))
+            return refreshed
+        }
+
+        async let first = coordinator.refreshedSession(accountSession: stale, operation: operation)
+        async let second = coordinator.refreshedSession(accountSession: stale, operation: operation)
+        let results = try await [first, second]
+        XCTAssertEqual(results, [refreshed, refreshed])
+        XCTAssertEqual(refreshCount, 1)
+
+        let late = try await coordinator.refreshedSession(accountSession: stale, operation: operation)
+        XCTAssertEqual(late, refreshed)
+        XCTAssertEqual(refreshCount, 1)
+    }
+
+    @MainActor
+    func testAccountLogoutRefreshesAnExpiredAccessTokenBeforeRevokingTheSession() async throws {
+        let stale = MobileAccountSession(
+            user: AccountUser(id: "logout-user", email: "logout@example.com", displayName: nil),
+            device: AccountDevice(
+                id: "logout-phone",
+                platform: "ios",
+                name: "iPhone",
+                hostId: nil,
+                syncSpaceId: nil
+            ),
+            session: AccountSessionTokens(
+                accessToken: "expired-access",
+                refreshToken: "valid-refresh",
+                accessExpiresAt: "2026-08-19T00:00:00.000Z",
+                refreshExpiresAt: "2099-08-19T00:00:00.000Z"
+            )
+        )
+        var observations: [String] = []
+        AccountClientURLProtocolStub.handler = { request in
+            let path = request.url?.path ?? ""
+            let authorization = request.value(forHTTPHeaderField: "Authorization") ?? ""
+            observations.append("\(path)|\(authorization)")
+            let status: Int
+            let body: Data
+            switch (path, authorization) {
+            case ("/v1/auth/logout", "Bearer expired-access"):
+                status = 401
+                body = Data(#"{"error":{"code":"session_expired","message":"expired"}}"#.utf8)
+            case ("/v1/auth/refresh", ""):
+                status = 200
+                body = Data(#"{"session":{"accessToken":"fresh-access","refreshToken":"fresh-refresh","accessExpiresAt":"2099-08-19T00:15:00.000Z","refreshExpiresAt":"2099-09-18T00:00:00.000Z"}}"#.utf8)
+            case ("/v1/auth/logout", "Bearer fresh-access"):
+                status = 204
+                body = Data()
+            default:
+                status = 500
+                body = Data()
+            }
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: status,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                body
+            )
+        }
+        defer { AccountClientURLProtocolStub.handler = nil }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AccountClientURLProtocolStub.self]
+        let client = AccountClient(
+            baseURL: URL(string: "https://account.test")!,
+            urlSession: URLSession(configuration: configuration)
+        )
+
+        let refreshed = try await client.logout(accountSession: stale)
+
+        XCTAssertEqual(refreshed.session.accessToken, "fresh-access")
+        XCTAssertEqual(refreshed.session.refreshToken, "fresh-refresh")
+        XCTAssertEqual(observations, [
+            "/v1/auth/logout|Bearer expired-access",
+            "/v1/auth/refresh|",
+            "/v1/auth/logout|Bearer fresh-access"
+        ])
+    }
+
     func testCompanionContractFingerprintRejectsMixedClientBuilds() {
         XCTAssertTrue(companionContractFingerprintIsSupported(companionContractFingerprint))
         XCTAssertTrue(companionContractFingerprintIsSupported(nil))
@@ -51,12 +449,16 @@ final class SyncModelTests: XCTestCase {
         XCTAssertNil(parseCompanionDate("not-a-date"))
     }
 
-    func testPairingPayloadDecodesMacPayload() throws {
-        let payload = #"{"minimumProtocolVersion":2,"protocolVersion":2,"relayUrl":"https://relay.example.com","accountId":"account","pairingSecret":"secret","encryptionKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","encryptionKeyId":"test-key-id"}"#
-        let decoded = try JSONDecoder().decode(PairingPayload.self, from: Data(payload.utf8))
-        XCTAssertEqual(decoded.minimumProtocolVersion, 2)
-        XCTAssertEqual(decoded.protocolVersion, 2)
-        XCTAssertEqual(decoded.accountId, "account")
+    func testRelayURLComponentsPreserveCanonicalBasePath() throws {
+        let components = try XCTUnwrap(companionRelayURLComponents(
+            baseURL: "https://fuddy.ai/api/relay/",
+            path: "/v1/events"
+        ))
+        XCTAssertEqual(components.url?.absoluteString, "https://fuddy.ai/api/relay/v1/events")
+        XCTAssertNil(companionRelayURLComponents(
+            baseURL: "https://user:secret@fuddy.ai/api/relay",
+            path: "/v1/events"
+        ))
     }
 
     func testCompanionCryptoRoundTripsJSONAndAttachments() throws {
@@ -472,34 +874,6 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(companionSocketHeartbeatIntervalSeconds, 20)
         XCTAssertFalse(companionSocketHeartbeatShouldReconnect(awaitingPong: false))
         XCTAssertTrue(companionSocketHeartbeatShouldReconnect(awaitingPong: true))
-    }
-
-    func testCompanionPagingClampsAtBothOuterEdges() {
-        XCTAssertEqual(companionClampedPageDrag(translation: 90, pageWidth: 390, isLeadingPage: true), 0)
-        XCTAssertEqual(companionClampedPageDrag(translation: -500, pageWidth: 390, isLeadingPage: true), -390)
-        XCTAssertEqual(companionClampedPageDrag(translation: -90, pageWidth: 390, isLeadingPage: false), 0)
-        XCTAssertEqual(companionClampedPageDrag(translation: 500, pageWidth: 390, isLeadingPage: false), 390)
-    }
-
-    func testCompanionPagingChangesOnlyTowardTheOtherPage() {
-        XCTAssertTrue(companionShouldChangePage(
-            translation: -80,
-            predictedTranslation: -90,
-            pageWidth: 390,
-            towardTrailingPage: true
-        ))
-        XCTAssertFalse(companionShouldChangePage(
-            translation: 80,
-            predictedTranslation: 90,
-            pageWidth: 390,
-            towardTrailingPage: true
-        ))
-        XCTAssertTrue(companionShouldChangePage(
-            translation: 80,
-            predictedTranslation: 90,
-            pageWidth: 390,
-            towardTrailingPage: false
-        ))
     }
 
     func testCompanionDrawerUsesContinuousRevealAndProjectedSnap() {

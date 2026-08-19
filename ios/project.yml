@@ -9,6 +9,10 @@ settings:
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: 0.1.0
     DEVELOPMENT_TEAM: 5PR3342M58
+packages:
+  GoogleSignIn:
+    url: https://github.com/google/GoogleSignIn-iOS
+    from: 9.1.0
 targets:
   ProjectAgentCompanion:
     type: application
@@ -18,14 +22,22 @@ targets:
     dependencies:
       - framework: ../.third-party-tools/whisper/v1.9.2/build-apple/whisper.xcframework
         embed: true
+      - package: GoogleSignIn
+        product: GoogleSignIn
+      - package: GoogleSignIn
+        product: GoogleSignInSwift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.ainative.projectagent.companion
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: ProjectAgentCompanion-Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: Fuddy
-        INFOPLIST_KEY_NSCameraUsageDescription: 扫描 Mac 上的一次性 Companion 配对二维码。
         INFOPLIST_KEY_NSMicrophoneUsageDescription: 将语音在 iPhone 本机转写为项目消息。
+        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking: YES
+        INFOPLIST_KEY_FuddyAccountAPIURL: $(FUDDY_ACCOUNT_API_URL)
+        FUDDY_GOOGLE_IOS_CLIENT_ID: 877382581311-vs5rfv70vbvsjhim8ubgkcq0vo3iarqj.apps.googleusercontent.com
+        FUDDY_GOOGLE_IOS_REVERSED_CLIENT_ID: com.googleusercontent.apps.877382581311-vs5rfv70vbvsjhim8ubgkcq0vo3iarqj
+        FUDDY_GOOGLE_SERVER_CLIENT_ID: 877382581311-i6dn0r7k47ij545p7cddpa33t01oe1jd.apps.googleusercontent.com
         INFOPLIST_KEY_UILaunchScreen_Generation: NO
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -35,8 +47,10 @@ targets:
       configs:
         Debug:
           APNS_ENVIRONMENT: development
+          FUDDY_ACCOUNT_API_URL: ''
         Release:
           APNS_ENVIRONMENT: production
+          FUDDY_ACCOUNT_API_URL: https://fuddy.ai/api/account
     scheme:
       testTargets:
         - ProjectAgentCompanionTests

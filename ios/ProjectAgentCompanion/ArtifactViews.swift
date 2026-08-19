@@ -107,8 +107,8 @@ struct RunInfoSheet: View {
         List {
             Section("Session") {
                 LabeledContent("标题", value: detail.run.title)
-                LabeledContent("Agent", value: detail.run.provider)
-                LabeledContent("状态", value: statusLabel(detail.run.status))
+                LabeledContent("Agent", value: companionAgentProviderLabel(detail.run.provider))
+                LabeledContent("状态", value: companionRunStatusLabel(detail.run.status))
                 if !detail.run.summary.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("概览").font(.caption).foregroundStyle(.secondary)
@@ -146,17 +146,6 @@ struct RunInfoSheet: View {
         .listStyle(.insetGrouped)
     }
 
-    private func statusLabel(_ status: String) -> String {
-        switch status {
-        case "draft": "草稿"
-        case "queued": "等待中"
-        case "running": "运行中"
-        case "completed": "已完成"
-        case "failed": "失败"
-        case "cancelled": "已取消"
-        default: status
-        }
-    }
 }
 
 struct RemoteAttachmentRow: View {

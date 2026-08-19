@@ -42,6 +42,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { QRCodeSVG } from 'qrcode.react'
 import { ChatComposer } from '../components/ChatComposer'
+import { ConfirmationDialog } from '../components/ConfirmationDialog'
 import { AgentRunsView } from '../components/AgentRunsView'
 import { ConversationMessageActions } from '../components/ConversationMessageActions'
 import { isProjectImageIcon, ProjectIcon } from '../components/ProjectIcon'
@@ -317,6 +318,12 @@ export function GoalsView({
   const [expandedGoalIds, setExpandedGoalIds] = useState<Set<string>>(
     () => new Set(goals.filter((goal) => goal.status === 'active' || goal.status === 'at-risk').map((goal) => goal.id))
   )
+  const [milestoneToDelete, setMilestoneToDelete] = useState<{
+    goalId: string
+    milestoneId: string
+    title: string
+  } | null>(null)
+  const [deletingMilestone, setDeletingMilestone] = useState(false)
   const orderedGoals = [...goals].sort((left, right) => {
     const priorityRank: Record<GoalPriority, number> = { P0: 0, P1: 1, P2: 2 }
     return (
@@ -438,9 +445,7 @@ export function GoalsView({
                               void onCompleteMilestone(goal.id, milestone.id)
                               return
                             }
-                            if (window.confirm(`确定删除里程碑“${milestone.title}”吗？`)) {
-                              void onDeleteMilestone(goal.id, milestone.id)
-                            }
+                            setMilestoneToDelete({ goalId: goal.id, milestoneId: milestone.id, title: milestone.title })
                           }}
                         />
                       </span>
@@ -478,7 +483,8 @@ export function GoalsView({
   }
 
   return (
-    <section className="goals-view">
+    <>
+      <section className="goals-view">
       <div className="goal-overview">
         <span>
           <strong>{goals.length}</strong> 个目标
@@ -504,6 +510,23 @@ export function GoalsView({
           <p>在下方描述下一步想达成的结果，目标 Agent 会整理指标和里程碑。</p>
         </div>
       )}
-    </section>
+      </section>
+      {milestoneToDelete && (
+        <ConfirmationDialog
+          title="删除里程碑？"
+          description={`“${milestoneToDelete.title}”将从目标中移除。`}
+          confirmLabel="删除"
+          destructive
+          busy={deletingMilestone}
+          onCancel={() => setMilestoneToDelete(null)}
+          onConfirm={() => {
+            setDeletingMilestone(true)
+            void onDeleteMilestone(milestoneToDelete.goalId, milestoneToDelete.milestoneId)
+              .then(() => setMilestoneToDelete(null))
+              .finally(() => setDeletingMilestone(false))
+          }}
+        />
+      )}
+    </>
   )
 }
