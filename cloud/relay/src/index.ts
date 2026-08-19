@@ -1,8 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import type {
   CompanionDevice,
-  CompanionDeviceEnrollmentResult,
-  CompanionEventBatchResult,
   CompanionEncryptedEventPage,
   CompanionPairingStartResult,
   CompanionPairingClaimResult
@@ -12,7 +10,7 @@ import {
   companionMinimumProtocolVersion,
   companionProtocolVersion
 } from '../../../src/shared/companion-sync'
-import { AccountRelay } from './account-relay'
+import { AccountRelay, type RelayMutationResult } from './account-relay'
 import {
   commandSchema,
   commandUpdateSchema,
@@ -33,7 +31,7 @@ export { AccountRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 export const maximumAttachmentBytes = companionAttachmentObjectMaximumBytes
-const relayBuild = '2026-08-19.1'
+const relayBuild = '2026-08-19.2'
 const canonicalRelayPathPrefix = '/api/relay'
 
 function randomToken(byteLength = 32): string {
@@ -91,6 +89,13 @@ function relay(env: Env, accountId: string): DurableObjectStub<AccountRelay> {
 }
 
 type AttachmentUploadCommitResult = Awaited<ReturnType<AccountRelay['commitAttachmentUploadLease']>>
+
+function relayMutationValue<T>(result: RelayMutationResult<T>): T {
+  if (result.status === 'unauthorized') throw new HttpError(401, '设备认证失败。')
+  if (result.status === 'account-unbound') throw new HttpError(409, 'Relay 账户尚未完成 Fuddy 账户绑定。')
+  if (result.status === 'capacity-exceeded') throw new HttpError(409, '账户命令存储已达到上限，请等待活跃命令结束。')
+  return result.value
+}
 
 export function shouldDeleteUploadedAttachmentObject(
   storageKey: string,
@@ -260,12 +265,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const context = relayRequestContext(request, env, url)
     const input = syncEventSchema.parse(await readJson(request))
     assertEncryptedEventPayloadSizes([input])
-    const event = await context.stub.appendEvent(
+    const event = relayMutationValue(await context.stub.appendEvent(
       context.deviceId,
       context.token,
       input
-    )
-    if (!event) throw new HttpError(401, '设备认证失败。')
+    ))
     return Response.json(event, { status: 201 })
   }
 
@@ -273,32 +277,32 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const context = relayRequestContext(request, env, url)
     const input = syncEventBatchSchema.parse(await readJson(request))
     assertEncryptedEventPayloadSizes(input.events)
-    const result = await context.stub.appendEvents(
+    const result = relayMutationValue(await context.stub.appendEvents(
       context.deviceId,
       context.token,
       input.events
-    ) as CompanionEventBatchResult | null
-    if (!result) throw new HttpError(401, '设备认证失败。')
+    ))
     return Response.json(result, { status: 201 })
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/commands') {
-    const context = await authenticatedContext(request, env, url, 'ios')
+    const context = relayRequestContext(request, env, url)
     const input = commandSchema.parse(await readJson(request))
-    return Response.json(await context.stub.createCommand(context.deviceId, context.token, input), { status: 201 })
+    return Response.json(relayMutationValue(
+      await context.stub.createCommand(context.deviceId, context.token, input)
+    ), { status: 201 })
   }
 
   if (request.method === 'POST' && url.pathname === '/v1/devices/enroll') {
-    const context = await authenticatedContext(request, env, url, 'mac')
+    const context = relayRequestContext(request, env, url)
     const input = deviceEnrollmentSchema.parse(await readJson(request))
     if (input.deviceId === context.deviceId) throw new HttpError(409, '不能把 Mac 设备覆盖为 iOS 设备。')
-    const enrollment = await context.stub.enrollDevice(
+    const enrollment = relayMutationValue(await context.stub.enrollDevice(
       context.deviceId,
       context.token,
       context.accountId,
       input
-    ) as CompanionDeviceEnrollmentResult | null
-    if (!enrollment) throw new HttpError(401, '设备认证失败。')
+    ))
     return Response.json(enrollment, { status: 201 })
   }
 
@@ -348,19 +352,19 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
   const commandMatch = url.pathname.match(/^\/v1\/commands\/([^/]+)$/)
   if (request.method === 'PATCH' && commandMatch) {
-    const context = await authenticatedContext(request, env, url, 'mac')
+    const context = relayRequestContext(request, env, url)
     const update = commandUpdateSchema.parse(await readJson(request))
-    return Response.json(await context.stub.updateCommand(
+    return Response.json(relayMutationValue(await context.stub.updateCommand(
       context.deviceId,
       context.token,
       decodeURIComponent(commandMatch[1]),
       update
-    ))
+    )))
   }
 
   const attachmentMatch = url.pathname.match(/^\/v1\/attachments\/([A-Za-z0-9._-]+)$/)
   if (attachmentMatch) {
-    const context = await authenticatedContext(request, env, url)
+    const context = relayRequestContext(request, env, url)
     const attachmentId = attachmentMatch[1]
     if (request.method === 'PUT') {
       if (request.headers.get('X-Companion-Encryption') !== 'A256GCM') {
@@ -381,6 +385,9 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         contentLength
       )
       if (!uploadLease) throw new HttpError(401, '设备认证失败。')
+      if (uploadLease.status === 'account-unbound') {
+        throw new HttpError(409, 'Relay 账户尚未完成 Fuddy 账户绑定。')
+      }
       if (uploadLease.status === 'quota-exceeded') {
         throw new HttpError(413, '账户附件总容量已达到 100 GiB 上限。')
       }

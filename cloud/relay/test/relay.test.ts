@@ -10,10 +10,32 @@ import type {
 } from '../../../src/shared/companion-sync'
 import { companionMinimumProtocolVersion, companionProtocolVersion } from '../../../src/shared/companion-sync'
 import { enforceRateLimit, maximumEncryptedEventPayloadBytes } from '../src/request-guards'
-import { maximumAccountAttachmentBytes } from '../src/account-relay'
+import {
+  maximumAccountAttachmentBytes,
+  maximumRetainedCommands,
+  maximumRetainedEvents
+} from '../src/account-relay'
 import { shouldDeleteUploadedAttachmentObject } from '../src/index'
 
-async function pairedDevices(): Promise<{
+function authenticatedUrl(path: string, accountId: string, deviceId: string): string {
+  return `https://relay.test${path}${path.includes('?') ? '&' : '?'}accountId=${accountId}&deviceId=${deviceId}`
+}
+
+async function confirmAccountBinding(pairing: CompanionPairingStartResult): Promise<void> {
+  const proofResponse = await SELF.fetch(
+    authenticatedUrl('/v1/account-binding-proofs', pairing.accountId, pairing.macDeviceId),
+    { method: 'POST', headers: { Authorization: `Bearer ${pairing.macToken}` } }
+  )
+  expect(proofResponse.status).toBe(201)
+  const { proof } = await proofResponse.json<{ proof: string }>()
+  const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+  const spaceId = crypto.randomUUID()
+  const bindingId = crypto.randomUUID()
+  await expect(stub.claimAccountBinding(spaceId, bindingId, 1, proof)).resolves.toBe(true)
+  await expect(stub.confirmAccountBinding(spaceId, bindingId)).resolves.toBe(true)
+}
+
+async function pairedDevices(bindAccount = true): Promise<{
   pairing: CompanionPairingStartResult
   phone: CompanionPairingClaimResult
 }> {
@@ -24,6 +46,7 @@ async function pairedDevices(): Promise<{
   })
   expect(pairingResponse.status).toBe(201)
   const pairing = await pairingResponse.json<CompanionPairingStartResult>()
+  if (bindAccount) await confirmAccountBinding(pairing)
   const claimResponse = await SELF.fetch('https://relay.test/v1/pairings/claim', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': `test-${crypto.randomUUID()}` },
@@ -36,10 +59,6 @@ async function pairedDevices(): Promise<{
   })
   expect(claimResponse.status).toBe(201)
   return { pairing, phone: await claimResponse.json<CompanionPairingClaimResult>() }
-}
-
-function authenticatedUrl(path: string, accountId: string, deviceId: string): string {
-  return `https://relay.test${path}${path.includes('?') ? '&' : '?'}accountId=${accountId}&deviceId=${deviceId}`
 }
 
 const encryptedPayload = {
@@ -73,7 +92,7 @@ describe('companion relay', () => {
       status: 'ok',
       minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
-      build: '2026-08-19.1'
+      build: '2026-08-19.2'
     })
   })
 
@@ -113,6 +132,83 @@ describe('companion relay', () => {
       })
     })
     expect(repeated.status).toBe(400)
+  })
+
+  it('blocks high-cost Relay mutations until Account API confirms ownership', async () => {
+    const { pairing, phone } = await pairedDevices(false)
+    const event = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventId: crypto.randomUUID(), protocolVersion: companionProtocolVersion,
+        type: 'agent-run.updated', entityType: 'agent-run', entityId: 'unbound-run', revision: 1,
+        payload: encryptedPayload, occurredAt: new Date().toISOString()
+      })
+    })
+    expect(event.status).toBe(409)
+
+    const command = await SELF.fetch(authenticatedUrl('/v1/commands', pairing.accountId, phone.device.id), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.deviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId: crypto.randomUUID(), protocolVersion: companionProtocolVersion,
+        type: 'agent.send-message', payload: encryptedPayload, createdAt: new Date().toISOString()
+      })
+    })
+    expect(command.status).toBe(409)
+
+    const attachmentId = crypto.randomUUID()
+    const attachment = await SELF.fetch(
+      authenticatedUrl(`/v1/attachments/${attachmentId}`, pairing.accountId, pairing.macDeviceId),
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${pairing.macToken}`,
+          'Content-Length': '1',
+          'X-Content-SHA256': 'a'.repeat(64),
+          'X-Companion-Encryption': 'A256GCM'
+        },
+        body: 'x'
+      }
+    )
+    expect(attachment.status).toBe(409)
+    await expect(env.ATTACHMENTS.list({ prefix: `${pairing.accountId}/` }))
+      .resolves.toMatchObject({ objects: [] })
+  })
+
+  it('removes expired unbound pairing credentials on the pairing alarm', async () => {
+    const { pairing } = await pairedDevices(false)
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec('UPDATE pairing SET expires_at = ?', new Date(0).toISOString())
+    })
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    await expect(runInDurableObject(stub, (_instance, state) => ({
+      devices: state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM devices').one().count,
+      pairings: state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM pairing').one().count
+    }))).resolves.toEqual({ devices: 0, pairings: 0 })
+  })
+
+  it('does not expire a pairing while its Account API binding lease is active', async () => {
+    const { pairing } = await pairedDevices(false)
+    const proofResponse = await SELF.fetch(
+      authenticatedUrl('/v1/account-binding-proofs', pairing.accountId, pairing.macDeviceId),
+      { method: 'POST', headers: { Authorization: `Bearer ${pairing.macToken}` } }
+    )
+    const { proof } = await proofResponse.json<{ proof: string }>()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    const spaceId = crypto.randomUUID()
+    const bindingId = crypto.randomUUID()
+    await expect(stub.claimAccountBinding(spaceId, bindingId, 1, proof)).resolves.toBe(true)
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec('UPDATE pairing SET expires_at = ?', new Date(0).toISOString())
+    })
+
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    await expect(stub.confirmAccountBinding(spaceId, bindingId)).resolves.toBe(true)
+    await expect(runInDurableObject(stub, (_instance, state) => (
+      state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM devices').one().count
+    ))).resolves.toBe(2)
   })
 
   it('lets an iPhone revoke its own Relay token when it signs out', async () => {
@@ -221,6 +317,7 @@ describe('companion relay', () => {
       body: JSON.stringify({ macDeviceId: 'account-mac', macDeviceName: 'Account Mac' })
     })
     const pairing = await pairingResponse.json<CompanionPairingStartResult>()
+    await confirmAccountBinding(pairing)
     const enroll = (deviceId: string) => SELF.fetch(
       authenticatedUrl('/v1/devices/enroll', pairing.accountId, pairing.macDeviceId),
       {
@@ -244,7 +341,11 @@ describe('companion relay', () => {
       {
         method: 'POST',
         headers: { Authorization: 'Bearer wrong-token', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceId: 'account-ios-3', deviceName: 'Unauthorized' })
+        body: JSON.stringify({
+          deviceId: 'account-ios-3',
+          deviceName: 'Unauthorized',
+          publicKey: 'account-device-public-key'
+        })
       }
     )
     expect(unauthorized.status).toBe(401)
@@ -269,6 +370,7 @@ describe('companion relay', () => {
       body: JSON.stringify({ macDeviceId: 'generation-mac', macDeviceName: 'Generation Mac' })
     })
     const pairing = await pairingResponse.json<CompanionPairingStartResult>()
+    await confirmAccountBinding(pairing)
     const enroll = async (grantId: string): Promise<CompanionPairingClaimResult> => {
       const response = await SELF.fetch(
         authenticatedUrl('/v1/devices/enroll', pairing.accountId, pairing.macDeviceId),
@@ -315,7 +417,7 @@ describe('companion relay', () => {
   })
 
   it('does not let an old account revocation delete a reactivated Relay generation', async () => {
-    const { pairing } = await pairedDevices()
+    const { pairing } = await pairedDevices(false)
     const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
     const spaceId = crypto.randomUUID()
     const bindingId = crypto.randomUUID()
@@ -512,6 +614,64 @@ describe('companion relay', () => {
     expect(page.events[0]).toMatchObject({ type: 'snapshot.created', entityId: 'current' })
   })
 
+  it('rolls retained events at 5000 while preserving the latest snapshot baseline', async () => {
+    const { pairing } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    const now = new Date().toISOString()
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO events (
+          event_id, protocol_version, type, entity_type, entity_id, revision,
+          payload_json, source_device_id, occurred_at
+        ) VALUES ('retention-snapshot', ?, 'snapshot.created', 'snapshot', 'current', 1, ?, ?, ?)`,
+        companionProtocolVersion,
+        JSON.stringify(encryptedPayload),
+        pairing.macDeviceId,
+        now
+      )
+      state.storage.sql.exec(
+        `WITH RECURSIVE retained(value) AS (
+           SELECT 1 UNION ALL SELECT value + 1 FROM retained WHERE value < ?
+         )
+         INSERT INTO events (
+           event_id, protocol_version, type, entity_type, entity_id, revision,
+           payload_json, source_device_id, occurred_at
+         )
+         SELECT 'retained-' || value, ?, 'agent-run.updated', 'agent-run',
+                'run-' || value, value, ?, ?, ? FROM retained`,
+        maximumRetainedEvents,
+        companionProtocolVersion,
+        JSON.stringify(encryptedPayload),
+        pairing.macDeviceId,
+        now
+      )
+    })
+
+    const newestId = crypto.randomUUID()
+    const response = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventId: newestId, protocolVersion: companionProtocolVersion,
+        type: 'agent-run.updated', entityType: 'agent-run', entityId: 'newest-run', revision: 1,
+        payload: encryptedPayload, occurredAt: now
+      })
+    })
+    expect(response.status).toBe(201)
+    await expect(runInDurableObject(stub, (_instance, state) => ({
+      count: state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM events').one().count,
+      snapshot: state.storage.sql.exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM events WHERE event_id = 'retention-snapshot'`
+      ).one().count,
+      oldestIncrement: state.storage.sql.exec<{ sequence: number }>(
+        `SELECT MIN(sequence) AS sequence FROM events WHERE type != 'snapshot.created'`
+      ).one().sequence,
+      newest: state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM events WHERE event_id = ?', newestId
+      ).one().count
+    }))).resolves.toEqual({ count: maximumRetainedEvents, snapshot: 1, oldestIncrement: 4, newest: 1 })
+  })
+
   it('schedules recurring Durable Object maintenance after retained data changes', async () => {
     const { pairing } = await pairedDevices()
     const response = await SELF.fetch(authenticatedUrl('/v1/events', pairing.accountId, pairing.macDeviceId), {
@@ -563,6 +723,91 @@ describe('companion relay', () => {
     expect(completed.result).toBeNull()
 
     expect(JSON.stringify(completed)).not.toContain('accepted')
+  })
+
+  it('caps commands at 1000 and reclaims the oldest terminal commands first', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    const now = new Date().toISOString()
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `WITH RECURSIVE retained(value) AS (
+           SELECT 1 UNION ALL SELECT value + 1 FROM retained WHERE value < ?
+         )
+         INSERT INTO commands (
+           command_id, protocol_version, type, payload_json, source_device_id,
+           status, result_json, error, created_at, updated_at
+         )
+         SELECT 'terminal-' || value, ?, 'agent.send-message', ?, ?,
+                'completed', NULL, NULL, ?, ? FROM retained`,
+        maximumRetainedCommands,
+        companionProtocolVersion,
+        JSON.stringify(encryptedPayload),
+        phone.device.id,
+        now,
+        now
+      )
+    })
+
+    const commandId = crypto.randomUUID()
+    const response = await SELF.fetch(authenticatedUrl('/v1/commands', pairing.accountId, phone.device.id), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.deviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId, protocolVersion: companionProtocolVersion, type: 'agent.send-message',
+        payload: encryptedPayload, createdAt: now
+      })
+    })
+    expect(response.status).toBe(201)
+    await expect(runInDurableObject(stub, (_instance, state) => ({
+      count: state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM commands').one().count,
+      newest: state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM commands WHERE command_id = ?', commandId
+      ).one().count
+    }))).resolves.toEqual({ count: maximumRetainedCommands - 99, newest: 1 })
+  })
+
+  it('rejects a new command with a conflict when every retained command is active', async () => {
+    const { pairing, phone } = await pairedDevices()
+    const stub = env.ACCOUNT_RELAY.getByName(pairing.accountId)
+    const now = new Date().toISOString()
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `WITH RECURSIVE retained(value) AS (
+           SELECT 1 UNION ALL SELECT value + 1 FROM retained WHERE value < ?
+         )
+         INSERT INTO commands (
+           command_id, protocol_version, type, payload_json, source_device_id,
+           status, result_json, error, created_at, updated_at
+         )
+         SELECT 'active-' || value, ?, 'agent.send-message', ?, ?,
+                'executing', NULL, NULL, ?, ? FROM retained`,
+        maximumRetainedCommands,
+        companionProtocolVersion,
+        JSON.stringify(encryptedPayload),
+        phone.device.id,
+        now,
+        now
+      )
+    })
+
+    const commandId = crypto.randomUUID()
+    const response = await SELF.fetch(authenticatedUrl('/v1/commands', pairing.accountId, phone.device.id), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${phone.deviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId, protocolVersion: companionProtocolVersion, type: 'agent.send-message',
+        payload: encryptedPayload, createdAt: now
+      })
+    })
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toEqual({ error: '账户命令存储已达到上限，请等待活跃命令结束。' })
+    await expect(runInDurableObject(stub, (_instance, state) => ({
+      count: state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM commands').one().count,
+      inserted: state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM commands WHERE command_id = ?', commandId
+      ).one().count
+    }))).resolves.toEqual({ count: maximumRetainedCommands, inserted: 0 })
   })
 
   it('preserves retained encrypted events and commands across the protocol-v4 migration', async () => {

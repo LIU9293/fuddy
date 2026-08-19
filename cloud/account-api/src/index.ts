@@ -26,6 +26,10 @@ const OTP_RESEND_SECONDS = 60
 const RELAY_BINDING_ATTEMPT_SECONDS = 5 * 60
 const MAX_JSON_BODY_BYTES = 64 * 1024
 const GOOGLE_JWKS = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'))
+export const maximumActiveDevicesPerUser = 20
+export const maximumActiveMacHostsPerUser = 5
+export const maximumActiveSessionsPerDevice = 10
+const ACCOUNT_PRUNE_BATCH_SIZE = 500
 
 export function relayBindingUsesManagedAuthority(relayUrl: string, environment: string): boolean {
   if (environment !== 'production') return true
@@ -215,6 +219,25 @@ async function upsertDevice(
 ): Promise<{ id: string; hostId: string | null; syncSpaceId: string | null }> {
   const installationId = input.id ?? crypto.randomUUID()
   const timestamp = isoNow(now)
+  const existingInstallation = await env.ACCOUNT_DB.prepare(
+    `SELECT id, platform, revoked_at FROM devices WHERE user_id = ? AND installation_id = ?`
+  ).bind(userId, installationId).first<{ id: string; platform: string; revoked_at: string | null }>()
+  if (existingInstallation && existingInstallation.platform !== input.platform) {
+    throw new ApiError(409, 'device_platform_mismatch', '这台设备的系统类型与首次注册时不一致。')
+  }
+  if (!existingInstallation || existingInstallation.revoked_at) {
+    const active = await env.ACCOUNT_DB.prepare(
+      `SELECT COUNT(*) AS devices,
+              SUM(CASE WHEN platform = 'macos' THEN 1 ELSE 0 END) AS macs
+       FROM devices WHERE user_id = ? AND revoked_at IS NULL`
+    ).bind(userId).first<{ devices: number; macs: number | null }>()
+    if ((active?.devices ?? 0) >= maximumActiveDevicesPerUser) {
+      throw new ApiError(409, 'device_limit_reached', `每个账户最多保留 ${maximumActiveDevicesPerUser} 台活跃设备。`)
+    }
+    if (input.platform === 'macos' && (active?.macs ?? 0) >= maximumActiveMacHostsPerUser) {
+      throw new ApiError(409, 'mac_host_limit_reached', `每个账户最多保留 ${maximumActiveMacHostsPerUser} 台活跃 Mac。`)
+    }
+  }
   const device = await env.ACCOUNT_DB.prepare(
     `INSERT INTO devices
        (id, user_id, installation_id, platform, name, public_key, app_version, protocol_version, created_at, updated_at, last_seen_at)
@@ -310,6 +333,14 @@ async function createSession(
   const refreshExpiresAt = addSeconds(now, REFRESH_SECONDS).toISOString()
   const absoluteExpiresAt = addSeconds(now, ABSOLUTE_SESSION_SECONDS).toISOString()
   await env.ACCOUNT_DB.batch([
+    env.ACCOUNT_DB.prepare(
+      `UPDATE auth_sessions SET revoked_at = ?, updated_at = ?
+       WHERE id IN (
+         SELECT id FROM auth_sessions
+         WHERE device_id = ? AND revoked_at IS NULL
+         ORDER BY updated_at DESC LIMIT -1 OFFSET ?
+       )`
+    ).bind(timestamp, timestamp, deviceRecord.id, maximumActiveSessionsPerDevice - 1),
     env.ACCOUNT_DB.prepare(
       `INSERT INTO auth_sessions
          (id, family_id, user_id, device_id, access_hash, current_refresh_hash, access_expires_at, refresh_expires_at,
@@ -1383,6 +1414,61 @@ export async function processRelayRevocationJobs(
   return { attempted: jobs.length, completed }
 }
 
+export async function pruneExpiredAccountData(
+  env: Environment,
+  now = new Date(),
+  batchSize = ACCOUNT_PRUNE_BATCH_SIZE
+): Promise<number> {
+  const limit = Math.min(Math.max(Math.trunc(batchSize), 1), 2_000)
+  const cutoff = (days: number): string => new Date(now.getTime() - days * 86_400_000).toISOString()
+  const results = await env.ACCOUNT_DB.batch([
+    env.ACCOUNT_DB.prepare(
+      `DELETE FROM auth_rate_limits WHERE rowid IN (
+         SELECT rowid FROM auth_rate_limits WHERE window_start < ? LIMIT ?
+       )`
+    ).bind(cutoff(2), limit),
+    env.ACCOUNT_DB.prepare(
+      `DELETE FROM auth_email_cooldowns WHERE email IN (
+         SELECT email FROM auth_email_cooldowns WHERE available_at < ? LIMIT ?
+       )`
+    ).bind(cutoff(2), limit),
+    env.ACCOUNT_DB.prepare(
+      `DELETE FROM auth_challenges WHERE id IN (
+         SELECT id FROM auth_challenges WHERE created_at < ? LIMIT ?
+       )`
+    ).bind(cutoff(7), limit),
+    env.ACCOUNT_DB.prepare(
+      `DELETE FROM resend_webhook_events WHERE svix_id IN (
+         SELECT svix_id FROM resend_webhook_events WHERE received_at < ? LIMIT ?
+       )`
+    ).bind(cutoff(30), limit),
+    env.ACCOUNT_DB.prepare(
+      `DELETE FROM security_events WHERE id IN (
+         SELECT id FROM security_events WHERE created_at < ? LIMIT ?
+       )`
+    ).bind(cutoff(90), limit),
+    env.ACCOUNT_DB.prepare(
+      `DELETE FROM auth_sessions WHERE id IN (
+         SELECT id FROM auth_sessions
+         WHERE (revoked_at IS NOT NULL AND updated_at < ?) OR absolute_expires_at < ?
+         LIMIT ?
+       )`
+    ).bind(cutoff(7), cutoff(7), limit),
+    env.ACCOUNT_DB.prepare(
+      `DELETE FROM relay_binding_attempts WHERE id IN (
+         SELECT id FROM relay_binding_attempts WHERE expires_at < ? LIMIT ?
+       )`
+    ).bind(now.toISOString(), limit),
+    env.ACCOUNT_DB.prepare(
+      `DELETE FROM relay_revocation_jobs WHERE id IN (
+         SELECT id FROM relay_revocation_jobs
+         WHERE status = 'completed' AND completed_at < ? LIMIT ?
+       )`
+    ).bind(cutoff(30), limit)
+  ])
+  return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0)
+}
+
 async function revokeDevice(request: Request, env: Environment, deviceId: string): Promise<Response> {
   const user = await authenticate(request, env)
   const device = await env.ACCOUNT_DB.prepare('SELECT id, platform FROM devices WHERE id = ? AND user_id = ? AND revoked_at IS NULL')
@@ -1805,6 +1891,9 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Environment, context: ExecutionContext): Promise<void> {
-    context.waitUntil(processRelayRevocationJobs(env))
+    context.waitUntil((async () => {
+      await processRelayRevocationJobs(env)
+      await pruneExpiredAccountData(env)
+    })())
   }
 } satisfies ExportedHandler<Environment>
