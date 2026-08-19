@@ -19,7 +19,8 @@ import type {
 import {
   companionAttachmentObjectMaximumBytes,
   companionMinimumProtocolVersion,
-  companionProtocolVersion
+  companionProtocolVersion,
+  companionRelayMaximumRetainedEvents
 } from '../../../src/shared/companion-sync'
 
 interface DeviceRow extends Record<string, SqlStorageValue> {
@@ -91,8 +92,18 @@ type AttachmentUploadLeaseResult =
     accountGeneration: number | null
   }
   | { status: 'quota-exceeded' }
+  | { status: 'account-unbound' }
   | { status: 'upload-in-progress' }
   | { status: 'existing'; attachment: AttachmentRecord }
+
+export type RelayMutationResult<T> =
+  | { status: 'accepted'; value: T }
+  | { status: 'unauthorized' }
+  | { status: 'account-unbound' }
+  | { status: 'snapshot-required' }
+  | { status: 'capacity-exceeded' }
+  | { status: 'command-retired' }
+  | { status: 'command-expired' }
 
 interface AccountAuthorityRow extends Record<string, SqlStorageValue> {
   generation: number
@@ -120,10 +131,13 @@ interface PushRequest {
 
 const lastSeenWriteIntervalMs = 5 * 60_000
 const attachmentUploadLeaseDurationMs = 5 * 60_000
-const maximumRetainedEvents = 50_000
+export const maximumRetainedEvents = companionRelayMaximumRetainedEvents
 export const maximumAccountAttachmentBytes = 100 * 1024 * 1024 * 1024
-const maximumRetainedCommands = 5_000
+export const maximumRetainedCommands = 1_000
 const terminalCommandRetentionDays = 30
+export const commandRetryWindowMs = terminalCommandRetentionDays * 24 * 60 * 60 * 1_000
+const maximumCommandClockSkewMs = 5 * 60_000
+const commandTombstoneRetentionMs = commandRetryWindowMs + maximumCommandClockSkewMs
 const maintenanceIntervalMs = 24 * 60 * 60 * 1_000
 
 export function agentTurnAlertPushRequest(event: CompanionEncryptedSyncEvent): PushRequest {
@@ -282,6 +296,10 @@ export class AccountRelay extends DurableObject<Env> {
         occurred_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS events_sequence_idx ON events(sequence);
+      CREATE TABLE IF NOT EXISTS event_retention (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        trimmed_through_sequence INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS commands (
         command_id TEXT PRIMARY KEY,
         protocol_version INTEGER NOT NULL,
@@ -419,6 +437,13 @@ export class AccountRelay extends DurableObject<Env> {
         ON attachment_upload_leases(expires_at);
       INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (13, datetime('now'));
     `)
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS event_retention (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        trimmed_through_sequence INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO _sql_schema_migrations (id, applied_at) VALUES (14, datetime('now'));
+    `)
   }
 
   async initializePairing(input: {
@@ -447,6 +472,12 @@ export class AccountRelay extends DurableObject<Env> {
       input.publicKey,
       input.createdAt
     )
+    await this.ctx.storage.setAlarm(new Date(input.expiresAt))
+  }
+
+  private hasConfirmedAccountAuthority(): boolean {
+    const authority = this.getAccountAuthority()
+    return Boolean(authority?.space_id && authority.binding_id && authority.binding_expires_at === null)
   }
 
   async claimPairing(input: CompanionPairingClaimInput): Promise<
@@ -493,9 +524,10 @@ export class AccountRelay extends DurableObject<Env> {
     macToken: string,
     accountId: string,
     input: CompanionDeviceEnrollmentInput
-  ): Promise<CompanionDeviceEnrollmentResult | null> {
+  ): Promise<RelayMutationResult<CompanionDeviceEnrollmentResult>> {
     const mac = await this.authorize(macDeviceId, macToken, 'mac')
-    if (!mac) return null
+    if (!mac) return { status: 'unauthorized' }
+    if (!this.hasConfirmedAccountAuthority()) return { status: 'account-unbound' }
     const now = new Date().toISOString()
     const deviceToken = randomToken()
     const tokenHash = await secretHash(deviceToken)
@@ -517,11 +549,14 @@ export class AccountRelay extends DurableObject<Env> {
     )
     const row = this.ctx.storage.sql.exec<DeviceRow>('SELECT * FROM devices WHERE id = ?', input.deviceId).one()
     return {
-      minimumProtocolVersion: companionMinimumProtocolVersion,
-      protocolVersion: companionProtocolVersion,
-      accountId,
-      device: mapDevice(row),
-      deviceToken
+      status: 'accepted',
+      value: {
+        minimumProtocolVersion: companionMinimumProtocolVersion,
+        protocolVersion: companionProtocolVersion,
+        accountId,
+        device: mapDevice(row),
+        deviceToken
+      }
     }
   }
 
@@ -618,6 +653,7 @@ export class AccountRelay extends DurableObject<Env> {
   ): Promise<AttachmentUploadLeaseResult | null> {
     const device = await this.authorize(deviceId, token)
     if (!device) return null
+    if (!this.hasConfirmedAccountAuthority()) return { status: 'account-unbound' }
     if (!Number.isSafeInteger(size) || size <= 0 || size > companionAttachmentObjectMaximumBytes) {
       return { status: 'quota-exceeded' }
     }
@@ -753,27 +789,29 @@ export class AccountRelay extends DurableObject<Env> {
     deviceId: string,
     token: string,
     input: CompanionEncryptedSyncEventInput
-  ): Promise<CompanionEncryptedSyncEvent | null> {
+  ): Promise<RelayMutationResult<CompanionEncryptedSyncEvent>> {
     const device = await this.authorize(deviceId, token, 'mac')
-    if (!device) return null
-    this.requireEventCapacity([input])
+    if (!device) return { status: 'unauthorized' }
+    if (!this.hasConfirmedAccountAuthority()) return { status: 'account-unbound' }
+    if (!this.canAppendEvents([input])) return { status: 'snapshot-required' }
     const { event, inserted } = this.persistEvent(input, deviceId)
     if (inserted) {
       if (event.type === 'snapshot.created') this.compactEventsToLatestSnapshot()
       this.notifyEventsAvailable([event])
       this.ctx.waitUntil(this.ensureMaintenanceAlarm())
     }
-    return event
+    return { status: 'accepted', value: event }
   }
 
   async appendEvents(
     deviceId: string,
     token: string,
     inputs: CompanionEncryptedSyncEventInput[]
-  ): Promise<CompanionEventBatchResult | null> {
+  ): Promise<RelayMutationResult<CompanionEventBatchResult>> {
     const device = await this.authorize(deviceId, token, 'mac')
-    if (!device) return null
-    this.requireEventCapacity(inputs)
+    if (!device) return { status: 'unauthorized' }
+    if (!this.hasConfirmedAccountAuthority()) return { status: 'account-unbound' }
+    if (!this.canAppendEvents(inputs)) return { status: 'snapshot-required' }
     const persisted = this.ctx.storage.transactionSync(() => inputs.map((input) => this.persistEvent(input, deviceId)))
     const inserted = persisted.filter((result) => result.inserted).map((result) => result.event)
     if (inserted.length > 0) {
@@ -785,8 +823,11 @@ export class AccountRelay extends DurableObject<Env> {
     }
     const events = persisted.map((result) => result.event)
     return {
-      accepted: events.map((event) => ({ eventId: event.eventId, sequence: event.sequence })),
-      lastSequence: events.reduce((latest, event) => Math.max(latest, event.sequence), 0)
+      status: 'accepted',
+      value: {
+        accepted: events.map((event) => ({ eventId: event.eventId, sequence: event.sequence })),
+        lastSequence: events.reduce((latest, event) => Math.max(latest, event.sequence), 0)
+      }
     }
   }
 
@@ -827,33 +868,52 @@ export class AccountRelay extends DurableObject<Env> {
       `, acknowledged, deviceId)
       this.compactEventsToLatestSnapshot()
     }
+    const replayResetSequence = this.replayResetSequence(after)
+    const queryAfter = replayResetSequence ?? after
     const events = this.ctx.storage.sql.exec<EventRow>(
       'SELECT * FROM events WHERE sequence > ? ORDER BY sequence ASC LIMIT ?',
-      after,
+      queryAfter,
       limit
     ).toArray().map(mapEvent)
     return {
       minimumProtocolVersion: companionMinimumProtocolVersion,
       protocolVersion: companionProtocolVersion,
       events,
-      lastSequence: events.at(-1)?.sequence ?? after,
+      lastSequence: events.at(-1)?.sequence ?? queryAfter,
+      ...(replayResetSequence === null ? {} : { replayResetSequence }),
       presence: this.getPresence()
     }
   }
 
-  async createCommand(deviceId: string, token: string, input: CompanionEncryptedCommandInput): Promise<CompanionEncryptedCommand> {
-    await this.requireAuthorization(deviceId, token, 'ios')
+  async createCommand(
+    deviceId: string,
+    token: string,
+    input: CompanionEncryptedCommandInput
+  ): Promise<RelayMutationResult<CompanionEncryptedCommand>> {
+    const device = await this.authorize(deviceId, token, 'ios')
+    if (!device) return { status: 'unauthorized' }
+    if (!this.hasConfirmedAccountAuthority()) return { status: 'account-unbound' }
+    const now = new Date()
+    this.pruneRevokedCommands(now)
     const revoked = this.ctx.storage.sql.exec<{ command_id: string }>(
       'SELECT command_id FROM revoked_commands WHERE command_id = ?', input.commandId
     ).toArray()[0]
-    if (revoked) throw new Error('远程命令已被撤销，不能重复提交。')
+    if (revoked) return { status: 'command-retired' }
     const existing = this.ctx.storage.sql.exec<{ command_id: string }>(
       'SELECT command_id FROM commands WHERE command_id = ?', input.commandId
     ).toArray()[0]
     if (!existing) {
+      const createdAt = Date.parse(input.createdAt)
+      if (createdAt < now.getTime() - commandRetryWindowMs
+        || createdAt > now.getTime() + maximumCommandClockSkewMs) {
+        return { status: 'command-expired' }
+      }
+      this.pruneTerminalCommands(now)
+      this.pruneOldestTerminalCommandsForCapacity(now)
       const count = this.ctx.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM commands').one().count
-      if (count >= maximumRetainedCommands) throw new Error('账户命令存储已达到上限，请等待历史记录清理。')
+      if (count >= maximumRetainedCommands) return { status: 'capacity-exceeded' }
     }
+    const payloadJson = JSON.stringify(input.payload)
     const inserted = this.ctx.storage.sql.exec<CommandRow>(
       `INSERT OR IGNORE INTO commands (
         command_id, protocol_version, type, payload_json, source_device_id,
@@ -862,7 +922,7 @@ export class AccountRelay extends DurableObject<Env> {
       input.commandId,
       input.protocolVersion,
       input.type,
-      JSON.stringify(input.payload),
+      payloadJson,
       deviceId,
       input.createdAt,
       input.createdAt
@@ -874,7 +934,7 @@ export class AccountRelay extends DurableObject<Env> {
       this.broadcast({ type: 'command.created', command }, 'role:mac')
       this.ctx.waitUntil(this.ensureMaintenanceAlarm())
     }
-    return command
+    return { status: 'accepted', value: command }
   }
 
   async listPendingCommands(deviceId: string, token: string): Promise<CompanionEncryptedCommand[]> {
@@ -906,14 +966,16 @@ export class AccountRelay extends DurableObject<Env> {
     token: string,
     commandId: string,
     update: CompanionCommandUpdate
-  ): Promise<CompanionEncryptedCommand> {
-    await this.requireAuthorization(deviceId, token, 'mac')
+  ): Promise<RelayMutationResult<CompanionEncryptedCommand>> {
+    const device = await this.authorize(deviceId, token, 'mac')
+    if (!device) return { status: 'unauthorized' }
+    if (!this.hasConfirmedAccountAuthority()) return { status: 'account-unbound' }
     const existing = this.ctx.storage.sql.exec<CommandRow>(
       'SELECT * FROM commands WHERE command_id = ?', commandId
     ).toArray()[0]
     if (!existing) throw new Error('远程命令不存在。')
     if (existing.status === 'completed' || existing.status === 'failed') {
-      if (existing.status === update.status) return mapCommand(existing)
+      if (existing.status === update.status) return { status: 'accepted', value: mapCommand(existing) }
       throw new Error('远程命令已经结束，不能修改状态。')
     }
     const allowedTransitions: Record<CompanionEncryptedCommand['status'], CompanionCommandUpdate['status'][]> = {
@@ -938,7 +1000,7 @@ export class AccountRelay extends DurableObject<Env> {
     ).one()
     const command = mapCommand(updated)
     this.broadcast({ type: 'command.updated', command })
-    return command
+    return { status: 'accepted', value: command }
   }
 
   getPresence(): CompanionPresence {
@@ -1143,6 +1205,7 @@ export class AccountRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM commands')
     this.ctx.storage.sql.exec('DELETE FROM revoked_commands')
     this.ctx.storage.sql.exec('DELETE FROM events')
+    this.ctx.storage.sql.exec('DELETE FROM event_retention')
     this.ctx.storage.sql.exec('DELETE FROM pairing')
     this.ctx.storage.sql.exec('DELETE FROM attachments')
     this.ctx.storage.sql.exec('DELETE FROM attachment_upload_leases')
@@ -1176,22 +1239,35 @@ export class AccountRelay extends DurableObject<Env> {
        WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
       deviceId
     ).toArray().map((command) => command.command_id)
+    if (commandIds.length === 0) return
     const revokedAt = new Date().toISOString()
-    this.ctx.storage.sql.exec(
-      `INSERT OR REPLACE INTO revoked_commands (command_id, revoked_at)
-       SELECT command_id, ? FROM commands
-       WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
-      revokedAt,
-      deviceId
-    )
-    this.ctx.storage.sql.exec(
-      `DELETE FROM commands
-       WHERE source_device_id = ? AND status IN ('queued', 'delivered', 'executing')`,
-      deviceId
-    )
-    if (commandIds.length > 0) {
-      this.broadcast({ type: 'commands.revoked', commandIds }, 'role:mac')
-    }
+    this.pruneRevokedCommands(new Date(revokedAt))
+    const tombstoneCount = this.ctx.storage.sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM revoked_commands'
+    ).one().count
+    const tombstonedIds = commandIds.slice(0, Math.max(0, maximumRetainedCommands - tombstoneCount))
+    const retainedIds = commandIds.slice(tombstonedIds.length)
+    this.ctx.storage.transactionSync(() => {
+      for (const commandId of tombstonedIds) {
+        this.ctx.storage.sql.exec(
+          'INSERT OR IGNORE INTO revoked_commands (command_id, revoked_at) VALUES (?, ?)',
+          commandId,
+          revokedAt
+        )
+        this.ctx.storage.sql.exec('DELETE FROM commands WHERE command_id = ?', commandId)
+      }
+      for (const commandId of retainedIds) {
+        this.ctx.storage.sql.exec(
+          `UPDATE commands
+           SET status = 'failed', result_json = NULL, error = ?, updated_at = ?
+           WHERE command_id = ?`,
+          '来源设备已撤销，命令未执行。',
+          revokedAt,
+          commandId
+        )
+      }
+    })
+    this.broadcast({ type: 'commands.revoked', commandIds }, 'role:mac')
   }
 
   private mapAttachmentRecord(row: AttachmentRow): AttachmentRecord {
@@ -1204,9 +1280,28 @@ export class AccountRelay extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    const now = new Date()
+    const timestamp = now.toISOString()
+    const pairing = this.ctx.storage.sql.exec<{ expires_at: string }>(
+      'SELECT expires_at FROM pairing WHERE id = 1'
+    ).toArray()[0]
+    const authority = this.getAccountAuthority()
+    if (!this.hasConfirmedAccountAuthority() && pairing && pairing.expires_at <= timestamp) {
+      if (authority?.binding_expires_at && authority.binding_expires_at > timestamp) {
+        await this.ctx.storage.setAlarm(new Date(authority.binding_expires_at))
+        return
+      }
+      for (const socket of this.ctx.getWebSockets()) {
+        try { socket.close(1000, 'Pairing expired') } catch { /* Already closed. */ }
+      }
+      this.revokeAccountState(undefined, false)
+      this.ctx.storage.sql.exec('DELETE FROM account_binding_proofs')
+      this.ctx.storage.sql.exec('DELETE FROM account_authority')
+      return
+    }
     this.compactEventsToLatestSnapshot()
-    this.pruneTerminalCommands()
-    this.pruneRevokedCommands()
+    this.pruneTerminalCommands(now)
+    this.pruneRevokedCommands(now)
     this.pruneExpiredAttachmentUploadLeases()
     const activeDevices = this.ctx.storage.sql.exec<{ count: number }>(
       'SELECT COUNT(*) AS count FROM devices WHERE revoked_at IS NULL'
@@ -1282,21 +1377,23 @@ export class AccountRelay extends DurableObject<Env> {
     return { event: mapEvent(row), inserted: inserted !== undefined }
   }
 
-  private requireEventCapacity(inputs: CompanionEncryptedSyncEventInput[]): void {
-    const uniqueIds = [...new Set(inputs.map((input) => input.eventId))]
-    if (uniqueIds.length === 0) return
-    // A canonical snapshot makes every earlier event disposable. Let it enter
-    // even at the logical cap, then compact it in the same Durable Object turn.
-    if (inputs.some((input) => input.type === 'snapshot.created')) return
-    const existing = uniqueIds.reduce((count, id) => count + (
-      this.ctx.storage.sql.exec<{ event_id: string }>('SELECT event_id FROM events WHERE event_id = ?', id).toArray()[0]
-        ? 1
-        : 0
-    ), 0)
-    const retained = this.ctx.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM events').one().count
-    if (retained + uniqueIds.length - existing > maximumRetainedEvents) {
-      throw new Error('账户事件存储已达到上限，等待下一次状态快照后会自动释放空间。')
+  private canAppendEvents(inputs: CompanionEncryptedSyncEventInput[]): boolean {
+    const unseenEventIds = new Set<string>()
+    let firstUnseenType: CompanionEncryptedSyncEventInput['type'] | null = null
+    for (const input of inputs) {
+      if (unseenEventIds.has(input.eventId)) continue
+      const exists = this.ctx.storage.sql.exec<{ event_id: string }>(
+        'SELECT event_id FROM events WHERE event_id = ?', input.eventId
+      ).toArray()[0]
+      if (exists) continue
+      unseenEventIds.add(input.eventId)
+      firstUnseenType ??= input.type
     }
+    if (unseenEventIds.size === 0 || firstUnseenType === 'snapshot.created') return true
+    const retainedCount = this.ctx.storage.sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM events'
+    ).one().count
+    return retainedCount + unseenEventIds.size <= maximumRetainedEvents
   }
 
   private compactEventsToLatestSnapshot(): void {
@@ -1309,12 +1406,55 @@ export class AccountRelay extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM events WHERE sequence < ?', snapshot.sequence)
   }
 
-  private pruneTerminalCommands(): void {
-    this.ctx.storage.sql.exec(`
-      DELETE FROM commands
-      WHERE status IN ('completed', 'failed')
-        AND updated_at < datetime('now', ?)
-    `, `-${terminalCommandRetentionDays} days`)
+  private replayResetSequence(after: number): number | null {
+    const snapshotSequence = this.ctx.storage.sql.exec<{ sequence: number }>(
+      `SELECT sequence FROM events WHERE type = 'snapshot.created' ORDER BY sequence DESC LIMIT 1`
+    ).toArray()[0]?.sequence
+    const trimmedThrough = this.ctx.storage.sql.exec<{ trimmed_through_sequence: number }>(
+      'SELECT trimmed_through_sequence FROM event_retention WHERE id = 1'
+    ).toArray()[0]?.trimmed_through_sequence
+    if (snapshotSequence === undefined || trimmedThrough === undefined) return null
+    if (after < snapshotSequence || after >= trimmedThrough) return null
+    return Math.max(0, snapshotSequence - 1)
+  }
+
+  private pruneTerminalCommands(now = new Date()): void {
+    const cutoff = new Date(now.getTime() - commandRetryWindowMs).toISOString()
+    this.ctx.storage.sql.exec(
+      `DELETE FROM commands
+       WHERE status IN ('completed', 'failed') AND created_at < ?`,
+      cutoff
+    )
+  }
+
+  private pruneOldestTerminalCommandsForCapacity(now = new Date()): void {
+    const count = this.ctx.storage.sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM commands'
+    ).one().count
+    if (count < maximumRetainedCommands) return
+    const tombstoneCount = this.ctx.storage.sql.exec<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM revoked_commands'
+    ).one().count
+    const availableTombstones = Math.max(0, maximumRetainedCommands - tombstoneCount)
+    if (availableTombstones === 0) return
+    const commandIds = this.ctx.storage.sql.exec<{ command_id: string }>(
+      `SELECT command_id FROM commands
+       WHERE status IN ('completed', 'failed')
+       ORDER BY updated_at ASC, command_id ASC LIMIT ?`,
+      Math.min(100, availableTombstones)
+    ).toArray().map((command) => command.command_id)
+    if (commandIds.length === 0) return
+    const retiredAt = now.toISOString()
+    this.ctx.storage.transactionSync(() => {
+      for (const commandId of commandIds) {
+        this.ctx.storage.sql.exec(
+          'INSERT OR IGNORE INTO revoked_commands (command_id, revoked_at) VALUES (?, ?)',
+          commandId,
+          retiredAt
+        )
+        this.ctx.storage.sql.exec('DELETE FROM commands WHERE command_id = ?', commandId)
+      }
+    })
   }
 
   private pruneExpiredAttachmentUploadLeases(): void {
@@ -1324,17 +1464,11 @@ export class AccountRelay extends DurableObject<Env> {
     )
   }
 
-  private pruneRevokedCommands(): void {
+  private pruneRevokedCommands(now = new Date()): void {
+    const cutoff = new Date(now.getTime() - commandTombstoneRetentionMs).toISOString()
     this.ctx.storage.sql.exec(
-      `DELETE FROM revoked_commands WHERE revoked_at < datetime('now', ?)`,
-      `-${terminalCommandRetentionDays} days`
-    )
-    this.ctx.storage.sql.exec(
-      `DELETE FROM revoked_commands WHERE command_id IN (
-        SELECT command_id FROM revoked_commands
-        ORDER BY revoked_at DESC LIMIT -1 OFFSET ?
-      )`,
-      maximumRetainedCommands
+      'DELETE FROM revoked_commands WHERE revoked_at < ?',
+      cutoff
     )
   }
 

@@ -184,6 +184,7 @@ struct SyncEventPage: Codable {
     let protocolVersion: Int?
     let events: [SyncEvent]
     let lastSequence: Int
+    let replayResetSequence: Int?
     let presence: CompanionPresence?
 }
 
@@ -192,6 +193,7 @@ struct EncryptedSyncEventPage: Codable {
     let protocolVersion: Int?
     let events: [EncryptedSyncEvent]
     let lastSequence: Int
+    let replayResetSequence: Int?
     let presence: CompanionPresence?
 }
 
@@ -249,6 +251,13 @@ func companionResetReplayCursorIfNeeded(state: inout CachedState, remoteSequence
     )
     guard replayCursor != state.lastSequence else { return false }
     state.lastSequence = replayCursor
+    return true
+}
+
+@discardableResult
+func companionApplyReplayResetIfNeeded(state: inout CachedState, replayResetSequence: Int?) -> Bool {
+    guard let replayResetSequence, replayResetSequence < state.lastSequence else { return false }
+    state.lastSequence = replayResetSequence
     return true
 }
 

@@ -6,8 +6,11 @@ import {
   activatePendingEnrollment,
   bindRelay,
   linkVerifiedGoogleIdentity,
+  maximumActiveMacHostsPerUser,
+  maximumActiveSessionsPerDevice,
   parseResendErrorDetails,
   processRelayRevocationJobs,
+  pruneExpiredAccountData,
   reactivateRelayAccountIfNeeded,
   relayBindingUsesManagedAuthority
 } from '../src/index'
@@ -156,6 +159,167 @@ describe('email authentication', () => {
          (SELECT COUNT(*) FROM sync_spaces WHERE owner_user_id = ?) AS spaces`
     ).bind(user!.id, user!.id, user!.id).first<{ devices: number; hosts: number; spaces: number }>()
     expect(counts).toEqual({ devices: 2, hosts: 2, spaces: 2 })
+  })
+
+  it('caps active Mac installations per account without blocking an existing installation', async () => {
+    const email = 'mac-limit@example.com'
+    const installationId = crypto.randomUUID()
+    const first = await signIn(email, { ...device, id: installationId })
+    const userId = first.payload.user.id as string
+    const timestamp = new Date().toISOString()
+    for (let index = 1; index < maximumActiveMacHostsPerUser; index += 1) {
+      await env.ACCOUNT_DB.prepare(
+        `INSERT INTO devices (
+          id, user_id, installation_id, platform, name, public_key, app_version,
+          protocol_version, created_at, updated_at, last_seen_at
+        ) VALUES (?, ?, ?, 'macos', ?, 'public-key-material', '0.0.3', 1, ?, ?, ?)`
+      ).bind(
+        crypto.randomUUID(), userId, crypto.randomUUID(), `额外 Mac ${index}`,
+        timestamp, timestamp, timestamp
+      ).run()
+    }
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const blocked = await signIn(email, { ...device, id: crypto.randomUUID(), name: '超额 Mac' })
+    expect(blocked.verify.status).toBe(409)
+    expect(blocked.payload).toMatchObject({ error: { code: 'mac_host_limit_reached' } })
+
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const existing = await signIn(email, { ...device, id: installationId, name: '原有 Mac' })
+    expect(existing.verify.status).toBe(200)
+  })
+
+  it('atomically admits only one concurrent Mac at the account limit', async () => {
+    const email = 'concurrent-mac-limit@example.com'
+    const first = await signIn(email, { ...device, id: crypto.randomUUID() })
+    const userId = first.payload.user.id as string
+    const timestamp = new Date().toISOString()
+    for (let index = 1; index < maximumActiveMacHostsPerUser - 1; index += 1) {
+      await env.ACCOUNT_DB.prepare(
+        `INSERT INTO devices (
+          id, user_id, installation_id, platform, name, public_key, app_version,
+          protocol_version, created_at, updated_at, last_seen_at
+        ) VALUES (?, ?, ?, 'macos', ?, 'public-key-material', '0.0.3', 1, ?, ?, ?)`
+      ).bind(
+        crypto.randomUUID(), userId, crypto.randomUUID(), `已有 Mac ${index}`,
+        timestamp, timestamp, timestamp
+      ).run()
+    }
+
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const leftStart = await post('/v1/auth/email/start', { email })
+    const left = await leftStart.json<{ challengeId: string; debugCode: string }>()
+    await env.ACCOUNT_DB.prepare(
+      `UPDATE auth_challenges SET created_at = datetime('now', '-2 minutes') WHERE id = ?`
+    ).bind(left.challengeId).run()
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const rightStart = await post('/v1/auth/email/start', { email })
+    const right = await rightStart.json<{ challengeId: string; debugCode: string }>()
+
+    const [leftVerify, rightVerify] = await Promise.all([
+      post('/v1/auth/email/verify', {
+        challengeId: left.challengeId,
+        code: left.debugCode,
+        device: { ...device, id: crypto.randomUUID(), name: '并发 Mac A' }
+      }),
+      post('/v1/auth/email/verify', {
+        challengeId: right.challengeId,
+        code: right.debugCode,
+        device: { ...device, id: crypto.randomUUID(), name: '并发 Mac B' }
+      })
+    ])
+    expect([leftVerify.status, rightVerify.status].sort()).toEqual([200, 409])
+    const rejected = leftVerify.status === 409 ? leftVerify : rightVerify
+    await expect(rejected.json()).resolves.toMatchObject({ error: { code: 'mac_host_limit_reached' } })
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT COUNT(*) AS count FROM devices
+       WHERE user_id = ? AND platform = 'macos' AND revoked_at IS NULL`
+    ).bind(userId).first()).resolves.toEqual({ count: maximumActiveMacHostsPerUser })
+  })
+
+  it('does not let an existing installation change platform to bypass Mac limits', async () => {
+    const email = 'platform-mismatch@example.com'
+    const installationId = crypto.randomUUID()
+    const first = await signIn(email, { ...device, id: installationId })
+    expect(first.verify.status).toBe(200)
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const changed = await signIn(email, {
+      ...device,
+      id: installationId,
+      platform: 'ios',
+      name: '伪装 iPhone'
+    })
+    expect(changed.verify.status).toBe(409)
+    expect(changed.payload).toMatchObject({ error: { code: 'device_platform_mismatch' } })
+  })
+
+  it('keeps only ten active sessions for one device', async () => {
+    const email = 'session-limit@example.com'
+    const installation = { ...device, id: crypto.randomUUID() }
+    const first = await signIn(email, installation)
+    const timestamp = new Date(0).toISOString()
+    for (let index = 0; index < maximumActiveSessionsPerDevice; index += 1) {
+      await env.ACCOUNT_DB.prepare(
+        `INSERT INTO auth_sessions (
+          id, family_id, user_id, device_id, access_hash, current_refresh_hash,
+          access_expires_at, refresh_expires_at, absolute_expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        crypto.randomUUID(), crypto.randomUUID(), first.payload.user.id, first.payload.device.id,
+        `access-${index}`, `refresh-${index}`,
+        '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z',
+        timestamp, timestamp
+      ).run()
+    }
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    const latest = await signIn(email, installation)
+    expect(latest.verify.status).toBe(200)
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT COUNT(*) AS count FROM auth_sessions WHERE device_id = ? AND revoked_at IS NULL'
+    ).bind(first.payload.device.id).first()).resolves.toEqual({ count: maximumActiveSessionsPerDevice })
+  })
+
+  it('prunes expired authentication and audit rows in bounded scheduled batches', async () => {
+    const signedIn = await signIn('prune@example.com', { ...device, id: crypto.randomUUID() })
+    const old = '2020-01-01T00:00:00.000Z'
+    await env.ACCOUNT_DB.batch([
+      env.ACCOUNT_DB.prepare(
+        `INSERT INTO auth_rate_limits (key_hash, window_start, count, updated_at) VALUES ('old-limit', ?, 1, ?)`
+      ).bind(old, old),
+      env.ACCOUNT_DB.prepare(
+        `INSERT INTO auth_email_cooldowns (email, challenge_id, available_at, updated_at)
+         VALUES ('old@example.com', 'old-cooldown', ?, ?)`
+      ).bind(old, old),
+      env.ACCOUNT_DB.prepare(
+        `INSERT INTO auth_challenges (id, email, code_hash, expires_at, created_at)
+         VALUES ('old-challenge', 'old@example.com', 'hash', ?, ?)`
+      ).bind(old, old),
+      env.ACCOUNT_DB.prepare(
+        `INSERT INTO resend_webhook_events
+          (svix_id, event_type, resend_email_id, event_created_at, received_at)
+         VALUES ('old-webhook', 'email.sent', 'old-email', ?, ?)`
+      ).bind(old, old),
+      env.ACCOUNT_DB.prepare(
+        `INSERT INTO security_events (id, user_id, device_id, event_type, created_at)
+         VALUES ('old-security', ?, ?, 'old.event', ?)`
+      ).bind(signedIn.payload.user.id, signedIn.payload.device.id, old),
+      env.ACCOUNT_DB.prepare(
+        `UPDATE auth_sessions SET revoked_at = ?, updated_at = ? WHERE device_id = ?`
+      ).bind(old, old, signedIn.payload.device.id)
+    ])
+
+    await expect(pruneExpiredAccountData(env, new Date('2030-01-01T00:00:00.000Z'), 50))
+      .resolves.toBeGreaterThan(0)
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM auth_rate_limits) AS rateLimits,
+         (SELECT COUNT(*) FROM auth_email_cooldowns) AS cooldowns,
+         (SELECT COUNT(*) FROM auth_challenges) AS challenges,
+         (SELECT COUNT(*) FROM resend_webhook_events) AS webhooks,
+         (SELECT COUNT(*) FROM security_events) AS securityEvents,
+         (SELECT COUNT(*) FROM auth_sessions) AS sessions`
+    ).first()).resolves.toEqual({
+      rateLimits: 0, cooldowns: 0, challenges: 0, webhooks: 0, securityEvents: 0, sessions: 0
+    })
   })
 
   it('rejects an incorrect code and accepts the original code afterward', async () => {

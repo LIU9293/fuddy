@@ -24,6 +24,7 @@ import type { CompanionEncryptedEnvelope } from './companion-crypto'
 export const companionProtocolVersion = companionProtocol.currentVersion
 export const companionMinimumProtocolVersion = companionProtocol.minimumVersion
 export const defaultCompanionRelayUrl = 'https://fuddy.ai/api/relay'
+export const companionRelayMaximumRetainedEvents = 5_000
 export const companionAttachmentObjectMaximumBytes = 20 * 1024 * 1024
 export const companionAttachmentEnvelopeOverheadBytes = 32
 export const companionAttachmentPlaintextMaximumBytes =
@@ -170,6 +171,7 @@ export interface CompanionEventPage {
   protocolVersion: number
   events: CompanionSyncEvent[]
   lastSequence: number
+  replayResetSequence?: number
   presence?: CompanionPresence
 }
 

@@ -61,7 +61,7 @@ Each event page and WebSocket presence frame also carries current Durable Object
 
 Current transport uses HTTPS, private Cloudflare storage and application-layer AES-256-GCM encryption so Cloudflare stores opaque event and attachment ciphertext. Abuse protection, account deletion and active Space Data Key rotation remain release gates for untrusted multi-user distribution.
 
-The current personal-device MVP retains ordered events, terminal commands, and R2 attachments until the Mac disconnects the account. Before long-lived multi-user rollout, add per-device replay acknowledgements, snapshot compaction, and attachment retention/garbage collection; deleting history without an acknowledged snapshot would create silent gaps for an offline phone.
+Relay keeps the latest encrypted snapshot as the recovery baseline and caps retained history at 5,000 events per account. A new snapshot immediately removes everything before it. If later increments fill the cap, Relay returns a machine-readable `snapshot-required` conflict instead of deleting mutations newer than the baseline; the Mac transactionally rebuilds its pending outbox from current state, preserves non-reconstructable transient events, and uploads the new snapshot first. Before replacing the complete Relay baseline, the Mac also checks the rebuilt outbox against the same hard cap. An oversized canonical baseline stops with a visible archival error instead of repeatedly replacing Relay state with partial snapshots. Legacy trimmed sequence markers still support the protocol-v5 replay reset contract for data created by earlier builds. Commands are capped at 1,000 rows and reclaim the oldest terminal rows before rejecting new work. First-time command IDs are accepted only within a 30-day retry window, and reclaimed IDs remain as tombstones for that entire window; when tombstone capacity is exhausted, Relay rejects reclamation instead of making an accepted command executable twice. R2 attachments remain until the Mac disconnects the account; longer-lived multi-user rollout still needs product-level attachment retention and garbage-collection controls.
 
 ## Foreground and background delivery
 
@@ -85,7 +85,7 @@ Set `APNS_ENVIRONMENT` to `development` for locally signed development builds an
 Agent-generated files already become `AgentRunArtifact` records on Mac. Work Assistant image attachments use the same transport instead of syncing their inline `data:` URLs. During sync:
 
 1. Mac first resolves project artifacts inside the registered project file space, then falls back to the Run working directory for coding-Agent artifacts; both paths enforce containment and reject missing files, directories, and traversal attempts.
-2. Files up to 100 MiB are streamed to a private R2 object under the account ID. The initial pairing snapshot uploads existing Run artifacts too, so historical Sessions are not display-only.
+2. Files up to 20 MiB including the encryption envelope are streamed to a private R2 object under the account ID. The initial pairing snapshot uploads existing Run artifacts too, so historical Sessions are not display-only.
 3. The event contains filename, MIME type, size, SHA-256, and artifact linkage; it never exposes a local Mac path as a downloadable URL.
 4. iOS downloads with its device token, verifies the expected byte length and SHA-256 before moving the file into Caches, and opens the local file with Quick Look. Image, PDF, text, and video types use native previews.
 

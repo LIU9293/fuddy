@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import type { CompanionChatPage, CompanionCommand, CompanionEncryptedCommand, CompanionEncryptedSyncEventInput, CompanionMacConfiguration, CompanionMacStatus, CompanionSyncEventInput } from '../../shared/companion-sync'
-import { companionProtocolVersion } from '../../shared/companion-sync'
+import { companionProtocolVersion, companionRelayMaximumRetainedEvents } from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import {
   companionAccountKeyId,
@@ -131,6 +131,122 @@ describe('Companion sync transport policy', () => {
       Date.parse('2030-01-02T00:00:00.000Z') + companionRetentionSnapshotIntervalMs - 1
     ))
     expect(database.listPendingCompanionEvents().filter((event) => event.type === 'snapshot.created')).toHaveLength(1)
+    database.close()
+  })
+
+  it('rebuilds the pending outbox from a recovery snapshot when Relay reaches its event cap', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-cap-recovery-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    const configuration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'capacity-account',
+      macDeviceId: 'capacity-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration
+    database.setSetting('companion.mac-configuration', configuration)
+    database.setSetting('companion.retention-snapshots', { [configuration.accountId]: now })
+    database.enqueueAgentTurnSettled({
+      runId: 'capacity-run',
+      turnId: 'capacity-turn',
+      title: '需要保留的瞬时事件',
+      outcome: 'completed',
+      summary: '已完成。',
+      settledAt: now
+    })
+    const publishedBatches: Array<Array<{ type: string }>> = []
+    let eventAttempts = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string; type: string }> }
+        publishedBatches.push(body.events)
+        eventAttempts += 1
+        if (eventAttempts === 1) {
+          return jsonResponse({
+            error: '事件历史已达到上限，需要先上传新的恢复快照。',
+            code: 'snapshot-required'
+          }, 409)
+        }
+        return jsonResponse({
+          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
+          lastSequence: body.events.length
+        }, 201)
+      }
+      if (url.pathname === '/v1/commands/pending' && method === 'GET') return jsonResponse({ commands: [] })
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    }))
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const status = await service.syncNow()
+
+    expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 0 })
+    expect(publishedBatches[0]?.map((event) => event.type)).toEqual(['agent-turn.settled'])
+    const recoveryTypes = publishedBatches.slice(1).flat().map((event) => event.type)
+    expect(recoveryTypes[0]).toBe('snapshot.created')
+    expect(recoveryTypes.at(-1)).toBe('agent-turn.settled')
+    service.stop()
+    database.close()
+  })
+
+  it('stops before replacing Relay state when a recovery baseline exceeds the hard event cap', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-oversized-recovery-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    const now = new Date().toISOString()
+    const configuration = {
+      relayUrl: 'https://relay.example.com',
+      accountId: 'oversized-capacity-account',
+      macDeviceId: 'oversized-capacity-mac',
+      pairedAt: now,
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
+    } satisfies CompanionMacConfiguration
+    database.setSetting('companion.mac-configuration', configuration)
+    database.setSetting('companion.retention-snapshots', { [configuration.accountId]: now })
+    database.enqueueAgentTurnSettled({
+      runId: 'oversized-capacity-run',
+      turnId: 'oversized-capacity-turn',
+      title: '不能丢失的事件',
+      outcome: 'completed',
+      summary: '已完成。',
+      settledAt: now
+    })
+    vi.spyOn(database, 'countPendingCompanionEvents')
+      .mockReturnValue(companionRelayMaximumRetainedEvents + 1)
+    const fetchMock = vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      const method = init.method ?? 'GET'
+      if (url.pathname === '/v1/events/batch' && method === 'POST') {
+        return jsonResponse({
+          error: '事件历史已达到上限，需要先上传新的恢复快照。',
+          code: 'snapshot-required'
+        }, 409)
+      }
+      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const service = new CompanionSyncService(
+      database,
+      testCredentials(),
+      {} as TaskDispatcher,
+      async () => ({ accepted: true })
+    )
+
+    const status = await service.syncNow()
+
+    expect(status.state).toBe('error')
+    expect(status.lastError).toContain(`超过免费 Relay 的 ${companionRelayMaximumRetainedEvents} 条事件上限`)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(database.listPendingCompanionEvents()[0]?.type).toBe('snapshot.created')
+    service.stop()
     database.close()
   })
 
@@ -1501,7 +1617,7 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
-  it('drains a retained encrypted v3 command and reports its result with protocol v4', async () => {
+  it('drains a retained encrypted v3 command and reports its result with the current protocol', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-legacy-command-'))
     directories.push(directory)
     const database = createTestDatabase(join(directory, 'app.sqlite'))

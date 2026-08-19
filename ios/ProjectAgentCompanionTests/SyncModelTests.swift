@@ -870,6 +870,23 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(cachedState.modelLabels.workAssistant, "保留现有聊天")
     }
 
+    func testReplayPageCanResetCursorToRetainedSnapshot() {
+        var cachedState = CachedState()
+        cachedState.lastSequence = 4_200
+        cachedState.modelLabels.workAssistant = "由 snapshot 替换"
+
+        XCTAssertTrue(companionApplyReplayResetIfNeeded(
+            state: &cachedState,
+            replayResetSequence: 1_999
+        ))
+        XCTAssertEqual(cachedState.lastSequence, 1_999)
+        XCTAssertEqual(cachedState.modelLabels.workAssistant, "由 snapshot 替换")
+        XCTAssertFalse(companionApplyReplayResetIfNeeded(
+            state: &cachedState,
+            replayResetSequence: 2_100
+        ))
+    }
+
     func testCompanionSocketReconnectsAfterMissedHeartbeat() {
         XCTAssertEqual(companionSocketHeartbeatIntervalSeconds, 20)
         XCTAssertFalse(companionSocketHeartbeatShouldReconnect(awaitingPong: false))

@@ -29,7 +29,11 @@ import type {
   CompanionRelaySnapshotPayload,
   CompanionRelayWorkAssistantMessage
 } from '../../shared/companion-sync'
-import { companionAttachmentPlaintextMaximumBytes, companionProtocolVersion } from '../../shared/companion-sync'
+import {
+  companionAttachmentPlaintextMaximumBytes,
+  companionProtocolVersion,
+  companionRelayMaximumRetainedEvents
+} from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
@@ -275,9 +279,21 @@ function relayRequestUrl(baseUrl: string, path: string): URL {
   return new URL(path.replace(/^\/+/, ''), `${baseUrl.replace(/\/+$/u, '')}/`)
 }
 
+class CompanionRelayError extends Error {
+  constructor(readonly status: number, readonly code: string | null, message: string) {
+    super(message)
+  }
+}
+
 async function responseJson<T>(response: Response): Promise<T> {
-  const body = await response.json().catch(() => ({})) as { error?: string }
-  if (!response.ok) throw new Error(body.error ?? `Companion Relay 请求失败（${response.status}）。`)
+  const body = await response.json().catch(() => ({})) as { error?: string; code?: string }
+  if (!response.ok) {
+    throw new CompanionRelayError(
+      response.status,
+      typeof body.code === 'string' ? body.code : null,
+      body.error ?? `Companion Relay 请求失败（${response.status}）。`
+    )
+  }
   return body as T
 }
 
@@ -917,6 +933,13 @@ export class CompanionSyncService {
       if (this.stopped) return
       const pending = this.database.listPendingCompanionEvents(companionEventBatchMaximumCount)
       if (pending.length === 0) return
+      if (pending[0].type === 'snapshot.created'
+        && this.database.countPendingCompanionEvents() > companionRelayMaximumRetainedEvents) {
+        throw new Error(
+          `当前 Companion 基线超过免费 Relay 的 ${companionRelayMaximumRetainedEvents} 条事件上限。`
+          + '请先归档不再需要的项目或 Run，再重新同步。'
+        )
+      }
       const prepared: CompanionEncryptedSyncEventInput[] = []
       for (const event of pending) {
         if (this.stopped) return
@@ -1018,16 +1041,23 @@ export class CompanionSyncService {
         }
         prepared.push(encrypted)
       }
+      let recoverySnapshotRequired = false
       for (const batch of partitionCompanionEventBatches(prepared)) {
         if (this.stopped) return
         try {
           await this.publishEventBatch(batch, context)
         } catch (error) {
+          if (error instanceof CompanionRelayError && error.code === 'snapshot-required') {
+            this.enqueueRetentionSnapshot(new Date(), true)
+            recoverySnapshotRequired = true
+            break
+          }
           const message = error instanceof Error ? error.message : '事件上传失败。'
           for (const event of batch) this.database.markCompanionEventFailed(event.eventId, message)
           throw error
         }
       }
+      if (recoverySnapshotRequired) continue
     }
   }
 

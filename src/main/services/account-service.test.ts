@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AccountOnboardingState } from '../../shared/account'
+import { companionProtocolVersion } from '../../shared/companion-sync'
 import { AccountAuthorizationLostError, AccountService, normalizeAccountApiUrl } from './account-service'
 
 class FakeDatabase {
@@ -46,7 +47,7 @@ describe('AccountService', () => {
           return response({ challengeId: 'challenge', expiresAt: '2026-08-19T01:00:00.000Z', retryAfterSeconds: 60 })
         }
         const body = JSON.parse(String(init?.body)) as { device: { protocolVersion: number } }
-        expect(body.device.protocolVersion).toBe(4)
+        expect(body.device.protocolVersion).toBe(companionProtocolVersion)
         return response({
           user: { id: 'user-1', email: 'kai@example.com', displayName: null },
           device: { id: 'device-1', platform: 'macos', name: 'Test Mac', hostId: 'host-1', syncSpaceId: 'space-1' },
