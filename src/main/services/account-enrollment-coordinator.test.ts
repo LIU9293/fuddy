@@ -154,4 +154,50 @@ describe('AccountEnrollmentCoordinator', () => {
 
     expect(companion.ensureAccountRelay).not.toHaveBeenCalled()
   })
+
+  it('pauses new work and drains an active Relay binding before logout', async () => {
+    let releaseBinding!: () => void
+    let bindingStarted!: () => void
+    const started = new Promise<void>((resolve) => { bindingStarted = resolve })
+    const blocked = new Promise<void>((resolve) => { releaseBinding = resolve })
+    const account = {
+      getState: vi.fn(() => ({
+        status: 'signed-in',
+        user: { id: 'user-1' },
+        device: { syncSpaceId: 'space-1' }
+      })),
+      bindRelay: vi.fn(),
+      listPendingEnrollments: vi.fn(async () => ({
+        syncSpace: {
+          id: 'space-1',
+          keyVersion: 1,
+          relayUrl: 'https://relay.example.com',
+          relayAccountId: 'relay-account'
+        },
+        revocations: [],
+        enrollments: []
+      }))
+    } as unknown as AccountService
+    const companion = {
+      ensureAccountRelay: vi.fn(async () => {
+        bindingStarted()
+        await blocked
+        return { relayUrl: 'https://relay.example.com', relayAccountId: 'relay-account' }
+      })
+    } as unknown as CompanionSyncService
+    const coordinator = new AccountEnrollmentCoordinator(account, companion, 'https://relay.example.com')
+    coordinator.start()
+    await started
+
+    let drained = false
+    const draining = coordinator.pauseAndDrain().then(() => { drained = true })
+    await Promise.resolve()
+    expect(drained).toBe(false)
+    releaseBinding()
+    await draining
+    expect(account.bindRelay).toHaveBeenCalledTimes(1)
+
+    await coordinator.processOnce()
+    expect(companion.ensureAccountRelay).toHaveBeenCalledTimes(1)
+  })
 })

@@ -62,16 +62,21 @@ export function registerAccountIpc(context: IpcContext): void {
   ipcMain.handle('account:revoke-device', async (_event, rawInput: unknown) => {
     const input = z.object({ deviceId: z.string().uuid() }).parse(rawInput)
     const isCurrentDevice = accountService.getState().device?.id === input.deviceId
-    await accountService.revokeDevice(input.deviceId)
+    if (isCurrentDevice) await accountEnrollmentCoordinator.pauseAndDrain()
+    try {
+      await accountService.revokeDevice(input.deviceId)
+    } catch (error) {
+      if (isCurrentDevice) accountEnrollmentCoordinator.start()
+      throw error
+    }
     if (!isCurrentDevice) return
-    accountEnrollmentCoordinator.stop()
     companionSync.stop()
     companionSync.forgetAccountRelay()
     broadcastAccountState()
   })
 
   ipcMain.handle('account:logout', async () => {
-    accountEnrollmentCoordinator.stop()
+    await accountEnrollmentCoordinator.pauseAndDrain()
     companionSync.stop()
     const state = await accountService.logout()
     broadcastAccountState()
@@ -79,8 +84,14 @@ export function registerAccountIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('account:logout-all', async () => {
-    const state = await accountService.logoutAll()
-    accountEnrollmentCoordinator.stop()
+    await accountEnrollmentCoordinator.pauseAndDrain()
+    let state: Awaited<ReturnType<typeof accountService.logoutAll>>
+    try {
+      state = await accountService.logoutAll()
+    } catch (error) {
+      accountEnrollmentCoordinator.start()
+      throw error
+    }
     companionSync.stop()
     companionSync.forgetAccountRelay()
     broadcastAccountState()

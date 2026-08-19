@@ -332,11 +332,23 @@ final class CompanionStore: ObservableObject {
     }
 
     func signOutAccount() async {
-        let current = accountSession
         accountBusy = true
         operationError = nil
-        if let current, let accountClient = AccountClient.configured() {
-            _ = try? await accountClient.logout(accountSession: current)
+        defer { accountBusy = false }
+        guard let current = accountSession else {
+            if let client { try? await client.revokeSelf() }
+            await unpair()
+            return
+        }
+        guard let accountClient = AccountClient.configured() else {
+            operationError = AccountClientError.notConfigured.localizedDescription
+            return
+        }
+        do {
+            _ = try await accountClient.logout(accountSession: current)
+        } catch {
+            operationError = error.localizedDescription
+            return
         }
         if let client { try? await client.revokeSelf() }
         await unpair()
@@ -347,7 +359,6 @@ final class CompanionStore: ObservableObject {
         availableAccountSyncSpaces = []
         selectedAccountSyncSpaceID = nil
         emailChallenge = nil
-        accountBusy = false
     }
 
     func unpair() async {

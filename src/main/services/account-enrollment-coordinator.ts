@@ -36,6 +36,7 @@ export function resolveCompanionRelayUrl(
 export class AccountEnrollmentCoordinator {
   private timer: NodeJS.Timeout | null = null
   private active: Promise<void> | null = null
+  private paused = false
   private lastBindingSignature: string | null = null
   private lastBindingAt = 0
 
@@ -50,6 +51,7 @@ export class AccountEnrollmentCoordinator {
   }
 
   start(): void {
+    this.paused = false
     if (this.timer) return
     void this.tick()
     this.timer = setInterval(() => void this.tick(), accountEnrollmentPollIntervalMs)
@@ -57,13 +59,31 @@ export class AccountEnrollmentCoordinator {
   }
 
   stop(): void {
+    this.paused = true
     if (this.timer) clearInterval(this.timer)
     this.timer = null
     this.lastBindingSignature = null
     this.lastBindingAt = 0
   }
 
+  async pauseAndDrain(): Promise<void> {
+    this.stop()
+    await this.active?.catch(() => undefined)
+  }
+
   async processOnce(): Promise<void> {
+    if (this.paused) return
+    if (this.active) return await this.active
+    const operation = this.runOnce()
+    this.active = operation
+    try {
+      await operation
+    } finally {
+      if (this.active === operation) this.active = null
+    }
+  }
+
+  private async runOnce(): Promise<void> {
     if (!this.relayUrl) return
     const state = this.accountService.getState()
     const spaceId = state.status === 'signed-in' ? state.device?.syncSpaceId : null
@@ -131,15 +151,9 @@ export class AccountEnrollmentCoordinator {
   }
 
   private async tick(): Promise<void> {
-    if (this.active) return await this.active
-    this.active = this.processOnce().catch(() => {
+    await this.processOnce().catch(() => {
       // Account/Relay connectivity is opportunistic. The next poll retries without
       // interrupting local Fuddy work or turning an offline Mac into a sign-out.
     })
-    try {
-      await this.active
-    } finally {
-      this.active = null
-    }
   }
 }
