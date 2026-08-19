@@ -335,6 +335,9 @@ final class CompanionStore: ObservableObject {
         let current = accountSession
         accountBusy = true
         operationError = nil
+        if let current, let accountClient = AccountClient.configured() {
+            _ = try? await accountClient.logout(accountSession: current)
+        }
         if let client { try? await client.revokeSelf() }
         await unpair()
         AccountKeychainStore.deleteSession()
@@ -344,9 +347,6 @@ final class CompanionStore: ObservableObject {
         availableAccountSyncSpaces = []
         selectedAccountSyncSpaceID = nil
         emailChallenge = nil
-        if let current, let client = AccountClient.configured() {
-            await client.logout(accessToken: current.session.accessToken)
-        }
         accountBusy = false
     }
 

@@ -3,6 +3,30 @@ import SwiftUI
 import XCTest
 @testable import ProjectAgentCompanion
 
+private final class AccountClientURLProtocolStub: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            if !data.isEmpty { client?.urlProtocol(self, didLoad: data) }
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
 final class SyncModelTests: XCTestCase {
     func testPreferredAccountSyncSpaceUsesSavedHostOrMostRecentHost() {
         let first = AccountSyncSpace(
@@ -216,6 +240,74 @@ final class SyncModelTests: XCTestCase {
         let late = try await coordinator.refreshedSession(accountSession: stale, operation: operation)
         XCTAssertEqual(late, refreshed)
         XCTAssertEqual(refreshCount, 1)
+    }
+
+    @MainActor
+    func testAccountLogoutRefreshesAnExpiredAccessTokenBeforeRevokingTheSession() async throws {
+        let stale = MobileAccountSession(
+            user: AccountUser(id: "logout-user", email: "logout@example.com", displayName: nil),
+            device: AccountDevice(
+                id: "logout-phone",
+                platform: "ios",
+                name: "iPhone",
+                hostId: nil,
+                syncSpaceId: nil
+            ),
+            session: AccountSessionTokens(
+                accessToken: "expired-access",
+                refreshToken: "valid-refresh",
+                accessExpiresAt: "2026-08-19T00:00:00.000Z",
+                refreshExpiresAt: "2099-08-19T00:00:00.000Z"
+            )
+        )
+        var observations: [String] = []
+        AccountClientURLProtocolStub.handler = { request in
+            let path = request.url?.path ?? ""
+            let authorization = request.value(forHTTPHeaderField: "Authorization") ?? ""
+            observations.append("\(path)|\(authorization)")
+            let status: Int
+            let body: Data
+            switch (path, authorization) {
+            case ("/v1/auth/logout", "Bearer expired-access"):
+                status = 401
+                body = Data(#"{"error":{"code":"session_expired","message":"expired"}}"#.utf8)
+            case ("/v1/auth/refresh", ""):
+                status = 200
+                body = Data(#"{"session":{"accessToken":"fresh-access","refreshToken":"fresh-refresh","accessExpiresAt":"2099-08-19T00:15:00.000Z","refreshExpiresAt":"2099-09-18T00:00:00.000Z"}}"#.utf8)
+            case ("/v1/auth/logout", "Bearer fresh-access"):
+                status = 204
+                body = Data()
+            default:
+                status = 500
+                body = Data()
+            }
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: status,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                body
+            )
+        }
+        defer { AccountClientURLProtocolStub.handler = nil }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AccountClientURLProtocolStub.self]
+        let client = AccountClient(
+            baseURL: URL(string: "https://account.test")!,
+            urlSession: URLSession(configuration: configuration)
+        )
+
+        let refreshed = try await client.logout(accountSession: stale)
+
+        XCTAssertEqual(refreshed.session.accessToken, "fresh-access")
+        XCTAssertEqual(refreshed.session.refreshToken, "fresh-refresh")
+        XCTAssertEqual(observations, [
+            "/v1/auth/logout|Bearer expired-access",
+            "/v1/auth/refresh|",
+            "/v1/auth/logout|Bearer fresh-access"
+        ])
     }
 
     func testCompanionContractFingerprintRejectsMixedClientBuilds() {

@@ -212,11 +212,31 @@ struct AccountClient {
         return refreshed
     }
 
-    func logout(accessToken: String) async {
-        var request = URLRequest(url: baseURL.appending(path: "/v1/auth/logout"))
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        _ = try? await urlSession.data(for: request)
+    func logout(accountSession: MobileAccountSession) async throws -> MobileAccountSession {
+        var current = accountSession
+        var result = try await performAuthorized(
+            path: "/v1/auth/logout",
+            method: "POST",
+            body: nil,
+            accessToken: current.session.accessToken
+        )
+        if result.response.statusCode == 401 {
+            current = try await Self.refreshCoordinator.refreshedSession(accountSession: current) {
+                try await self.performRefresh(accountSession: $0)
+            }
+            result = try await performAuthorized(
+                path: "/v1/auth/logout",
+                method: "POST",
+                body: nil,
+                accessToken: current.session.accessToken
+            )
+        }
+        if result.response.statusCode == 401 { throw AccountClientError.authenticationRequired }
+        guard (200..<300).contains(result.response.statusCode) else {
+            let message = (try? JSONDecoder().decode(AccountAPIError.self, from: result.data))?.error.message
+            throw AccountClientError.service(message ?? "账户服务请求失败（\(result.response.statusCode)）。")
+        }
+        return current
     }
 
     private func request<Response: Decodable, Body: Encodable>(path: String, body: Body) async throws -> Response {
