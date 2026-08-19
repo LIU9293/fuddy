@@ -223,6 +223,8 @@ export interface CompanionMacConfiguration {
   accountId: string
   macDeviceId: string
   pairedAt: string
+  /** Fuddy account that owns this Relay identity. Absent on legacy pairings. */
+  ownerUserId?: string
   /** Account sync space that owns this Relay identity. Absent on legacy pairings. */
   syncSpaceId?: string
   /** Key material is stored in the credential vault; only its identifier is persisted here. */

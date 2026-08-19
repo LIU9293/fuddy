@@ -211,7 +211,7 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
-  it('rotates the Relay identity when the same Mac switches account spaces', async () => {
+  it('preserves and restores each account Relay when the same Mac switches users', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-account-switch-'))
     directories.push(directory)
     const database = createTestDatabase(join(directory, 'app.sqlite'))
@@ -254,10 +254,6 @@ describe('Companion sync transport policy', () => {
           expiresAt: new Date(Date.now() + 60_000).toISOString()
         }, 201)
       }
-      if (url.pathname === '/v1/account' && method === 'DELETE') {
-        expect(url.searchParams.get('accountId')).toBe('previous-relay-account')
-        return new Response(null, { status: 204 })
-      }
       if (url.pathname === '/v1/device' && method === 'GET') {
         expect(url.searchParams.get('accountId')).toBe('next-relay-account')
         return jsonResponse({ device: { id: 'next-mac', role: 'mac' } })
@@ -277,17 +273,34 @@ describe('Companion sync transport policy', () => {
     await expect(service.ensureAccountRelay(
       'https://relay.example.com',
       'Test Mac',
-      'next-space'
+      'next-space',
+      'next-user'
     )).resolves.toEqual({
       relayUrl: 'https://relay.example.com',
       relayAccountId: 'next-relay-account'
     })
     expect(service.getStatus().configuration).toMatchObject({
       accountId: 'next-relay-account',
+      ownerUserId: 'next-user',
       syncSpaceId: 'next-space'
     })
-    expect(secrets.has('companion.mac-token:previous-relay-account')).toBe(false)
-    expect(secrets.has('companion.account-key:previous-relay-account')).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/v1/account'),
+      expect.objectContaining({ method: 'DELETE' })
+    )
+    expect(secrets.has('companion.mac-token:previous-relay-account')).toBe(true)
+    expect(secrets.has('companion.account-key:previous-relay-account')).toBe(true)
+
+    await service.activateAccountRelay('previous-user', 'previous-space')
+    expect(service.getStatus().configuration).toEqual({
+      ...previousConfiguration,
+      ownerUserId: 'previous-user'
+    })
+    await service.activateAccountRelay('next-user', 'next-space')
+    expect(service.getStatus().configuration).toMatchObject({
+      accountId: 'next-relay-account',
+      ownerUserId: 'next-user'
+    })
     service.stop()
     database.close()
   })

@@ -32,6 +32,41 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(preferredAccountSyncSpace(from: [first, second], preferredID: "removed-space")?.id, "space-a")
     }
 
+    func testAccountSpacesUseDistinctCacheFiles() {
+        XCTAssertEqual(companionCacheFileName(spaceID: nil), "state.json")
+        XCTAssertNotEqual(
+            companionCacheFileName(spaceID: "space-a"),
+            companionCacheFileName(spaceID: "space-b")
+        )
+        XCTAssertFalse(companionCacheFileName(spaceID: "space/a").contains("/"))
+    }
+
+    func testRelayCredentialsRemainIsolatedPerAccountSpace() throws {
+        KeychainStore.deleteAll()
+        defer { KeychainStore.deleteAll() }
+        let first = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "relay-a",
+            deviceID: "phone-a",
+            deviceToken: "token-a",
+            syncSpaceID: "space-a"
+        )
+        let second = CompanionCredentials(
+            relayURL: "https://fuddy.ai/api/relay",
+            accountID: "relay-b",
+            deviceID: "phone-a",
+            deviceToken: "token-b",
+            syncSpaceID: "space-b"
+        )
+
+        try KeychainStore.save(first)
+        try KeychainStore.save(second)
+
+        XCTAssertEqual(try KeychainStore.load(syncSpaceID: "space-a")?.accountID, "relay-a")
+        XCTAssertEqual(try KeychainStore.load(syncSpaceID: "space-b")?.accountID, "relay-b")
+        XCTAssertNil(try KeychainStore.load(syncSpaceID: "space-c"))
+    }
+
     func testAccountCredentialsReenrollWhenSpaceRelayIdentityRotates() {
         let space = AccountSyncSpace(
             id: "space-a",
@@ -87,7 +122,7 @@ final class SyncModelTests: XCTestCase {
             outputByteCount: 32
         )
         let credentials = CompanionCredentials(
-            relayURL: "https://relay.example.com",
+            relayURL: "https://fuddy.ai/api/relay/",
             accountID: "relay-account",
             deviceID: "phone-1",
             deviceToken: "secret-token",
@@ -118,6 +153,7 @@ final class SyncModelTests: XCTestCase {
             privateKeyData: phone.rawRepresentation
         )
         XCTAssertEqual(opened.deviceToken, "secret-token")
+        XCTAssertEqual(opened.relayURL, "https://fuddy.ai/api/relay/")
         XCTAssertThrowsError(try AccountDeviceGrant.open(
             String(decoding: envelope, as: UTF8.self),
             enrollmentID: "grant-1",

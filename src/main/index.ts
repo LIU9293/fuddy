@@ -527,9 +527,19 @@ if (!hasLock) {
         .catch((error: unknown) => {
           Sentry.captureException(error, { tags: { boundary: 'decision-remediation-startup' } })
         })
-      if (accountService.getState().status === 'signed-in') {
-        void companionSync.start()
-        accountEnrollmentCoordinator.start()
+      const accountState = accountService.getState()
+      if (accountState.status === 'signed-in' && accountState.user) {
+        const activeCompanionSync = companionSync
+        const activeEnrollmentCoordinator = accountEnrollmentCoordinator
+        void activeCompanionSync.activateAccountRelay(
+          accountState.user.id,
+          accountState.device?.syncSpaceId ?? undefined
+        ).then(async () => {
+          await activeCompanionSync.start()
+          activeEnrollmentCoordinator.start()
+        }).catch((error: unknown) => {
+          Sentry.captureException(error, { tags: { boundary: 'account-relay-startup' } })
+        })
       }
       if (process.env.PROJECT_AGENT_SENTRY_TEST === '1') {
         setTimeout(() => {

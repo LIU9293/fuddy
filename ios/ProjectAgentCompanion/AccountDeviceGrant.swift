@@ -65,11 +65,12 @@ enum AccountDeviceGrant {
         )
         let plaintext = try AES.GCM.open(sealedBox, using: key, authenticating: associatedData)
         let credentials = try JSONDecoder().decode(CompanionCredentials.self, from: plaintext)
+        let relayPath = relayURLPathForValidation(credentials.relayURL)
         guard credentials.deviceID == deviceID,
               let relayURL = URL(string: credentials.relayURL),
               relayURL.host != nil, relayURL.user == nil, relayURL.password == nil,
               relayURL.query == nil, relayURL.fragment == nil,
-              relayURL.path.isEmpty || relayURL.path == "/" else {
+              relayPath == "" || relayPath == "/api/relay" else {
             throw AccountClientError.invalidResponse
         }
 #if DEBUG
@@ -91,5 +92,12 @@ enum AccountDeviceGrant {
             encryptionKeyId: credentials.encryptionKeyId,
             syncSpaceID: spaceID
         )
+    }
+
+    private static func relayURLPathForValidation(_ value: String) -> String? {
+        guard let url = URL(string: value) else { return nil }
+        var path = url.path
+        while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
+        return path == "/" ? "" : path
     }
 }

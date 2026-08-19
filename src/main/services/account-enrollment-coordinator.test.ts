@@ -6,7 +6,11 @@ import type { CompanionSyncService } from './companion-sync'
 describe('AccountEnrollmentCoordinator', () => {
   it('binds the host Relay and completes every pending iPhone grant', async () => {
     const account = {
-      getState: vi.fn(() => ({ status: 'signed-in', device: { syncSpaceId: 'space-1' } })),
+      getState: vi.fn(() => ({
+        status: 'signed-in',
+        user: { id: 'user-1' },
+        device: { syncSpaceId: 'space-1' }
+      })),
       bindRelay: vi.fn(),
       listPendingEnrollments: vi.fn(async () => ({
         syncSpace: {
@@ -45,6 +49,12 @@ describe('AccountEnrollmentCoordinator', () => {
 
     await new AccountEnrollmentCoordinator(account, companion, 'https://relay.example.com').processOnce()
 
+    expect(companion.ensureAccountRelay).toHaveBeenCalledWith(
+      'https://relay.example.com',
+      undefined,
+      'space-1',
+      'user-1'
+    )
     expect(account.bindRelay).toHaveBeenCalledWith({
       spaceId: 'space-1',
       relayUrl: 'https://relay.example.com',

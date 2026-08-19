@@ -920,51 +920,135 @@ async function listPendingEnrollments(request: Request, env: Environment, spaceI
   })
 }
 
-async function directlyRevokeRelayDevices(
-  env: Environment,
-  grants: Array<{ id: string; deviceId: string; relayAccountId: string }>
-): Promise<void> {
-  if (!env.RELAY_ADMIN || grants.length === 0) return
-  const relayAdmin = env.RELAY_ADMIN as RelayAdministrationBinding
-  const timestamp = isoNow()
-  const completed: string[] = []
-  for (const grant of grants) {
-    try {
-      if (await relayAdmin.revokeDevice(grant.relayAccountId, grant.deviceId)) {
-        completed.push(grant.id)
-      }
-    } catch {
-      // The Mac coordinator remains a fallback for grants that could not be revoked here.
-    }
-  }
-  if (completed.length > 0) {
-    await env.ACCOUNT_DB.batch(completed.map((id) => env.ACCOUNT_DB.prepare(
-      'UPDATE device_grants SET relay_revoked_at = ?, updated_at = ? WHERE id = ?'
-    ).bind(timestamp, timestamp, id)))
-  }
+type RelayDeviceRevocationTarget = { id: string; deviceId: string; relayAccountId: string }
+type RelayAccountRevocationTarget = { spaceId: string; relayAccountId: string }
+type RelayRevocationJob = {
+  id: string
+  operation: 'account' | 'device'
+  source_id: string
+  relay_account_id: string
+  device_id: string | null
+  attempt_count: number
 }
 
-async function directlyRevokeRelayAccounts(
+function relayDeviceRevocationStatements(
   env: Environment,
-  spaces: Array<{ spaceId: string; relayAccountId: string }>
-): Promise<void> {
-  if (!env.RELAY_ADMIN || spaces.length === 0) return
-  const relayAdmin = env.RELAY_ADMIN as RelayAdministrationBinding
-  const timestamp = isoNow()
-  const completed: string[] = []
-  for (const space of spaces) {
+  grants: RelayDeviceRevocationTarget[],
+  timestamp: string
+): D1PreparedStatement[] {
+  return grants.map((grant) => env.ACCOUNT_DB.prepare(
+    `INSERT INTO relay_revocation_jobs
+      (id, operation, source_id, relay_account_id, device_id, status, attempt_count,
+       next_attempt_at, created_at, updated_at)
+     VALUES (?, 'device', ?, ?, ?, 'pending', 0, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET relay_account_id = excluded.relay_account_id,
+       device_id = excluded.device_id, status = 'pending', attempt_count = 0,
+       next_attempt_at = excluded.next_attempt_at, last_error = NULL,
+       completed_at = NULL, updated_at = excluded.updated_at`
+  ).bind(
+    `device:${grant.id}`,
+    grant.id,
+    grant.relayAccountId,
+    grant.deviceId,
+    timestamp,
+    timestamp,
+    timestamp
+  ))
+}
+
+function relayAccountRevocationStatements(
+  env: Environment,
+  spaces: RelayAccountRevocationTarget[],
+  timestamp: string
+): D1PreparedStatement[] {
+  return spaces.map((space) => env.ACCOUNT_DB.prepare(
+    `INSERT INTO relay_revocation_jobs
+      (id, operation, source_id, relay_account_id, device_id, status, attempt_count,
+       next_attempt_at, created_at, updated_at)
+     VALUES (?, 'account', ?, ?, NULL, 'pending', 0, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET relay_account_id = excluded.relay_account_id,
+       device_id = NULL, status = 'pending', attempt_count = 0,
+       next_attempt_at = excluded.next_attempt_at, last_error = NULL,
+       completed_at = NULL, updated_at = excluded.updated_at`
+  ).bind(
+    `account:${space.spaceId}`,
+    space.spaceId,
+    space.relayAccountId,
+    timestamp,
+    timestamp,
+    timestamp
+  ))
+}
+
+export async function processRelayRevocationJobs(
+  env: Environment,
+  options: {
+    relayAdmin?: RelayAdministrationBinding
+    now?: Date
+    limit?: number
+  } = {}
+): Promise<{ attempted: number; completed: number }> {
+  const relayAdmin = options.relayAdmin
+    ?? (env.RELAY_ADMIN ? env.RELAY_ADMIN as RelayAdministrationBinding : undefined)
+  if (!relayAdmin) return { attempted: 0, completed: 0 }
+  const now = options.now ?? new Date()
+  const timestamp = now.toISOString()
+  const limit = Math.min(Math.max(options.limit ?? 25, 1), 100)
+  const jobs = (await env.ACCOUNT_DB.prepare(
+    `SELECT id, operation, source_id, relay_account_id, device_id, attempt_count
+     FROM relay_revocation_jobs
+     WHERE status = 'pending' AND next_attempt_at <= ?
+     ORDER BY created_at ASC
+     LIMIT ?`
+  ).bind(timestamp, limit).all<RelayRevocationJob>()).results
+  let completed = 0
+  for (const job of jobs) {
     try {
-      await relayAdmin.revokeAccount(space.relayAccountId)
-      completed.push(space.spaceId)
-    } catch {
-      // A later Mac sign-in can resume pending revocations when the binding is unavailable.
+      if (job.operation === 'account') {
+        await relayAdmin.revokeAccount(job.relay_account_id)
+      } else {
+        if (!job.device_id) throw new Error('Relay device revocation is missing a device ID.')
+        // A missing Relay device is already in the desired revoked state.
+        await relayAdmin.revokeDevice(job.relay_account_id, job.device_id)
+      }
+      const completedAt = new Date().toISOString()
+      const statements = [
+        env.ACCOUNT_DB.prepare(
+          `UPDATE relay_revocation_jobs
+           SET status = 'completed', attempt_count = attempt_count + 1,
+               last_error = NULL, completed_at = ?, updated_at = ?
+           WHERE id = ? AND status = 'pending'`
+        ).bind(completedAt, completedAt, job.id),
+        job.operation === 'account'
+          ? env.ACCOUNT_DB.prepare(
+              'UPDATE device_grants SET relay_revoked_at = ?, updated_at = ? WHERE space_id = ?'
+            ).bind(completedAt, completedAt, job.source_id)
+          : env.ACCOUNT_DB.prepare(
+              'UPDATE device_grants SET relay_revoked_at = ?, updated_at = ? WHERE id = ?'
+            ).bind(completedAt, completedAt, job.source_id)
+      ]
+      await env.ACCOUNT_DB.batch(statements)
+      completed += 1
+    } catch (error) {
+      const attemptCount = job.attempt_count + 1
+      const retrySeconds = Math.min(24 * 60 * 60, 30 * (2 ** Math.min(attemptCount - 1, 11)))
+      const nextAttemptAt = new Date(now.getTime() + retrySeconds * 1_000).toISOString()
+      const message = (error instanceof Error ? error.message : 'Relay revocation failed.').slice(0, 500)
+      await env.ACCOUNT_DB.prepare(
+        `UPDATE relay_revocation_jobs
+         SET attempt_count = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
+         WHERE id = ? AND status = 'pending'`
+      ).bind(attemptCount, nextAttemptAt, message, timestamp, job.id).run()
+      console.warn('Relay revocation retry scheduled.', {
+        jobId: job.id,
+        operation: job.operation,
+        attemptCount,
+        nextAttemptAt,
+        error: message
+      })
     }
   }
-  if (completed.length > 0) {
-    await env.ACCOUNT_DB.batch(completed.map((spaceId) => env.ACCOUNT_DB.prepare(
-      'UPDATE device_grants SET relay_revoked_at = ?, updated_at = ? WHERE space_id = ?'
-    ).bind(timestamp, timestamp, spaceId)))
-  }
+  return { attempted: jobs.length, completed }
 }
 
 async function revokeDevice(request: Request, env: Environment, deviceId: string): Promise<Response> {
@@ -1013,9 +1097,13 @@ async function revokeDevice(request: Request, env: Environment, deviceId: string
       ).bind(timestamp, timestamp, deviceId)
     )
   }
+  statements.push(
+    ...(device.platform === 'macos'
+      ? relayAccountRevocationStatements(env, relaySpaces, timestamp)
+      : relayDeviceRevocationStatements(env, relayGrants, timestamp))
+  )
   await env.ACCOUNT_DB.batch(statements)
-  if (device.platform === 'macos') await directlyRevokeRelayAccounts(env, relaySpaces)
-  else await directlyRevokeRelayDevices(env, relayGrants)
+  await processRelayRevocationJobs(env)
   return new Response(null, { status: 204 })
 }
 
@@ -1231,9 +1319,10 @@ async function route(request: Request, env: Environment): Promise<Response> {
       env.ACCOUNT_DB.prepare(
         `UPDATE device_grants SET status = 'revoked', revoked_at = ?, relay_revoked_at = NULL, updated_at = ?
          WHERE device_id = ? AND status != 'revoked'`
-      ).bind(timestamp, timestamp, user.deviceId)
+      ).bind(timestamp, timestamp, user.deviceId),
+      ...relayDeviceRevocationStatements(env, relayGrants, timestamp)
     ])
-    await directlyRevokeRelayDevices(env, relayGrants)
+    await processRelayRevocationJobs(env)
     return new Response(null, { status: 204 })
   }
   if (request.method === 'POST' && parts.join('/') === 'v1/auth/logout-all') {
@@ -1250,9 +1339,10 @@ async function route(request: Request, env: Environment): Promise<Response> {
       env.ACCOUNT_DB.prepare(
         `UPDATE device_grants SET status = 'revoked', revoked_at = ?, relay_revoked_at = NULL, updated_at = ?
          WHERE device_id IN (SELECT id FROM devices WHERE user_id = ?) AND status != 'revoked'`
-      ).bind(timestamp, timestamp, user.userId)
+      ).bind(timestamp, timestamp, user.userId),
+      ...relayAccountRevocationStatements(env, relaySpaces, timestamp)
     ])
-    await directlyRevokeRelayAccounts(env, relaySpaces)
+    await processRelayRevocationJobs(env)
     return new Response(null, { status: 204 })
   }
   if (request.method === 'GET' && parts.join('/') === 'v1/devices') return listDevices(request, env)
@@ -1301,5 +1391,8 @@ export default {
       console.error('Unhandled account API error', error)
       return json({ error: { code: 'internal_error', message: '服务暂时不可用，请稍后重试。' } }, { status: 500 })
     }
+  },
+  async scheduled(_controller: ScheduledController, env: Environment, context: ExecutionContext): Promise<void> {
+    context.waitUntil(processRelayRevocationJobs(env))
   }
 } satisfies ExportedHandler<Environment>

@@ -33,20 +33,24 @@ final class CompanionStore: ObservableObject {
     private var accountSessionValidated = false
     private var activeSync: Task<Void, Never>?
     private var activeSyncID: UUID?
+    private var spaceSwitchTask: Task<Void, Never>?
+    private var spaceSwitchTaskID: UUID?
     private var syncRequested = false
     private var commandErrors: [String: String] = [:]
     private var historyRequestChatIDs: [String: String] = [:]
     private var notificationObservers: [NSObjectProtocol] = []
     private var notificationAuthorizationRequested = false
-    private let cacheURL: URL
+    private let cacheRootURL: URL
     private let previewMode = ProcessInfo.processInfo.arguments.contains("--design-preview")
     private let accountHostsPreviewMode = ProcessInfo.processInfo.arguments.contains(
         "--design-preview-account-hosts")
     private let chatScrollPositionKeyPrefix = "chat.scroll-position."
 
     init() {
-        cacheURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ProjectAgentCompanion/state.json")
+        cacheRootURL = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent("ProjectAgentCompanion")
 #if DEBUG
         if accountHostsPreviewMode {
             accountSession = MobileAccountSession(
@@ -115,7 +119,6 @@ final class CompanionStore: ObservableObject {
             return
         }
 #endif
-        loadCache()
         do {
             accountSession = try AccountKeychainStore.loadSession()
             if let expiry = accountSession?.session.refreshExpiresAt,
@@ -131,14 +134,21 @@ final class CompanionStore: ObservableObject {
                     forKey: accountSelectedSyncSpaceKey(userID: userID)
                 )
             }
-            credentials = try KeychainStore.load()
+            credentials = try KeychainStore.load(syncSpaceID: selectedAccountSyncSpaceID)
             if let credentials {
+                if selectedAccountSyncSpaceID == nil, let credentialSpaceID = credentials.syncSpaceID {
+                    selectedAccountSyncSpaceID = credentialSpaceID
+                }
                 configureClient(credentials)
                 connection = .offline
             }
         } catch {
             operationError = error.localizedDescription
         }
+        loadCache(
+            spaceID: selectedAccountSyncSpaceID ?? credentials?.syncSpaceID,
+            allowLegacyMigration: credentials?.syncSpaceID != nil
+        )
         notificationObservers.append(
             NotificationCenter.default.addObserver(
                 forName: .companionPushToken,
@@ -227,7 +237,10 @@ final class CompanionStore: ObservableObject {
             beginAccountValidationIfNeeded()
             return
         }
-        if needsAccountEnrollment { beginAccountEnrollmentIfNeeded() }
+        if needsAccountEnrollment {
+            beginAccountEnrollmentIfNeeded()
+            return
+        }
         guard isPaired else {
             return
         }
@@ -323,7 +336,7 @@ final class CompanionStore: ObservableObject {
         accountBusy = true
         operationError = nil
         if let client { try? await client.revokeSelf() }
-        unpair()
+        await unpair()
         AccountKeychainStore.deleteSession()
         accountSession = nil
         accountSessionValidated = false
@@ -337,24 +350,26 @@ final class CompanionStore: ObservableObject {
         accountBusy = false
     }
 
-    func unpair() {
-        accountEnrollmentTask?.cancel()
+    func unpair() async {
+        let enrollmentTask = accountEnrollmentTask
+        enrollmentTask?.cancel()
         accountEnrollmentTask = nil
         accountEnrollmentTaskID = nil
+        await enrollmentTask?.value
+        let switchTask = spaceSwitchTask
+        switchTask?.cancel()
+        spaceSwitchTask = nil
+        spaceSwitchTaskID = nil
+        await switchTask?.value
         accountValidationTask?.cancel()
         accountValidationTask = nil
         accountEnrollmentInProgress = false
         accountEnrollmentMessage = nil
-        suspendForegroundTransport()
-        activeSync?.cancel()
-        activeSync = nil
-        activeSyncID = nil
-        syncRequested = false
+        await quiesceRelaySync()
         client = nil
-        KeychainStore.delete()
+        KeychainStore.deleteAll()
         credentials = nil
         state = CachedState()
-        persistCache()
         macOnline = false
         connection = .unpaired
     }
@@ -364,7 +379,7 @@ final class CompanionStore: ObservableObject {
         let taskID = UUID()
         accountEnrollmentTaskID = taskID
         accountEnrollmentTask = Task { @MainActor [weak self] in
-            await self?.connectSameAccount()
+            await self?.connectSameAccount(taskID: taskID)
             guard self?.accountEnrollmentTaskID == taskID else { return }
             self?.accountEnrollmentTask = nil
             self?.accountEnrollmentTaskID = nil
@@ -380,28 +395,63 @@ final class CompanionStore: ObservableObject {
         beginAccountEnrollmentIfNeeded()
     }
 
-    func selectAccountSyncSpace(_ id: String) {
+    func switchAccountSyncSpace(_ id: String) {
+        guard id != selectedAccountSyncSpaceID else { return }
+        spaceSwitchTask?.cancel()
+        let taskID = UUID()
+        spaceSwitchTaskID = taskID
+        spaceSwitchTask = Task { @MainActor [weak self] in
+            await self?.performAccountSyncSpaceSwitch(id, taskID: taskID)
+        }
+    }
+
+    private func performAccountSyncSpaceSwitch(_ id: String, taskID: UUID) async {
+        defer {
+            if spaceSwitchTaskID == taskID {
+                spaceSwitchTask = nil
+                spaceSwitchTaskID = nil
+            }
+        }
         guard let userID = accountSession?.user.id,
             availableAccountSyncSpaces.contains(where: { $0.id == id })
         else { return }
-        selectedAccountSyncSpaceID = id
-        UserDefaults.standard.set(id, forKey: accountSelectedSyncSpaceKey(userID: userID))
-        accountEnrollmentTask?.cancel()
+        let enrollmentTask = accountEnrollmentTask
+        enrollmentTask?.cancel()
         accountEnrollmentTask = nil
         accountEnrollmentTaskID = nil
-        beginAccountEnrollmentIfNeeded()
+        await enrollmentTask?.value
+        guard spaceSwitchTaskID == taskID, !Task.isCancelled else { return }
+
+        await quiesceRelaySync()
+        guard spaceSwitchTaskID == taskID, !Task.isCancelled else { return }
+        selectedAccountSyncSpaceID = id
+        UserDefaults.standard.set(id, forKey: accountSelectedSyncSpaceKey(userID: userID))
+        do {
+            credentials = try KeychainStore.load(syncSpaceID: id)
+            client = nil
+            if let credentials { configureClient(credentials) }
+            state = cachedState(spaceID: id, allowLegacyMigration: false)
+            reconcileChatPages()
+            connection = credentials == nil ? .connecting : .offline
+            macOnline = false
+            operationError = nil
+            beginAccountEnrollmentIfNeeded()
+            start()
+        } catch {
+            credentials = nil
+            client = nil
+            state = CachedState()
+            connection = .unpaired
+            operationError = error.localizedDescription
+        }
     }
 
-    func switchAccountSyncSpace(_ id: String) {
-        guard id != selectedAccountSyncSpaceID else { return }
-        selectAccountSyncSpace(id)
-    }
-
-    private func connectSameAccount() async {
+    private func connectSameAccount(taskID: UUID) async {
         guard let accountClient = AccountClient.configured(), var currentSession = accountSession else {
             return
         }
         let replacingLegacyPairing = isPaired
+        let shouldMigrateLegacyCache = credentials?.syncSpaceID == nil
         accountEnrollmentInProgress = true
         accountEnrollmentMessage = "正在寻找同一账户下的 Mac…"
         if !replacingLegacyPairing { connection = .connecting }
@@ -440,6 +490,7 @@ final class CompanionStore: ObservableObject {
                     accountSession: currentSession
                 )
                 currentSession = try persistRefreshedAccountSession(afterCreate)
+                guard accountEnrollmentTaskID == taskID, !Task.isCancelled else { return }
                 accountEnrollmentMessage = "已找到 \(space.hostName)，正在等待安全授权…"
 
                 while !Task.isCancelled && Date() < deadline {
@@ -449,6 +500,7 @@ final class CompanionStore: ObservableObject {
                         accountSession: currentSession
                     )
                     currentSession = try persistRefreshedAccountSession(afterPoll)
+                    guard accountEnrollmentTaskID == taskID, !Task.isCancelled else { return }
                     if status.enrollment.status == "active",
                         let wrappedGrant = status.enrollment.wrappedSpaceKey,
                         let privateKey = try AccountKeychainStore.loadDevicePrivateKey()
@@ -460,11 +512,16 @@ final class CompanionStore: ObservableObject {
                             deviceID: currentSession.device.id,
                             privateKeyData: privateKey
                         )
+                        await quiesceRelaySync()
+                        guard accountEnrollmentTaskID == taskID, !Task.isCancelled else { return }
                         try KeychainStore.save(relayCredentials)
                         credentials = relayCredentials
                         configureClient(relayCredentials)
-                        state = CachedState()
-                        persistCache()
+                        state = cachedState(
+                            spaceID: space.id,
+                            allowLegacyMigration: shouldMigrateLegacyCache
+                        )
+                        reconcileChatPages()
                         accountEnrollmentMessage = nil
                         connection = .connected
                         start()
@@ -540,7 +597,7 @@ final class CompanionStore: ObservableObject {
             restoringAccountSession = false
             start()
         } catch AccountClientError.authenticationRequired {
-            unpair()
+            await unpair()
             AccountKeychainStore.deleteSession()
             accountSession = nil
             accountSessionValidated = false
@@ -632,6 +689,7 @@ final class CompanionStore: ObservableObject {
                 operationError = nil
             }
         } catch {
+            if Task.isCancelled { return }
             connection = .offline
             operationError = "同步失败：\(error.localizedDescription)"
         }
@@ -1300,15 +1358,43 @@ final class CompanionStore: ObservableObject {
         return uploaded
     }
 
-    private func loadCache() {
-        guard let data = try? Data(contentsOf: cacheURL),
+    private func cacheURL(spaceID: String?) -> URL {
+        let directory = spaceID == nil
+            ? cacheRootURL
+            : cacheRootURL.appendingPathComponent("spaces", isDirectory: true)
+        return directory.appendingPathComponent(companionCacheFileName(spaceID: spaceID))
+    }
+
+    private func cachedState(spaceID: String?, allowLegacyMigration: Bool) -> CachedState {
+        let targetURL = cacheURL(spaceID: spaceID)
+        if let data = try? Data(contentsOf: targetURL),
             let saved = try? JSONDecoder().decode(CachedState.self, from: data)
-        else { return }
-        state = saved
+        {
+            return saved
+        }
+        guard allowLegacyMigration, spaceID != nil,
+            let data = try? Data(contentsOf: cacheURL(spaceID: nil)),
+            let legacy = try? JSONDecoder().decode(CachedState.self, from: data)
+        else { return CachedState() }
+        do {
+            try FileManager.default.createDirectory(
+                at: targetURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try JSONEncoder().encode(legacy).write(to: targetURL, options: .atomic)
+        } catch {
+            operationError = "本地缓存保存失败：\(error.localizedDescription)"
+        }
+        return legacy
+    }
+
+    private func loadCache(spaceID: String?, allowLegacyMigration: Bool) {
+        state = cachedState(spaceID: spaceID, allowLegacyMigration: allowLegacyMigration)
         reconcileChatPages()
     }
 
     private func persistCache() {
+        let cacheURL = cacheURL(spaceID: credentials?.syncSpaceID ?? selectedAccountSyncSpaceID)
         do {
             try FileManager.default.createDirectory(
                 at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -1316,6 +1402,19 @@ final class CompanionStore: ObservableObject {
         } catch {
             operationError = "本地缓存保存失败：\(error.localizedDescription)"
         }
+    }
+
+    private func quiesceRelaySync() async {
+        suspendForegroundTransport()
+        let task = activeSync
+        let taskID = activeSyncID
+        task?.cancel()
+        await task?.value
+        if activeSyncID == taskID {
+            activeSync = nil
+            activeSyncID = nil
+        }
+        syncRequested = false
     }
 
 #if DEBUG

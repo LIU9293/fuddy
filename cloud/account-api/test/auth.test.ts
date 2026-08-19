@@ -1,7 +1,8 @@
 import { SELF, env } from 'cloudflare:test'
 import { Webhook } from 'svix'
-import { describe, expect, it } from 'vitest'
-import { linkVerifiedGoogleIdentity, parseResendErrorDetails } from '../src/index'
+import { describe, expect, it, vi } from 'vitest'
+import type { RelayAdministrationBinding } from '../../relay/src/administration-contract'
+import { linkVerifiedGoogleIdentity, parseResendErrorDetails, processRelayRevocationJobs } from '../src/index'
 import type { DeviceInput } from '../src/types'
 
 const device: DeviceInput = {
@@ -192,11 +193,15 @@ describe('email authentication', () => {
   })
 
   it('revokes every phone grant when its Mac is removed', async () => {
+    await env.ACCOUNT_DB.prepare('DELETE FROM relay_revocation_jobs').run()
     const { payload } = await signIn('remove-mac@example.com')
     const iosDeviceId = crypto.randomUUID()
     const grantId = crypto.randomUUID()
     const now = new Date().toISOString()
     await env.ACCOUNT_DB.batch([
+      env.ACCOUNT_DB.prepare(
+        'UPDATE sync_spaces SET relay_url = ?, relay_account_id = ?, updated_at = ? WHERE id = ?'
+      ).bind('https://fuddy.ai/api/relay', 'relay-account-to-revoke', now, payload.device.syncSpaceId),
       env.ACCOUNT_DB.prepare(
         `INSERT INTO devices
           (id, user_id, platform, name, public_key, app_version, protocol_version, created_at, updated_at, last_seen_at)
@@ -226,6 +231,47 @@ describe('email authentication', () => {
     await expect(env.ACCOUNT_DB.prepare(
       'SELECT status FROM device_grants WHERE id = ?'
     ).bind(grantId).first()).resolves.toMatchObject({ status: 'revoked' })
+
+    const pendingJob = await env.ACCOUNT_DB.prepare(
+      `SELECT status, attempt_count AS attemptCount
+       FROM relay_revocation_jobs WHERE id = ?`
+    ).bind(`account:${payload.device.syncSpaceId}`).first<{ status: string; attemptCount: number }>()
+    expect(pendingJob).toEqual({ status: 'pending', attemptCount: 0 })
+
+    const relayAdmin = {
+      revokeDevice: vi.fn(async () => true),
+      revokeAccount: vi.fn()
+        .mockRejectedValueOnce(new Error('temporary Relay outage'))
+        .mockResolvedValue(undefined)
+    } satisfies RelayAdministrationBinding
+    const firstRetry = await processRelayRevocationJobs(env, {
+      relayAdmin,
+      now: new Date('2030-01-01T00:00:00.000Z')
+    })
+    expect(firstRetry).toEqual({ attempted: 1, completed: 0 })
+    await expect(env.ACCOUNT_DB.prepare(
+      `SELECT status, attempt_count AS attemptCount, last_error AS lastError
+       FROM relay_revocation_jobs WHERE id = ?`
+    ).bind(`account:${payload.device.syncSpaceId}`).first()).resolves.toMatchObject({
+      status: 'pending',
+      attemptCount: 1,
+      lastError: 'temporary Relay outage'
+    })
+
+    const secondRetry = await processRelayRevocationJobs(env, {
+      relayAdmin,
+      now: new Date('2030-01-01T00:01:00.000Z')
+    })
+    expect(secondRetry).toEqual({ attempted: 1, completed: 1 })
+    expect(relayAdmin.revokeAccount).toHaveBeenCalledTimes(2)
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT status FROM relay_revocation_jobs WHERE id = ?'
+    ).bind(`account:${payload.device.syncSpaceId}`).first()).resolves.toMatchObject({ status: 'completed' })
+    await expect(env.ACCOUNT_DB.prepare(
+      'SELECT relay_revoked_at AS relayRevokedAt FROM device_grants WHERE id = ?'
+    ).bind(grantId).first<{ relayRevokedAt: string | null }>()).resolves.toMatchObject({
+      relayRevokedAt: expect.any(String)
+    })
   })
 
   it('lists the current device separately from other signed-in devices', async () => {

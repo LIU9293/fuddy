@@ -2,6 +2,15 @@ import Foundation
 
 let defaultCompanionRelayURL = "https://fuddy.ai/api/relay"
 
+func companionCacheFileName(spaceID: String?) -> String {
+    guard let spaceID else { return "state.json" }
+    let encoded = Data(spaceID.utf8).base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+    return "space-\(encoded).json"
+}
+
 struct AccountUser: Codable, Equatable {
     let id: String
     let email: String

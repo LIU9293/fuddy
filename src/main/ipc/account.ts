@@ -31,6 +31,10 @@ export function registerAccountIpc(context: IpcContext): void {
       code: z.string().regex(/^\d{6}$/u)
     }).parse(rawInput)
     const state = await accountService.verifyEmailSignIn(input.challengeId, input.code)
+    if (state.user) await companionSync.activateAccountRelay(
+      state.user.id,
+      state.device?.syncSpaceId ?? undefined
+    )
     void companionSync.start().catch(() => undefined)
     accountEnrollmentCoordinator.start()
     return state
@@ -38,6 +42,10 @@ export function registerAccountIpc(context: IpcContext): void {
 
   ipcMain.handle('account:sign-in-google', async () => {
     const state = await accountService.signInWithGoogle((url) => shell.openExternal(url))
+    if (state.user) await companionSync.activateAccountRelay(
+      state.user.id,
+      state.device?.syncSpaceId ?? undefined
+    )
     void companionSync.start().catch(() => undefined)
     accountEnrollmentCoordinator.start()
     return state
@@ -71,9 +79,9 @@ export function registerAccountIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('account:logout-all', async () => {
+    const state = await accountService.logoutAll()
     accountEnrollmentCoordinator.stop()
     companionSync.stop()
-    const state = await accountService.logoutAll()
     companionSync.forgetAccountRelay()
     broadcastAccountState()
     return state

@@ -61,6 +61,7 @@ import { companionLatestChatCursor } from '../../shared/companion-chat'
 import type { AccountRelayCredentials } from './account-device-grant'
 
 const configurationKey = 'companion.mac-configuration'
+const accountConfigurationsKey = 'companion.account-configurations'
 export const companionFallbackSyncIntervalMs = 60_000
 export const companionConnectedFallbackSyncIntervalMs = 5 * 60_000
 export const companionRequestTimeoutMs = 30_000
@@ -273,6 +274,7 @@ async function responseJson<T>(response: Response): Promise<T> {
 export class CompanionSyncService {
   private executeWorkAssistantAction: ((input: { messageId: string; proposalId: string; optionId: string }) => unknown) | null = null
   private configuration: CompanionMacConfiguration | null
+  private accountConfigurations: Record<string, CompanionMacConfiguration>
   private state: CompanionMacStatus['state'] = 'not-configured'
   private realtimeState: CompanionRealtimeConnectionState = 'disconnected'
   private lastConnectedAt: string | null = null
@@ -306,6 +308,13 @@ export class CompanionSyncService {
     private readonly modelLabels: () => AgentModelLabels = () => emptyAgentModelLabels
   ) {
     this.configuration = database.getSetting<CompanionMacConfiguration | null>(configurationKey, null)
+    this.accountConfigurations = database.getSetting<Record<string, CompanionMacConfiguration>>(
+      accountConfigurationsKey,
+      {}
+    )
+    if (this.configuration?.ownerUserId) {
+      this.accountConfigurations[this.configuration.ownerUserId] = this.configuration
+    }
     this.state = this.configuration ? 'disconnected' : 'not-configured'
     database.onCompanionEventEnqueued(() => this.scheduleEventSync())
   }
@@ -354,11 +363,47 @@ export class CompanionSyncService {
     this.connectSocket()
   }
 
+  async activateAccountRelay(ownerUserId: string, syncSpaceId?: string): Promise<void> {
+    if (this.configuration && !this.configuration.ownerUserId) {
+      const legacyBelongsToAccount = !this.configuration.syncSpaceId
+        || !syncSpaceId
+        || this.configuration.syncSpaceId === syncSpaceId
+      if (legacyBelongsToAccount) {
+        this.configuration = {
+          ...this.configuration,
+          ownerUserId,
+          syncSpaceId: this.configuration.syncSpaceId ?? syncSpaceId
+        }
+        this.persistActiveConfiguration()
+        return
+      }
+      this.accountConfigurations[this.legacyConfigurationKey(this.configuration)] = this.configuration
+      this.database.setSetting(accountConfigurationsKey, this.accountConfigurations)
+    }
+    if (this.configuration?.ownerUserId === ownerUserId) return
+
+    this.stopped = true
+    this.closeTransports()
+    if (this.activeSync) await this.activeSync
+    this.configuration = this.takeAccountConfiguration(ownerUserId, syncSpaceId)
+    this.database.setSetting(configurationKey, this.configuration)
+    this.validatedAccountRelaySignature = null
+    this.state = this.configuration ? 'disconnected' : 'not-configured'
+    this.realtimeState = 'disconnected'
+    this.lastConnectedAt = null
+    this.lastSyncedAt = null
+    this.lastError = null
+    this.iosDevicesOnline = null
+    this.emitStatus()
+  }
+
   async ensureAccountRelay(
     relayUrl: string,
     deviceName?: string,
-    syncSpaceId?: string
+    syncSpaceId?: string,
+    ownerUserId?: string
   ): Promise<AccountRelayBinding> {
+    if (ownerUserId) await this.activateAccountRelay(ownerUserId, syncSpaceId)
     const normalizedRelay = normalizedRelayUrl(relayUrl)
     const configurationHasKey = this.configuration?.encryptionKeyId
       && this.credentials.get(this.encryptionKeyReference(this.configuration.accountId))
@@ -369,10 +414,10 @@ export class CompanionSyncService {
     )
     const relayChanged = Boolean(this.configuration && this.configuration.relayUrl !== normalizedRelay)
     if (!this.configuration || !configurationHasKey || belongsToAnotherSpace || relayChanged) {
-      await this.beginPairing(normalizedRelay, deviceName, syncSpaceId)
+      await this.beginPairing(normalizedRelay, deviceName, syncSpaceId, ownerUserId)
     } else if (syncSpaceId && !this.configuration.syncSpaceId) {
       this.configuration = { ...this.configuration, syncSpaceId }
-      this.database.setSetting(configurationKey, this.configuration)
+      this.persistActiveConfiguration()
     }
     if (!this.configuration) throw new Error('无法初始化 Companion Relay。')
     const signature = `${this.configuration.accountId}\0${this.configuration.macDeviceId}\0${syncSpaceId ?? ''}`
@@ -390,7 +435,7 @@ export class CompanionSyncService {
         : deviceResponse
       if (validationResponse.status === 401) {
         this.forgetAccountRelay()
-        await this.beginPairing(normalizedRelay, deviceName, syncSpaceId)
+        await this.beginPairing(normalizedRelay, deviceName, syncSpaceId, ownerUserId)
       } else {
         await responseJson(validationResponse)
       }
@@ -448,7 +493,8 @@ export class CompanionSyncService {
   async beginPairing(
     relayUrl: string,
     deviceName?: string,
-    syncSpaceId?: string
+    syncSpaceId?: string,
+    ownerUserId?: string
   ): Promise<CompanionPairingSession> {
     const previousConfiguration = this.configuration
     const origin = normalizedRelayUrl(relayUrl)
@@ -490,12 +536,13 @@ export class CompanionSyncService {
       accountId: pairing.accountId,
       macDeviceId: pairing.macDeviceId,
       pairedAt: new Date().toISOString(),
+      ownerUserId,
       syncSpaceId,
       encryptionKeyId
     }
     this.credentials.set(this.tokenReference(pairing.accountId), pairing.macToken)
     this.credentials.set(this.encryptionKeyReference(pairing.accountId), encryptionKey)
-    this.database.setSetting(configurationKey, this.configuration)
+    this.persistActiveConfiguration()
     this.validatedAccountRelaySignature = null
     this.database.enqueueCompanionPairingSnapshot(this.modelLabels())
     this.state = 'connecting'
@@ -524,8 +571,13 @@ export class CompanionSyncService {
 
   /** Clears a Relay identity already revoked by the Account API without making another remote request. */
   forgetAccountRelay(): void {
+    const ownerUserId = this.configuration?.ownerUserId
     if (this.configuration) this.credentials.delete(this.tokenReference(this.configuration.accountId))
     if (this.configuration) this.credentials.delete(this.encryptionKeyReference(this.configuration.accountId))
+    if (ownerUserId) {
+      delete this.accountConfigurations[ownerUserId]
+      this.database.setSetting(accountConfigurationsKey, this.accountConfigurations)
+    }
     this.database.setSetting<CompanionMacConfiguration | null>(configurationKey, null)
     this.configuration = null
     this.validatedAccountRelaySignature = null
@@ -536,6 +588,40 @@ export class CompanionSyncService {
     this.lastError = null
     this.closeTransports()
     this.emitStatus()
+  }
+
+  private persistActiveConfiguration(): void {
+    this.database.setSetting(configurationKey, this.configuration)
+    if (!this.configuration?.ownerUserId) return
+    this.accountConfigurations[this.configuration.ownerUserId] = this.configuration
+    this.database.setSetting(accountConfigurationsKey, this.accountConfigurations)
+  }
+
+  private legacyConfigurationKey(configuration: CompanionMacConfiguration): string {
+    return `legacy:${configuration.syncSpaceId ?? configuration.accountId}`
+  }
+
+  private takeAccountConfiguration(
+    ownerUserId: string,
+    syncSpaceId?: string
+  ): CompanionMacConfiguration | null {
+    const owned = this.accountConfigurations[ownerUserId]
+    if (owned) return owned
+    const legacy = Object.entries(this.accountConfigurations).find(([, configuration]) => (
+      !configuration.ownerUserId
+      && (!configuration.syncSpaceId || !syncSpaceId || configuration.syncSpaceId === syncSpaceId)
+    ))
+    if (!legacy) return null
+    const [legacyKey, configuration] = legacy
+    delete this.accountConfigurations[legacyKey]
+    const claimed = {
+      ...configuration,
+      ownerUserId,
+      syncSpaceId: configuration.syncSpaceId ?? syncSpaceId
+    }
+    this.accountConfigurations[ownerUserId] = claimed
+    this.database.setSetting(accountConfigurationsKey, this.accountConfigurations)
+    return claimed
   }
 
   async syncNow(): Promise<CompanionMacStatus> {

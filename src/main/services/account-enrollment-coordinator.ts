@@ -65,8 +65,14 @@ export class AccountEnrollmentCoordinator {
     if (!this.relayUrl) return
     const state = this.accountService.getState()
     const spaceId = state.status === 'signed-in' ? state.device?.syncSpaceId : null
-    if (!spaceId) return
-    const binding = await this.companionSync.ensureAccountRelay(this.relayUrl, undefined, spaceId)
+    const ownerUserId = state.status === 'signed-in' ? state.user?.id : null
+    if (!spaceId || !ownerUserId) return
+    const binding = await this.companionSync.ensureAccountRelay(
+      this.relayUrl,
+      undefined,
+      spaceId,
+      ownerUserId
+    )
     const bindingSignature = `${spaceId}\0${binding.relayUrl}\0${binding.relayAccountId}`
     if (bindingSignature !== this.lastBindingSignature || Date.now() - this.lastBindingAt >= 5 * 60_000) {
       await this.accountService.bindRelay({ spaceId, ...binding })

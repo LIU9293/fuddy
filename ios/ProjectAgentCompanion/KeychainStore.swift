@@ -3,10 +3,16 @@ import Security
 
 enum KeychainStore {
     private static let service = "dev.ainative.projectagent.companion"
-    private static let account = "relay-credentials"
+    private static let legacyAccount = "relay-credentials"
+
+    private static func account(syncSpaceID: String?) -> String {
+        guard let syncSpaceID else { return legacyAccount }
+        return "relay-credentials:\(syncSpaceID)"
+    }
 
     static func save(_ credentials: CompanionCredentials) throws {
         let data = try JSONEncoder().encode(credentials)
+        let account = account(syncSpaceID: credentials.syncSpaceID)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -18,9 +24,23 @@ enum KeychainStore {
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(item as CFDictionary, nil)
         guard status == errSecSuccess else { throw KeychainError.status(status) }
+        if credentials.syncSpaceID != nil {
+            delete(account: legacyAccount)
+        }
     }
 
-    static func load() throws -> CompanionCredentials? {
+    static func load(syncSpaceID: String? = nil) throws -> CompanionCredentials? {
+        let account = account(syncSpaceID: syncSpaceID)
+        if let credentials = try load(account: account) { return credentials }
+        guard let syncSpaceID,
+            let legacy = try load(account: legacyAccount),
+            legacy.syncSpaceID == syncSpaceID
+        else { return nil }
+        try save(legacy)
+        return legacy
+    }
+
+    private static func load(account: String) throws -> CompanionCredentials? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -35,7 +55,18 @@ enum KeychainStore {
         return try JSONDecoder().decode(CompanionCredentials.self, from: data)
     }
 
-    static func delete() {
+    static func delete(syncSpaceID: String? = nil) {
+        delete(account: account(syncSpaceID: syncSpaceID))
+    }
+
+    static func deleteAll() {
+        SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service
+        ] as CFDictionary)
+    }
+
+    private static func delete(account: String) {
         SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

@@ -55,7 +55,10 @@
           "pattern": "fuddy.ai/api/account/*",
           "zone_name": "fuddy.ai"
         }
-      ]
+      ],
+      "triggers": {
+        "crons": ["*/5 * * * *"]
+      }
     }
   },
   "observability": {
