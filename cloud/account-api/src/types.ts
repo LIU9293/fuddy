@@ -10,6 +10,7 @@ export type Environment = {
   RESEND_API_KEY: string
   RESEND_WEBHOOK_SECRET: string
   GOOGLE_CLIENT_IDS: string
+  GOOGLE_CLIENT_SECRET: string
   /** Wrangler currently emits this named RPC entrypoint as a generic Fetcher. */
   RELAY_ADMIN?: RelayAdministrationBinding | Pick<Fetcher, 'fetch'>
 }

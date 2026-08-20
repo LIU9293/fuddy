@@ -4538,14 +4538,12 @@
   }
 
   .sidebar-runs-section { border-top-color: rgba(255, 255, 248, .08); }
-  .sidebar-runs-heading,
+  .sidebar-projects-heading,
   .sidebar-run-group-heading,
   .sidebar-run-list small,
   .sidebar-run-list > p { color: #969690; }
-  .sidebar-runs-heading button,
   .sidebar-run-group-heading > button,
   .sidebar-run-row { color: #d2d2cd; }
-  .sidebar-runs-heading button:hover,
   .sidebar-run-group-heading > button:hover,
   .sidebar-run-row:hover,
   .sidebar-run-row.is-active { color: white; background: rgba(255, 255, 248, .08); }

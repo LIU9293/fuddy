@@ -564,7 +564,7 @@ npx wrangler d1 migrations apply project-agent-account --local
 npm run dev
 ```
 
-Fuddy Dev 默认连接 `http://127.0.0.1:8788`。Production 默认连接 `https://fuddy.ai/api/account`，可通过 `FUDDY_ACCOUNT_API_URL` 显式覆盖；Mac 与 iOS Release 已内置公开的 Google OAuth Client ID，开发构建仍保持本地 Account API 隔离。Account API 的 `GOOGLE_CLIENT_IDS` 必须包含 Mac Client ID 与 iOS 使用的 Server Client ID。生产 Resend Key、OAuth Secret、OTP pepper 与 session pepper 只能放部署环境或 Cloudflare Secrets，不能提交到仓库。
+Fuddy Dev 默认连接 `http://127.0.0.1:8788`。Production 默认连接 `https://fuddy.ai/api/account`，可通过 `FUDDY_ACCOUNT_API_URL` 显式覆盖；Mac 与 iOS Release 已内置公开的 Google OAuth Client ID，开发构建仍保持本地 Account API 隔离。Mac 只负责 loopback 回调与 PKCE，授权码统一由 Account API 交换，Google Client Secret 不进入 Electron 包。Account API 的 `GOOGLE_CLIENT_IDS` 必须包含 Mac Client ID 与 iOS 使用的 Server Client ID，并通过本地 `.dev.vars` 或生产 Cloudflare Secret 提供 `GOOGLE_CLIENT_SECRET`。生产 Resend Key、OAuth Secret、OTP pepper 与 session pepper 只能放部署环境或 Cloudflare Secrets，不能提交到仓库。
 
 `npm run dev` 始终启动隔离的 **Fuddy Dev**，使用 `~/Library/Application Support/ai-native-project-agent-dev`。它与 `/Applications/Fuddy.app` 的 production 数据库、凭证、Companion 配对、Agent Session、自动化调度和单实例锁完全分离，因此两者可以同时运行。开发与 QA 不得把 production Fuddy 当作测试目标；需要测试打包形态时使用 `npm run package:smoke` 或 `npm run dist:mac:dev`，产物拥有独立的 `dev.ainative.projectagent.dev` Bundle ID 且禁用自动更新。production Fuddy 继续使用 `~/Library/Application Support/ai-native-project-agent`，保证现有安装升级后仍能读取原数据。
 

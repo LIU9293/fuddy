@@ -15,7 +15,8 @@ export default defineConfig({
           RESEND_FROM: 'Fuddy <onboarding@resend.dev>',
           RESEND_API_KEY: '',
           RESEND_WEBHOOK_SECRET: 'whsec_MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=',
-          GOOGLE_CLIENT_IDS: ''
+          GOOGLE_CLIENT_IDS: '',
+          GOOGLE_CLIENT_SECRET: 'test-google-client-secret'
         },
         d1Databases: ['ACCOUNT_DB'],
         d1Persist: false,

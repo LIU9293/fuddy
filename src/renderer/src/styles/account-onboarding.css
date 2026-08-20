@@ -156,6 +156,29 @@
   margin: 8px 0 0;
 }
 
+.account-provider-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 9px 0 0;
+  color: #888880;
+  font-size: 11px;
+}
+
+.account-provider-fallback button {
+  padding: 0;
+  color: var(--blue);
+  font: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.account-provider-fallback button:hover {
+  text-decoration: underline;
+}
+
 .account-divider {
   display: flex;
   align-items: center;

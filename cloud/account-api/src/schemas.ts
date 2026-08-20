@@ -19,14 +19,36 @@ export const verifyEmailSchema = z.object({
   device: deviceSchema
 })
 
-export const googleSignInSchema = z.object({
-  idToken: z.string().min(20),
-  device: deviceSchema
-})
-
-export const googleIdentitySchema = z.object({
+const googleIdTokenSchema = z.object({
   idToken: z.string().min(20)
-})
+}).strict()
+
+const googleAuthorizationCodeSchema = z.object({
+  authorizationCode: z.string().min(10).max(4096),
+  clientId: z.string().trim().regex(/^\d+-[a-z0-9-]+\.apps\.googleusercontent\.com$/iu).max(255),
+  codeVerifier: z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/u),
+  redirectUri: z.url().max(2048).refine((value) => {
+    const url = new URL(value)
+    return url.protocol === 'http:'
+      && url.hostname === '127.0.0.1'
+      && Boolean(url.port)
+      && url.pathname === '/'
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+  }, 'Google OAuth 回调地址必须是带随机端口的本机 loopback 地址。')
+}).strict()
+
+export const googleIdentitySchema = z.union([
+  googleIdTokenSchema,
+  googleAuthorizationCodeSchema
+])
+
+export const googleSignInSchema = z.union([
+  googleIdTokenSchema.extend({ device: deviceSchema }),
+  googleAuthorizationCodeSchema.extend({ device: deviceSchema })
+])
 
 export const refreshSchema = z.object({
   refreshToken: z.string().min(20)

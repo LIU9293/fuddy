@@ -72,6 +72,15 @@ export type VerifiedGoogleIdentity = {
   displayName: string | null
 }
 
+export type GoogleAuthorizationCodeExchangeInput = {
+  authorizationCode: string
+  clientId: string
+  codeVerifier: string
+  redirectUri: string
+}
+
+type GoogleCredential = z.infer<typeof googleIdentitySchema>
+
 function json(value: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers)
   headers.set('content-type', 'application/json; charset=utf-8')
@@ -618,6 +627,66 @@ async function verifyGoogleIdentity(env: Environment, idToken: string): Promise<
   }
 }
 
+export async function exchangeGoogleAuthorizationCode(
+  input: GoogleAuthorizationCodeExchangeInput,
+  clientSecret: string,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch
+): Promise<string> {
+  let response: Response
+  try {
+    response = await fetchImpl('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: input.clientId,
+        client_secret: clientSecret,
+        code: input.authorizationCode,
+        code_verifier: input.codeVerifier,
+        grant_type: 'authorization_code',
+        redirect_uri: input.redirectUri
+      }),
+      signal: AbortSignal.timeout(10_000)
+    })
+  } catch {
+    throw new ApiError(503, 'google_exchange_unavailable', 'Google 登录服务暂时不可用，请重试。')
+  }
+
+  if (!response.ok) {
+    let upstreamCode = ''
+    try {
+      const payload = await response.json() as { error?: unknown }
+      if (typeof payload.error === 'string' && /^[a-z0-9_.-]{1,80}$/iu.test(payload.error)) {
+        upstreamCode = payload.error
+      }
+    } catch {
+      // The response body may be non-JSON; do not surface arbitrary upstream content.
+    }
+    if (upstreamCode === 'invalid_client') {
+      throw new ApiError(503, 'google_client_invalid', 'Google 登录服务配置无效，请稍后重试。')
+    }
+    throw new ApiError(401, 'google_code_invalid', 'Google 登录授权无效或已过期，请重新登录。')
+  }
+
+  const payload = await response.json() as { id_token?: unknown }
+  if (typeof payload.id_token !== 'string' || payload.id_token.length < 20) {
+    throw new ApiError(502, 'google_token_missing', 'Google 没有返回可验证的登录凭证。')
+  }
+  return payload.id_token
+}
+
+async function resolveGoogleIdentity(env: Environment, credential: GoogleCredential): Promise<VerifiedGoogleIdentity> {
+  if ('idToken' in credential) return verifyGoogleIdentity(env, credential.idToken)
+  const audiences = env.GOOGLE_CLIENT_IDS.split(',').map((value) => value.trim()).filter(Boolean)
+  if (!audiences.includes(credential.clientId)) {
+    throw new ApiError(400, 'google_client_not_allowed', 'Google OAuth 客户端不受支持。')
+  }
+  if (!env.GOOGLE_CLIENT_SECRET) {
+    throw new ApiError(503, 'google_exchange_not_configured', 'Google 登录暂时不可用，请使用邮箱继续。')
+  }
+  const idToken = await exchangeGoogleAuthorizationCode(credential, env.GOOGLE_CLIENT_SECRET)
+  return verifyGoogleIdentity(env, idToken)
+}
+
 export async function linkVerifiedGoogleIdentity(
   env: Environment,
   user: Pick<AuthenticatedUser, 'userId' | 'deviceId'>,
@@ -694,8 +763,11 @@ async function listIdentityRecords(env: Environment, userId: string): Promise<Ar
 
 async function googleSignIn(request: Request, env: Environment): Promise<Response> {
   const input = googleSignInSchema.parse(await bodyJson(request))
-  const google = await verifyGoogleIdentity(env, input.idToken)
-  const timestamp = isoNow()
+  const now = new Date()
+  const ip = request.headers.get('cf-connecting-ip') ?? 'unknown'
+  await rateLimit(env, `google-ip:${ip}`, 30, now)
+  const google = await resolveGoogleIdentity(env, input)
+  const timestamp = isoNow(now)
   let identity = await env.ACCOUNT_DB.prepare(
     `SELECT i.user_id, u.primary_email, u.display_name
      FROM auth_identities i JOIN users u ON u.id = i.user_id
@@ -744,8 +816,8 @@ async function listIdentities(request: Request, env: Environment): Promise<Respo
 
 async function linkGoogle(request: Request, env: Environment): Promise<Response> {
   const user = await authenticate(request, env)
-  const { idToken } = googleIdentitySchema.parse(await bodyJson(request))
-  await linkVerifiedGoogleIdentity(env, user, await verifyGoogleIdentity(env, idToken))
+  const credential = googleIdentitySchema.parse(await bodyJson(request))
+  await linkVerifiedGoogleIdentity(env, user, await resolveGoogleIdentity(env, credential))
   return json({ identities: await listIdentityRecords(env, user.userId) })
 }
 

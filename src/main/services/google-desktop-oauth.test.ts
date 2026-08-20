@@ -1,37 +1,44 @@
 import { describe, expect, it } from 'vitest'
-import { getGoogleIdToken } from './google-desktop-oauth'
+import { getGoogleAuthorizationCode } from './google-desktop-oauth'
 
-describe('getGoogleIdToken', () => {
-  it('uses a loopback callback, state, and PKCE before returning the Google ID token', async () => {
+describe('getGoogleAuthorizationCode', () => {
+  it('uses a loopback callback, state, and PKCE before returning the code exchange input', async () => {
     let authorizationUrlValue = ''
-    let tokenBodyValue = ''
-    const token = await getGoogleIdToken({
+    let announcedAuthorizationUrl = ''
+    let callbackPagePromise: Promise<Response> | undefined
+    const authorization = await getGoogleAuthorizationCode({
       clientId: 'desktop-client-id',
       timeoutMs: 2_000,
+      onAuthorizationUrl: (value) => { announcedAuthorizationUrl = value },
       openExternal: async (value) => {
         authorizationUrlValue = value
         const authorizationUrl = new URL(value)
         const redirectUri = authorizationUrl.searchParams.get('redirect_uri')!
         const state = authorizationUrl.searchParams.get('state')!
         queueMicrotask(() => {
-          void fetch(`${redirectUri}?code=authorization-code&state=${encodeURIComponent(state)}`)
-        })
-      },
-      fetch: async (_url, init) => {
-        tokenBodyValue = String(init?.body)
-        return new Response(JSON.stringify({ id_token: 'verified-google-id-token' }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' }
+          callbackPagePromise = fetch(`${redirectUri}?code=authorization-code&state=${encodeURIComponent(state)}`)
         })
       }
     })
 
-    expect(token).toBe('verified-google-id-token')
     const authorizationUrl = new URL(authorizationUrlValue)
-    const tokenBody = new URLSearchParams(tokenBodyValue)
     expect(authorizationUrl.origin).toBe('https://accounts.google.com')
+    expect(announcedAuthorizationUrl).toBe(authorizationUrlValue)
+    expect(new URL(authorizationUrl.searchParams.get('redirect_uri')!).pathname).toBe('/')
     expect(authorizationUrl.searchParams.get('code_challenge_method')).toBe('S256')
-    expect(tokenBody.get('code')).toBe('authorization-code')
-    expect(tokenBody.get('code_verifier')).toBeTruthy()
+    expect(authorization).toEqual({
+      authorizationCode: 'authorization-code',
+      clientId: 'desktop-client-id',
+      codeVerifier: expect.any(String),
+      redirectUri: authorizationUrl.searchParams.get('redirect_uri')
+    })
+    expect(authorization.codeVerifier.length).toBeGreaterThanOrEqual(43)
+    const callbackResponse = await callbackPagePromise
+    const callbackHtml = await callbackResponse?.text()
+    expect(callbackResponse?.headers.get('content-type')).toContain('text/html')
+    expect(callbackHtml).toContain('aria-label="Fuddy"')
+    expect(callbackHtml).toContain('已收到 Google 授权')
+    expect(callbackHtml).toContain('关闭页面')
+    expect(callbackHtml).toContain('place-items: center')
   })
 })

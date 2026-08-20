@@ -51,6 +51,9 @@ function LoginView({ state, onStateChange }: AccountOnboardingProps): React.JSX.
   const [error, setError] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [retryAt, setRetryAt] = useState(0)
+  const [googleAuthorizationUrl, setGoogleAuthorizationUrl] = useState<string | null>(null)
+  const [showGoogleFallback, setShowGoogleFallback] = useState(false)
+  const [googleLinkCopied, setGoogleLinkCopied] = useState(false)
 
   useEffect(() => {
     if (!challenge) return
@@ -59,6 +62,16 @@ function LoginView({ state, onStateChange }: AccountOnboardingProps): React.JSX.
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)
     return () => window.clearInterval(timer)
   }, [challenge, retryAt])
+
+  useEffect(() => {
+    if (!googleAuthorizationUrl) {
+      setShowGoogleFallback(false)
+      setGoogleLinkCopied(false)
+      return
+    }
+    const timer = window.setTimeout(() => setShowGoogleFallback(true), 2_000)
+    return () => window.clearTimeout(timer)
+  }, [googleAuthorizationUrl])
 
   async function startEmail(): Promise<void> {
     if (!email.trim() || busy) return
@@ -96,12 +109,24 @@ function LoginView({ state, onStateChange }: AccountOnboardingProps): React.JSX.
     if (!state.availableProviders.google || busy) return
     setBusy('google')
     setError(null)
+    setGoogleAuthorizationUrl(null)
     try {
-      onStateChange(await window.projectAgent.signInWithGoogle())
+      onStateChange(await window.projectAgent.signInWithGoogle(setGoogleAuthorizationUrl))
     } catch (caught) {
       setError(errorMessage(caught, 'Google 登录没有完成。'))
     } finally {
       setBusy(null)
+      setGoogleAuthorizationUrl(null)
+    }
+  }
+
+  async function copyGoogleAuthorizationUrl(): Promise<void> {
+    if (!googleAuthorizationUrl) return
+    try {
+      await window.projectAgent.copyGoogleAuthorizationUrl(googleAuthorizationUrl)
+      setGoogleLinkCopied(true)
+    } catch {
+      setError('登录链接复制失败，请重试。')
     }
   }
 
@@ -147,7 +172,6 @@ function LoginView({ state, onStateChange }: AccountOnboardingProps): React.JSX.
             </>
           ) : (
             <>
-              <p className="account-eyebrow">欢迎来到 Fuddy</p>
               <h1 id="account-entry-title">登录或注册 Fuddy</h1>
               <p className="account-lede">让项目在 Mac 和 iPhone 之间无缝继续。</p>
               {state.availableProviders.google && (
@@ -159,8 +183,16 @@ function LoginView({ state, onStateChange }: AccountOnboardingProps): React.JSX.
                     onClick={() => void signInWithGoogle()}
                   >
                     {busy === 'google' && <LoaderCircle className="spin" size={15} />}
-                    使用 Google 继续
+                    {busy === 'google' ? '正在打开 Google 登录…' : '使用 Google 继续'}
                   </button>
+                  {showGoogleFallback && googleAuthorizationUrl && (
+                    <div className="account-provider-fallback" role="status">
+                      <span>浏览器没有打开？</span>
+                      <button type="button" onClick={() => void copyGoogleAuthorizationUrl()}>
+                        {googleLinkCopied ? '已复制，请粘贴到浏览器打开' : '复制登录链接'}
+                      </button>
+                    </div>
+                  )}
                   <div className="account-divider"><span>或</span></div>
                 </>
               )}
@@ -218,7 +250,7 @@ function AgentStep({ onStateChange }: Pick<AccountOnboardingProps, 'onStateChang
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const codingAgents = useMemo(
-    () => result?.capabilities.filter((item) => ['pi', 'codex', 'claude', 'opencode'].includes(item.id)) ?? [],
+    () => result?.capabilities.filter((item) => ['codex', 'claude', 'opencode'].includes(item.id)) ?? [],
     [result]
   )
 

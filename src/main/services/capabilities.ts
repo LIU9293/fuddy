@@ -1,9 +1,13 @@
 import { execFileSync } from 'node:child_process'
 import { systemPreferences } from 'electron'
 import type { Capability, ProviderSettings } from '../../shared/contracts'
-import { resolveCliBinary } from './cli-executables'
+import { isInstalledCliBinary, resolveCliBinary } from './cli-executables'
 
-function probeExecutable(command: string): { available: boolean; version?: string } {
+export function probeExecutable(command: string): { available: boolean; version?: string } {
+  // An absolute, executable candidate is installed even if its version command
+  // is slow or depends on configuration that is not available during onboarding.
+  if (isInstalledCliBinary(command)) return { available: true }
+
   try {
     const version = execFileSync(command, ['--version'], {
       encoding: 'utf8',

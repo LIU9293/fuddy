@@ -1017,7 +1017,7 @@ export function SettingsView({
           <h1>{settingsSectionTitles[section]}</h1>
           <p>
             {section === 'general'
-              ? '管理账户、iPhone 同步和这台 Mac 可以使用的功能。'
+              ? '管理账户、登录设备和这台 Mac 可以使用的功能。'
               : section === 'models'
                 ? '选择工作助理与 Coding Agent 使用的模型。'
                 : section === 'voice'
@@ -1029,7 +1029,7 @@ export function SettingsView({
 
       {section === 'general' && (
         <section className="settings-list-page">
-          <div className="settings-group-label">账户</div>
+          <h2 className="settings-group-label">账户</h2>
           <div className="settings-flat-list">
             <article>
               <div className="settings-row-main">
@@ -1079,7 +1079,7 @@ export function SettingsView({
             </article>
           </div>
 
-          <div className="settings-group-label">登录设备</div>
+          <h2 className="settings-group-label">登录设备</h2>
           <div className="settings-flat-list">
             {accountDevices.map((device) => (
               <article key={device.id}>
@@ -1109,11 +1109,6 @@ export function SettingsView({
                 </button>
               </article>
             )}
-          </div>
-          {accountError && <p className="settings-inline-error" role="alert">{accountError}</p>}
-
-          <div className="settings-group-label">iPhone 同步</div>
-          <div className="settings-flat-list settings-companion-list">
             <article className="settings-summary-row">
               <div className="settings-row-main">
                 <span className="settings-row-icon is-accent"><Smartphone size={17} /></span>
@@ -1192,8 +1187,9 @@ export function SettingsView({
               </article>
             )}
           </div>
+          {accountError && <p className="settings-inline-error" role="alert">{accountError}</p>}
 
-          <div className="settings-group-label settings-list-section-spacing">这台 Mac 可以做什么</div>
+          <h2 className="settings-group-label">这台 Mac 可以做什么</h2>
           <div className="settings-flat-list">
             {bootstrap.capabilities
               .filter((item) => item.id === 'browser' || item.id === 'computer')

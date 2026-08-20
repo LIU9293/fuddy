@@ -99,6 +99,7 @@ let companionSync: CompanionSyncService | null = null
 let accountEnrollmentCoordinator: AccountEnrollmentCoordinator | null = null
 let pendingAgentRunNavigationId: string | null = null
 let stopAutoUpdates: (() => void) | null = null
+let taskDispatcher: TaskDispatcher | null = null
 
 app.on('render-process-gone', (_event, webContents, details) => {
   if (details.reason === 'clean-exit' || details.reason === 'killed') return
@@ -376,6 +377,7 @@ if (!hasLock) {
           if (turn.outcome === 'completed') await decisionRemediationService.sync(run.projectId)
         }
       )
+      taskDispatcher = dispatcher
       dispatcher.onRunUpdate((runId, update) => {
         const targetWindow = mainWindow
         if (!targetWindow || targetWindow.webContents.isDestroyed()) return
@@ -600,6 +602,9 @@ async function shutdown(): Promise<void> {
     const activeCompanionSync = companionSync
     companionSync = null
     await activeCompanionSync?.stopAndDrain()
+    const activeTaskDispatcher = taskDispatcher
+    taskDispatcher = null
+    await activeTaskDispatcher?.stopAndDrain()
     await agentToolsMcp?.stop()
     agentToolsMcp = null
     database?.close()

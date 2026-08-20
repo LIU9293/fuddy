@@ -15,6 +15,7 @@ import {
   CODEX_TURN_SANDBOX_POLICY,
   claudeRecord,
   codexTomlStringMap,
+  CliAgentRuntime,
   opencodeRecord
 } from './cli-agent-runtime'
 import type { McpServerLaunchConfig } from './third-party-mcp-runtime'
@@ -224,5 +225,37 @@ describe('coding CLI MCP injection', () => {
     expect(buildCodexTurnStartParams('thread', 'test')).not.toHaveProperty('effort')
     expect(claudeSdkReasoningOptions('max')).toEqual({ effort: 'max' })
     expect(claudeSdkReasoningOptions()).toEqual({})
+  })
+
+  it('drains tracked CLI turns before runtime shutdown completes', async () => {
+    let markStarted!: () => void
+    let releaseTurn!: () => void
+    const started = new Promise<void>((resolve) => { markStarted = resolve })
+    const runtime = new CliAgentRuntime(
+      { getLaunchConfigs: async () => [] },
+      undefined,
+      undefined,
+      undefined,
+      [{
+        provider: 'codex',
+        runTurn: async () => {
+          markStarted()
+          await new Promise<void>((resolve) => { releaseTurn = resolve })
+          return { text: 'done', sessionId: null }
+        }
+      }]
+    )
+
+    const turn = runtime.runTurn(input('codex'))
+    await started
+    let drained = false
+    const drain = runtime.stopAndDrain().then(() => { drained = true })
+    await Promise.resolve()
+    expect(drained).toBe(false)
+
+    releaseTurn()
+    await expect(turn).resolves.toMatchObject({ text: 'done' })
+    await drain
+    expect(drained).toBe(true)
   })
 })

@@ -1,8 +1,22 @@
-import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { accessSync, constants, existsSync, readdirSync, statSync } from 'node:fs'
+import { isAbsolute, join } from 'node:path'
 import type { AgentRunProvider } from '../../shared/contracts'
 
 type CliProvider = Exclude<AgentRunProvider, 'pi'>
+
+export function isExecutableFile(candidate: string): boolean {
+  try {
+    if (!statSync(candidate).isFile()) return false
+    accessSync(candidate, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function isInstalledCliBinary(command: string): boolean {
+  return isAbsolute(command) && isExecutableFile(command)
+}
 
 function nvmCandidates(binary: string): string[] {
   const home = process.env.HOME ?? ''
@@ -43,6 +57,6 @@ export function cliBinaryCandidates(provider: CliProvider): string[] {
 
 export function resolveCliBinary(provider: CliProvider): string {
   const candidates = cliBinaryCandidates(provider)
-  return candidates.find((candidate) => candidate.includes('/') && existsSync(candidate))
+  return candidates.find((candidate) => isAbsolute(candidate) && isExecutableFile(candidate))
     ?? candidates.at(-1) as string
 }

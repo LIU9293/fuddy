@@ -5,6 +5,7 @@ import { resolveCliBinary } from './cli-executables'
 import type { ProviderSettingsService } from './provider-settings'
 import type { McpServerLaunchConfig } from './third-party-mcp-runtime'
 import { buildAgentStoragePolicy } from './agent-runtime-context'
+import { terminateProcessTree } from './process-tree'
 
 export interface McpLaunchConfigProvider {
   getLaunchConfigs(scope?: string): Promise<McpServerLaunchConfig[]>
@@ -326,6 +327,7 @@ export function buildCliEnv(
 
 export class CliAgentRuntime {
   private readonly adapters = new Map<CliAgentTurnInput['provider'], CliAgentProviderRuntimeAdapter>()
+  private readonly activeTurns = new Set<Promise<CliAgentTurnResult>>()
 
   constructor(
     private readonly mcpProvider: McpLaunchConfigProvider,
@@ -372,7 +374,17 @@ export class CliAgentRuntime {
     }
     const adapter = this.adapters.get(resolvedInput.provider)
     if (!adapter) throw new Error(`CLI agent provider is not registered: ${resolvedInput.provider}`)
-    return await adapter.runTurn(resolvedInput, mcpServers)
+    const turn = adapter.runTurn(resolvedInput, mcpServers)
+    this.activeTurns.add(turn)
+    try {
+      return await turn
+    } finally {
+      this.activeTurns.delete(turn)
+    }
+  }
+
+  async stopAndDrain(): Promise<void> {
+    await Promise.allSettled([...this.activeTurns])
   }
 
   private async runClaudeSdk(
@@ -506,7 +518,8 @@ export class CliAgentRuntime {
     return await new Promise<CliAgentTurnResult>((resolve, reject) => {
       const child = spawn(binary, args, {
         cwd: input.workingDirectory,
-        env: { ...process.env, PWD: input.workingDirectory }
+        env: { ...process.env, PWD: input.workingDirectory },
+        detached: process.platform !== 'win32'
       })
       let buffer = ''
       let stderr = ''
@@ -530,8 +543,8 @@ export class CliAgentRuntime {
       const finishError = (error: Error): void => {
         if (settled) return
         settled = true
-        child.kill()
-        reject(error)
+        input.abortController.signal.removeEventListener('abort', abortChild)
+        void terminateProcessTree(child).finally(() => reject(error))
       }
       const abortChild = (): void => finishError(input.abortController.signal.reason instanceof Error
         ? input.abortController.signal.reason
@@ -543,8 +556,7 @@ export class CliAgentRuntime {
         if (!text) return finishError(new Error('Codex app-server 没有返回 Agent 消息。'))
         settled = true
         input.abortController.signal.removeEventListener('abort', abortChild)
-        child.kill()
-        resolve({ text, sessionId })
+        void terminateProcessTree(child).finally(() => resolve({ text, sessionId }))
       }
       const handleApproval = (record: JsonRecord): void => {
         const method = textValue(record.method)
@@ -687,7 +699,8 @@ export class CliAgentRuntime {
     return await new Promise<CliAgentTurnResult>((resolve, reject) => {
       const child = spawn(binary, args, {
         cwd: input.workingDirectory,
-        env: { ...buildCliEnv(input.provider, mcpServers), PWD: input.workingDirectory }
+        env: { ...buildCliEnv(input.provider, mcpServers), PWD: input.workingDirectory },
+        detached: process.platform !== 'win32'
       })
       const stderr: Buffer[] = []
       let settled = false
@@ -695,8 +708,7 @@ export class CliAgentRuntime {
         if (settled) return
         settled = true
         input.abortController.signal.removeEventListener('abort', abortChild)
-        child.kill()
-        reject(error)
+        void terminateProcessTree(child).finally(() => reject(error))
       }
       const abortChild = (): void => finishError(input.abortController.signal.reason instanceof Error
         ? input.abortController.signal.reason

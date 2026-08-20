@@ -5,7 +5,8 @@ import type { IpcContext } from './context'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
-  windows: [] as Array<{ webContents: { isDestroyed: () => boolean; send: ReturnType<typeof vi.fn> } }>
+  windows: [] as Array<{ webContents: { isDestroyed: () => boolean; send: ReturnType<typeof vi.fn> } }>,
+  writeText: vi.fn()
 }))
 
 vi.mock('electron', () => ({
@@ -14,6 +15,7 @@ vi.mock('electron', () => ({
     getAllWindows: () => electronMocks.windows
   },
   dialog: { showOpenDialog: vi.fn() },
+  clipboard: { writeText: electronMocks.writeText },
   ipcMain: {
     handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
       electronMocks.handlers.set(channel, handler)
@@ -54,6 +56,19 @@ describe('account IPC lifecycle', () => {
   beforeEach(() => {
     electronMocks.handlers.clear()
     electronMocks.windows.length = 0
+    electronMocks.writeText.mockClear()
+  })
+
+  it('copies only Google authorization URLs through the privileged process', () => {
+    registerAccountIpc({
+      accountService: { getState: vi.fn(() => signedOutState) }
+    } as unknown as IpcContext)
+
+    const copyAuthorizationUrl = electronMocks.handlers.get('account:copy-google-authorization-url')
+    const authorizationUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test'
+    expect(copyAuthorizationUrl?.({}, { url: authorizationUrl })).toBeUndefined()
+    expect(electronMocks.writeText).toHaveBeenCalledWith(authorizationUrl)
+    expect(() => copyAuthorizationUrl?.({}, { url: 'https://example.com/oauth' })).toThrow()
   })
 
   it('stops and forgets Companion when account validation reports explicit authorization loss', async () => {

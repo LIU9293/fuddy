@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain, shell, type OpenDialogOptions } from 'electron'
+import { BrowserWindow, clipboard, dialog, ipcMain, shell, type OpenDialogOptions } from 'electron'
 import { z } from 'zod'
 import { createProjectSchema } from '../../shared/project-validation'
 import { getCapabilities } from '../services/capabilities'
@@ -76,14 +76,30 @@ export function registerAccountIpc(context: IpcContext): void {
     return state
   })
 
-  ipcMain.handle('account:sign-in-google', async () => {
-    const state = await accountService.signInWithGoogle((url) => shell.openExternal(url))
+  ipcMain.handle('account:sign-in-google', async (event) => {
+    const state = await accountService.signInWithGoogle(
+      (url) => shell.openExternal(url, { activate: true }),
+      (url) => {
+        if (!event.sender.isDestroyed()) event.sender.send('account:google-authorization-url', url)
+      }
+    )
     if (state.user) await companionSync.activateAccountRelay(
       state.user.id,
       state.device?.syncSpaceId ?? undefined
     )
     accountEnrollmentCoordinator.start()
     return state
+  })
+
+  ipcMain.handle('account:copy-google-authorization-url', (_event, rawInput: unknown) => {
+    const input = z.object({
+      url: z.url().max(4_096).refine((value) => {
+        const parsed = new URL(value)
+        return parsed.origin === 'https://accounts.google.com'
+          && parsed.pathname === '/o/oauth2/v2/auth'
+      }, 'Google 登录链接无效。')
+    }).parse(rawInput)
+    clipboard.writeText(input.url)
   })
 
   ipcMain.handle('account:list-identities', () => (
@@ -162,7 +178,7 @@ export function registerAccountIpc(context: IpcContext): void {
     return {
       capabilities,
       readyAgentIds: capabilities
-        .filter((capability) => ['pi', 'codex', 'claude', 'opencode'].includes(capability.id) && capability.status === 'ready')
+        .filter((capability) => ['codex', 'claude', 'opencode'].includes(capability.id) && capability.status === 'ready')
         .map((capability) => capability.id)
     }
   })

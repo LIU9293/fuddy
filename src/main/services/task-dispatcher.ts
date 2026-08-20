@@ -84,6 +84,7 @@ export class TaskDispatcher {
     abortController: AbortController
     settled: Promise<void>
   }>()
+  private stopping = false
   private readonly pendingApprovals = new Map<string, {
     runId: string
     auditId: string
@@ -95,7 +96,7 @@ export class TaskDispatcher {
     private readonly database: AppDatabase,
     piHarness: PiTaskHarness,
     private readonly workspaceFiles: WorkspaceFilesService,
-    cliRuntime: CliAgentRuntime,
+    private readonly cliRuntime: CliAgentRuntime,
     private readonly inactivityTimeoutMs = AGENT_RUN_INACTIVITY_TIMEOUT_MS,
     private readonly onRunSettled?: (run: AgentRun, turn: AgentTurnSettledPayload) => void | Promise<void>,
     providerRegistry?: AgentProviderRegistry
@@ -260,6 +261,7 @@ export class TaskDispatcher {
       onUpdate(queuedUpdate)
     }
     const execute = (): Promise<AgentRunDetail> => {
+      if (this.stopping) return Promise.reject(new AgentRunStoppedError())
       if (cancellationSignal?.aborted) {
         return Promise.reject(cancellationSignal.reason instanceof Error
           ? cancellationSignal.reason
@@ -286,6 +288,20 @@ export class TaskDispatcher {
     this.rejectPendingApprovals(runId)
     await active.settled
     return this.database.getAgentRunDetail(runId)
+  }
+
+  async stopAndDrain(): Promise<void> {
+    this.stopping = true
+    const activeTurns = [...this.activeTurns.values()]
+    for (const active of activeTurns) active.abortController.abort(new AgentRunStoppedError())
+    for (const runId of new Set([...this.pendingApprovals.values()].map((approval) => approval.runId))) {
+      this.rejectPendingApprovals(runId)
+    }
+    await Promise.allSettled([
+      ...activeTurns.map((active) => active.settled),
+      ...this.turnQueueTails.values()
+    ])
+    await this.cliRuntime.stopAndDrain?.()
   }
 
   private rejectPendingApprovals(runId: string): void {

@@ -11,7 +11,7 @@
     "GOOGLE_CLIENT_IDS": ""
   },
   "secrets": {
-    "required": ["OTP_PEPPER", "SESSION_TOKEN_PEPPER", "RESEND_API_KEY", "RESEND_WEBHOOK_SECRET"]
+    "required": ["OTP_PEPPER", "SESSION_TOKEN_PEPPER", "RESEND_API_KEY", "RESEND_WEBHOOK_SECRET", "GOOGLE_CLIENT_SECRET"]
   },
   "d1_databases": [
     {
@@ -33,7 +33,7 @@
         "GOOGLE_CLIENT_IDS": "877382581311-dt2ln9r81lqe8i0d6svknfs1dfi1s889.apps.googleusercontent.com,877382581311-i6dn0r7k47ij545p7cddpa33t01oe1jd.apps.googleusercontent.com"
       },
       "secrets": {
-        "required": ["OTP_PEPPER", "SESSION_TOKEN_PEPPER", "RESEND_API_KEY", "RESEND_WEBHOOK_SECRET"]
+        "required": ["OTP_PEPPER", "SESSION_TOKEN_PEPPER", "RESEND_API_KEY", "RESEND_WEBHOOK_SECRET", "GOOGLE_CLIENT_SECRET"]
       },
       "d1_databases": [
         {

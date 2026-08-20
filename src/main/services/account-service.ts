@@ -15,7 +15,7 @@ import { companionProtocol } from '../../shared/companion-protocol'
 import type { FuddyRuntimeChannel } from '../runtime-profile'
 import type { CredentialVault } from './credential-vault'
 import type { AppDatabase } from './database'
-import { getGoogleIdToken } from './google-desktop-oauth'
+import { getGoogleAuthorizationCode } from './google-desktop-oauth'
 import {
   wrapDeviceGrant,
   type AccountRelayCredentials
@@ -209,11 +209,24 @@ export class AccountService {
     return this.getState()
   }
 
-  async signInWithGoogle(openExternal: (url: string) => Promise<unknown>): Promise<AccountState> {
+  async signInWithGoogle(
+    openExternal: (url: string) => Promise<unknown>,
+    onAuthorizationUrl?: (url: string) => void
+  ): Promise<AccountState> {
     const clientId = this.options.googleClientId?.trim()
     if (!clientId) throw new Error('Google 登录暂时不可用，请使用邮箱继续。')
-    const idToken = await getGoogleIdToken({ clientId, openExternal, fetch: this.fetchImpl })
-    return this.acceptGoogleIdToken(idToken)
+    const authorization = await getGoogleAuthorizationCode({
+      clientId,
+      openExternal,
+      onAuthorizationUrl
+    })
+    const response = await this.request('/v1/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ ...authorization, device: this.getDeviceInput() })
+    })
+    const payload = await response.json() as AuthPayload
+    this.persistAuth(payload)
+    return this.getState()
   }
 
   async listIdentities(): Promise<AccountIdentity[]> {
@@ -224,10 +237,10 @@ export class AccountService {
   async linkGoogle(openExternal: (url: string) => Promise<unknown>): Promise<AccountIdentity[]> {
     const clientId = this.options.googleClientId?.trim()
     if (!clientId) throw new Error('Google 登录暂时不可用，请使用邮箱继续。')
-    const idToken = await getGoogleIdToken({ clientId, openExternal, fetch: this.fetchImpl })
+    const authorization = await getGoogleAuthorizationCode({ clientId, openExternal })
     const response = await this.requestAuthorized('/v1/identities/google', {
       method: 'POST',
-      body: JSON.stringify({ idToken })
+      body: JSON.stringify(authorization)
     })
     return (await response.json() as { identities: AccountIdentity[] }).identities
   }

@@ -165,4 +165,29 @@ describe('TaskDispatcher Agent Run turn queue', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it('stops and drains an active reply during application shutdown', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'project-agent-turn-shutdown-'))
+    let receivedSignal: AbortSignal | null = null
+    const { database, dispatcher, runId } = createDispatcher(root, async (input) => {
+      receivedSignal = input.abortController.signal
+      await new Promise<void>((_resolve, reject) => {
+        input.abortController.signal.addEventListener('abort', () => reject(input.abortController.signal.reason), { once: true })
+      })
+      return { text: 'unreachable', sessionId: null }
+    })
+    try {
+      const sending = dispatcher.sendMessage(runId, '退出前仍在执行的任务')
+      await vi.waitFor(() => expect(receivedSignal).not.toBeNull())
+
+      await dispatcher.stopAndDrain()
+      const result = await sending
+
+      expect((receivedSignal as AbortSignal | null)?.aborted).toBe(true)
+      expect(result.run.status).toBe('idle')
+    } finally {
+      database.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

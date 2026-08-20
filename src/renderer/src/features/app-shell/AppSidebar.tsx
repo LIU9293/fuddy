@@ -146,20 +146,13 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
             </NavigationButton>
           </nav>
 
-          <section className="sidebar-runs-section" aria-label="Agent Runs">
-            <div className="sidebar-runs-heading">
-              <span>Agent Runs</span>
-              <small>{props.runs.length}</small>
-              <button type="button" onClick={() => props.onCreateRun()} aria-label="新建 Agent Run">
-                <Plus size={14} />
-              </button>
-            </div>
+          <section className="sidebar-runs-section" aria-label="项目 Agent Runs">
+            <div className="sidebar-projects-heading">项目</div>
             <nav className="sidebar-run-list" aria-label="Agent Run 列表">
               {runGroups.map((group) => (
                 <section className="sidebar-run-group" key={group.id} aria-labelledby={`sidebar-run-group-${group.id}`}>
                   <div className="sidebar-run-group-heading">
                     <span id={`sidebar-run-group-${group.id}`}>{group.title}</span>
-                    <small>{group.runs.length}</small>
                     <button
                       type="button"
                       onClick={() => props.onCreateRun(group.projectId)}

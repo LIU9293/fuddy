@@ -432,41 +432,15 @@
   border-top: 1px solid rgba(40, 40, 35, 0.08);
 }
 
-.sidebar-runs-heading {
+.sidebar-projects-heading {
   display: flex;
   min-height: 28px;
   align-items: center;
-  gap: 6px;
   padding: 0 7px;
   color: #7f7f78;
   font-size: 11px;
   font-weight: 650;
   letter-spacing: .02em;
-}
-
-.sidebar-runs-heading small {
-  color: #a0a099;
-  font-size: 11px;
-  font-weight: 550;
-}
-
-.sidebar-runs-heading button {
-  display: grid;
-  width: 24px;
-  height: 24px;
-  margin-left: auto;
-  padding: 0;
-  place-items: center;
-  border: 0;
-  border-radius: 7px;
-  color: #777771;
-  background: transparent;
-  cursor: pointer;
-}
-
-.sidebar-runs-heading button:hover {
-  color: #292925;
-  background: rgba(53, 53, 48, 0.075);
 }
 
 .sidebar-run-list {
@@ -506,11 +480,6 @@
   letter-spacing: .02em;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.sidebar-run-group-heading > small {
-  color: #aaa9a3;
-  font-size: 10px;
 }
 
 .sidebar-run-group-heading > button {

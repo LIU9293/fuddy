@@ -5,6 +5,7 @@ import type { RelayAdministrationBinding } from '../../relay/src/administration-
 import {
   activatePendingEnrollment,
   bindRelay,
+  exchangeGoogleAuthorizationCode,
   linkVerifiedGoogleIdentity,
   maximumActiveMacHostsPerUser,
   maximumActiveSessionsPerDevice,
@@ -45,6 +46,46 @@ async function signIn(email = 'kai@example.com', inputDevice = device) {
 }
 
 describe('email authentication', () => {
+  it('exchanges Mac authorization codes on the server with PKCE and the OAuth client secret', async () => {
+    let requestedUrl = ''
+    let tokenBody = new URLSearchParams()
+    const idToken = await exchangeGoogleAuthorizationCode({
+      authorizationCode: 'test-authorization-code',
+      clientId: '123456789-test.apps.googleusercontent.com',
+      codeVerifier: 'a'.repeat(64),
+      redirectUri: 'http://127.0.0.1:54321'
+    }, 'test-client-secret', (async (url, init) => {
+      requestedUrl = String(url)
+      tokenBody = new URLSearchParams(String(init?.body))
+      return new Response(JSON.stringify({ id_token: 'verified-google-id-token' }), {
+        headers: { 'content-type': 'application/json' }
+      })
+    }) as typeof fetch)
+
+    expect(idToken).toBe('verified-google-id-token')
+    expect(requestedUrl).toBe('https://oauth2.googleapis.com/token')
+    expect(tokenBody.get('client_id')).toBe('123456789-test.apps.googleusercontent.com')
+    expect(tokenBody.get('client_secret')).toBe('test-client-secret')
+    expect(tokenBody.get('code')).toBe('test-authorization-code')
+    expect(tokenBody.get('code_verifier')).toBe('a'.repeat(64))
+    expect(tokenBody.get('redirect_uri')).toBe('http://127.0.0.1:54321')
+  })
+
+  it('does not expose Google token endpoint response details', async () => {
+    await expect(exchangeGoogleAuthorizationCode({
+      authorizationCode: 'test-authorization-code',
+      clientId: '123456789-test.apps.googleusercontent.com',
+      codeVerifier: 'a'.repeat(64),
+      redirectUri: 'http://127.0.0.1:54321'
+    }, 'test-client-secret', (async () => new Response(JSON.stringify({
+      error: 'invalid_client',
+      error_description: 'private upstream details'
+    }), { status: 401 })) as typeof fetch)).rejects.toMatchObject({
+      code: 'google_client_invalid',
+      message: 'Google 登录服务配置无效，请稍后重试。'
+    })
+  })
+
   it('extracts bounded Resend errors without accepting unrelated response bodies', () => {
     expect(parseResendErrorDetails(JSON.stringify({ name: 'validation_error', message: 'Domain is not verified.' })))
       .toEqual({ name: 'validation_error', message: 'Domain is not verified.' })

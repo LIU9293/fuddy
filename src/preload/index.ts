@@ -51,7 +51,18 @@ const api: DesktopApi = {
   getAccountState: () => ipcRenderer.invoke('account:get-state'),
   startEmailSignIn: (email: string) => ipcRenderer.invoke('account:start-email-sign-in', { email }),
   verifyEmailSignIn: (input) => ipcRenderer.invoke('account:verify-email-sign-in', input),
-  signInWithGoogle: () => ipcRenderer.invoke('account:sign-in-google'),
+  signInWithGoogle: (onAuthorizationUrl) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+      if (typeof value === 'string') onAuthorizationUrl(value)
+    }
+    ipcRenderer.on('account:google-authorization-url', listener)
+    return ipcRenderer.invoke('account:sign-in-google').finally(() => {
+      ipcRenderer.removeListener('account:google-authorization-url', listener)
+    })
+  },
+  copyGoogleAuthorizationUrl: (url: string) => (
+    ipcRenderer.invoke('account:copy-google-authorization-url', { url })
+  ),
   listAccountIdentities: () => ipcRenderer.invoke('account:list-identities'),
   linkGoogleAccount: () => ipcRenderer.invoke('account:link-google'),
   unlinkGoogleAccount: () => ipcRenderer.invoke('account:unlink-google'),

@@ -1053,7 +1053,8 @@ export interface DesktopApi {
   getAccountState(): Promise<import('./account').AccountState>
   startEmailSignIn(email: string): Promise<import('./account').StartEmailSignInResult>
   verifyEmailSignIn(input: import('./account').VerifyEmailSignInInput): Promise<import('./account').AccountState>
-  signInWithGoogle(): Promise<import('./account').AccountState>
+  signInWithGoogle(onAuthorizationUrl: (url: string) => void): Promise<import('./account').AccountState>
+  copyGoogleAuthorizationUrl(url: string): Promise<void>
   listAccountIdentities(): Promise<import('./account').AccountIdentity[]>
   linkGoogleAccount(): Promise<import('./account').AccountIdentity[]>
   unlinkGoogleAccount(): Promise<import('./account').AccountIdentity[]>
