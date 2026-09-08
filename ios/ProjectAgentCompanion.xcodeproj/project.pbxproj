@@ -356,7 +356,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ProjectAgentCompanion-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Fuddy;
-				INFOPLIST_KEY_FuddyAccountAPIURL = "$(FUDDY_ACCOUNT_API_URL)";
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "将语音在 iPhone 本机转写为项目消息。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -532,7 +531,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ProjectAgentCompanion-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Fuddy;
-				INFOPLIST_KEY_FuddyAccountAPIURL = "$(FUDDY_ACCOUNT_API_URL)";
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "将语音在 iPhone 本机转写为项目消息。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

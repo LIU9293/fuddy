@@ -34,7 +34,6 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Fuddy
         INFOPLIST_KEY_NSMicrophoneUsageDescription: 将语音在 iPhone 本机转写为项目消息。
         INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking: YES
-        INFOPLIST_KEY_FuddyAccountAPIURL: $(FUDDY_ACCOUNT_API_URL)
         FUDDY_GOOGLE_IOS_CLIENT_ID: 877382581311-vs5rfv70vbvsjhim8ubgkcq0vo3iarqj.apps.googleusercontent.com
         FUDDY_GOOGLE_IOS_REVERSED_CLIENT_ID: com.googleusercontent.apps.877382581311-vs5rfv70vbvsjhim8ubgkcq0vo3iarqj
         FUDDY_GOOGLE_SERVER_CLIENT_ID: 877382581311-i6dn0r7k47ij545p7cddpa33t01oe1jd.apps.googleusercontent.com

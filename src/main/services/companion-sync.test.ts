@@ -88,6 +88,74 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 describe('Companion sync transport policy', () => {
+  it.each([200, 401, 503])('migrates the managed Relay alias before validating its identity (%s)', async (status) => {
+    const directory = mkdtempSync(join(tmpdir(), 'companion-managed-relay-migration-'))
+    directories.push(directory)
+    const database = createTestDatabase(join(directory, 'app.sqlite'))
+    database.setSetting('companion.mac-configuration', {
+      relayUrl: 'https://project-agent-companion-relay.moghub.workers.dev',
+      accountId: 'existing-account',
+      macDeviceId: 'existing-mac',
+      pairedAt: new Date().toISOString(),
+      ownerUserId: 'user-a',
+      syncSpaceId: 'space-a',
+      encryptionKeyId: await companionAccountKeyId(testEncryptionKey),
+      accountBindingConfirmedAt: new Date().toISOString()
+    } satisfies CompanionMacConfiguration)
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input))
+      expect(url.origin).toBe('https://fuddy.ai')
+      requests.push(`${init.method ?? 'GET'} ${url.pathname}`)
+      if (url.pathname === '/api/relay/v1/device') {
+        return jsonResponse({ device: { id: 'existing-mac', role: 'mac' } }, status)
+      }
+      if (url.pathname === '/api/relay/v1/pairings') {
+        return jsonResponse({
+          protocolVersion: companionProtocolVersion,
+          accountId: 'replacement-account', macDeviceId: 'replacement-mac', macToken: 'replacement-token',
+          pairingPayload: '{}', expiresAt: new Date(Date.now() + 60_000).toISOString()
+        }, 201)
+      }
+      throw new Error(`Unexpected request: ${init.method} ${url.pathname}`)
+    }))
+    const secrets = new Map([
+      ['companion.mac-token:existing-account', 'existing-token'],
+      ['companion.account-key:existing-account', testEncryptionKey]
+    ])
+    const credentials = {
+      get: (key: string) => secrets.get(key) ?? null,
+      set: (key: string, value: string) => { secrets.set(key, value) },
+      delete: (key: string) => { secrets.delete(key) }
+    } as unknown as CredentialVault
+    const service = new CompanionSyncService(database, credentials, {} as TaskDispatcher, async () => ({ accepted: true }))
+    try {
+      if (status === 503) {
+        await expect(service.ensureAccountRelay('https://fuddy.ai/api/relay', undefined, 'space-a', 'user-a'))
+          .rejects.toThrow('503')
+        expect(requests).toEqual(['GET /api/relay/v1/device'])
+        expect(secrets.get('companion.mac-token:existing-account')).toBe('existing-token')
+        expect(secrets.get('companion.account-key:existing-account')).toBe(testEncryptionKey)
+        expect(service.getStatus().configuration?.accountId).toBe('existing-account')
+        return
+      }
+      const binding = await service.ensureAccountRelay('https://fuddy.ai/api/relay', undefined, 'space-a', 'user-a')
+      expect(binding).toEqual({
+        relayUrl: 'https://fuddy.ai/api/relay',
+        relayAccountId: status === 200 ? 'existing-account' : 'replacement-account'
+      })
+      expect(requests).toEqual(status === 200
+        ? ['GET /api/relay/v1/device']
+        : ['GET /api/relay/v1/device', 'POST /api/relay/v1/pairings'])
+      expect(service.isAccountRelayBindingConfirmed({ ...binding, ownerUserId: 'user-a', syncSpaceId: 'space-a' })).toBe(false)
+      expect(database.getSetting<CompanionMacConfiguration>('companion.mac-configuration', {} as CompanionMacConfiguration).relayUrl)
+        .toBe('https://fuddy.ai/api/relay')
+    } finally {
+      service.stop()
+      database.close()
+    }
+  })
+
   it('enqueues at most one retention snapshot per Relay account every 24 hours', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-retention-snapshot-'))
     directories.push(directory)

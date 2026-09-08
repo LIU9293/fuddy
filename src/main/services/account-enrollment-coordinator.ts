@@ -43,7 +43,8 @@ export class AccountEnrollmentCoordinator {
   constructor(
     private readonly accountService: AccountService,
     private readonly companionSync: CompanionSyncService,
-    private readonly relayUrl: string | null
+    private readonly relayUrl: string | null,
+    private readonly onConnectionError: () => void = () => undefined
   ) {}
 
   getRelayUrl(): string | null {
@@ -176,6 +177,7 @@ export class AccountEnrollmentCoordinator {
 
   private async tick(): Promise<void> {
     await this.processOnce().catch(() => {
+      if (!this.paused) this.onConnectionError()
       // Account/Relay connectivity is opportunistic. The next poll retries without
       // interrupting local Fuddy work or turning an offline Mac into a sign-out.
     })

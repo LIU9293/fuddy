@@ -270,6 +270,7 @@ Mac 主侧边栏保留工作助理、决策收件箱、文件、项目和自动�
 
 ### Agent Runs
 
+- iPhone Runs 列表左滑显示“归档 / 重命名”，不再显示三个点按钮；运行中或排队中的 Run 保留重命名，但不能归档。详情页的操作菜单保持不变。
 - 每个 Run 都是一个可恢复、可继续对话的持久 Session；Mac 主侧边栏与 iPhone Runs 页面都按项目分组，只展示标题、Agent 和运行状态，不展示消息摘要，并可从列表或分组标题的“+”直接创建项目预选的 Draft Run；
 - 点击 Run 后在右侧打开 Session 对话，展示完整消息、工具活动和错误；默认收起、可拖拽调宽的右侧信息栏分为“基本信息 / 文件”，集中展示 Git 增删行、项目与 Workspace 摘要，并在栏内预览 Run 产出的 Markdown、文本和图片；
 - Session 可以选择关联一个 Goal / Milestone，也可以作为独立任务运行；
@@ -555,6 +556,19 @@ npm run prepare:whisper
 npm run dev
 ```
 
+只开发桌面前端 UI 时，可以不启动或打包 Electron，也不需要 Account API 或 Agent 工具：
+
+```bash
+npm run dev:web
+# 浏览器打开 http://127.0.0.1:5174/
+```
+
+Web Mode 使用独立的 Vite 入口，复用 `src/renderer/src/App.tsx`、全部页面和共享样式，支持 React / CSS 热更新。可以让 Codex 在内置浏览器打开上述地址，再使用浏览器的标注功能反馈 UI 修改。Light / Dark 跟随浏览器的 `prefers-color-scheme`，可在浏览器开发工具中模拟两种主题；调整浏览器宽度和应用侧栏可检查布局。`npm run dev` 的 Electron Renderer 也支持热更新，只有原生能力联调才需要启动 Fuddy Dev。
+
+顶部「Web 预览」工具栏明确区分开发数据，支持示例 / 空状态切换和重置；也可以用 `?fixture=empty` 直接进入空状态。`src/renderer/web/fixtures.ts` 提供虚构项目、目标、收件箱、聊天、文件与自动化，`preview-api.ts` 使用完整的 `DesktopApi` 类型约束提供内存实现。项目编辑、事项状态、Run 草稿 / 重命名 / 归档、已有示例文件编辑与自动化表单修改只影响当前页面，刷新即还原。新增 Run 不发送消息，开启示例自动化不会启动调度器。
+
+Web Mode 不连接 Electron IPC、SQLite、Keychain、真实账户、Agent、Companion 或 Sentry，不读取 production / Fuddy Dev 的数据，也不加载项目 `.env` 文件。依赖原生服务的发送消息、生成目标、连接器运行、语音、文件导入等操作明确提示需要 Fuddy Dev，不伪造执行成功。开发服务器默认只监听 `127.0.0.1:5174`，端口占用时退出；可显式使用 `npm run dev:web -- --port 5175`。预览入口不参与 Electron 打包，也不提供独立 Web 发布构建；IPC、原生权限和真实任务执行仍使用隔离的 Fuddy Dev 验证。
+
 首次开发账户流程时，在另一个终端准备本地 Account API。复制 `cloud/account-api/.dev.vars.example` 为不受版本控制的 `.dev.vars`，填入仅供开发的值，然后执行：
 
 ```bash
@@ -567,6 +581,10 @@ npm run dev
 Fuddy Dev 默认连接 `http://127.0.0.1:8788`。Production 默认连接 `https://fuddy.ai/api/account`，可通过 `FUDDY_ACCOUNT_API_URL` 显式覆盖；Mac 与 iOS Release 已内置公开的 Google OAuth Client ID，开发构建仍保持本地 Account API 隔离。Mac 只负责 loopback 回调与 PKCE，授权码统一由 Account API 交换，Google Client Secret 不进入 Electron 包。Account API 的 `GOOGLE_CLIENT_IDS` 必须包含 Mac Client ID 与 iOS 使用的 Server Client ID，并通过本地 `.dev.vars` 或生产 Cloudflare Secret 提供 `GOOGLE_CLIENT_SECRET`。生产 Resend Key、OAuth Secret、OTP pepper 与 session pepper 只能放部署环境或 Cloudflare Secrets，不能提交到仓库。
 
 `npm run dev` 始终启动隔离的 **Fuddy Dev**，使用 `~/Library/Application Support/ai-native-project-agent-dev`。它与 `/Applications/Fuddy.app` 的 production 数据库、凭证、Companion 配对、Agent Session、自动化调度和单实例锁完全分离，因此两者可以同时运行。开发与 QA 不得把 production Fuddy 当作测试目标；需要测试打包形态时使用 `npm run package:smoke` 或 `npm run dist:mac:dev`，产物拥有独立的 `dev.ainative.projectagent.dev` Bundle ID 且禁用自动更新。production Fuddy 继续使用 `~/Library/Application Support/ai-native-project-agent`，保证现有安装升级后仍能读取原数据。
+
+iPhone 真机连接线上账户服务时，Debug 构建必须显式传入 `FUDDY_ACCOUNT_API_URL=https://fuddy.ai/api/account`；默认 Debug 的 `127.0.0.1:8788` 仅适合本地服务联调，在真机上指向手机自身。账户地址通过 `ios/ProjectAgentCompanion-Info.plist` 写入安装包，安装前应检查产物 `Info.plist` 的 `FuddyAccountAPIURL`。Release 默认使用线上地址。
+
+同账户自动连接不需要用户二次批准或扫码。Mac 会将历史托管 Relay 地址迁移到 `https://fuddy.ai/api/relay`，先验证原连接，再按既有流程自动恢复失效连接并向账户服务确认绑定。自动连接失败会在设置中显示重试提示；启动时的暂时失败不会关闭后续重试。
 
 验证：
 

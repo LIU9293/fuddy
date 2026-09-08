@@ -4,6 +4,44 @@ import { AccountAuthorizationLostError, AccountRequestError, type AccountService
 import type { CompanionSyncService } from './companion-sync'
 
 describe('AccountEnrollmentCoordinator', () => {
+  it('does not report a retry after an in-flight connection fails during sign-out', async () => {
+    const onError = vi.fn()
+    const coordinator = new AccountEnrollmentCoordinator({} as AccountService, {} as CompanionSyncService, null, onError)
+    let rejectAttempt!: (reason: Error) => void
+    vi.spyOn(coordinator, 'processOnce').mockImplementation(() => new Promise<void>((_resolve, reject) => {
+      rejectAttempt = reject
+    }))
+    try {
+      coordinator.start()
+      coordinator.stop()
+      rejectAttempt(new Error('connection closed'))
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(onError).not.toHaveBeenCalled()
+    } finally {
+      coordinator.stop()
+    }
+  })
+
+  it('reports a connection failure and retries automatically without a new sign-in', async () => {
+    vi.useFakeTimers()
+    const onError = vi.fn()
+    const coordinator = new AccountEnrollmentCoordinator({} as AccountService, {} as CompanionSyncService, null, onError)
+    const attempt = vi.spyOn(coordinator, 'processOnce')
+      .mockRejectedValueOnce(new Error('temporary connection failure'))
+      .mockResolvedValue(undefined)
+    try {
+      coordinator.start()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onError).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(attempt).toHaveBeenCalledTimes(2)
+      expect(onError).toHaveBeenCalledOnce()
+    } finally {
+      coordinator.stop()
+      vi.useRealTimers()
+    }
+  })
+
   it('binds the host Relay and completes every pending iPhone grant', async () => {
     const account = {
       getState: vi.fn(() => ({

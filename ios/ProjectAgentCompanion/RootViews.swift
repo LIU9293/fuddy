@@ -1045,35 +1045,16 @@ struct RunsListView: View {
                 Section {
                     ForEach(group.runs) { detail in
                         let active = detail.run.status == "running" || detail.run.status == "queued"
-                        HStack(spacing: 4) {
-                            NavigationLink(value: CompanionRoute.run(id: detail.run.id, prefill: "")) {
-                                HStack(alignment: .center, spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(detail.run.title).font(.headline).lineLimit(2)
-                                        Text(runMetadata(detail.run)).font(.caption).foregroundStyle(.secondary)
-                                        if !detail.run.summary.isEmpty { Text(detail.run.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
-                                    }
-                                    Spacer(minLength: 8)
-                                    if active { ProgressView().controlSize(.small) }
+                        NavigationLink(value: CompanionRoute.run(id: detail.run.id, prefill: "")) {
+                            HStack(alignment: .center, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(detail.run.title).font(.headline).lineLimit(2)
+                                    Text(runMetadata(detail.run)).font(.caption).foregroundStyle(.secondary)
                                 }
-                                .padding(.vertical, 3)
+                                Spacer(minLength: 8)
+                                if active { ProgressView().controlSize(.small) }
                             }
-                            Menu {
-                                Button("重命名", systemImage: "pencil") {
-                                    renamedTitle = detail.run.title
-                                    renamingRun = detail.run
-                                }
-                                Button("归档", systemImage: "archivebox", role: .destructive) {
-                                    Task { await archive(detail.run) }
-                                }
-                                .disabled(active || archivingRunIDs.contains(detail.run.id))
-                            } label: {
-                                Image(systemName: "ellipsis")
-                                    .frame(width: 36, height: 36)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("\(detail.run.title)更多操作")
+                            .padding(.vertical, 3)
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if !active {
@@ -1084,6 +1065,13 @@ struct RunsListView: View {
                                 }
                                 .disabled(archivingRunIDs.contains(detail.run.id))
                             }
+                            Button {
+                                renamedTitle = detail.run.title
+                                renamingRun = detail.run
+                            } label: {
+                                Label("重命名", systemImage: "pencil")
+                            }
+                            .tint(.blue)
                         }
                     }
                 } header: {

@@ -32,6 +32,7 @@ import type {
 import {
   companionAttachmentPlaintextMaximumBytes,
   companionProtocolVersion,
+  defaultCompanionRelayUrl,
   companionRelayMaximumRetainedEvents
 } from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
@@ -383,6 +384,11 @@ export class CompanionSyncService {
     return this.accountRelayConfigurations().length > 0
   }
 
+  reportAccountConnectionError(): void {
+    this.lastError = '同账户自动连接暂时失败，Mac 正在重试，无需重新配对。'
+    this.emitStatus()
+  }
+
   onStatusChanged(listener: (status: CompanionMacStatus) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
@@ -472,6 +478,15 @@ export class CompanionSyncService {
   ): Promise<AccountRelayBinding> {
     if (ownerUserId) await this.activateAccountRelay(ownerUserId, syncSpaceId)
     const normalizedRelay = normalizedRelayUrl(relayUrl)
+    // These are two routes to the same managed Worker, not different Relay
+    // accounts. Keep the identity and let normal validation/recovery run before
+    // attempting replacement; deleting through the retired route can return 401.
+    if (this.configuration?.relayUrl === 'https://project-agent-companion-relay.moghub.workers.dev'
+      && normalizedRelay === defaultCompanionRelayUrl) {
+      this.configuration = { ...this.configuration, relayUrl: normalizedRelay, accountBindingConfirmedAt: undefined }
+      this.validatedAccountRelaySignature = null
+      this.persistActiveConfiguration()
+    }
     const configurationHasKey = this.configuration?.encryptionKeyId
       && this.credentials.get(this.encryptionKeyReference(this.configuration.accountId))
     const belongsToAnotherSpace = Boolean(

@@ -435,7 +435,8 @@ if (!hasLock) {
       accountEnrollmentCoordinator = new AccountEnrollmentCoordinator(
         accountService,
         companionSync,
-        companionRelayUrl
+        companionRelayUrl,
+        () => companionSync?.reportAccountConnectionError()
       )
       companionSync.setWorkAssistantActionExecutor((input, cancellationSignal) => (
         morningBriefingService.executeAction(input, cancellationSignal)
@@ -542,16 +543,9 @@ if (!hasLock) {
         })
       const accountState = accountService.getState()
       if (accountState.status === 'signed-in' && accountState.user) {
-        const activeCompanionSync = companionSync
-        const activeEnrollmentCoordinator = accountEnrollmentCoordinator
-        void activeCompanionSync.activateAccountRelay(
-          accountState.user.id,
-          accountState.device?.syncSpaceId ?? undefined
-        ).then(() => {
-          activeEnrollmentCoordinator.start()
-        }).catch((error: unknown) => {
-          Sentry.captureException(error, { tags: { boundary: 'account-relay-startup' } })
-        })
+        // The coordinator activates the account inside its retry loop. A
+        // transient activation failure must not disable enrollment until restart.
+        accountEnrollmentCoordinator.start()
       } else if (companionSync.hasAccountRelayIdentity()) {
         // A cached Account session may expire while Fuddy is closed. Account-owned
         // Relay state must not survive that signed-out bootstrap path.

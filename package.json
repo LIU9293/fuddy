@@ -8,6 +8,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev --watch",
+    "dev:web": "vite --config vite.web.config.ts",
     "build": "npm run typecheck && electron-vite build",
     "postinstall": "install-electron && patch-package",
     "preview": "electron-vite preview",
