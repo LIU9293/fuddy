@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -7,6 +7,19 @@ const stylesDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = dirname(stylesDirectory)
 
 describe('renderer CSS architecture', () => {
+  it('keeps absolute text sizes at least 12px and bounds relative reductions', () => {
+    for (const file of readdirSync(stylesDirectory).filter((name) => name.endsWith('.css'))) {
+      const css = readFileSync(join(stylesDirectory, file), 'utf8')
+      for (const match of css.matchAll(/(?:font-size|font|--font-size-[\w-]+)\s*:\s*([\d.]+)px/g)) {
+        expect(Number(match[1]), `${file}: ${match[0]}`).toBeGreaterThanOrEqual(12)
+      }
+      // A bare em reduction can shrink nested code or native small text below the floor.
+      for (const match of css.matchAll(/font-size\s*:\s*([\d.]+)em/g)) {
+        expect(Number(match[1]), `${file}: ${match[0]}`).toBeGreaterThanOrEqual(1)
+      }
+    }
+  })
+
   it('keeps the cascade entrypoint explicit and ordered', () => {
     const entrypoint = readFileSync(join(rendererDirectory, 'styles.css'), 'utf8')
     const imports = [...entrypoint.matchAll(/@import '([^']+)'/g)].map((match) => match[1])

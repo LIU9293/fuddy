@@ -1608,7 +1608,10 @@ describe('Companion sync transport policy', () => {
     const credentials = testCredentials()
     let finishTurn: (() => void) | undefined
     const turn = new Promise<void>((resolve) => { finishTurn = resolve })
-    const sendMessage = vi.fn(() => turn)
+    const sendMessage = vi.fn(async () => {
+      await turn
+      return { run: { id: 'run-from-phone', status: 'idle' }, messages: [], artifacts: [] }
+    })
     const dispatcher = { sendMessage } as unknown as TaskDispatcher
     const now = new Date().toISOString()
     const command: CompanionCommand = {
@@ -1710,7 +1713,7 @@ describe('Companion sync transport policy', () => {
       updatedAt: now
     }
     const wireCommand = await encryptedCommand(legacyCommand)
-    const sendMessage = vi.fn(async () => ({ accepted: true }))
+    const sendMessage = vi.fn(async () => ({ run: { id: 'legacy-run', status: 'idle' }, messages: [], artifacts: [] }))
     let served = false
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
       const url = new URL(String(input))
@@ -1820,7 +1823,7 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
-  it('uses the global default Agent for a shared Run created from iPhone', async () => {
+  it.each([undefined, 'opencode'] as const)('uses the target default unless the client selects an Agent (%s)', async (selectedProvider) => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-create-shared-run-'))
     directories.push(directory)
     const database = createTestDatabase(join(directory, 'app.sqlite'))
@@ -1837,7 +1840,7 @@ describe('Companion sync transport policy', () => {
       commandId: 'create-shared-run-command',
       protocolVersion: companionProtocolVersion,
       type: 'agent.create-session',
-      payload: { runId: 'shared-phone-run', title: 'Shared iPhone Run' },
+      payload: { runId: 'shared-phone-run', title: 'Shared iPhone Run', ...(selectedProvider ? { provider: selectedProvider } : {}) },
       sourceDeviceId: 'test-phone',
       status: 'queued',
       result: null,
@@ -1878,7 +1881,7 @@ describe('Companion sync transport policy', () => {
     await vi.waitFor(() => expect(createDraft).toHaveBeenCalledWith({
       id: 'shared-phone-run',
       projectId: null,
-      provider: 'claude',
+      provider: selectedProvider ?? 'claude',
       title: 'Shared iPhone Run'
     }))
 
@@ -1886,7 +1889,7 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
-  it('finishes a queued Run creation before executing dependent Run commands', async () => {
+  it.each(['idle', 'failed'])('finishes queued creation and reports the dependent Chat outcome (%s)', async status => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-create-order-'))
     directories.push(directory)
     const database = createTestDatabase(join(directory, 'app.sqlite'))
@@ -1906,7 +1909,7 @@ describe('Companion sync transport policy', () => {
     })
     const sendMessage = vi.fn(async () => {
       expect(creationFinished).toBe(true)
-      return { run: { id: 'ordered-run' }, messages: [], artifacts: [] }
+      return { run: { id: 'ordered-run', status, summary: status === 'failed' ? '会话占用，消息尚未执行' : '完成' }, messages: [], artifacts: [] }
     })
     const dispatcher = { createDraft, sendMessage } as unknown as TaskDispatcher
     const createCommand: CompanionCommand = {
@@ -1965,7 +1968,8 @@ describe('Companion sync transport policy', () => {
 
     expect(createDraft).toHaveBeenCalledTimes(1)
     expect(database.getCompanionCommand(createCommand.commandId)?.status).toBe('completed')
-    expect(database.getCompanionCommand(sendCommand.commandId)?.status).toBe('completed')
+    expect(database.getCompanionCommand(sendCommand.commandId)?.status).toBe(status === 'failed' ? 'failed' : 'completed')
+    if (status === 'failed') expect(database.getCompanionCommand(sendCommand.commandId)?.error).toBe('会话占用，消息尚未执行')
     service.stop()
     database.close()
   })

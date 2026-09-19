@@ -164,7 +164,6 @@ export function SettingsView({
   const [requestingComputerPermissions, setRequestingComputerPermissions] = useState(false)
   const [projectAgentBusy, setProjectAgentBusy] = useState<string | null>(null)
   const [companionStatus, setCompanionStatus] = useState<CompanionMacStatus | null>(null)
-  const [companionRelayAvailable, setCompanionRelayAvailable] = useState(false)
   const [companionBusy, setCompanionBusy] = useState<'sync' | null>(null)
   const [companionError, setCompanionError] = useState<string | null>(null)
   const [accountState, setAccountState] = useState<AccountState | null>(null)
@@ -334,14 +333,10 @@ export function SettingsView({
 
   useEffect(() => {
     let active = true
-    void Promise.all([
-      window.projectAgent.getCompanionStatus(),
-      window.projectAgent.getCompanionRelayConfiguration()
-    ])
-      .then(([status, relay]) => {
+    void window.projectAgent.getCompanionStatus()
+      .then((status) => {
         if (!active) return
         setCompanionStatus(status)
-        setCompanionRelayAvailable(relay.available)
       })
       .catch((error: unknown) => {
         if (active) setCompanionError(error instanceof Error ? error.message : '无法读取 iPhone Companion 状态。')
@@ -590,7 +585,7 @@ export function SettingsView({
       )
       onNotice(
         result.mode === 'repo-skill'
-          ? `已创建 ${profile.projectName} Agent Run。`
+          ? `已创建 ${profile.projectName} Chat。`
           : `${profile.projectName} Super Agent 已返回：${result.message.slice(0, 120)}`
       )
       await onRefresh()
@@ -991,16 +986,6 @@ export function SettingsView({
   }
 
   const companionIssue = companionError ?? companionStatus?.lastError ?? null
-  const companionPhoneCount = companionStatus?.iosDevicesOnline ?? 0
-  const companionStatusLabel = !companionStatus?.configuration
-    ? companionRelayAvailable ? '正在准备' : '暂不可用'
-    : companionPhoneCount > 0
-      ? `${companionPhoneCount} 台已连接`
-      : companionStatus.realtimeState === 'connecting'
-        ? '正在连接'
-        : companionStatus.realtimeState === 'connected' || companionStatus.state === 'connected'
-          ? '等待 iPhone'
-          : '暂时离线'
   const asrModelLabel =
     asrModelStatus?.state === 'installed'
       ? '已下载 · 547 MiB'
@@ -1109,56 +1094,6 @@ export function SettingsView({
                 </button>
               </article>
             )}
-            <article className="settings-summary-row">
-              <div className="settings-row-main">
-                <span className="settings-row-icon is-accent"><Smartphone size={17} /></span>
-                <div className="settings-row-copy">
-                  <strong>iPhone 自动同步</strong>
-                  <p>
-                    {!companionStatus?.configuration && !companionRelayAvailable
-                      ? '暂时无法连接 iPhone，服务恢复后会自动重试。'
-                      : '在 iPhone 登录同一账户，即可安全连接这台 Mac。'}
-                  </p>
-                </div>
-              </div>
-              <div className="settings-heading-actions">
-                <span
-                  className={`settings-value-pill ${companionStatus?.realtimeState === 'connected' ? 'is-ready' : ''}`}
-                >
-                  {companionStatusLabel}
-                </span>
-              </div>
-            </article>
-
-            {companionStatus?.configuration ? (
-              <article>
-                <div className="settings-row-main">
-                  <span className="settings-row-icon"><RefreshCw size={16} /></span>
-                  <div className="settings-row-copy">
-                    <strong>同步状态</strong>
-                    <p>
-                      {companionStatus.pendingEvents > 0
-                        ? `${companionStatus.pendingEvents} 条待同步`
-                        : companionStatus.isolatedEvents > 0
-                          ? `${companionStatus.isolatedEvents} 条需要处理`
-                          : '已同步'}
-                      {companionStatus.lastSyncedAt
-                        ? ` · 最近同步 ${formatRelativeTime(companionStatus.lastSyncedAt)}`
-                        : ''}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  className="settings-row-link-action"
-                  onClick={() => void syncCompanionNow()}
-                  disabled={Boolean(companionBusy)}
-                >
-                  {companionBusy === 'sync' ? <LoaderCircle className="spin" size={13} /> : null}
-                  同步
-                </button>
-              </article>
-            ) : null}
-
             {companionIssue && (
               <article className="settings-alert-row" role="alert">
                 <div className="settings-row-main">
@@ -1867,7 +1802,7 @@ export function SettingsView({
             <article>
               <div>
                 <strong>运行记录</strong>
-                <p>保存 Agent Run 的消息、工具调用与结果</p>
+                <p>保存 Chat 的消息、工具调用与结果</p>
               </div>
               <span className="settings-row-status">保留于本机</span>
             </article>

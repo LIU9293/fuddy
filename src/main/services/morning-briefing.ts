@@ -29,6 +29,7 @@ import type { WorkspaceAgentActions } from './workspace-agent-actions'
 import type { DecisionRemediationService } from './decision-remediation'
 import type { WorkAssistantAgentRuntime } from './work-assistant-agent'
 import { throwIfCancelled } from './cancellation'
+import { dailyInspectionJobId, defaultBriefingPrompt } from '../../shared/briefing-prompt'
 
 const MAX_NARRATION_CHARACTERS = 620
 const CHINESE_CHARACTERS_PER_SECOND = 4
@@ -162,22 +163,11 @@ export function buildMorningBriefingContent(input: {
   }
 }
 
-function buildAgentBriefingPrompt(reportDate: string, pulses: ProjectPulse[]): string {
-  return `请根据下面已经由系统核验的 Project Pulse，生成今天的跨项目中文简报。只输出一个 JSON 对象，不要代码块。
+function buildAgentBriefingPrompt(reportDate: string, pulses: ProjectPulse[], prompt: string): string {
+  return `${prompt}
 
-JSON 结构：
-{"headline":"","body":"","narration":""}
-
-规则：
-- body 使用 Markdown，必须包含“今天最值得处理”和“各项目脉搏”，并覆盖每一个项目。
-- 每个项目说明当前焦点、已验证变化、待处理事项和一个今天下一步。
-- 没有业务 Connector 不等于没有内容；可以总结目标、任务、Run 与产物，但不得推测业务变化。
-- 未解决事项即使不是今天新出现的，也要继续提醒；不要声称创建了新的收件箱事项。
-- 如果 Project Pulse 已提供 PR、CI、Review 或发布进度，必须保留对应 PR 编号和“生产问题是否仍存在”的事实，下一步使用 Pulse 给出的当前关口，不得退回最初的排查建议。
-- PR 已提交、CI 通过或已经合并都不等于生产问题解决；只有 Pulse 明确写明生产问题已解除时才能这样表述。
-- narration 是自然的中文口播，最多 ${MAX_NARRATION_CHARACTERS} 个字符、三分钟内；优先讲需要跟进、停滞和有新产物的项目。
-- 只能使用输入事实，不得添加数字、原因、完成状态或用户反馈。
-- headline 最多 80 个中文字符。
+输出约定：只输出一个 JSON 对象，不要代码块，结构为 {"headline":"","body":"","narration":""}。
+body 必须覆盖每个项目并保留证据中的 PR 编号；只能使用输入事实。narration 最多 ${MAX_NARRATION_CHARACTERS} 个字符。
 
 报告日期：${reportDate}
 Project Pulse：
@@ -241,10 +231,13 @@ export class MorningBriefingService {
     private readonly workAssistantAgent?: WorkAssistantAgentRuntime
   ) {}
 
-  async generate(cancellationSignal?: AbortSignal): Promise<GenerateMorningBriefingResult> {
+  async generate(cancellationSignal?: AbortSignal, promptOverride?: string): Promise<GenerateMorningBriefingResult> {
     throwIfCancelled(cancellationSignal)
     const generatedAt = new Date().toISOString()
     const reportDate = previousCompleteShanghaiDate()
+    const prompt = (promptOverride === undefined
+      ? this.database.listAutomations().find((job) => job.id === dailyInspectionJobId)?.prompt.trim()
+      : promptOverride.trim()) || defaultBriefingPrompt
     try {
       await this.goalTrackingService?.checkDueGoals(undefined, cancellationSignal)
     } catch {
@@ -311,7 +304,7 @@ export class MorningBriefingService {
     if (this.agentRuntime.isConfigured()) {
       try {
         const generated = parseAgentBriefing(
-          await this.agentRuntime.run(buildAgentBriefingPrompt(reportDate, pulses), [], cancellationSignal),
+          await this.agentRuntime.run(buildAgentBriefingPrompt(reportDate, pulses, prompt), [], cancellationSignal),
           pulses
         )
         if (generated) {

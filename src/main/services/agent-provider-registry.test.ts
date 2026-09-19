@@ -29,6 +29,16 @@ function turnInput(): AgentProviderTurnInput {
 }
 
 describe('AgentProviderRegistry', () => {
+  it.each(['codex', 'claude', 'opencode'] as const)('keeps %s user messages clean while refreshing context on resume', async provider => {
+    const runTurn = vi.fn<CliAgentRuntime['runTurn']>(async () => ({ text: 'ok', sessionId: 'native-session' }))
+    const registry = createDefaultAgentProviderRegistry({ runTurn: vi.fn() } as unknown as PiTaskHarness, { runTurn } as unknown as CliAgentRuntime)
+    const input = { ...turnInput(), sessionId: null, codexSessionOwned: true }
+    await registry.runTurn(provider, input)
+    await registry.runTurn(provider, { ...input, sessionId: 'native-session', projectContext: 'updated facts' })
+    expect(runTurn.mock.calls.map(([turn]) => turn.prompt)).toEqual(['do work', 'do work'])
+    expect(runTurn).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'native-session', projectContext: 'updated facts' }))
+  })
+
   it('builds continuation context from persisted user and assistant messages only', () => {
     expect(codingAgentContinuationContext([
       { id: 'user-1', runId: 'run-1', role: 'user', content: '先检查数据库', eventType: null, toolName: null, metadata: null, createdAt: '2026-01-01' },
@@ -62,6 +72,7 @@ describe('AgentProviderRegistry', () => {
     await expect(registry.runTurn('pi', piInput)).resolves.toMatchObject({ text: 'pi result' })
     expect(piInput.history).toHaveBeenCalledOnce()
     const cliInput = turnInput()
+    cliInput.codexSessionOwned = true
     cliInput.model = 'gpt-test'
     cliInput.reasoningEffort = 'high'
     cliInput.history = vi.fn(() => [])
@@ -71,7 +82,8 @@ describe('AgentProviderRegistry', () => {
       provider: 'codex',
       model: 'gpt-test',
       reasoningEffort: 'high',
-      prompt: 'project context\n\n用户任务：\ndo work'
+      projectContext: 'project context',
+      prompt: 'do work'
     }))
   })
 

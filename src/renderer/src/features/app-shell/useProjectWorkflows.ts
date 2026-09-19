@@ -144,7 +144,7 @@ export function useProjectWorkflows(options: UseProjectWorkflowsOptions): Projec
       await options.refreshDomains(['runs'])
       options.onOpenRun(detail.run.id)
     } catch (error) {
-      options.onNotice(error instanceof Error ? error.message : 'Agent Run 创建失败。')
+      options.onNotice(error instanceof Error ? error.message : 'Chat 创建失败。')
     } finally {
       startingMilestoneIds.current.delete(milestone.id)
     }
@@ -172,7 +172,7 @@ export function useProjectWorkflows(options: UseProjectWorkflowsOptions): Projec
       await options.refreshDomains(['runs'])
       options.onOpenRun(detail.run.id)
     } catch (error) {
-      options.onNotice(error instanceof Error ? error.message : 'Agent Run 创建失败。')
+      options.onNotice(error instanceof Error ? error.message : 'Chat 创建失败。')
     } finally {
       setHandlingDecisionId(null)
     }

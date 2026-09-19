@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { agentAccountContextSchema } from './agent-account-context'
 import {
   companionCommandTypes,
   companionEventDefinitions,
@@ -26,7 +27,7 @@ export const companionEncryptedEnvelopeSchema = z.object({
   nonce: z.string().regex(/^[A-Za-z0-9_-]{16}$/),
   ciphertext: z.string().regex(/^[A-Za-z0-9_-]+$/).max(8 * 1024 * 1024)
 })
-const attachment = z.object({
+export const companionAttachmentDescriptorSchema = z.object({
   id: identifier,
   messageId: identifier.nullish().transform((value) => value ?? null),
   artifactId: identifier.nullish().transform((value) => value ?? null),
@@ -41,6 +42,7 @@ const attachment = z.object({
 })
 const evidence = z.object({ label: z.string(), uri: z.string() })
 const workspaceRoot = z.object({ id: identifier, label: z.string(), path: z.string() })
+const attachment = companionAttachmentDescriptorSchema
 const projectCurrentState = z.object({
   summary: z.string(),
   facts: z.array(z.string()),
@@ -65,6 +67,7 @@ const projectProfile = z.object({
 })
 const project = z.object({
   id: identifier,
+  shared: z.object({ id: z.uuid(), revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), author: identifier }).optional(),
   name: z.string().trim().min(1),
   icon: z.string().nullable().optional(),
   summary: z.string(),
@@ -100,6 +103,7 @@ const goalCheckIn = z.object({
 })
 const goal = z.object({
   id: identifier,
+  executionHostId: identifier.optional(),
   projectId: identifier,
   title: z.string(),
   description: z.string(),
@@ -147,6 +151,7 @@ const decision = z.object({
 })
 const agentRun = z.object({
   id: identifier,
+  accountContext: agentAccountContextSchema.nullable().optional(),
   projectId: identifier.nullable(),
   decisionId: identifier.nullable().optional(),
   goalId: identifier.nullable().optional(),
@@ -175,6 +180,7 @@ const agentMessage = z.object({
   toolStatus: z.enum(['completed', 'failed']).optional(),
   toolKind: z.enum(['read', 'search', 'edit', 'command', 'browser', 'other']).optional(),
   toolSummary: z.string().optional(),
+  attachments: z.array(attachment).optional(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
   createdAt: isoDate
 })
@@ -367,6 +373,8 @@ const eventBase = {
   occurredAt: isoDate
 }
 
+export const companionChatPageSchema = chatPage
+
 const companionEventTypes = Object.keys(companionEventDefinitions) as [CompanionEventType, ...CompanionEventType[]]
 const companionEntityTypes = [...new Set(Object.values(companionEventDefinitions))] as [
   (typeof companionEventDefinitions)[CompanionEventType],
@@ -430,10 +438,15 @@ const commandPayloadSchemas = {
   'agent.create-session': z.object({
     runId: identifier,
     projectId: identifier.optional(),
+    provider: z.enum(['pi', 'codex', 'claude', 'opencode']).optional(),
+    goalId: identifier.optional(),
+    milestoneId: identifier.optional(),
+    draftPrompt: z.string().max(20_000).optional(),
     title: z.string().trim().min(1).max(200)
   }),
   'agent.rename-session': z.object({ runId: identifier, title: z.string().trim().min(1).max(200) }),
   'agent.update-draft-prompt': z.object({ runId: identifier, draftPrompt: z.string().max(20_000) }),
+  'agent.update-execution-settings': z.object({ runId: identifier, provider: z.enum(['pi', 'codex', 'claude', 'opencode']), model: z.string().max(200).optional(), reasoningEffort: z.string().max(100).optional() }),
   'agent.archive-session': z.object({ runId: identifier }),
   'chat.load-history': z.object({
     chatKind: z.enum(['assistant', 'agent']),

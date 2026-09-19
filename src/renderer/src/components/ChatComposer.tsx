@@ -1,6 +1,6 @@
 import { ArrowUp, LoaderCircle, Mic, Paperclip, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { WorkAssistantImageAttachment } from '../../../shared/contracts'
+import { isNativeImage, type ChatAttachmentInput } from '../../../shared/chat-attachments'
 import { blobToDataUrl, downsampleAudio, encodePcm16Wave, mergeAudioChunks, microphoneAccessError, prepareAudioForTranscription } from '../voice-input'
 
 interface ChatComposerProps {
@@ -13,7 +13,8 @@ interface ChatComposerProps {
   onStop?: () => void | Promise<void>
   disabled?: boolean
   leftControls?: ReactNode
-  attachments?: readonly WorkAssistantImageAttachment[]
+  attachments?: readonly ChatAttachmentInput[]
+  imageOnly?: boolean
   attachmentError?: string | null
   onAttachmentsSelected: (files: File[]) => void | Promise<void>
   onRemoveAttachment: (id: string) => void
@@ -43,11 +44,12 @@ export function ChatComposer({
   disabled = false,
   leftControls,
   attachments = [],
+  imageOnly = true,
   attachmentError = null,
   onAttachmentsSelected,
   onRemoveAttachment,
   submitAriaLabel = '提交',
-  voicePrompt = 'Fuddy，项目，目标，决策收件箱，工作助理，Agent Run',
+  voicePrompt = 'Fuddy，项目，目标，决策收件箱，工作助理，Chat',
   modelLabel,
   modelControl
 }: ChatComposerProps): React.JSX.Element {
@@ -145,16 +147,23 @@ export function ChatComposer({
   }
 
   return (
-    <div className="composer">
+    <div className="composer"
+      onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }}
+      onDrop={event => {
+        if (!event.dataTransfer.files.length) return
+        event.preventDefault()
+        if (!disabled && (!busy || allowSubmitWhileBusy)) void onAttachmentsSelected(Array.from(event.dataTransfer.files))
+      }}>
       {attachments.length > 0 && (
-        <div className="composer-image-attachments" aria-label="待发送图片">
+        <div className="composer-image-attachments" aria-label="待发送附件">
           {attachments.map((attachment) => (
             <figure className="composer-image-attachment" key={attachment.id} title={attachment.name}>
-              <img src={attachment.dataUrl} alt={attachment.name} />
+              {isNativeImage(attachment.mimeType) ? <img src={attachment.dataUrl} alt={attachment.name} />
+                : <span className="composer-file-attachment"><Paperclip size={18} />{attachment.name}</span>}
               <button
                 type="button"
                 onClick={() => onRemoveAttachment(attachment.id)}
-                aria-label={`移除图片 ${attachment.name}`}
+                aria-label={`移除附件 ${attachment.name}`}
                 disabled={disabled || (busy && !allowSubmitWhileBusy)}
               >
                 <X size={12} />
@@ -166,6 +175,11 @@ export function ChatComposer({
       {(attachmentError || voiceError) && <p className="composer-image-error">{attachmentError ?? voiceError}</p>}
       <textarea
         className="composer-textarea"
+        onPaste={event => {
+          if (!event.clipboardData.files.length) return
+          event.preventDefault()
+          if (!disabled && (!busy || allowSubmitWhileBusy)) void onAttachmentsSelected(Array.from(event.clipboardData.files))
+        }}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
@@ -184,7 +198,7 @@ export function ChatComposer({
             ref={imageInputRef}
             className="composer-image-input"
             type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
+            accept={imageOnly ? 'image/png,image/jpeg,image/webp,image/gif' : undefined}
             multiple
             tabIndex={-1}
             onChange={(event) => {

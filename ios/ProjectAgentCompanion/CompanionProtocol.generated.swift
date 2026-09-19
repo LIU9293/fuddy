@@ -3,7 +3,7 @@ import Foundation
 
 let companionMinimumProtocolVersion = 5
 let companionProtocolVersion = 5
-let companionContractFingerprint = "ae1eb480f47004c1179a666e"
+let companionContractFingerprint = "49051a2b2669e019559cc066"
 
 func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
     version >= companionMinimumProtocolVersion && version <= companionProtocolVersion
@@ -104,6 +104,7 @@ enum CompanionCommandType: Hashable, Codable {
     case agentCreateSession
     case agentRenameSession
     case agentUpdateDraftPrompt
+    case agentUpdateExecutionSettings
     case agentArchiveSession
     case chatLoadHistory
     case artifactRequestUpload
@@ -121,6 +122,7 @@ enum CompanionCommandType: Hashable, Codable {
         case .agentCreateSession: "agent.create-session"
         case .agentRenameSession: "agent.rename-session"
         case .agentUpdateDraftPrompt: "agent.update-draft-prompt"
+        case .agentUpdateExecutionSettings: "agent.update-execution-settings"
         case .agentArchiveSession: "agent.archive-session"
         case .chatLoadHistory: "chat.load-history"
         case .artifactRequestUpload: "artifact.request-upload"
@@ -141,6 +143,7 @@ enum CompanionCommandType: Hashable, Codable {
         case "agent.create-session": self = .agentCreateSession
         case "agent.rename-session": self = .agentRenameSession
         case "agent.update-draft-prompt": self = .agentUpdateDraftPrompt
+        case "agent.update-execution-settings": self = .agentUpdateExecutionSettings
         case "agent.archive-session": self = .agentArchiveSession
         case "chat.load-history": self = .chatLoadHistory
         case "artifact.request-upload": self = .artifactRequestUpload
@@ -183,6 +186,10 @@ struct AgentCreateSessionPayload: Codable {
     let runId: String
     let projectId: String?
     let title: String
+    let provider: String?
+    let goalId: String?
+    let milestoneId: String?
+    let draftPrompt: String?
 }
 
 struct AgentRenameSessionPayload: Codable {
@@ -193,6 +200,13 @@ struct AgentRenameSessionPayload: Codable {
 struct AgentUpdateDraftPromptPayload: Codable {
     let runId: String
     let draftPrompt: String
+}
+
+struct AgentUpdateExecutionSettingsPayload: Codable {
+    let runId: String
+    let provider: String
+    let model: String?
+    let reasoningEffort: String?
 }
 
 struct AgentArchiveSessionPayload: Codable {

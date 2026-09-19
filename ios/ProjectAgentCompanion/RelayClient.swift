@@ -33,7 +33,8 @@ func companionRelayURLComponents(baseURL: String, path: String) -> URLComponents
 @MainActor
 final class RelayClient {
     private let credentials: CompanionCredentials
-    private lazy var session = URLSession(configuration: .default)
+    private let session: URLSession
+    private let attachmentCacheDirectory: URL
     private var socket: URLSessionWebSocketTask?
     private var onPush: ((SocketEnvelope) -> Void)?
     private var reconnectTask: Task<Void, Never>?
@@ -41,8 +42,15 @@ final class RelayClient {
     private var reconnectAttempt = 0
     private var awaitingPong = false
     private(set) var realtimeConnected = false
+    var onConnectionLost: (() -> Void)?
 
-    init(credentials: CompanionCredentials) { self.credentials = credentials }
+    init(credentials: CompanionCredentials, session: URLSession = URLSession(configuration: .default), attachmentCacheDirectory: URL? = nil) {
+        self.credentials = credentials
+        self.session = session
+        let scope = SHA256.hash(data: Data(credentials.accountID.utf8)).map { String(format: "%02x", $0) }.joined()
+        self.attachmentCacheDirectory = (attachmentCacheDirectory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("CompanionAttachments", isDirectory: true)).appendingPathComponent(scope, isDirectory: true)
+    }
 
     func events(after: Int) async throws -> SyncEventPage {
         var components = authenticatedComponents(path: "/v1/events")
@@ -92,9 +100,10 @@ final class RelayClient {
     func sendCommand<Payload: Codable>(
         commandID: String = UUID().uuidString,
         type: CompanionCommandType,
-        payload: Payload
+        payload: Payload,
+        originalCreatedAt: String? = nil
     ) async throws -> CommandResult {
-        let createdAt = ISO8601DateFormatter().string(from: Date())
+        let createdAt = originalCreatedAt ?? ISO8601DateFormatter().string(from: Date())
         let key = try encryptionKey()
         let encryptedPayload = try CompanionCrypto.sealJSON(
             payload,
@@ -163,7 +172,17 @@ final class RelayClient {
         request.setValue(encryptedDigest, forHTTPHeaderField: "X-Content-SHA256")
         request.setValue("A256GCM", forHTTPHeaderField: "X-Companion-Encryption")
         let (data, response) = try await session.upload(for: request, from: sealed)
-        try Self.validate(response: response, data: data)
+        if (response as? HTTPURLResponse)?.statusCode == 409 {
+            // A prior PUT may have succeeded before its reply was lost. AES-GCM
+            // creates a new nonce on retry; verify the existing plaintext instead.
+            let (existing, existingResponse) = try await session.data(for: authorizedRequest(url: request.url!))
+            try Self.validate(response: existingResponse, data: existing)
+            let plaintext = try CompanionCrypto.openAttachment(existing, key: encryptionKey(), associatedData:
+                CompanionCrypto.attachmentAssociatedData(accountId: credentials.accountID, attachmentId: attachment.id))
+            guard plaintext == attachment.data else { throw RelayError.integrity("同名附件的内容不一致。") }
+        } else {
+            try Self.validate(response: response, data: data)
+        }
         return AttachmentDescriptor(
             id: attachment.id,
             messageId: nil,
@@ -180,6 +199,8 @@ final class RelayClient {
     }
 
     func downloadAttachment(_ attachment: AttachmentDescriptor) async throws -> URL {
+        let destination = cacheURL(for: attachment)
+        if let cached = try? Data(contentsOf: destination), Self.attachmentMatches(cached, attachment) { return destination }
         let url = authenticatedComponents(path: "/v1/attachments/\(attachment.id)").url!
         let (sealed, response) = try await session.data(for: authorizedRequest(url: url))
         try Self.validate(response: response, data: sealed)
@@ -191,21 +212,31 @@ final class RelayClient {
                 attachmentId: attachment.id
             )
         )
-        guard plaintext.count == attachment.size else {
-            throw RelayError.integrity("附件大小不一致。")
-        }
-        let downloadedHash = SHA256.hash(data: plaintext).map { String(format: "%02x", $0) }.joined()
-        guard downloadedHash.caseInsensitiveCompare(attachment.sha256) == .orderedSame else {
+        guard Self.attachmentMatches(plaintext, attachment) else {
             throw RelayError.integrity("附件校验失败。")
         }
-        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CompanionAttachments", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let safeFilename = URL(fileURLWithPath: attachment.filename).lastPathComponent
-        let destination = directory.appendingPathComponent("\(attachment.id)-\(safeFilename)")
+        try FileManager.default.createDirectory(at: attachmentCacheDirectory, withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: destination)
         try plaintext.write(to: destination, options: .atomic)
         return destination
+    }
+
+    static func attachmentMatches(_ data: Data, _ attachment: AttachmentDescriptor) -> Bool {
+        data.count == attachment.size && SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            .caseInsensitiveCompare(attachment.sha256) == .orderedSame
+    }
+
+    func cachePendingAttachment(_ attachment: PendingAttachment, messageID: String, createdAt: String) throws -> AttachmentDescriptor {
+        let descriptor = attachment.descriptor(messageID: messageID, createdAt: createdAt)
+        try FileManager.default.createDirectory(at: attachmentCacheDirectory, withIntermediateDirectories: true)
+        try attachment.data.write(to: cacheURL(for: descriptor), options: .atomic)
+        return descriptor
+    }
+
+    private func cacheURL(for attachment: AttachmentDescriptor) -> URL {
+        let safeID = SHA256.hash(data: Data(attachment.id.utf8)).map { String(format: "%02x", $0) }.joined()
+        let safeFilename = URL(fileURLWithPath: attachment.filename).lastPathComponent
+        return attachmentCacheDirectory.appendingPathComponent("\(safeID)-\(safeFilename)")
     }
 
     func connect(onPush: @escaping (SocketEnvelope) -> Void) {
@@ -290,6 +321,7 @@ final class RelayClient {
         heartbeatTask = nil
         awaitingPong = false
         realtimeConnected = false
+        onConnectionLost?()
         task.cancel(with: .goingAway, reason: nil)
         socket = nil
         scheduleReconnect()

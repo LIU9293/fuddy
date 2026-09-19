@@ -1,23 +1,26 @@
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
+  realpathSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   statSync,
   writeFileSync
 } from 'node:fs'
-import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { AgentRunArtifact, AgentRunArtifactPreview, Project, WorkspaceFileContent, WorkspaceFileEntry } from '../../shared/contracts'
 import { workspaceFilePreviewUrl } from '../../shared/workspace-file-preview'
 import { AppDatabase } from './database'
+import { maximumChatAttachmentBytes } from '../../shared/chat-attachments'
 
 const editableExtensions = new Set([
   '.txt', '.md', '.markdown', '.json', '.jsonl', '.csv', '.tsv', '.html', '.css', '.xml', '.yaml', '.yml'
 ])
 
 const maximumTextPreviewSize = 2 * 1024 * 1024
-const maximumImagePreviewSize = 12 * 1024 * 1024
+const maximumImagePreviewSize = maximumChatAttachmentBytes
 const maximumPdfPreviewSize = 20 * 1024 * 1024
 
 const mimeTypes: Record<string, string> = {
@@ -183,7 +186,7 @@ export class WorkspaceFilesService {
     }
 
     if (entry.mimeType?.startsWith('image/')) {
-      if (entry.size > maximumImagePreviewSize) throw new Error('图片超过 12 MB，请在 Finder 中打开。')
+      if (entry.size > maximumImagePreviewSize) throw new Error('图片超过 20 MiB，请在 Finder 中打开。')
       return {
         artifact,
         kind: 'image',
@@ -193,6 +196,9 @@ export class WorkspaceFilesService {
       }
     }
 
+    if (entry.mimeType === 'application/pdf' && entry.size <= maximumPdfPreviewSize) {
+      return { artifact, kind: 'pdf', content: null, dataUrl: `data:application/pdf;base64,${readFileSync(absolutePath).toString('base64')}`, size: entry.size }
+    }
     return { artifact, kind: 'unsupported', content: null, dataUrl: null, size: entry.size }
   }
 
@@ -300,8 +306,19 @@ export class WorkspaceFilesService {
 
   private assertInside(root: string, target: string): void {
     const relativeTarget = relative(root, target)
-    if (relativeTarget === '..' || relativeTarget.startsWith(`..${sep}`) || resolve(target) === resolve(this.root)) {
+    if (isAbsolute(relativeTarget) || relativeTarget === '..' || relativeTarget.startsWith(`..${sep}`) || resolve(target) === resolve(this.root)) {
       throw new Error('路径必须位于项目文件空间内。')
     }
+    // Check the nearest existing ancestor for writes as well as reads. lstat
+    // includes dangling symlinks, which must not bypass this boundary.
+    let ancestor = target
+    while (ancestor !== root) {
+      try { lstatSync(ancestor); break } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        ancestor = dirname(ancestor)
+      }
+    }
+    const actual = relative(realpathSync(root), realpathSync(ancestor))
+    if (isAbsolute(actual) || actual === '..' || actual.startsWith(`..${sep}`)) throw new Error('路径必须位于项目文件空间内。')
   }
 }

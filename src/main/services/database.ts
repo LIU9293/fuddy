@@ -134,7 +134,7 @@ export class AppDatabase {
     this.goals = new GoalRepository(
       this.database,
       (operation) => this.companionTransaction(operation),
-      (type, goal) => this.enqueueCompanionEvent(type, 'goal', goal.id, goal),
+      (type, goal) => this.enqueueCompanionEvent(type, 'goal', goal.id, this.goalWithHost(goal)),
       (runId) => {
         const run = this.getAgentRun(runId)
         this.enqueueCompanionEvent('agent-run.updated', 'agent-run', run.id, run)
@@ -206,6 +206,21 @@ export class AppDatabase {
         version: 8,
         name: 'upgrade-companion-remote-commands-protocol-v4',
         apply: () => this.migrateCompanionRemoteCommandsProtocolV4()
+      },
+      {
+        version: 9,
+        name: 'separate-local-project-workspaces',
+        apply: () => this.projects.migrateLocalWorkspaces()
+      },
+      {
+        version: 10,
+        name: 'chat-account-context',
+        apply: () => {
+          const columns = this.database.prepare('PRAGMA table_info(agent_runs)').all()
+          if (!columns.some(column => column.name === 'account_context_json')) {
+            this.database.exec('ALTER TABLE agent_runs ADD COLUMN account_context_json TEXT')
+          }
+        }
       }
     ]
     const currentVersion = databaseSchemaVersion(this.database)
@@ -307,8 +322,39 @@ export class AppDatabase {
     return this.projects.create(input)
   }
 
+  mergeAccountProject(project: Project, ownerUserId: string): Project {
+    return this.projects.mergeShared(project, ownerUserId)
+  }
+
+  accountProjects(ownerUserId: string): Project[] {
+    return this.projects.forAccount(ownerUserId)
+  }
+
+  publishProjectForSync(project: Project): void {
+    this.enqueueCompanionEvent('project.updated', 'project', project.id, project)
+  }
+
   listGoals(projectId?: string): ProjectGoal[] {
-    return this.goals.list(projectId)
+    return this.goals.list(projectId).map((goal) => this.goalWithHost(goal))
+  }
+
+  private goalWithHost(goal: ProjectGoal): ProjectGoal {
+    const currentHost = this.getSetting<{ device?: { hostId?: string } }>('account.cached-state', {}).device?.hostId
+    const host = this.getSetting<string | null>(`goal.execution-host:${goal.id}`, null) ?? currentHost
+    return { ...goal, ...(host ? { executionHostId: host } : {}) }
+  }
+
+  mergeAccountGoal(goal: ProjectGoal, projectId: string, sourceHostId: string): void {
+    this.companionTransaction(() => {
+      if (!this.goals.list().some((item) => item.id === goal.id)) this.setSetting(`goal.execution-host:${goal.id}`, goal.executionHostId ?? sourceHostId)
+      this.goals.merge({ ...goal, projectId })
+    })
+  }
+
+  canScheduleGoalHere(goal: ProjectGoal): boolean {
+    const owner = this.getSetting<string | null>(`goal.execution-host:${goal.id}`, null)
+    const current = this.getSetting<{ device?: { hostId?: string } }>('account.cached-state', {}).device?.hostId
+    return !owner || owner === current
   }
 
   getGoal(id: string): ProjectGoal {
@@ -610,6 +656,32 @@ export class AppDatabase {
     return this.runs.update(run)
   }
 
+  ownsCodexSession(runId: string, sessionId: string | null): boolean {
+    const binding = this.getSetting<import('./codex-session').CodexSessionBinding | null>(`codex.session.${runId}`, null)
+    return Boolean(sessionId && binding?.version === 1 && binding.sessionId === sessionId)
+  }
+
+  bindCodexSession(runId: string, ready: import('./codex-session').CodexSessionReady): AgentRun {
+    return this.companionTransaction(() => {
+      const run = this.runs.get(runId)
+      if (run.provider !== 'codex') throw new Error('只有 Codex Chat 可以绑定 Codex 会话。')
+      const existing = new Set(this.runs.listMessages(runId).map(message => message.id))
+      for (const message of ready.messages) {
+        if (message.runId !== runId) throw new Error('Codex 历史不属于当前 Chat。')
+        if (!existing.has(message.id)) this.runs.createMessage(message)
+      }
+      const updated = this.runs.update({ ...run, sessionId: ready.sessionId, updatedAt: new Date().toISOString() })
+      this.setSetting(`codex.session.${runId}`, {
+        version: 1, sessionId: ready.sessionId, sourceSessionId: ready.sourceSessionId
+      } satisfies import('./codex-session').CodexSessionBinding)
+      return updated
+    })
+  }
+
+  updateAgentRunAccountContext(id: string, context: import('../../shared/agent-account-context').AgentAccountContext): void {
+    this.runs.updateAccountContext(id, context)
+  }
+
   recoverInterruptedAgentRuns(recoveredAt: string): number {
     return this.runs.recoverInterrupted(recoveredAt)
   }
@@ -683,7 +755,7 @@ export class AppDatabase {
       }
     }
     if (!this.listRuns().some((run) => run.id === chatId)) {
-      throw new Error('没有找到这个 Agent Run。')
+      throw new Error('没有找到这个 Chat。')
     }
     const pageLimit = Math.min(
       companionMaximumChatPageLimit,
@@ -907,6 +979,19 @@ export class AppDatabase {
   }
 
   private companionTransaction<T>(operation: () => T): T {
+    if (this.database.isTransaction) {
+      const savepoint = `nested_${randomUUID().replaceAll('-', '')}`
+      this.database.exec(`SAVEPOINT ${savepoint}`)
+      try {
+        const result = operation()
+        this.database.exec(`RELEASE SAVEPOINT ${savepoint}`)
+        return result
+      } catch (error) {
+        this.database.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`)
+        this.database.exec(`RELEASE SAVEPOINT ${savepoint}`)
+        throw error
+      }
+    }
     this.database.exec('BEGIN IMMEDIATE')
     try {
       const result = operation()

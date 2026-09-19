@@ -42,6 +42,8 @@ export interface ProjectProfile {
 
 export interface Project {
   id: string
+  /** Account identity and deterministic metadata revision; local paths are never merged. */
+  shared?: { id: string; revision: number; author: string }
   name: string
   icon?: string | null
   summary: string
@@ -128,6 +130,9 @@ export type AgentRunMessageRole = 'user' | 'assistant' | 'system' | 'tool'
 
 export interface AgentRun {
   id: string
+  accountContext?: import('./agent-account-context').AgentAccountContext | null
+  /** Presentation-only routing for a Run owned by another Mac. */
+  executionHost?: { id: string; name: string; online: boolean }
   projectId: string | null
   decisionId?: string | null
   goalId?: string | null
@@ -161,6 +166,7 @@ export interface AgentRunMessage {
   toolStatus?: 'completed' | 'failed'
   toolKind?: import('./agent-activity').AgentToolKind
   toolSummary?: string
+  attachments?: import('./companion-sync').CompanionAttachmentDescriptor[]
   metadata: Record<string, unknown> | null
   createdAt: string
 }
@@ -177,7 +183,7 @@ export interface AgentRunArtifact {
 
 export interface AgentRunArtifactPreview {
   artifact: AgentRunArtifact
-  kind: 'markdown' | 'text' | 'image' | 'unsupported'
+  kind: 'markdown' | 'text' | 'image' | 'pdf' | 'unsupported'
   content: string | null
   dataUrl: string | null
   size: number
@@ -201,6 +207,7 @@ export interface AgentRunDetail {
   run: AgentRun
   messages: AgentRunMessage[]
   artifacts: AgentRunArtifact[]
+  remoteHistory?: { hasMore: boolean }
 }
 
 export interface GitWorkingTreeChange {
@@ -296,6 +303,8 @@ export interface GoalCheckIn {
 
 export interface ProjectGoal {
   id: string
+  /** Mac responsible for scheduled check-ins; sharing a goal does not duplicate its scheduler. */
+  executionHostId?: string
   projectId: string
   title: string
   description: string
@@ -999,7 +1008,7 @@ export interface SendAgentRunMessageInput {
   requestId: string
   runId: string
   prompt: string
-  attachments?: WorkAssistantImageAttachment[]
+  attachments?: import('./chat-attachments').ChatAttachmentInput[]
 }
 
 export interface RespondAgentApprovalInput {
@@ -1013,6 +1022,7 @@ export interface CreateAgentRunInput extends DispatchTaskInput {
 
 export interface CreateAgentRunDraftInput {
   id?: string
+  executionHostId?: string | null
   projectId: string | null
   decisionId?: string | null
   goalId?: string | null
@@ -1065,7 +1075,7 @@ export interface DesktopApi {
   onAccountStateChanged(callback: (state: import('./account').AccountState) => void): () => void
   detectCodingAgents(): Promise<import('./account').AgentDetectionResult>
   completeAgentDetection(): Promise<import('./account').AccountState>
-  selectOnboardingProjectFolder(): Promise<string | null>
+  selectProjectFolder(): Promise<string | null>
   completeProjectOnboarding(input: import('./account').CompleteProjectOnboardingInput): Promise<{
     account: import('./account').AccountState
     project: Project | null
@@ -1091,11 +1101,13 @@ export interface DesktopApi {
     onUpdate: (update: AgentRunStreamUpdate) => void
   ): Promise<DispatchTaskResult>
   createAgentRunDraft(input: CreateAgentRunDraftInput): Promise<AgentRunDetail>
+  listExecutionHosts(projectId: string | null): Promise<import('./account').ExecutionHost[]>
   dispatchProjectAgent(
     input: DispatchProjectAgentInput,
     onUpdate: (update: AgentRunStreamUpdate) => void
   ): Promise<DispatchProjectAgentResult>
   getAgentRun(id: string): Promise<AgentRunDetail>
+  loadAgentRunHistory(id: string): Promise<AgentRunDetail>
   getAgentRunGitSummary(id: string): Promise<GitWorkingTreeSummary>
   getAgentRunArtifactPreview(runId: string, artifactId: string): Promise<AgentRunArtifactPreview>
   renameAgentRun(id: string, title: string): Promise<AgentRun>

@@ -154,13 +154,19 @@ struct RemoteAttachmentRow: View {
     @State private var previewItem: PreviewItem?
     @State private var downloading = false
     @State private var error: String?
+    @State private var thumbnail: UIImage?
 
     var body: some View {
         Button {
             Task { await open() }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: attachment.mimeType.hasPrefix("image/") ? "photo" : "paperclip")
+                if let thumbnail {
+                    Image(uiImage: thumbnail).resizable().scaledToFit().frame(maxWidth: 180, maxHeight: 150)
+                        .accessibilityLabel(attachment.filename)
+                } else {
+                    Image(systemName: attachment.mimeType.hasPrefix("image/") ? "photo" : "paperclip")
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(attachment.filename).lineLimit(1)
                     Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.size), countStyle: .file))
@@ -174,6 +180,13 @@ struct RemoteAttachmentRow: View {
             .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
         }
         .buttonStyle(.plain)
+        .disabled(downloading)
+        .task(id: attachment.id) {
+            guard attachment.mimeType.hasPrefix("image/") else { return }
+            if let url = try? await store.download(attachment), let data = try? Data(contentsOf: url) {
+                thumbnail = UIImage(data: data)
+            }
+        }
         .sheet(item: $previewItem) { QuickLookPreview(url: $0.url) }
         .alert("无法打开附件", isPresented: Binding(
             get: { error != nil },

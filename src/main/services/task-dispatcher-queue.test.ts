@@ -35,6 +35,42 @@ function createDispatcher(
 }
 
 describe('TaskDispatcher Agent Run turn queue', () => {
+  it('keeps the next phone/Mac turn queued until cancelled runtime cleanup actually settles', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'fuddy-cancel-drain-'))
+    let finishCleanup!: () => void
+    let started = 0
+    let cancelled = false
+    const { database, dispatcher, runId } = createDispatcher(root, async input => {
+      started += 1
+      if (started === 1) {
+        await new Promise<void>((_resolve, reject) => {
+          input.abortController.signal.addEventListener('abort', () => {
+            cancelled = true
+            finishCleanup = () => reject(input.abortController.signal.reason)
+          }, { once: true })
+        })
+      }
+      return { text: '完成', sessionId: 'owned-session' }
+    })
+    try {
+      const first = dispatcher.sendMessage(runId, 'Mac 消息')
+      await vi.waitFor(() => expect(started).toBe(1))
+      let stopSettled = false
+      const stopping = dispatcher.stopMessage(runId).then(() => { stopSettled = true })
+      const second = dispatcher.sendMessage(runId, '手机消息')
+      await vi.waitFor(() => expect(cancelled).toBe(true))
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(stopSettled).toBe(false)
+      expect(started).toBe(1)
+      finishCleanup()
+      await Promise.all([first, stopping, second])
+      expect(started).toBe(2)
+      expect(database.getAgentRun(runId).status).toBe('idle')
+    } finally {
+      database.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
   it('runs messages for the same Agent Run sequentially', async () => {
     const root = mkdtempSync(join(tmpdir(), 'project-agent-turn-queue-'))
     const releases: Array<() => void> = []

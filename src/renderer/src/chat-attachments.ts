@@ -2,9 +2,27 @@ import type {
   WorkAssistantImageAttachment,
   WorkAssistantImageMimeType
 } from '../../shared/contracts'
+import { maximumChatAttachmentBytes, maximumChatAttachments, type ChatAttachmentInput } from '../../shared/chat-attachments'
+
+export async function prepareChatAttachments(files: File[], currentCount: number): Promise<{ attachments: ChatAttachmentInput[]; error: string | null }> {
+  const slots = Math.max(0, maximumChatAttachments - currentCount)
+  const supported = files.filter(file => file.size > 0 && file.size <= maximumChatAttachmentBytes)
+  const attachments = await Promise.all(supported.slice(0, slots).map(file => new Promise<ChatAttachmentInput>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error(`无法读取附件 ${file.name}`))
+    reader.onload = () => {
+      const mimeType = file.type || 'application/octet-stream'
+      const encoded = String(reader.result).split(',')[1]
+      resolve({ id: crypto.randomUUID(), name: file.name, mimeType, dataUrl: `data:${mimeType};base64,${encoded}` })
+    }
+    reader.readAsDataURL(file)
+  })))
+  return { attachments, error: supported.length !== files.length ? '附件不能为空，单个附件不能超过 20 MiB。'
+    : files.length > slots ? '每条消息最多添加 4 个附件。' : null }
+}
 
 export const maxChatImages = 4
-export const maxChatImageBytes = 5 * 1024 * 1024
+export const maxChatImageBytes = maximumChatAttachmentBytes
 
 const chatImageMimeTypes: readonly WorkAssistantImageMimeType[] = [
   'image/png',
@@ -53,7 +71,7 @@ export async function prepareChatImages(
     problems.push('仅支持 PNG、JPEG、WEBP 和 GIF')
   }
   if (files.some((file) => file.size > maxChatImageBytes)) {
-    problems.push('单张图片不能超过 5MB')
+    problems.push('单张图片不能超过 20 MiB')
   }
   if (supported.length > availableSlots) {
     problems.push(`每条消息最多添加 ${maxChatImages} 张图片`)

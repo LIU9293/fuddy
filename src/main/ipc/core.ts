@@ -54,19 +54,20 @@ export function registerCoreIpc(context: IpcContext): void {
   } = context
   ipcMain.handle('app:get-bootstrap', () => {
     const settings = providerSettings.getPublicSettings()
-    return database.getBootstrap(
+    const bootstrap = database.getBootstrap(
       getCapabilities(settings),
       connectorCatalog,
       listProjectAnalyticsProfileSummaries(),
       credentialVault.getStatus(),
       settings
     )
+    return { ...bootstrap, runs: [...bootstrap.runs, ...(context.macPeers?.listRuns() ?? [])] }
   })
 
   ipcMain.handle('app:get-bootstrap-patch', (_event, rawKeys: unknown) => {
     const keys = z.array(z.enum(appBootstrapDataKeys)).min(1).max(appBootstrapDataKeys.length).parse(rawKeys)
     const settings = providerSettings.getPublicSettings()
-    return database.getBootstrapPatch(
+    const patch = database.getBootstrapPatch(
       [...new Set(keys)],
       getCapabilities(settings),
       connectorCatalog,
@@ -74,6 +75,8 @@ export function registerCoreIpc(context: IpcContext): void {
       credentialVault.getStatus(),
       settings
     )
+    if (patch.runs) patch.runs = [...patch.runs, ...(context.macPeers?.listRuns() ?? [])]
+    return patch
   })
 
   ipcMain.handle('capability:request-computer-permissions', async () => {

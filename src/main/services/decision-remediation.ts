@@ -287,7 +287,7 @@ export class DecisionRemediationService {
           sourceType: 'github-pr',
           sourceRef: url,
           state: existing?.state ?? 'investigating',
-          summary: existing?.summary ?? `Agent Run「${run.title}」已关联 PR #${reference.number}，等待 GitHub 实时状态核验。`,
+          summary: existing?.summary ?? `Chat「${run.title}」已关联 PR #${reference.number}，等待 GitHub 实时状态核验。`,
           nextAction: existing?.nextAction ?? `核验 PR #${reference.number} 的 Review、CI 和可合并状态。`,
           evidenceRefs: existing?.evidenceRefs ?? [{ label: `GitHub PR #${reference.number}`, uri: url }],
           metadata: { ...(existing?.metadata ?? {}), runId: run.id },

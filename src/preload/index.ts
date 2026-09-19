@@ -77,7 +77,7 @@ const api: DesktopApi = {
   },
   detectCodingAgents: () => ipcRenderer.invoke('onboarding:detect-coding-agents'),
   completeAgentDetection: () => ipcRenderer.invoke('onboarding:complete-agent-detection'),
-  selectOnboardingProjectFolder: () => ipcRenderer.invoke('onboarding:select-project-folder'),
+  selectProjectFolder: () => ipcRenderer.invoke('project:select-folder'),
   completeProjectOnboarding: (input) => ipcRenderer.invoke('onboarding:complete-project', input),
   getBootstrap: () => ipcRenderer.invoke('app:get-bootstrap'),
   getBootstrapPatch: (keys: AppBootstrapDataKey[]) => ipcRenderer.invoke('app:get-bootstrap-patch', keys),
@@ -128,6 +128,8 @@ const api: DesktopApi = {
     })
   },
   getAgentRun: (id: string) => ipcRenderer.invoke('agent-run:get', id),
+  loadAgentRunHistory: (id: string) => ipcRenderer.invoke('agent-run:load-history', id),
+  listExecutionHosts: (projectId: string | null) => ipcRenderer.invoke('agent-run:execution-hosts', projectId),
   getAgentRunGitSummary: (id: string) => ipcRenderer.invoke('agent-run:git-summary', id),
   getAgentRunArtifactPreview: (runId: string, artifactId: string) =>
     ipcRenderer.invoke('agent-run:artifact-preview', { runId, artifactId }),

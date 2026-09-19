@@ -145,7 +145,8 @@ export class AccountEnrollmentCoordinator {
         deviceId: enrollment.deviceId,
         deviceName: enrollment.deviceName,
         publicKey: enrollment.publicKey,
-        grantId: enrollment.id
+        grantId: enrollment.id,
+        ...(enrollment.platform ? { platform: enrollment.platform } : {})
       })
       const wrappedSpaceKey = this.accountService.wrapEnrollmentGrant({
         enrollmentId: enrollment.id,

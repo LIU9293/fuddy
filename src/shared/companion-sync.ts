@@ -84,6 +84,8 @@ export interface CompanionDeviceEnrollmentInput {
   publicKey?: string | null
   /** Account API enrollment generation used to fence delayed revocations. */
   grantId?: string | null
+  /** Client platform; Relay role 'ios' denotes a client token, never host authority. */
+  platform?: CompanionDevicePlatform
 }
 
 export type CompanionDeviceEnrollmentResult = CompanionPairingClaimResult

@@ -8,12 +8,13 @@ import type {
 import { nextCronOccurrence } from './automation-cron'
 import { AppDatabase } from './database'
 import { cancellationError, throwIfCancelled } from './cancellation'
+import { dailyInspectionJobId } from '../../shared/briefing-prompt'
 
 export interface AutomationActions {
   runAgentTask(job: AutomationJob, cancellationSignal?: AbortSignal): Promise<{ summary: string; agentRunId: string }>
   runConnectors(projectId: string | null, cancellationSignal?: AbortSignal): Promise<string>
   checkGoals(projectId: string | null, cancellationSignal?: AbortSignal): Promise<string>
-  generateBriefing(projectId: string | null, cancellationSignal?: AbortSignal): Promise<string>
+  generateBriefing(projectId: string | null, cancellationSignal?: AbortSignal, prompt?: string): Promise<string>
 }
 
 function wait(milliseconds: number, cancellationSignal?: AbortSignal): Promise<void> {
@@ -70,6 +71,9 @@ export class AutomationRuntime {
     const now = new Date()
     const existing = input.id ? this.database.getAutomation(input.id) : null
     if (existing?.status === 'running') throw new Error('自动任务运行中，暂时不能修改。')
+    if (input.id === dailyInspectionJobId && (input.action !== 'generate-briefing' || input.projectId !== null || !input.prompt.trim())) {
+      throw new Error('每日项目巡检需要保留全部项目的简报动作，并填写 Prompt。')
+    }
     if (input.projectId && !this.database.listProjects().some((project) => project.id === input.projectId)) {
       throw new Error('自动任务引用的项目不存在。')
     }
@@ -123,7 +127,7 @@ export class AutomationRuntime {
 
   async runDue(now = new Date()): Promise<RunAutomationResult[]> {
     const due = this.database.listAutomations().filter((job) =>
-      job.enabled && job.nextRunAt !== null && new Date(job.nextRunAt).getTime() <= now.getTime()
+      job.enabled && job.status !== 'running' && job.nextRunAt !== null && new Date(job.nextRunAt).getTime() <= now.getTime()
     )
     const results: RunAutomationResult[] = []
     for (const job of due) {
@@ -293,6 +297,6 @@ export class AutomationRuntime {
     if (job.action === 'check-goals') {
       return { summary: await this.actions.checkGoals(job.projectId, cancellationSignal), agentRunId: null }
     }
-    return { summary: await this.actions.generateBriefing(job.projectId, cancellationSignal), agentRunId: null }
+    return { summary: await this.actions.generateBriefing(job.projectId, cancellationSignal, job.prompt), agentRunId: null }
   }
 }

@@ -13,7 +13,7 @@ describe('Agent Run notifications', () => {
     })).toEqual({
       id: 'agent-turn-turn-1',
       groupId: 'agent-run-run-1',
-      title: 'Agent Run 已完成',
+      title: 'Chat 已完成',
       body: '整理产品数据'
     })
   })
@@ -27,7 +27,7 @@ describe('Agent Run notifications', () => {
       summary: `连接失败 ${'x'.repeat(200)}`,
       settledAt: '2026-08-12T12:00:00.000Z'
     })
-    expect(content.title).toBe('Agent Run 执行失败')
+    expect(content.title).toBe('Chat 执行失败')
     expect(content.body.length).toBeLessThanOrEqual(121)
     expect(content.body).toMatch(/^发布内容：连接失败/)
   })

@@ -1,7 +1,7 @@
 import { hostname } from 'node:os'
 import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, rm } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import WebSocket from 'ws'
 import type {
@@ -37,6 +37,7 @@ import {
 } from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
 import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
+import { attachmentStorageId, incomingAttachmentDirectory } from './agent-attachments'
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { agentToolPresentation } from '../../shared/agent-activity'
@@ -89,7 +90,7 @@ const reconnectDelaysMs = [5_000, 15_000, 60_000] as const
 const maximumRevokedCommandFences = 5_000
 
 export function companionAttachmentStorageId(artifactId: string, sha256: string): string {
-  return createHash('sha256').update(`${artifactId}\0${sha256.toLowerCase()}`).digest('hex')
+  return attachmentStorageId(artifactId, sha256)
 }
 
 interface AuthenticatedCompanionContext {
@@ -1403,7 +1404,10 @@ export class CompanionSyncService {
         this.lastError = error instanceof Error ? error.message : 'Mac 执行远程操作失败。'
         this.emitStatus()
       })
-      .finally(() => {
+      .finally(async () => {
+        if (remoteCommand.type === 'agent.send-message' || remoteCommand.type === 'assistant.send-message') {
+          await rm(incomingAttachmentDirectory(this.incomingAttachmentsRoot, remoteCommand.commandId), { recursive: true, force: true }).catch(() => undefined)
+        }
         this.activeCommands.delete(remoteCommand.commandId)
         this.activeCommandAbortControllers.delete(remoteCommand.commandId)
         if (createdRunId && this.activeRunCreations.get(createdRunId) === operation) {
@@ -1524,17 +1528,17 @@ export class CompanionSyncService {
           : undefined
         const attachments = await this.materializeIncomingAttachments(remoteCommand.commandId, payload)
         if (cancellationSignal.aborted) throw cancellationSignal.reason
-        const attachmentContext = attachments.length > 0
-          ? `\n\n用户从 iPhone 附加了以下本机文件，请按需读取：\n${attachments.map((attachment) => `- ${attachment.path}`).join('\n')}`
-          : ''
-        return await this.dispatcher.sendMessage(
+        const detail = await this.dispatcher.sendMessage(
           runId,
-          `${this.requiredString(payload, 'prompt')}${attachmentContext}`,
+          this.requiredString(payload, 'prompt'),
           () => this.scheduleEventSync(),
           clientMessageId,
-          [],
+          attachments.map(file => ({ id: file.descriptor.id, name: file.descriptor.filename, mimeType: file.descriptor.mimeType,
+            dataUrl: `data:${file.descriptor.mimeType};base64,${file.bytes.toString('base64')}` })),
           cancellationSignal
         )
+        if (detail.run.status === 'failed') throw new Error(detail.run.summary || 'Chat 执行失败，请重试。')
+        return detail
       }
       case 'agent.stop-message':
         return await this.dispatcher.stopMessage(this.requiredString(payload, 'runId'))
@@ -1549,7 +1553,11 @@ export class CompanionSyncService {
           id: this.requiredString(payload, 'runId'),
           projectId,
           title: this.requiredString(payload, 'title'),
-          ...(projectId ? {} : { provider: this.defaultCodingAgent() })
+          ...(projectId ? {} : { provider: this.defaultCodingAgent() }),
+          ...(typeof payload.provider === 'string' ? { provider: payload.provider as import('../../shared/contracts').AgentRunProvider } : {}),
+          ...(typeof payload.goalId === 'string' ? { goalId: payload.goalId } : {}),
+          ...(typeof payload.milestoneId === 'string' ? { milestoneId: payload.milestoneId } : {}),
+          ...(typeof payload.draftPrompt === 'string' ? { draftPrompt: payload.draftPrompt } : {})
         })
       }
       case 'agent.rename-session':
@@ -1561,6 +1569,13 @@ export class CompanionSyncService {
         return this.database.updateAgentRunDraftPrompt(
           this.requiredString(payload, 'runId'),
           typeof payload.draftPrompt === 'string' ? payload.draftPrompt : ''
+        )
+      case 'agent.update-execution-settings':
+        return this.database.updateAgentRunExecutionSettings(
+          this.requiredString(payload, 'runId'),
+          this.requiredString(payload, 'provider') as import('../../shared/contracts').AgentRunProvider,
+          typeof payload.model === 'string' ? payload.model : null,
+          typeof payload.reasoningEffort === 'string' ? payload.reasoningEffort : null
         )
       case 'agent.archive-session': {
         const runId = this.requiredString(payload, 'runId')
@@ -1627,7 +1642,7 @@ export class CompanionSyncService {
   ): Promise<Array<{ descriptor: CompanionAttachmentDescriptor; path: string; bytes: Buffer }>> {
     if (!Array.isArray(payload.attachments) || payload.attachments.length === 0) return []
     if (payload.attachments.length > 4) throw new Error('一次最多发送 4 个附件。')
-    const directory = join(this.incomingAttachmentsRoot, commandId.replace(/[^A-Za-z0-9._-]/g, '_'))
+    const directory = incomingAttachmentDirectory(this.incomingAttachmentsRoot, commandId)
     mkdirSync(directory, { recursive: true })
     const context = this.authenticatedContext()
     const results: Array<{ descriptor: CompanionAttachmentDescriptor; path: string; bytes: Buffer }> = []
@@ -1647,6 +1662,7 @@ export class CompanionSyncService {
         thumbnailAttachmentId: null,
         createdAt: this.requiredString(value, 'createdAt')
       }
+      if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(descriptor.id)) throw new Error('附件标识无效。')
       if (!Number.isInteger(descriptor.size)
         || descriptor.size <= 0
         || descriptor.size > companionAttachmentPlaintextMaximumBytes) {

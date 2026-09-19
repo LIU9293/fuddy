@@ -111,7 +111,7 @@ describe('TaskDispatcher project agent defaults', () => {
     expect(completed.run.draftPrompt).toBeNull()
     expect(completed.messages[0]).toMatchObject({ role: 'user', content: expect.stringContaining('复用已有 Logo') })
     expect(completed.artifacts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ relativePath: 'marketing/social/setup.md' })
+      expect.objectContaining({ label: 'setup.md', relativePath: expect.stringMatching(/^_artifacts\//) })
     ]))
     expect(onRunSettled).toHaveBeenCalledWith(
       expect.objectContaining({ id: draft.run.id, status: 'idle', summary: '已整理宣传资料。' }),

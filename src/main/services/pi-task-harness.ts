@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { attachmentPrompt, isNativeImage, type RuntimeAttachment } from '../../shared/chat-attachments'
 import {
   Type,
   createProvider,
@@ -29,7 +30,7 @@ import type {
 } from '../../shared/contracts'
 import { evaluateAggressivePermission } from '../../shared/permissions'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
-import { buildAgentStoragePolicy } from './agent-runtime-context'
+import { buildAgentInstructions, buildAdditionalWorkspaceContext } from './agent-runtime-context'
 import { AppDatabase } from './database'
 import { ProviderSettingsService, type RuntimeAgentEndpoint } from './provider-settings'
 import { ThirdPartyMcpRuntime } from './third-party-mcp-runtime'
@@ -39,6 +40,7 @@ export interface PiTaskTurnInput {
   projectId: string | null
   projectContext: string
   prompt: string
+  attachments?: RuntimeAttachment[]
   history: AgentRunMessage[]
   sessionId: string | null
   workingDirectory: string
@@ -239,7 +241,11 @@ export class PiTaskHarness {
         input.onUpdate({ type: 'status', status: 'running', detail: 'Pi Coding Agent SDK 正在执行' })
         try {
           if (input.abortController.signal.aborted) throw input.abortController.signal.reason
-          await session.prompt(input.prompt)
+          await session.prompt(attachmentPrompt(input.prompt, input.attachments ?? []), {
+            images: (input.attachments ?? []).filter(file => isNativeImage(file.mimeType)).map(file => ({
+              type: 'image' as const, mimeType: file.mimeType, data: readFileSync(file.path).toString('base64')
+            }))
+          })
         } finally {
           input.abortController.signal.removeEventListener('abort', abortSession)
         }
@@ -258,18 +264,12 @@ export class PiTaskHarness {
   }
 
   private systemPrompt(input: PiTaskTurnInput, mcpAvailability: string): string {
-    return `你是 Fuddy 中负责项目任务的执行 Agent，运行在一个可持续对话的 Agent Run Session 中。
-
-${buildAgentStoragePolicy(input)}
-
-当前项目与任务上下文：
-${input.projectContext}
+    return `${buildAgentInstructions(input)}
+${buildAdditionalWorkspaceContext(input)}
 
 你拥有 Pi Coding Agent 的 read、bash、edit、write、grep、find、ls 基础工具，也可以使用 update_project_info 修改当前项目配置。
 你还可以使用第三方 MCP：Browser Use 负责网页，Computer Use 负责没有结构化接口的本机 App。${mcpAvailability}
-先检查项目中的 AGENTS.md、README、已有脚本、数据库模型和 Skills，再基于实际证据行动。不要编造数据库内容或执行结果。
-修改项目 Workspace 后，新目录从下一回合开始生效。
-使用中文和 Markdown，先给结论，再给实际执行结果。`
+修改项目 Workspace 后，新目录从下一回合开始生效。`
   }
 
   private createCustomTools(input: PiTaskTurnInput): ToolDefinition[] {

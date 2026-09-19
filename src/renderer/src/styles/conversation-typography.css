@@ -1,47 +1,29 @@
-/* Conversation typography is intentionally one step larger than the dense app chrome. */
-.conversation-shell .chat-turn-meta strong {
+/* Contextual conversation sizing; shared control sizes live with their components. */
+.message-attachments { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-block: 8px; }
+.message-attachment {
+  display: inline-flex;
+  max-width: 240px;
+  align-items: center;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--surface);
+  cursor: pointer;
+  overflow-wrap: anywhere;
   font-size: 12px;
 }
-
-.conversation-shell .chat-turn-meta time {
-  font-size: 12px;
-}
-
-.briefing-delivery-copy,
-.work-task-context,
-.agent-run-system-message {
-  font-size: 13px;
-}
+.message-attachment:hover { background: var(--control-hover-background); }
+.message-attachment img { max-width: 220px; max-height: 180px; object-fit: contain; border-radius: 6px; }
+.composer-file-attachment { display: flex; max-width: 180px; min-height: 52px; gap: 6px; align-items: center; padding: 8px; overflow-wrap: anywhere; font-size: 12px; }
+.agent-run-pdf-preview { width: 100%; min-height: 65vh; border: 0; }
 
 .conversation-shell .chat-bubble,
 .conversation-shell .chat-markdown,
 .conversation-shell .chat-turn-content > .chat-markdown {
   font-size: 14px;
-}
-
-.agent-thinking-marker-content > strong,
-.agent-tool-call-preview,
-.agent-tool-call-summary small,
-.agent-tool-call-group-summary small,
-.agent-tool-call-detail pre,
-.agent-tool-call-group-detail > pre {
-  font-size: 12px;
-}
-
-.agent-thinking-marker .chat-markdown,
-.agent-tool-call-summary strong,
-.agent-tool-call-group-summary strong {
-  font-size: 12px;
-}
-
-.composer-textarea {
-  font-size: 14px;
-}
-
-.composer-image-error,
-.composer .select-menu-trigger,
-.composer .select-menu-option {
-  font-size: 12px;
 }
 
 .chat-attachment-list {
@@ -68,6 +50,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
+  .composer-model-picker-popover label { color: var(--muted); }
   .composer-model-label,
   .composer-model-picker-trigger { color: #aaa9a3; background: transparent; }
   .composer-model-picker-trigger:hover,
@@ -134,7 +117,13 @@
   .agent-run-project-summary dt,
   .agent-run-workspace-summary,
   .agent-run-workspace-summary code,
-  .agent-run-meta-grid small { color: #8f8f89; }
+  .agent-run-meta-grid small { color: var(--muted); }
+  .agent-run-info-artifacts > button,
+  .agent-run-git-stats > span { color: var(--text-secondary); }
+  .agent-run-info-artifacts small,
+  .agent-run-info-tabs small,
+  .agent-run-git-stats small,
+  .agent-process-disclosure > button small { color: var(--muted); }
   .agent-run-info-header > button:hover,
   .agent-run-info-section-title > button:hover,
   .agent-run-info-artifacts > button:hover { color: #deded9; background: rgba(255, 255, 248, .065); }
@@ -162,6 +151,7 @@
   .agent-run-image-preview { border-color: rgba(255, 255, 248, .08); background: rgba(255, 255, 248, .035); }
   .agent-run-text-preview { color: #c4c4bf; }
   .agent-run-file-preview-state > button { color: #c7c7c2; background: rgba(255, 255, 248, .075); }
+  .agent-run-file-preview-state.is-error { color: var(--text-danger); }
   .agent-run-chat-main > .conversation-shell .chat-turn-content > .chat-markdown { color: #d9d9d5; }
   .chat-scroll-to-latest {
     border-color: rgba(255, 255, 248, .12);
@@ -205,5 +195,4 @@
   .agent-tool-call-group-detail > pre { color: #969690; }
   .agent-process-disclosure > button { color: #8f8f89; }
   .agent-process-disclosure > button:hover { color: #d2d2cd; }
-  .agent-process-disclosure > button small { color: #74746f; }
 }

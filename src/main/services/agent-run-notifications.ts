@@ -17,7 +17,7 @@ export function agentRunNotificationContent(turn: AgentTurnSettledPayload): Agen
   return {
     id: `agent-turn-${turn.turnId}`,
     groupId: `agent-run-${turn.runId}`,
-    title: turn.outcome === 'completed' ? 'Agent Run 已完成' : 'Agent Run 执行失败',
+    title: turn.outcome === 'completed' ? 'Chat 已完成' : 'Chat 执行失败',
     body: concise(turn.outcome === 'failed' && turn.summary ? `${turn.title}：${turn.summary}` : turn.title, 120)
   }
 }

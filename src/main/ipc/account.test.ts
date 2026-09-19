@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccountState } from '../../shared/account'
 import { AccountAuthorizationLostError } from '../services/account-service'
 import type { IpcContext } from './context'
+import { BrowserWindow, dialog } from 'electron'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -59,6 +60,14 @@ describe('account IPC lifecycle', () => {
     electronMocks.writeText.mockClear()
   })
 
+  it('broadcasts an already signed-out state to clear a stale root renderer', () => {
+    const send = vi.fn()
+    electronMocks.windows.push({ webContents: { isDestroyed: () => false, send } })
+    registerAccountIpc({ accountService: { getState: () => signedOutState } } as unknown as IpcContext)
+    expect(electronMocks.handlers.get('account:get-state')?.()).toEqual(signedOutState)
+    expect(send).toHaveBeenCalledWith('account:state-changed', signedOutState)
+  })
+
   it('copies only Google authorization URLs through the privileged process', () => {
     registerAccountIpc({
       accountService: { getState: vi.fn(() => signedOutState) }
@@ -69,6 +78,25 @@ describe('account IPC lifecycle', () => {
     expect(copyAuthorizationUrl?.({}, { url: authorizationUrl })).toBeUndefined()
     expect(electronMocks.writeText).toHaveBeenCalledWith(authorizationUrl)
     expect(() => copyAuthorizationUrl?.({}, { url: 'https://example.com/oauth' })).toThrow()
+  })
+
+  it.each([
+    { canceled: false, filePaths: ['/Users/test/Project'], expected: '/Users/test/Project' },
+    { canceled: true, filePaths: ['/Users/test/Project'], expected: null },
+    { canceled: false, filePaths: [], expected: null }
+  ])('selects a project directory through a native window dialog: $expected', async ({ canceled, filePaths, expected }) => {
+    registerAccountIpc({} as IpcContext)
+    const parent = {} as Electron.BrowserWindow
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValueOnce(parent)
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled, filePaths })
+
+    const selectFolder = electronMocks.handlers.get('project:select-folder')!
+    await expect(selectFolder({ sender: {} })).resolves.toBe(expected)
+    expect(dialog.showOpenDialog).toHaveBeenLastCalledWith(parent, {
+      title: '选择项目文件夹',
+      buttonLabel: '选择文件夹',
+      properties: ['openDirectory', 'createDirectory']
+    })
   })
 
   it('stops and forgets Companion when account validation reports explicit authorization loss', async () => {

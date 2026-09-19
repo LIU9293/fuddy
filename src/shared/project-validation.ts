@@ -33,6 +33,7 @@ export const projectProfileSchema = z.object({
 
 export const updateProjectSchema = z.object({
   id: z.string().trim().min(1).max(200),
+  shared: z.object({ id: z.uuid(), revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), author: z.string().min(1).max(200) }).optional(),
   name: z.string().trim().min(1).max(200),
   icon: projectIconSchema,
   summary: z.string().trim().min(1).max(2_000),

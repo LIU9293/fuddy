@@ -167,8 +167,8 @@ export class WorkspaceAgentActions {
     const getContext = defineTool({
       name: 'get_workspace_context',
       label: 'Get workspace context',
-      description: '读取工作助理可管理的项目、目标、收件箱、Agent Run、自动化和最近 Action 状态。先用它找到真实 ID，不要猜测。',
-      promptSnippet: 'Inspect projects, goals, inbox items, Agent Runs, automations, and recent action state',
+      description: '读取工作助理可管理的项目、目标、收件箱、Chat、自动化和最近 Action 状态。先用它找到真实 ID，不要猜测。',
+      promptSnippet: 'Inspect projects, goals, inbox items, Chats, automations, and recent action state',
       parameters: Type.Object({}),
       execute: async () => {
         const context = {
@@ -187,7 +187,7 @@ export class WorkspaceAgentActions {
     const inspectProject = defineTool({
       name: 'inspect_project',
       label: 'Inspect project',
-      description: '读取一个项目的配置、当前状态、目标、收件箱和 Agent Run。',
+      description: '读取一个项目的配置、当前状态、目标、收件箱和 Chat。',
       promptSnippet: 'Inspect one project and its operational state',
       parameters: Type.Object({ projectId: Type.String() }),
       execute: async (_id, params) => {
@@ -219,9 +219,9 @@ export class WorkspaceAgentActions {
 
     const inspectAgentRun = defineTool({
       name: 'inspect_agent_run',
-      label: 'Inspect Agent Run',
-      description: '读取一个 Agent Run 的状态、消息、工具记录和产物。',
-      promptSnippet: 'Inspect a persistent Agent Run',
+      label: 'Inspect Chat',
+      description: '读取一个 Chat 的状态、消息、工具记录和产物。',
+      promptSnippet: 'Inspect a persistent Chat',
       parameters: Type.Object({ runId: Type.String() }),
       execute: async (_id, params) => {
         const detail = this.database.getAgentRunDetail(params.runId)
@@ -232,15 +232,15 @@ export class WorkspaceAgentActions {
 
     const openAgentRun = defineTool({
       name: 'open_agent_run',
-      label: 'Open Agent Run',
-      description: '把一个已有 Agent Run 作为普通链接附到回复中，供用户跳转。只导航，不修改任何状态，也不需要确认。',
-      promptSnippet: 'Attach a link that opens an existing Agent Run without changing state',
+      label: 'Open Chat',
+      description: '把一个已有 Chat 作为普通链接附到回复中，供用户跳转。只导航，不修改任何状态，也不需要确认。',
+      promptSnippet: 'Attach a link that opens an existing Chat without changing state',
       parameters: Type.Object({ runId: Type.String() }),
       execute: async (_id, params) => {
         const run = this.database.getAgentRun(params.runId)
         state.linkedRunId = run.id
         capture('open_agent_run', { runId: run.id })
-        return toolResult(`已附加 Agent Run“${run.title}”的跳转链接。`, { runId: run.id })
+        return toolResult(`已附加 Chat“${run.title}”的跳转链接。`, { runId: run.id })
       }
     })
 
@@ -355,7 +355,7 @@ export class WorkspaceAgentActions {
     if (option.capability === 'agent-run.open') {
       const runId = text(option.payload.runId, 200)
       const run = this.database.listRuns().find((item) => item.id === runId)
-      if (!run) throw new Error('这个 Agent Run 已归档或不存在，请重新查找。')
+      if (!run) throw new Error('这个 Chat 已归档或不存在，请重新查找。')
       return { message, navigation: { kind: 'agent-run', id: run.id, draftPrompt: null }, notice: `已打开“${run.title}”。` }
     }
 
@@ -400,13 +400,13 @@ export class WorkspaceAgentActions {
       })
       notice = `已更新“${project.name}”的用户确认项目现状。`
     } else if (option.capability === 'agent-run.create') {
-      if (!this.dispatcher) throw new Error('工作助理的 Agent Run 管理能力尚未初始化。')
+      if (!this.dispatcher) throw new Error('工作助理的 Chat 管理能力尚未初始化。')
       const projectId = nullableText(payload.projectId, 200)
       if (projectId) requireProject(this.database, projectId)
       const decisionId = nullableText(payload.decisionId, 200)
       const title = text(payload.title, 200)
       const draftPrompt = text(payload.draftPrompt, 20_000)
-      if (!title || !draftPrompt) throw new Error('Agent Run 标题和任务说明不能为空。')
+      if (!title || !draftPrompt) throw new Error('Chat 标题和任务说明不能为空。')
       const existing = this.database.listRuns().find((run) =>
         run.status !== 'completed'
         && run.status !== 'cancelled'
@@ -424,7 +424,7 @@ export class WorkspaceAgentActions {
       if (decisionId) {
         this.database.updateDecisionStatus(decisionId, 'in_progress', {
           actor: 'agent',
-          reason: `已交由 Agent Run“${detail.run.title}”处理。`
+          reason: `已交由 Chat“${detail.run.title}”处理。`
         })
       }
       linkedRunId = detail.run.id
@@ -437,21 +437,21 @@ export class WorkspaceAgentActions {
       if (payload.operation === 'rename') {
         const run = this.database.renameAgentRun(runId, text(payload.title, 200))
         linkedRunId = run.id
-        notice = `Agent Run 已重命名为“${run.title}”。`
+        notice = `Chat 已重命名为“${run.title}”。`
       } else if (payload.operation === 'update_draft') {
         const run = this.database.updateAgentRunDraftPrompt(runId, text(payload.draftPrompt, 20_000))
         linkedRunId = run.id
         notice = `已更新“${run.title}”的预填任务说明，仍未发送。`
       } else {
-        throw new Error('不支持的 Agent Run 更新操作。')
+        throw new Error('不支持的 Chat 更新操作。')
       }
     } else if (option.capability === 'agent-run.archive') {
       const runId = text(payload.runId, 200)
       const run = this.database.getAgentRun(runId)
       this.database.archiveAgentRun(runId)
-      notice = `已归档 Agent Run“${run.title}”。`
+      notice = `已归档 Chat“${run.title}”。`
     } else if (option.capability === 'agent-run.send') {
-      if (!this.dispatcher) throw new Error('工作助理的 Agent Run 管理能力尚未初始化。')
+      if (!this.dispatcher) throw new Error('工作助理的 Chat 管理能力尚未初始化。')
       const detail = await this.dispatcher.sendMessage(
         text(payload.runId, 200),
         text(payload.prompt, 20_000),
@@ -461,7 +461,7 @@ export class WorkspaceAgentActions {
         cancellationSignal
       )
       linkedRunId = detail.run.id
-      notice = `已把消息发送给 Agent Run“${detail.run.title}”。`
+      notice = `已把消息发送给 Chat“${detail.run.title}”。`
     } else if (option.capability === 'goal.manage') {
       notice = await this.executeGoalAction(payload, cancellationSignal)
     } else if (option.capability === 'inbox.manage') {

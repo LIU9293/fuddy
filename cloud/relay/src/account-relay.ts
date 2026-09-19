@@ -535,12 +535,13 @@ export class AccountRelay extends DurableObject<Env> {
       `INSERT INTO devices (
         id, role, platform, name, token_hash, public_key, grant_generation,
         created_at, last_seen_at, revoked_at
-      ) VALUES (?, 'ios', 'ios', ?, ?, ?, ?, ?, NULL, NULL)
+      ) VALUES (?, 'ios', ?, ?, ?, ?, ?, ?, NULL, NULL)
       ON CONFLICT(id) DO UPDATE SET
-        role = 'ios', platform = 'ios', name = excluded.name, token_hash = excluded.token_hash,
+        role = 'ios', platform = excluded.platform, name = excluded.name, token_hash = excluded.token_hash,
         public_key = excluded.public_key, grant_generation = excluded.grant_generation,
         last_seen_at = NULL, revoked_at = NULL`,
       input.deviceId,
+      input.platform ?? 'ios',
       input.deviceName,
       tokenHash,
       input.publicKey ?? null,

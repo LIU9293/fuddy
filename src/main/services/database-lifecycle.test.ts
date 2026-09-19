@@ -28,12 +28,12 @@ describe('AppDatabase lifecycle', () => {
     new AppDatabase(path).close()
 
     const database = new DatabaseSync(path)
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 10 })
     database.close()
 
     new AppDatabase(path).close()
     const reopened = new DatabaseSync(path)
-    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
+    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 10 })
     reopened.close()
   })
 
@@ -53,7 +53,7 @@ describe('AppDatabase lifecycle', () => {
     const upgraded = new DatabaseSync(path)
     const columns = upgraded.prepare('PRAGMA table_info(agent_runs)').all() as Array<{ name: string }>
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['model', 'reasoning_effort']))
-    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 10 })
     upgraded.close()
   })
 
@@ -132,7 +132,7 @@ describe('AppDatabase lifecycle', () => {
       last_error: null
     })
     expect(upgradedRemoteCommand).toEqual({ protocol_version: companionProtocolVersion, status: 'executing' })
-    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 10 })
     upgraded.close()
   })
 

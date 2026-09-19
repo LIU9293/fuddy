@@ -1,5 +1,23 @@
 import type { Capability, CreateProjectInput } from './contracts'
 
+export interface ExecutionHost {
+  id: string
+  name: string
+  isCurrent: boolean
+  online: boolean
+  workspaceConfigured: boolean
+  unavailableReason: string | null
+}
+
+export interface AccountSyncSpace {
+  id: string
+  hostId: string
+  hostName: string
+  relayBound: number | boolean
+  relayUrl: string | null
+  relayAccountId: string | null
+}
+
 export type AccountServiceStatus = 'ready' | 'offline' | 'configuration-required'
 export type AccountOnboardingStep = 'detect-agent' | 'add-project' | 'complete'
 
@@ -83,6 +101,7 @@ export interface AccountPendingEnrollment {
   deviceId: string
   deviceName: string
   publicKey: string
+  platform?: 'macos' | 'ios'
   expiresAt: string
 }
 

@@ -513,7 +513,7 @@ export class GoalTrackingService {
   async checkDueGoals(projectId?: string, cancellationSignal?: AbortSignal): Promise<CheckGoalResult[]> {
     throwIfCancelled(cancellationSignal)
     const now = Date.now()
-    const due = this.database.listGoals(projectId).filter((goal) =>
+    const due = this.database.listGoals(projectId).filter((goal) => this.database.canScheduleGoalHere(goal)).filter((goal) =>
       (goal.status === 'active' || goal.status === 'at-risk') &&
       Boolean(goal.nextCheckInAt && new Date(goal.nextCheckInAt).getTime() <= now)
     )

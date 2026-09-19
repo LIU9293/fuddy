@@ -1,11 +1,27 @@
 import { z } from 'zod'
+import { maximumChatAttachmentBytes, maximumChatAttachments } from '../../shared/chat-attachments'
+
+export const chatAttachmentSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  name: z.string().trim().min(1).max(500),
+  mimeType: z.string().regex(/^[\w.+-]+\/[\w.+-]+$/).max(200),
+  dataUrl: z.string().max(Math.ceil(maximumChatAttachmentBytes / 3) * 4 + 256)
+}).superRefine((file, context) => {
+  const prefix = `data:${file.mimeType};base64,`
+  const encoded = file.dataUrl.slice(prefix.length)
+  const bytes = Buffer.from(encoded, 'base64')
+  if (!file.dataUrl.startsWith(prefix) || bytes.toString('base64') !== encoded
+    || bytes.length === 0 || bytes.length > maximumChatAttachmentBytes) {
+    context.addIssue({ code: 'custom', path: ['dataUrl'], message: '附件数据无效或超过 20 MiB。' })
+  }
+})
 
 export const workAssistantImageSchema = z
   .object({
     id: z.string().trim().min(1).max(200),
     name: z.string().trim().min(1).max(200),
     mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
-    dataUrl: z.string().max(7_100_000)
+    dataUrl: z.string().max(Math.ceil(maximumChatAttachmentBytes / 3) * 4 + 256)
   })
   .superRefine((image, context) => {
     if (!image.dataUrl.startsWith(`data:${image.mimeType};base64,`)) {
@@ -55,6 +71,7 @@ export const dispatchTaskSchema = z.object({
 })
 
 export const createAgentRunDraftSchema = dispatchTaskSchema.omit({ requestId: true, prompt: true }).extend({
+  executionHostId: z.string().trim().min(1).max(200).nullable().optional(),
   title: z.string().trim().min(1).max(200),
   draftPrompt: z.string().trim().max(20_000).nullable().optional()
 })
@@ -69,7 +86,7 @@ export const sendAgentRunMessageSchema = z.object({
   requestId: z.string().trim().min(1).max(200),
   runId: z.string().trim().min(1).max(200),
   prompt: z.string().trim().min(1).max(20_000),
-  attachments: z.array(workAssistantImageSchema).max(4).optional()
+  attachments: z.array(chatAttachmentSchema).max(maximumChatAttachments).optional()
 })
 
 export const renameAgentRunSchema = z.object({

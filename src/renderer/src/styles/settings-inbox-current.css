@@ -44,7 +44,7 @@
 .settings-list-section-heading p {
   margin-top: 5px;
   color: #85857e;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -108,14 +108,14 @@
   margin-top: 5px;
   overflow-wrap: anywhere;
   color: #7f7f78;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
 .settings-row-status {
   flex: 0 0 auto;
   color: #73736d;
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -147,7 +147,7 @@
   border-radius: 8px;
   color: #5e5e58;
   background: rgba(255, 255, 253, .72);
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -195,7 +195,7 @@
 }
 
 .settings-setup-row strong { font-size: 12px; }
-.settings-setup-row p { margin-top: 4px; color: #85857e; font-size: 11px; line-height: 1.5; }
+.settings-setup-row p { margin-top: 4px; color: #85857e; font-size: 12px; line-height: 1.5; }
 .settings-setup-row input {
   width: 100%;
   min-height: 35px;
@@ -204,7 +204,7 @@
   border-radius: 8px;
   color: #3d3d38;
   background: rgba(255, 255, 253, .78);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .settings-recovery-alert {
@@ -222,8 +222,8 @@
 
 .settings-recovery-alert > div:first-of-type { min-width: 0; }
 .settings-recovery-alert strong { color: #4b4338; font-size: 12px; }
-.settings-recovery-alert p { margin: 4px 0 0; color: #7e7365; font-size: 11px; line-height: 1.5; }
-.settings-recovery-alert code { display: block; max-height: 120px; margin-top: 9px; overflow: auto; color: #76695a; font-size: 10px; white-space: pre-wrap; }
+.settings-recovery-alert p { margin: 4px 0 0; color: #7e7365; font-size: 12px; line-height: 1.5; }
+.settings-recovery-alert code { display: block; max-height: 120px; margin-top: 9px; overflow: auto; color: #76695a; font-size: 12px; white-space: pre-wrap; }
 .settings-recovery-alert > div:last-child { display: flex; align-items: center; gap: 8px; }
 
 .settings-segmented-control {
@@ -243,7 +243,7 @@
   border-radius: 7px;
   color: #74746e;
   background: transparent;
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -298,14 +298,14 @@
   flex-direction: column;
   gap: 6px;
   color: #66665f;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .coding-agent-inline-editor > p {
   grid-column: 1 / -1;
   margin: 0;
   color: #85857e;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .coding-agent-inline-editor > p.is-error { color: #a74444; }
@@ -339,7 +339,7 @@
 }
 
 .settings-disclosure-button > span { display: flex; flex-direction: column; gap: 4px; }
-.settings-disclosure-button small { color: #85857e; font-size: 11px; }
+.settings-disclosure-button small { color: #85857e; font-size: 12px; }
 .settings-disclosure-button svg { color: #92928b; transition: transform 150ms ease; }
 .settings-flat-list article.is-expanded .settings-disclosure-button svg { transform: rotate(180deg); }
 
@@ -351,7 +351,7 @@
   padding-top: 14px;
 }
 
-.settings-inline-editor-heading span { color: #8a8a83; font-size: 10px; }
+.settings-inline-editor-heading span { color: #8a8a83; font-size: 12px; }
 .settings-inline-editor-heading.is-secondary { margin-top: 24px; border-top: 1px solid var(--border); }
 
 .settings-risk-banner {
@@ -369,13 +369,13 @@
 .settings-risk-banner strong,
 .settings-risk-banner p { display: block; margin: 0; }
 .settings-risk-banner strong { color: #423c34; font-size: 13px; }
-.settings-risk-banner p { margin-top: 5px; color: #776d61; font-size: 11px; line-height: 1.55; }
-.settings-risk-banner > span { color: #9b691f; font-size: 11px; white-space: nowrap; }
+.settings-risk-banner p { margin-top: 5px; color: #776d61; font-size: 12px; line-height: 1.55; }
+.settings-risk-banner > span { color: #9b691f; font-size: 12px; white-space: nowrap; }
 
 .settings-policy-footnote {
   margin: 18px 0 0;
   color: #8c8c85;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .decision-list {
@@ -396,7 +396,7 @@
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   color: #92928b;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 620;
 }
 
@@ -413,7 +413,7 @@
   align-items: center;
   gap: 7px;
   color: #565650;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -430,7 +430,7 @@
   gap: 4px;
   padding: 4px 7px;
   border-radius: 6px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 650;
   white-space: nowrap;
 }
@@ -461,7 +461,7 @@
 .decision-title-button span,
 .decision-preview-button span {
   color: #85857e;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -469,7 +469,7 @@
   display: -webkit-box;
   overflow: hidden;
   color: #666660;
-  font-size: 11px;
+  font-size: 12px;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -485,7 +485,7 @@
   min-height: 31px;
   padding: 0 10px;
   border-radius: 7px;
-  font-size: 10px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -518,6 +518,29 @@
 }
 
 @media (prefers-color-scheme: dark) {
+  .settings-row-button:hover:not(:disabled),
+  .decision-ignore-button:hover,
+  .decision-expand-button:hover {
+    color: var(--text);
+    background: var(--control-hover-background);
+  }
+  .settings-disclosure-button,
+  .decision-project-cell { color: var(--text-secondary); }
+  .settings-row-status,
+  .settings-segmented-control button,
+  .settings-disclosure-button small,
+  .coding-agent-inline-editor label,
+  .coding-agent-inline-editor > p,
+  .settings-setup-row p,
+  .settings-recovery-alert code { color: var(--muted); }
+  .settings-row-status.is-ready,
+  .settings-row-status.is-scaffolded { color: var(--text-success); }
+  .settings-row-status.is-needs-setup,
+  .settings-row-status.is-warning,
+  .settings-risk-banner > span { color: var(--text-warning); }
+  .settings-row-status.is-unavailable,
+  .coding-agent-inline-editor > p.is-error { color: var(--text-danger); }
+  .settings-link-button { color: var(--text-link); }
   .settings-secondary-nav button.is-active { color: #b7b8ff; background: rgba(121, 122, 242, .16); }
   .settings-list-section-heading h2,
   .settings-flat-list strong,
@@ -542,5 +565,5 @@
   .settings-risk-banner p,
   .settings-recovery-alert p { color: #aaa096; }
   .settings-recovery-alert { background: rgba(225, 158, 58, .07); }
-  .decision-row .primary-action { background: #6668e3; }
+  .decision-row .primary-action { color: #fff; background: #5758d9; }
 }

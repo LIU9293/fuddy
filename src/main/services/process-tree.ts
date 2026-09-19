@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process'
 
 interface KillableChildProcess {
   pid?: number
+  exitCode?: number | null
+  signalCode?: NodeJS.Signals | null
   kill(signal?: NodeJS.Signals): boolean
 }
 
@@ -68,19 +70,13 @@ export async function terminateProcessTree(
   gracePeriodMs = 750
 ): Promise<void> {
   const rootPid = child.pid
-  if (!rootPid || process.platform === 'win32') {
-    child.kill()
+  if (!rootPid) {
     return
   }
-
-  const processTable = await readUnixProcessTable()
-  if (!processTable) {
-    signalProcessGroup(rootPid, 'SIGTERM')
-    child.kill('SIGTERM')
-    return
-  }
-
-  const processIds = [...unixDescendantProcessIds(processTable, rootPid), rootPid]
+  // A completed child may have had its PID recycled. Never signal it again.
+  if (child.exitCode != null || child.signalCode != null) return
+  const processTable = process.platform === 'win32' ? null : await readUnixProcessTable()
+  const processIds = [...unixDescendantProcessIds(processTable ?? '', rootPid), rootPid]
   for (const pid of processIds) signalProcess(pid, 'SIGTERM')
   signalProcessGroup(rootPid, 'SIGTERM')
   const deadline = Date.now() + gracePeriodMs
@@ -91,4 +87,11 @@ export async function terminateProcessTree(
     if (processIsRunning(pid)) signalProcess(pid, 'SIGKILL')
   }
   signalProcessGroup(rootPid, 'SIGKILL')
+  // SIGKILL delivery is asynchronous too. Do not release a turn's writer queue
+  // just because the signal was sent (including when process-table lookup failed).
+  const exitDeadline = Date.now() + 5_000
+  while (processIds.some(processIsRunning) && Date.now() < exitDeadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 25))
+  }
+  if (processIds.some(processIsRunning)) throw new Error('Agent 进程尚未完全退出，请等待后再试。')
 }

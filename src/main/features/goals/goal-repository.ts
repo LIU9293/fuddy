@@ -59,8 +59,9 @@ export class GoalRepository {
     return goal
   }
 
-  create(goal: ProjectGoal): ProjectGoal {
+  create(goal: ProjectGoal, fromSync = false): ProjectGoal {
     return this.transaction(() => {
+      if (!fromSync && this.database.prepare('SELECT 1 FROM project_goals WHERE id=?').get(goal.id)) throw new Error('目标已存在。')
       this.database
         .prepare(
           `
@@ -69,6 +70,12 @@ export class GoalRepository {
           next_check_in_at, progress, confidence, agent_summary,
           monitoring_sources_json, created_by, created_at, updated_at, completed_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET title=excluded.title, description=excluded.description,
+          status=excluded.status, priority=excluded.priority, metric_json=excluded.metric_json,
+          deadline=excluded.deadline, next_check_in_at=excluded.next_check_in_at,
+          progress=excluded.progress, confidence=excluded.confidence, agent_summary=excluded.agent_summary,
+          monitoring_sources_json=excluded.monitoring_sources_json, updated_at=excluded.updated_at,
+          completed_at=excluded.completed_at
       `
         )
         .run(
@@ -95,7 +102,19 @@ export class GoalRepository {
           id, goal_id, title, status, due_at, evidence_refs_json, sort_order,
           created_at, updated_at, completed_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET title=excluded.title, status=excluded.status, due_at=excluded.due_at,
+          evidence_refs_json=excluded.evidence_refs_json, sort_order=excluded.sort_order,
+          updated_at=excluded.updated_at, completed_at=excluded.completed_at
+        WHERE goal_milestones.goal_id=excluded.goal_id
       `)
+      if (fromSync) {
+        const retained = new Set(goal.milestones.map((milestone) => milestone.id))
+        for (const row of this.database.prepare('SELECT id FROM goal_milestones WHERE goal_id=?').all(goal.id) as SqlRow[]) {
+          if (retained.has(String(row.id))) continue
+          this.database.prepare('UPDATE agent_runs SET milestone_id=NULL WHERE milestone_id=?').run(row.id)
+          this.database.prepare('DELETE FROM goal_milestones WHERE id=?').run(row.id)
+        }
+      }
       for (const milestone of goal.milestones) {
         insertMilestone.run(
           milestone.id,
@@ -110,11 +129,22 @@ export class GoalRepository {
           milestone.completedAt
         )
       }
-      for (const checkIn of goal.checkIns) this.createCheckIn(checkIn)
+      for (const checkIn of goal.checkIns) if (!this.database.prepare('SELECT 1 FROM goal_checkins WHERE id=?').get(checkIn.id)) this.createCheckIn(checkIn)
       const created = this.get(goal.id)
       this.publish('goal.created', created)
       return created
     })
+  }
+
+  merge(goal: ProjectGoal): ProjectGoal {
+    const existing = this.list(goal.projectId).find((item) => item.id === goal.id)
+    if (existing) {
+      const { executionHostId: _incomingHost, ...incoming } = goal
+      const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+        ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item)
+      if (existing.updatedAt > goal.updatedAt || (existing.updatedAt === goal.updatedAt && canonical(existing) >= canonical(incoming))) return existing
+    } else if (this.database.prepare('SELECT 1 FROM project_goals WHERE id=?').get(goal.id)) throw new Error('目标标识属于另一个项目。')
+    return this.create(goal, true)
   }
 
   updateTracking(input: {

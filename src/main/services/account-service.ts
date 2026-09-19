@@ -18,6 +18,7 @@ import type { AppDatabase } from './database'
 import { getGoogleAuthorizationCode } from './google-desktop-oauth'
 import {
   wrapDeviceGrant,
+  openDeviceGrant,
   type AccountRelayCredentials
 } from './account-device-grant'
 
@@ -27,6 +28,16 @@ const devicePrivateKeyReference = 'account.device-private-key'
 const cachedAccountKey = 'account.cached-state'
 const onboardingKeyPrefix = 'account.onboarding-state:'
 const deviceIdentityKey = 'account.device-identity'
+const lastSignOutKey = 'account.last-sign-out'
+
+type SignOutReason = 'user_logout' | 'all_devices_logout' | 'device_revoked'
+  | 'refresh_expired_locally' | 'missing_refresh_token' | 'refresh_rejected' | 'access_rejected_after_refresh'
+
+interface SignOutDiagnostic {
+  reason: SignOutReason
+  occurredAt: string
+  serverCode: string | null
+}
 
 type CredentialStore = Pick<CredentialVault, 'get' | 'set' | 'delete'>
 
@@ -86,6 +97,7 @@ export interface AccountServiceOptions {
   deviceName?: string
   googleClientId?: string | null
   fetch?: typeof globalThis.fetch
+  onSignedOut?: (state: AccountState) => void
 }
 
 export function normalizeAccountApiUrl(
@@ -124,10 +136,14 @@ export class AccountService {
   getState(): AccountState {
     const cached = this.database.getSetting<CachedAccount | null>(cachedAccountKey, null)
     if (cached?.refreshExpiresAt && new Date(cached.refreshExpiresAt).getTime() <= Date.now()) {
-      this.clearLocalAuth()
+      this.clearLocalAuth('refresh_expired_locally')
       return this.signedOutState('登录状态已过期，请重新登录。')
     }
-    if (!cached || !this.credentialVault.get(refreshTokenReference)) {
+    if (cached && !this.credentialVault.get(refreshTokenReference)) {
+      this.clearLocalAuth('missing_refresh_token')
+      return this.signedOutState('登录状态已失效，请重新登录。')
+    }
+    if (!cached) {
       return this.signedOutState(this.options.apiUrl ? null : 'Account API 尚未配置。')
     }
     const onboardingKey = `${onboardingKeyPrefix}${cached.user.id}`
@@ -256,15 +272,38 @@ export class AccountService {
     return devices.map((device) => ({ ...device, isCurrent: Boolean(device.isCurrent) }))
   }
 
+  async listSyncSpaces(): Promise<import('../../shared/account').AccountSyncSpace[]> {
+    const response = await this.requestAuthorized('/v1/sync-spaces', { method: 'GET' })
+    return (await response.json() as { syncSpaces: import('../../shared/account').AccountSyncSpace[] }).syncSpaces
+  }
+
+  async enrollMacPeer(spaceId: string, enrollmentId?: string): Promise<{ id: string; credentials: AccountRelayCredentials | null }> {
+    const deviceId = this.getState().device?.id
+    if (!deviceId) throw new Error('请先登录。')
+    const root = `/v1/sync-spaces/${encodeURIComponent(spaceId)}/enrollments`
+    const response = await this.requestAuthorized(enrollmentId ? `${root}/${encodeURIComponent(enrollmentId)}` : root,
+      enrollmentId ? { method: 'GET' } : { method: 'POST', body: JSON.stringify({ deviceId }) })
+    const { enrollment } = await response.json() as { enrollment: { id: string; status: string; wrappedSpaceKey?: string; expiresAt?: string } }
+    if (enrollment.status === 'revoked' || (enrollment.status === 'pending' && enrollment.expiresAt && Date.parse(enrollment.expiresAt) < Date.now())) {
+      throw new Error('Mac 连接授权已失效，请重试。')
+    }
+    if (enrollment.status !== 'active' || !enrollment.wrappedSpaceKey) return { id: enrollment.id, credentials: null }
+    const privateKey = this.credentialVault.get(devicePrivateKeyReference)
+    if (!privateKey) throw new Error('设备密钥不可用。')
+    return { id: enrollment.id, credentials: openDeviceGrant({
+      wrappedGrant: enrollment.wrappedSpaceKey, enrollmentId: enrollment.id, spaceId, deviceId, recipientPrivateKey: privateKey
+    }) }
+  }
+
   async revokeDevice(deviceId: string): Promise<void> {
     const currentDeviceId = this.getState().device?.id
     await this.requestAuthorized(`/v1/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' })
-    if (deviceId === currentDeviceId) this.clearLocalAuth()
+    if (deviceId === currentDeviceId) this.clearLocalAuth('device_revoked')
   }
 
   async logoutAll(): Promise<AccountState> {
     await this.requestAuthorized('/v1/auth/logout-all', { method: 'POST' })
-    this.clearLocalAuth()
+    this.clearLocalAuth('all_devices_logout')
     return this.getState()
   }
 
@@ -288,7 +327,7 @@ export class AccountService {
         // Local sign-out must remain available while the Account API is offline.
       }
     }
-    if (this.authGeneration === generation) this.clearLocalAuth()
+    if (this.authGeneration === generation) this.clearLocalAuth('user_logout')
     return this.getState()
   }
 
@@ -410,11 +449,21 @@ export class AccountService {
     }
   }
 
-  private clearLocalAuth(): void {
+  private clearLocalAuth(reason: SignOutReason, serverCode?: string): void {
     this.authGeneration += 1
     this.credentialVault.delete(accessTokenReference)
     this.credentialVault.delete(refreshTokenReference)
     this.database.setSetting<CachedAccount | null>(cachedAccountKey, null)
+    // Keep only a fixed reason/code and timestamp; never persist tokens or raw responses.
+    const knownCodes = ['refresh_token_expired', 'refresh_token_reused', 'invalid_session', 'session_expired', 'device_revoked']
+    this.database.setSetting<SignOutDiagnostic>(lastSignOutKey, {
+      reason,
+      occurredAt: new Date().toISOString(),
+      serverCode: serverCode && knownCodes.includes(serverCode) ? serverCode : null
+    })
+    this.options.onSignedOut?.(this.signedOutState(
+      reason === 'user_logout' || reason === 'all_devices_logout' ? null : '登录状态已失效，请重新登录。'
+    ))
   }
 
   private signedOutState(serviceMessage: string | null): AccountState {
@@ -449,7 +498,7 @@ export class AccountService {
       if (this.authGeneration !== generation) throw new Error('账户已切换，请重试。')
       if (response.status === 401) {
         if (this.credentialVault.get(accessTokenReference) === accessToken) {
-          this.clearLocalAuth()
+          this.clearLocalAuth('access_rejected_after_refresh')
           throw new AccountAuthorizationLostError()
         }
         throw new Error('账户已切换，请重试。')
@@ -467,7 +516,7 @@ export class AccountService {
     if (this.refreshInFlight?.generation === generation) return this.refreshInFlight.promise
     const refreshToken = this.credentialVault.get(refreshTokenReference)
     if (!refreshToken) {
-      this.clearLocalAuth()
+      this.clearLocalAuth('missing_refresh_token')
       throw new AccountAuthorizationLostError()
     }
     const promise = (async () => {
@@ -483,7 +532,7 @@ export class AccountService {
             this.authGeneration === generation
             && this.credentialVault.get(refreshTokenReference) === refreshToken
           ) {
-            this.clearLocalAuth()
+            this.clearLocalAuth('refresh_rejected', error.code)
             throw new AccountAuthorizationLostError()
           }
           throw new Error('账户已切换，请重试。')

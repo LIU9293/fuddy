@@ -53,7 +53,8 @@ export function registerIpc(
   projectAgentIntegration: ProjectAgentIntegrationService,
   companionSync: CompanionSyncService,
   accountService: AccountService,
-  accountEnrollmentCoordinator: AccountEnrollmentCoordinator
+  accountEnrollmentCoordinator: AccountEnrollmentCoordinator,
+  macPeers?: import('./services/mac-peer-sync').MacPeerSyncService
 ): void {
   const persistAttachments = (
     projectId: string | null,
@@ -72,6 +73,7 @@ export function registerIpc(
     })
 
   const context: IpcContext = {
+    macPeers,
     database,
     dispatcher,
     connectorRuntime,

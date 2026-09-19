@@ -1,17 +1,30 @@
 import { spawn } from 'node:child_process'
-import { basename } from 'node:path'
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { attachmentPrompt, isNativeImage, type RuntimeAttachment } from '../../shared/chat-attachments'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 import type { AgentApprovalDecision, AgentApprovalRequest, AgentRunProvider, AgentRunStreamUpdate } from '../../shared/contracts'
 import { resolveCliBinary } from './cli-executables'
 import type { ProviderSettingsService } from './provider-settings'
 import type { McpServerLaunchConfig } from './third-party-mcp-runtime'
-import { buildAgentStoragePolicy } from './agent-runtime-context'
+import { buildAgentInstructions, buildAdditionalWorkspaceContext } from './agent-runtime-context'
 import { terminateProcessTree } from './process-tree'
+import { codexSessionError, prepareCodexSession, type CodexSessionReady } from './codex-session'
+import { throwIfCancelled } from './cancellation'
+import type { AgentAccountContext } from '../../shared/agent-account-context'
+import { emptyAccountContext, codexAccountContext, codexExecutionContext, codexLimitContext, claudeAccountContext, claudeModelContext, claudeLimitContext, claudeTurnUsage, opencodeStepUsage, optionalAccountMetadata } from './agent-account-context'
 
 export interface McpLaunchConfigProvider {
   getLaunchConfigs(scope?: string): Promise<McpServerLaunchConfig[]>
 }
 
 export interface CliAgentTurnInput {
+  runId?: string
+  history?: import('../../shared/contracts').AgentRunMessage[]
+  codexSessionOwned?: boolean
+  onCodexSessionReady?: (ready: CodexSessionReady) => void
   projectId: string | null
   provider: Exclude<AgentRunProvider, 'pi'>
   /** Empty or omitted means the coding agent's own configured default. */
@@ -19,6 +32,8 @@ export interface CliAgentTurnInput {
   /** Empty or omitted means the coding agent's own configured default. */
   reasoningEffort?: string | null
   prompt: string
+  projectContext?: string
+  attachments?: RuntimeAttachment[]
   sessionId: string | null
   workingDirectory: string
   workspaceRoots: string[]
@@ -26,6 +41,7 @@ export interface CliAgentTurnInput {
   abortController: AbortController
   onUpdate: (update: AgentRunStreamUpdate) => void
   onSessionId: (sessionId: string) => void
+  onAccountContext?: (context: AgentAccountContext) => void
   onTool: (toolName: string, detail: string, metadata?: Record<string, unknown>) => void
   onApproval: (request: Omit<AgentApprovalRequest, 'runId' | 'createdAt'>) => Promise<AgentApprovalDecision>
 }
@@ -85,11 +101,15 @@ export function claudeSdkReasoningOptions(reasoningEffort?: string | null): { ef
 export function buildCodexTurnStartParams(
   threadId: string,
   prompt: string,
-  reasoningEffort?: string | null
+  reasoningEffort?: string | null,
+  attachments: RuntimeAttachment[] = []
 ): JsonRecord {
   return {
     threadId,
-    input: [{ type: 'text', text: prompt }],
+    input: [
+      { type: 'text', text: attachmentPrompt(prompt, attachments) },
+      ...attachments.filter(file => isNativeImage(file.mimeType)).map(file => ({ type: 'localImage', path: file.path }))
+    ],
     approvalPolicy: CODEX_APPROVAL_POLICY,
     sandboxPolicy: { type: CODEX_TURN_SANDBOX_POLICY },
     summary: CODEX_REASONING_SUMMARY,
@@ -266,7 +286,7 @@ export function buildCliArgs(input: CliAgentTurnInput, mcpServers: McpServerLaun
           ...(server.env ? { env: server.env } : {})
         }]))
       }),
-      '--append-system-prompt', `这是 Fuddy 中的持续 Agent Run。\n\n${buildAgentStoragePolicy(input)}`,
+      '--append-system-prompt', buildAgentInstructions(input),
       ...session,
       ...additionalDirectories.flatMap((directory) => ['--add-dir', directory]),
       '--tools', 'default',
@@ -280,6 +300,7 @@ export function buildCliArgs(input: CliAgentTurnInput, mcpServers: McpServerLaun
     ...(input.model ? ['--model', input.model] : []),
     ...(input.reasoningEffort ? ['--variant', input.reasoningEffort] : []),
     ...(input.sessionId ? ['--session', input.sessionId] : []),
+    ...(input.attachments?.length ? [...input.attachments.flatMap(file => ['--file', file.path]), '--'] : []),
     input.prompt
   ]
 }
@@ -298,7 +319,8 @@ export function buildCodexAppServerArgs(mcpServers: McpServerLaunchConfig[]): st
 export function buildCliEnv(
   provider: CliAgentTurnInput['provider'],
   mcpServers: McpServerLaunchConfig[],
-  baseEnv: NodeJS.ProcessEnv = process.env
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  instructionsFile?: string
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv }
   if (provider !== 'opencode') return env
@@ -311,6 +333,7 @@ export function buildCliEnv(
   const existingMcp = existing.mcp && typeof existing.mcp === 'object' ? existing.mcp as Record<string, unknown> : {}
   env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
     ...existing,
+    ...(instructionsFile ? { instructions: [...(Array.isArray(existing.instructions) ? existing.instructions : []), instructionsFile] } : {}),
     permission: 'allow',
     mcp: {
       ...existingMcp,
@@ -323,6 +346,23 @@ export function buildCliEnv(
     }
   })
   return env
+}
+
+export function claudeAttachmentPrompt(input: Pick<CliAgentTurnInput, 'prompt' | 'attachments' | 'sessionId'>): string | AsyncIterable<SDKUserMessage> {
+  if (!input.attachments?.length) return input.prompt
+  const attachments = input.attachments
+  return (async function* (): AsyncGenerator<SDKUserMessage> {
+    yield {
+      type: 'user', session_id: input.sessionId ?? '', parent_tool_use_id: null,
+      message: { role: 'user', content: [
+        { type: 'text', text: attachmentPrompt(input.prompt, attachments) },
+        ...attachments.filter(file => isNativeImage(file.mimeType)).map(file => ({
+          type: 'image' as const,
+          source: { type: 'base64' as const, media_type: file.mimeType as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif', data: readFileSync(file.path).toString('base64') }
+        }))
+      ] }
+    }
+  })()
 }
 
 export class CliAgentRuntime {
@@ -339,7 +379,7 @@ export class CliAgentRuntime {
     const defaults: CliAgentProviderRuntimeAdapter[] = [
       { provider: 'codex', runTurn: (input, servers) => this.runCodexAppServer(input, servers) },
       { provider: 'claude', runTurn: (input, servers) => this.runClaudeSdk(input, servers) },
-      { provider: 'opencode', runTurn: (input, servers) => this.runJsonCli(input, servers) }
+      { provider: 'opencode', runTurn: (input, servers) => this.runOpenCode(input, servers) }
     ]
     for (const adapter of adapters ?? defaults) this.registerAdapter(adapter)
   }
@@ -350,6 +390,7 @@ export class CliAgentRuntime {
   }
 
   async runTurn(input: CliAgentTurnInput): Promise<CliAgentTurnResult> {
+    throwIfCancelled(input.abortController.signal)
     const configuredModel = input.model?.trim() || this.providerSettings?.getCodingAgentDefaultModel(input.provider)
     const configuredReasoningEffort = input.reasoningEffort?.trim()
       || this.providerSettings?.getCodingAgentDefaultReasoningEffort(input.provider)
@@ -374,6 +415,7 @@ export class CliAgentRuntime {
     }
     const adapter = this.adapters.get(resolvedInput.provider)
     if (!adapter) throw new Error(`CLI agent provider is not registered: ${resolvedInput.provider}`)
+    throwIfCancelled(input.abortController.signal)
     const turn = adapter.runTurn(resolvedInput, mcpServers)
     this.activeTurns.add(turn)
     try {
@@ -399,12 +441,15 @@ export class CliAgentRuntime {
     let streamedText = ''
     let finalText = ''
     const pendingTools = new Map<string, { name: string; detail: string; metadata: JsonRecord }>()
+    let accountContext = emptyAccountContext('claude', input.model)
+    input.onAccountContext?.(accountContext)
     input.onUpdate({ type: 'status', status: 'running', detail: '正在通过 Claude Agent SDK 启动 Claude Code' })
     const stream = query({
-      prompt: input.prompt,
+      prompt: claudeAttachmentPrompt(input),
       options: {
         abortController: input.abortController,
         cwd: input.workingDirectory,
+        systemPrompt: { type: 'preset', preset: 'claude_code', append: buildAgentInstructions(input) },
         ...(input.model ? { model: input.model } : {}),
         ...claudeSdkReasoningOptions(input.reasoningEffort),
         ...(input.sessionId ? { resume: input.sessionId } : {}),
@@ -426,6 +471,22 @@ export class CliAgentRuntime {
     })
     for await (const message of stream) {
       const record = message as unknown as JsonRecord
+      if (record.type === 'system' && record.subtype === 'init') {
+        const account = await optionalAccountMetadata(() => stream.accountInfo())
+        accountContext = { ...accountContext, ...claudeAccountContext(account ?? { apiKeySource: record.apiKeySource }), ...claudeModelContext(record), observedAt: new Date().toISOString() }
+        input.onAccountContext?.(accountContext)
+      }
+      if (record.type === 'rate_limit_event') {
+        const limit = claudeLimitContext(record.rate_limit_info)
+        if (limit) {
+          accountContext = { ...accountContext, limits: [...accountContext.limits.filter(item => item.name !== limit.name), limit].slice(-32), observedAt: new Date().toISOString() }
+          input.onAccountContext?.(accountContext)
+        }
+      }
+      if (record.type === 'result') {
+        accountContext = { ...accountContext, turnUsage: claudeTurnUsage(record), observedAt: new Date().toISOString() }
+        input.onAccountContext?.(accountContext)
+      }
       const found = recordSessionId(record)
       if (found && found !== sessionId) {
         sessionId = found
@@ -513,6 +574,7 @@ export class CliAgentRuntime {
     mcpServers: McpServerLaunchConfig[]
   ): Promise<CliAgentTurnResult> {
     const binary = resolveCliBinary('codex')
+    throwIfCancelled(input.abortController.signal)
     const args = buildCodexAppServerArgs(mcpServers)
     input.onUpdate({ type: 'status', status: 'running', detail: '正在通过 Codex app-server 启动 Session' })
     return await new Promise<CliAgentTurnResult>((resolve, reject) => {
@@ -531,32 +593,52 @@ export class CliAgentRuntime {
       const streamedAgentMessages = new Map<string, string>()
       const agentMessagePhases = new Map<string, 'commentary' | 'final_answer' | null>()
       let settled = false
+      let accountContext = emptyAccountContext('codex', input.model)
+      const publishContext = (patch: Partial<AgentAccountContext>): void => {
+        if (settled) return
+        accountContext = { ...accountContext, ...patch, observedAt: new Date().toISOString() }
+        if (accountContext.apiProvider && accountContext.apiProvider !== 'openai') {
+          accountContext = { ...accountContext, authMode: 'unknown', plan: undefined, limits: [] }
+        }
+        input.onAccountContext?.(accountContext)
+      }
+      publishContext({})
       const pending = new Map<number, { resolve: (value: JsonRecord) => void; reject: (error: Error) => void }>()
       const write = (record: JsonRecord): void => {
         child.stdin.write(`${JSON.stringify(record)}\n`)
       }
       const request = (method: string, params: JsonRecord): Promise<JsonRecord> => {
+        if (settled) return Promise.reject(new Error('Codex 连接已关闭。'))
+        if (input.abortController.signal.aborted) return Promise.reject(input.abortController.signal.reason)
         const id = nextId++
-        write({ id, method, params })
-        return new Promise((requestResolve, requestReject) => pending.set(id, { resolve: requestResolve, reject: requestReject }))
+        return new Promise((requestResolve, requestReject) => {
+          pending.set(id, { resolve: requestResolve, reject: requestReject })
+          write({ id, method, params })
+        })
+      }
+      const closePending = (): void => {
+        for (const entry of pending.values()) entry.reject(new Error('Codex 连接已关闭。'))
+        pending.clear()
       }
       const finishError = (error: Error): void => {
         if (settled) return
         settled = true
+        closePending()
         input.abortController.signal.removeEventListener('abort', abortChild)
-        void terminateProcessTree(child).finally(() => reject(error))
+        void terminateProcessTree(child).then(() => reject(codexSessionError(error)), reject)
       }
       const abortChild = (): void => finishError(input.abortController.signal.reason instanceof Error
         ? input.abortController.signal.reason
-        : new Error('Agent Run 已停止。'))
+        : new Error('Chat 已停止。'))
       input.abortController.signal.addEventListener('abort', abortChild, { once: true })
       const finishSuccess = (): void => {
         if (settled) return
         const text = (finalAnswerText || legacyText || lastAgentMessageText).trim()
         if (!text) return finishError(new Error('Codex app-server 没有返回 Agent 消息。'))
         settled = true
+        closePending()
         input.abortController.signal.removeEventListener('abort', abortChild)
-        void terminateProcessTree(child).finally(() => resolve({ text, sessionId }))
+        void terminateProcessTree(child).then(() => resolve({ text, sessionId }), reject)
       }
       const handleApproval = (record: JsonRecord): void => {
         const method = textValue(record.method)
@@ -565,6 +647,7 @@ export class CliAgentRuntime {
         write({ id: serverId, result: { decision: 'accept' } })
       }
       const processLine = (line: string): void => {
+        if (settled) return
         if (!line.trim()) return
         let record: JsonRecord
         try { record = JSON.parse(line) as JsonRecord } catch { return }
@@ -582,6 +665,7 @@ export class CliAgentRuntime {
           return
         }
         const params = record.params && typeof record.params === 'object' ? record.params as JsonRecord : {}
+        if (method === 'account/rateLimits/updated') publishContext(codexLimitContext(params))
         if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
           const messageId = textValue(params.itemId) || textValue(params.item_id) || `stream-${sessionId ?? 'new'}`
           const phase = agentMessagePhases.get(messageId) ?? null
@@ -649,6 +733,7 @@ export class CliAgentRuntime {
         }
       })
       child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
+      child.stdin.on('error', error => finishError(error))
       child.on('error', (error) => finishError((error as NodeJS.ErrnoException).code === 'ENOENT'
         ? new Error('codex CLI 未安装或不在 PATH 中。请先在终端安装并登录。')
         : error))
@@ -663,43 +748,72 @@ export class CliAgentRuntime {
           capabilities: { experimentalApi: true }
         })
         write({ method: 'initialized', params: {} })
+        // Read-only metadata is opportunistic; it never gates thread/turn creation.
+        void optionalAccountMetadata(() => request('account/read', { refreshToken: false })).then(value => { if (value) publishContext(codexAccountContext(value)) })
+        void optionalAccountMetadata(() => request('account/rateLimits/read', {})).then(value => { if (value) publishContext(codexLimitContext(value)) })
         const runtimeWorkspaceRoots = codingAgentRuntimeRoots(input)
-        const threadResult = input.sessionId
-          ? await request('thread/resume', {
-              threadId: input.sessionId, cwd: input.workingDirectory, approvalPolicy: CODEX_APPROVAL_POLICY,
-              ...(input.model ? { model: input.model } : {}),
-              sandbox: CODEX_THREAD_SANDBOX, runtimeWorkspaceRoots
-            })
-          : await request('thread/start', {
-              cwd: input.workingDirectory, approvalPolicy: CODEX_APPROVAL_POLICY, sandbox: CODEX_THREAD_SANDBOX,
-              ...(input.model ? { model: input.model } : {}),
-              runtimeWorkspaceRoots,
-              developerInstructions: `这是 Fuddy 中的持续 Agent Run。\n\n${buildAgentStoragePolicy(input)}`
-            })
+        if (input.sessionId && !input.codexSessionOwned) {
+          input.onUpdate({ type: 'status', status: 'running', detail: '正在迁移历史，为 Fuddy 创建独立会话' })
+        }
+        const prepared = await prepareCodexSession({
+          request,
+          runId: input.runId ?? input.sessionId ?? 'standalone',
+          sessionId: input.sessionId,
+          owned: input.codexSessionOwned === true,
+          history: input.history ?? [],
+          checkCancelled: () => throwIfCancelled(input.abortController.signal),
+          params: {
+            cwd: input.workingDirectory, approvalPolicy: CODEX_APPROVAL_POLICY, sandbox: CODEX_THREAD_SANDBOX,
+            ...(input.model ? { model: input.model } : {}),
+            runtimeWorkspaceRoots,
+            developerInstructions: buildAgentInstructions(input)
+          }
+        })
+        const threadResult = prepared.result
         const thread = threadResult.thread && typeof threadResult.thread === 'object' ? threadResult.thread as JsonRecord : {}
+        publishContext(codexExecutionContext(threadResult))
         const found = textValue(thread.id) || input.sessionId
         if (!found) throw new Error('Codex app-server 没有返回 thread id。')
         sessionId = found
-        if (found !== input.sessionId) input.onSessionId(found)
-        await request('turn/start', buildCodexTurnStartParams(found, input.prompt, input.reasoningEffort))
+        if (prepared.ready && input.onCodexSessionReady) input.onCodexSessionReady(prepared.ready)
+        else if (found !== input.sessionId) input.onSessionId(found)
+        throwIfCancelled(input.abortController.signal)
+        await request('turn/start', buildCodexTurnStartParams(found, input.prompt, input.reasoningEffort, input.attachments))
       })().catch(finishError)
     })
   }
 
-  private async runJsonCli(input: CliAgentTurnInput, mcpServers: McpServerLaunchConfig[]): Promise<CliAgentTurnResult> {
+  private async runOpenCode(input: CliAgentTurnInput, mcpServers: McpServerLaunchConfig[]): Promise<CliAgentTurnResult> {
+    // Per-turn config instructions refresh resumed sessions without adding
+    // background to user messages or changing the user's Agent configuration.
+    const directory = await mkdtemp(join(tmpdir(), 'fuddy-agent-instructions-'))
+    try {
+      const file = join(directory, 'context.md')
+      await writeFile(file, [buildAgentInstructions(input), buildAdditionalWorkspaceContext(input)].filter(Boolean).join('\n\n'), { mode: 0o600 })
+      throwIfCancelled(input.abortController.signal)
+      return await this.runJsonCli(input, mcpServers, file)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+
+  private async runJsonCli(input: CliAgentTurnInput, mcpServers: McpServerLaunchConfig[], instructionsFile: string): Promise<CliAgentTurnResult> {
     const binary = resolveCliBinary(input.provider)
     const args = buildCliArgs(input, mcpServers)
     let latestSessionId = input.sessionId
     let buffer = ''
     let finalText = ''
     const persistedToolIds = new Set<string>()
+    let accountContext = emptyAccountContext('opencode', input.model)
+    input.onAccountContext?.(accountContext)
+    const usageStepIds = new Set<string>()
 
     input.onUpdate({ type: 'status', status: 'running', detail: `正在启动 ${input.provider} CLI` })
 
     return await new Promise<CliAgentTurnResult>((resolve, reject) => {
       const child = spawn(binary, args, {
         cwd: input.workingDirectory,
-        env: { ...buildCliEnv(input.provider, mcpServers), PWD: input.workingDirectory },
+        env: { ...buildCliEnv(input.provider, mcpServers, process.env, instructionsFile), PWD: input.workingDirectory },
         detached: process.platform !== 'win32'
       })
       const stderr: Buffer[] = []
@@ -708,11 +822,11 @@ export class CliAgentRuntime {
         if (settled) return
         settled = true
         input.abortController.signal.removeEventListener('abort', abortChild)
-        void terminateProcessTree(child).finally(() => reject(error))
+        void terminateProcessTree(child).then(() => reject(error), reject)
       }
       const abortChild = (): void => finishError(input.abortController.signal.reason instanceof Error
         ? input.abortController.signal.reason
-        : new Error('Agent Run 已停止。'))
+        : new Error('Chat 已停止。'))
       input.abortController.signal.addEventListener('abort', abortChild, { once: true })
 
       const processLine = (line: string): void => {
@@ -730,6 +844,19 @@ export class CliAgentRuntime {
           input.onSessionId(foundSessionId)
         }
         const parsed = opencodeRecord(record)
+        const usage = opencodeStepUsage(record)
+        const part = record.part && typeof record.part === 'object' ? record.part as JsonRecord : {}
+        const stepId = textValue(part.id)
+        if (usage && stepId && !usageStepIds.has(stepId)) {
+          usageStepIds.add(stepId)
+          const previous = accountContext.turnUsage
+          const add = (key: 'inputTokens' | 'outputTokens' | 'estimatedCostUsd'): number | undefined =>
+            usage[key] === undefined ? previous?.[key] : (previous?.[key] ?? 0) + usage[key]!
+          accountContext = { ...accountContext, observedAt: new Date().toISOString(), turnUsage: {
+            inputTokens: add('inputTokens'), outputTokens: add('outputTokens'), estimatedCostUsd: add('estimatedCostUsd')
+          } }
+          input.onAccountContext?.(accountContext)
+        }
         if (parsed.reasoning) input.onUpdate({
           type: 'reasoning_delta',
           segmentId: parsed.reasoningSegmentId,

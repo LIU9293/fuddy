@@ -29,13 +29,31 @@ button {
   color: inherit;
 }
 
+/* Native small/footnote text also respects the app's minimum readable size. */
+small {
+  font-size: max(12px, 0.833333em);
+}
+
+sub,
+sup {
+  font-size: max(12px, 0.75em);
+}
+
 button:focus-visible,
 select:focus-visible {
-  outline: 2px solid rgba(40, 103, 232, 0.55);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
 input:focus,
 textarea:focus {
   outline: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--muted);
+    opacity: 1;
+  }
 }

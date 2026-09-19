@@ -7,9 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0214E36545C1BF2F2F1C477F /* AccountProjectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82E78605140ECAF8027D4D02 /* AccountProjectTests.swift */; };
 		07F3CDC397BE47E65A5A057B /* RelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A57F13FB0BBE001DAB5DF0 /* RelayClient.swift */; };
 		0BDA31DD60CD2A12C3027A81 /* AccountDeviceGrant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62663B3930416DDA631FBAF3 /* AccountDeviceGrant.swift */; };
 		0C2BA32FB13C17EB234F1B8B /* CompanionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */; };
+		1A0193363E8892261C89EBB4 /* AccountProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5E860F2D4FCE812F03F38EB /* AccountProjects.swift */; };
 		27ACA6DC0A4F400D3B3F2523 /* ArtifactViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B47F1531E907F8945808DAC /* ArtifactViews.swift */; };
 		2F57BB8627029D3F03A75BA2 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = F69902103CEA1233DCDDAB5D /* GoogleSignInSwift */; };
 		3B7DA75E4711BC4D744CEAD5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5CD502DF6E11A245E3716F80 /* Assets.xcassets */; };
@@ -21,6 +23,7 @@
 		6D40CCAFB6F459CD69EA1D25 /* WhisperInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4862CB9096D1A9D2CC3D3B99 /* WhisperInputTests.swift */; };
 		8FAB7375F2E78B06CBCE0B09 /* WhisperTranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60D0BAE3551C392C4DD3FA33 /* WhisperTranscriptionService.swift */; };
 		9271BDB1930FBF2D5BCC26B1 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */; };
+		AFF15B20E9318961CD7FBC70 /* OutgoingAgentMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A77C26F729222468129CB5B7 /* OutgoingAgentMessage.swift */; };
 		B75DCC95314F31BEE7FADF5F /* ChatHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = D855191543BDE3F7423D2CB9 /* ChatHistory.swift */; };
 		BF4A1AB219302A92E1B2EE43 /* AccountLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90C613F13D8FA312BF3502C8 /* AccountLoginView.swift */; };
 		C4E03AB2974FE96D0EF42FFF /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = CE07DAE52057D22326492397 /* GoogleSignIn */; };
@@ -30,6 +33,7 @@
 		D72907235AA17CEDCDF811B5 /* AccountSyncSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8538A19087973580AAB03B5 /* AccountSyncSetupView.swift */; };
 		D8AFF60D5D6AFDA20C1C86DB /* UserFacingLabels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B16354DDCFA1D79235BA2A /* UserFacingLabels.swift */; };
 		E10C5BCC535AA32D689C583A /* CompanionCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8625D23798C1233D38D3813A /* CompanionCrypto.swift */; };
+		E4ADEC49141F2198A5A04D12 /* AttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE423C3B966100BEDC999EEE /* AttachmentTests.swift */; };
 		F1FD298AB5A25BB1E46E7F90 /* ChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52B7088EB0EFC0E27BEF8BB5 /* ChatComposer.swift */; };
 		F9E6CDF2312ADB3376C46EA6 /* ProjectAgentCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */; };
 /* End PBXBuildFile section */
@@ -70,18 +74,22 @@
 		62663B3930416DDA631FBAF3 /* AccountDeviceGrant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountDeviceGrant.swift; sourceTree = "<group>"; };
 		7908738597AEE67070893705 /* SyncModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncModelTests.swift; sourceTree = "<group>"; };
 		7F3F5393D89089BA711CCD8A /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		82E78605140ECAF8027D4D02 /* AccountProjectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountProjectTests.swift; sourceTree = "<group>"; };
 		8625D23798C1233D38D3813A /* CompanionCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionCrypto.swift; sourceTree = "<group>"; };
 		8B47F1531E907F8945808DAC /* ArtifactViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactViews.swift; sourceTree = "<group>"; };
 		90C613F13D8FA312BF3502C8 /* AccountLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountLoginView.swift; sourceTree = "<group>"; };
 		A1BA317B52DA4F0E106F6BC6 /* ProjectAgentCompanion.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ProjectAgentCompanion.entitlements; sourceTree = "<group>"; };
 		A1CC22EBB8B5CBEBDCE3CFF0 /* AccountClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountClient.swift; sourceTree = "<group>"; };
+		A77C26F729222468129CB5B7 /* OutgoingAgentMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutgoingAgentMessage.swift; sourceTree = "<group>"; };
 		B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectAgentCompanionApp.swift; sourceTree = "<group>"; };
 		B675BF1415AFA5806E4876DC /* ProjectAgentCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ProjectAgentCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B8538A19087973580AAB03B5 /* AccountSyncSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSyncSetupView.swift; sourceTree = "<group>"; };
 		B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionStore.swift; sourceTree = "<group>"; };
+		D5E860F2D4FCE812F03F38EB /* AccountProjects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountProjects.swift; sourceTree = "<group>"; };
 		D74F19EE816B043346AD6309 /* ProjectAgentCompanionTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ProjectAgentCompanionTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D855191543BDE3F7423D2CB9 /* ChatHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistory.swift; sourceTree = "<group>"; };
+		EE423C3B966100BEDC999EEE /* AttachmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentTests.swift; sourceTree = "<group>"; };
 		F0BC51CC42E21CDCBA0EE606 /* RootViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootViews.swift; sourceTree = "<group>"; };
 		F5A57F13FB0BBE001DAB5DF0 /* RelayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayClient.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -111,6 +119,8 @@
 		60C4F389FE05C1F35B7F5C95 /* ProjectAgentCompanionTests */ = {
 			isa = PBXGroup;
 			children = (
+				82E78605140ECAF8027D4D02 /* AccountProjectTests.swift */,
+				EE423C3B966100BEDC999EEE /* AttachmentTests.swift */,
 				7908738597AEE67070893705 /* SyncModelTests.swift */,
 				4862CB9096D1A9D2CC3D3B99 /* WhisperInputTests.swift */,
 			);
@@ -158,6 +168,7 @@
 				A1CC22EBB8B5CBEBDCE3CFF0 /* AccountClient.swift */,
 				62663B3930416DDA631FBAF3 /* AccountDeviceGrant.swift */,
 				90C613F13D8FA312BF3502C8 /* AccountLoginView.swift */,
+				D5E860F2D4FCE812F03F38EB /* AccountProjects.swift */,
 				B8538A19087973580AAB03B5 /* AccountSyncSetupView.swift */,
 				8B47F1531E907F8945808DAC /* ArtifactViews.swift */,
 				5CD502DF6E11A245E3716F80 /* Assets.xcassets */,
@@ -168,6 +179,7 @@
 				B8AEA7A7374BCF2AC616036E /* CompanionStore.swift */,
 				B27A4996D6658A3B9BDA25CA /* KeychainStore.swift */,
 				7F3F5393D89089BA711CCD8A /* Models.swift */,
+				A77C26F729222468129CB5B7 /* OutgoingAgentMessage.swift */,
 				A1BA317B52DA4F0E106F6BC6 /* ProjectAgentCompanion.entitlements */,
 				B62DEA8E27B2405C31F4B9A8 /* ProjectAgentCompanionApp.swift */,
 				F5A57F13FB0BBE001DAB5DF0 /* RelayClient.swift */,
@@ -283,6 +295,7 @@
 				69B4764DDC41010FAE133D05 /* AccountClient.swift in Sources */,
 				0BDA31DD60CD2A12C3027A81 /* AccountDeviceGrant.swift in Sources */,
 				BF4A1AB219302A92E1B2EE43 /* AccountLoginView.swift in Sources */,
+				1A0193363E8892261C89EBB4 /* AccountProjects.swift in Sources */,
 				D72907235AA17CEDCDF811B5 /* AccountSyncSetupView.swift in Sources */,
 				27ACA6DC0A4F400D3B3F2523 /* ArtifactViews.swift in Sources */,
 				F1FD298AB5A25BB1E46E7F90 /* ChatComposer.swift in Sources */,
@@ -292,6 +305,7 @@
 				0C2BA32FB13C17EB234F1B8B /* CompanionStore.swift in Sources */,
 				9271BDB1930FBF2D5BCC26B1 /* KeychainStore.swift in Sources */,
 				5C1FC98F3F8090A21D2B0F52 /* Models.swift in Sources */,
+				AFF15B20E9318961CD7FBC70 /* OutgoingAgentMessage.swift in Sources */,
 				F9E6CDF2312ADB3376C46EA6 /* ProjectAgentCompanionApp.swift in Sources */,
 				07F3CDC397BE47E65A5A057B /* RelayClient.swift in Sources */,
 				67E70F0EB9A59223134B00A5 /* RootViews.swift in Sources */,
@@ -304,6 +318,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0214E36545C1BF2F2F1C477F /* AccountProjectTests.swift in Sources */,
+				E4ADEC49141F2198A5A04D12 /* AttachmentTests.swift in Sources */,
 				45B15BB7FB97DB4125B4DB42 /* SyncModelTests.swift in Sources */,
 				6D40CCAFB6F459CD69EA1D25 /* WhisperInputTests.swift in Sources */,
 			);

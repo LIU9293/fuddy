@@ -1182,7 +1182,7 @@ async function listPendingEnrollments(request: Request, env: Environment, spaceI
     .run()
   const rows = await env.ACCOUNT_DB.prepare(
     `SELECT g.id, g.space_id AS spaceId, g.device_id AS deviceId, g.expires_at AS expiresAt,
-            d.name AS deviceName, d.public_key AS publicKey
+            d.name AS deviceName, d.public_key AS publicKey, d.platform AS platform
      FROM device_grants g JOIN devices d ON d.id = g.device_id
      WHERE g.space_id = ? AND g.status = 'pending' AND g.expires_at > ? AND d.revoked_at IS NULL
      ORDER BY g.created_at ASC`
@@ -1566,13 +1566,11 @@ async function revokeDevice(request: Request, env: Environment, deviceId: string
     .bind(deviceId, user.userId)
     .first<{ id: string; platform: string }>()
   if (!device) throw new ApiError(404, 'device_not_found', '没有找到这台设备。')
-  const relayGrants = device.platform === 'ios'
-    ? (await env.ACCOUNT_DB.prepare(
+  const relayGrants = (await env.ACCOUNT_DB.prepare(
         `SELECT g.id, g.device_id AS deviceId, s.relay_account_id AS relayAccountId
          FROM device_grants g JOIN sync_spaces s ON s.id = g.space_id
          WHERE g.device_id = ? AND g.status != 'revoked' AND s.relay_account_id IS NOT NULL`
       ).bind(deviceId).all<{ id: string; deviceId: string; relayAccountId: string }>()).results
-    : []
   const relaySpaces = device.platform === 'macos'
     ? (await env.ACCOUNT_DB.prepare(
         `SELECT s.id AS spaceId, s.relay_account_id AS relayAccountId,
@@ -1609,9 +1607,8 @@ async function revokeDevice(request: Request, env: Environment, deviceId: string
     )
   }
   statements.push(
-    ...(device.platform === 'macos'
-      ? relayAccountRevocationStatements(env, relaySpaces, timestamp)
-      : relayDeviceRevocationStatements(env, relayGrants, timestamp))
+    ...relayAccountRevocationStatements(env, relaySpaces, timestamp),
+    ...relayDeviceRevocationStatements(env, relayGrants, timestamp)
   )
   await env.ACCOUNT_DB.batch(statements)
   await processRelayRevocationJobs(env)
@@ -1627,7 +1624,10 @@ async function createEnrollment(request: Request, env: Environment, spaceId: str
   )
     .bind(user.deviceId, user.userId)
     .first<{ platform: string }>()
-  if (device?.platform !== 'ios') throw new ApiError(403, 'ios_required', '只有 iPhone 可以申请连接 Mac。')
+  if (!device || !['ios', 'macos'].includes(device.platform)) throw new ApiError(403, 'device_required', '设备无法申请连接 Mac。')
+  const ownSpace = await env.ACCOUNT_DB.prepare('SELECT 1 FROM sync_spaces s JOIN hosts h ON h.id=s.host_id WHERE s.id=? AND h.device_id=?')
+    .bind(spaceId, user.deviceId).first()
+  if (ownSpace) throw new ApiError(409, 'self_enrollment', '无需连接本机同步空间。')
   const membership = await env.ACCOUNT_DB.prepare(
     `SELECT s.key_version FROM space_memberships m JOIN sync_spaces s ON s.id = m.space_id
      WHERE m.space_id = ? AND m.user_id = ? AND m.revoked_at IS NULL AND s.revoked_at IS NULL`

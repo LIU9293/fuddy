@@ -78,14 +78,14 @@
   justify-content: space-between;
   margin: 22px 7px 7px;
   color: #8b8b84;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 620;
   text-transform: uppercase;
   letter-spacing: .05em;
 }
 
 .agent-runs-sidebar-label small {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 550;
 }
 
@@ -151,7 +151,7 @@
 .agent-runs-sidebar-copy small,
 .agent-runs-sidebar-copy > span {
   color: #8b8b84;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .agent-runs-sidebar-copy > span {
@@ -176,13 +176,13 @@
   width: 15px;
   height: 15px;
   border-radius: 4px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .agent-runs-sidebar-list > p {
   margin: 24px 8px;
   color: #969690;
-  font-size: 11px;
+  font-size: 12px;
   text-align: center;
 }
 
@@ -235,7 +235,7 @@
 .agent-run-page-header small {
   overflow: hidden;
   color: #898982;
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -382,7 +382,7 @@
 
 .agent-run-info-header small {
   color: #96968f;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .agent-run-info-header > button,
@@ -424,7 +424,7 @@
   border: 0;
   color: #8a8a83;
   background: transparent;
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -441,7 +441,7 @@
 
 .agent-run-info-tabs > button.is-active { color: #3f3f3a; font-weight: 620; }
 .agent-run-info-tabs > button.is-active::after { background: #55554f; }
-.agent-run-info-tabs small { color: #96968f; font-size: 10px; font-weight: 500; }
+.agent-run-info-tabs small { color: #96968f; font-size: 12px; font-weight: 500; }
 
 .agent-run-info-section-title > button:disabled { opacity: .55; }
 
@@ -466,7 +466,7 @@
   align-items: center;
   justify-content: space-between;
   color: #85857e;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 650;
   letter-spacing: .02em;
 }
@@ -479,7 +479,7 @@
   place-items: center;
   border-radius: 10px;
   background: rgba(45, 45, 40, .06);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -499,7 +499,7 @@
   gap: 5px;
   overflow: hidden;
   color: #4b4b46;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -507,7 +507,7 @@
 
 .agent-run-git-heading > code {
   color: #96968f;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .agent-run-git-stats {
@@ -531,7 +531,7 @@
 
 .agent-run-git-stats > span + span { border-left: 1px solid rgba(45, 45, 40, .08); }
 .agent-run-git-stats strong { font-size: 12px; }
-.agent-run-git-stats small { color: #96968f; font-size: 10px; }
+.agent-run-git-stats small { color: #96968f; font-size: 12px; }
 .agent-run-git-stats .is-addition strong { color: #2f7958; }
 .agent-run-git-stats .is-deletion strong { color: #b05750; }
 
@@ -549,14 +549,14 @@
   align-items: center;
   gap: 7px;
   color: #666660;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .agent-run-change-list code {
   width: 20px;
   flex: 0 0 auto;
   color: #85857e;
-  font-size: 10px;
+  font-size: 12px;
   text-align: center;
 }
 
@@ -569,7 +569,7 @@
 .agent-run-info-note,
 .agent-run-info-empty {
   color: #96968f;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -603,26 +603,26 @@
 .agent-run-info-artifacts > button > span { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .agent-run-info-artifacts strong,
 .agent-run-info-artifacts small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-run-info-artifacts strong { color: #55554f; font-size: 10px; font-weight: 560; }
-.agent-run-info-artifacts small { color: #96968f; font-size: 10px; }
+.agent-run-info-artifacts strong { color: #55554f; font-size: 12px; font-weight: 560; }
+.agent-run-info-artifacts small { color: #96968f; font-size: 12px; }
 
 .project-icon.is-agent-run-info {
   width: 20px;
   height: 20px;
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
-.agent-run-project-name > strong { min-width: 0; flex: 1; color: #44443f; font-size: 11px; }
-.agent-run-project-name > small { color: #85857e; font-size: 10px; }
-.agent-run-project-summary > p { margin: 10px 0 12px; color: #74746e; font-size: 11px; line-height: 1.5; }
+.agent-run-project-name > strong { min-width: 0; flex: 1; color: #44443f; font-size: 12px; }
+.agent-run-project-name > small { color: #85857e; font-size: 12px; }
+.agent-run-project-summary > p { margin: 10px 0 12px; color: #74746e; font-size: 12px; line-height: 1.5; }
 
 .agent-run-project-summary dl {
   display: grid;
   margin: 0;
-  grid-template-columns: 62px minmax(0, 1fr);
-  row-gap: 8px;
-  font-size: 11px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 12px;
+  font-size: 12px;
 }
 
 .agent-run-project-summary dt { color: #96968f; }
@@ -638,8 +638,8 @@
 
 .agent-run-workspace-summary > svg { flex: 0 0 auto; margin-top: 2px; }
 .agent-run-workspace-summary > span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
-.agent-run-workspace-summary strong { color: #55554f; font-size: 10px; }
-.agent-run-workspace-summary code { overflow: hidden; color: #8c8c85; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-run-workspace-summary strong { color: #55554f; font-size: 12px; }
+.agent-run-workspace-summary code { overflow: hidden; color: #8c8c85; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
 .agent-run-meta-grid {
   display: grid;
@@ -658,8 +658,8 @@
   background: rgba(45, 45, 40, .04);
 }
 
-.agent-run-meta-grid small { color: #96968f; font-size: 10px; }
-.agent-run-meta-grid strong { overflow: hidden; color: #5d5d57; font-size: 10px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+.agent-run-meta-grid small { color: #96968f; font-size: 12px; }
+.agent-run-meta-grid strong { overflow: hidden; color: #5d5d57; font-size: 12px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
 
 .agent-run-files-section { padding-top: 12px; border-bottom: 0; }
 
@@ -686,7 +686,7 @@
   border-radius: 7px;
   color: #777771;
   background: transparent;
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -706,8 +706,8 @@
 .agent-run-file-preview-title > span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
 .agent-run-file-preview-title strong,
 .agent-run-file-preview-title small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-run-file-preview-title strong { color: #464641; font-size: 11px; }
-.agent-run-file-preview-title small { color: #96968f; font-size: 10px; }
+.agent-run-file-preview-title strong { color: #464641; font-size: 12px; }
+.agent-run-file-preview-title small { color: #96968f; font-size: 12px; }
 
 .agent-run-file-preview-state {
   display: flex;
@@ -718,13 +718,13 @@
   flex-direction: column;
   gap: 9px;
   color: #8e8e87;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   text-align: center;
 }
 
 .agent-run-file-preview-state.is-error { color: #ac5d56; }
-.agent-run-file-preview-state > button { padding: 6px 9px; border: 0; border-radius: 7px; color: #62625c; background: rgba(45, 45, 40, .065); font-size: 10px; cursor: pointer; }
+.agent-run-file-preview-state > button { padding: 6px 9px; border: 0; border-radius: 7px; color: #62625c; background: rgba(45, 45, 40, .065); font-size: 12px; cursor: pointer; }
 
 .agent-run-markdown-preview {
   padding: 18px 2px 0;
@@ -751,7 +751,7 @@
   border-radius: 9px;
   color: #55554f;
   background: rgba(255, 255, 253, .55);
-  font: 10px/1.55 "SFMono-Regular", Consolas, monospace;
+  font: 12px/1.55 "SFMono-Regular", Consolas, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -839,7 +839,7 @@
   border-radius: 7px;
   color: #44443f;
   background: transparent;
-  font-size: 11px;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
@@ -876,7 +876,7 @@
   border-radius: 6px;
   color: #5e5e58;
   background: rgba(45, 45, 40, .065);
-  font-size: 10px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -955,7 +955,7 @@
   border-radius: 9px;
   color: #a14843;
   background: rgba(190, 76, 70, .055);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .agent-run-system-message > svg { flex: 0 0 auto; margin-top: 2px; }
@@ -1002,7 +1002,7 @@
 .agent-run-queued-message small {
   flex: 0 0 auto;
   color: #92928b;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .agent-run-create-shell {

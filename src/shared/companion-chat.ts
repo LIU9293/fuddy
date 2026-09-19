@@ -112,7 +112,7 @@ export function paginateCompanionChatRecords(
   }
 }
 
-export function flattenAgentChatRecords(records: CompanionChatRecord[]): AgentRunMessage[] {
+export function flattenAgentChatRecords(records: Array<{ agentMessages: AgentRunMessage[] }>): AgentRunMessage[] {
   return records.flatMap((record) => record.agentMessages)
 }
 

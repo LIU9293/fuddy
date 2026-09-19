@@ -76,12 +76,12 @@ export interface SidebarRunGroup {
 
 export function groupSidebarRuns(runs: AgentRun[], projects: Project[]): SidebarRunGroup[] {
   const knownProjectIds = new Set(projects.map((project) => project.id))
-  const groups: SidebarRunGroup[] = projects.flatMap((project) => {
-    const projectRuns = runs.filter((run) => run.projectId === project.id)
-    return projectRuns.length > 0
-      ? [{ id: project.id, title: project.name, projectId: project.id, runs: projectRuns }]
-      : []
-  })
+  const groups: SidebarRunGroup[] = projects.map((project) => ({
+    id: project.id,
+    title: project.name,
+    projectId: project.id,
+    runs: runs.filter((run) => run.projectId === project.id)
+  }))
   const sharedRuns = runs.filter((run) => !run.projectId || !knownProjectIds.has(run.projectId))
   if (sharedRuns.length > 0) groups.push({ id: 'shared', title: '共享任务', projectId: null, runs: sharedRuns })
   return groups
@@ -146,9 +146,9 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
             </NavigationButton>
           </nav>
 
-          <section className="sidebar-runs-section" aria-label="项目 Agent Runs">
+          <section className="sidebar-runs-section" aria-label="项目 Chats">
             <div className="sidebar-projects-heading">项目</div>
-            <nav className="sidebar-run-list" aria-label="Agent Run 列表">
+            <nav className="sidebar-run-list" aria-label="Chat 列表">
               {runGroups.map((group) => (
                 <section className="sidebar-run-group" key={group.id} aria-labelledby={`sidebar-run-group-${group.id}`}>
                   <div className="sidebar-run-group-heading">
@@ -156,7 +156,7 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
                     <button
                       type="button"
                       onClick={() => props.onCreateRun(group.projectId)}
-                      aria-label={`在${group.title}中新建 Agent Run`}
+                      aria-label={`在${group.title}中新建 Chat`}
                     >
                       <Plus size={12} />
                     </button>
@@ -171,7 +171,7 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
                         <button type="button" className="sidebar-run-open" onClick={() => props.onOpenRun(run.id)}>
                           <span>
                             <strong>{run.title}</strong>
-                            <small>{formatAgentProviderName(run.provider)}</small>
+                            <small>{formatAgentProviderName(run.provider)}{run.executionHost ? ` · ${run.executionHost.name}${run.executionHost.online ? '' : ' · 离线'}` : ''}</small>
                           </span>
                           {active && <LoaderCircle size={14} className="spin" />}
                         </button>
@@ -192,7 +192,7 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
                   })}
                 </section>
               ))}
-              {props.runs.length === 0 && <p>还没有 Agent Run</p>}
+              {runGroups.length === 0 && <p>添加项目后即可新建 Chat</p>}
             </nav>
           </section>
 

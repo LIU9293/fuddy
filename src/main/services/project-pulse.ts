@@ -105,12 +105,12 @@ function runChange(run: AgentRun, artifacts: AgentRunArtifact[], milestone: Goal
   if (runArtifacts.length > 0) {
     const paths = runArtifacts.slice(0, 2).map((artifact) => `「${artifact.relativePath}」`).join('、')
     const pending = milestone && milestone.status !== 'completed' ? '，关联里程碑仍待确认' : ''
-    return `Agent Run「${run.title}」已生成产物 ${paths}${pending}。`
+    return `Chat「${run.title}」已生成产物 ${paths}${pending}。`
   }
-  if (run.status === 'completed') return `Agent Run「${run.title}」已经完成。`
-  if (run.status === 'idle') return `Agent Run「${run.title}」正在等待继续。`
-  if (run.status === 'failed') return `Agent Run「${run.title}」执行失败，需要处理。`
-  return `Agent Run「${run.title}」当前状态为${run.status}。`
+  if (run.status === 'completed') return `Chat「${run.title}」已经完成。`
+  if (run.status === 'idle') return `Chat「${run.title}」正在等待继续。`
+  if (run.status === 'failed') return `Chat「${run.title}」执行失败，需要处理。`
+  return `Chat「${run.title}」当前状态为${run.status}。`
 }
 
 function runNextAction(
@@ -119,11 +119,11 @@ function runNextAction(
   milestone: GoalMilestone | null
 ): string | null {
   const runArtifacts = artifacts.filter((artifact) => artifact.runId === run.id)
-  if (run.status === 'failed') return `检查 Agent Run「${run.title}」的失败原因并决定是否重试。`
+  if (run.status === 'failed') return `检查 Chat「${run.title}」的失败原因并决定是否重试。`
   if (runArtifacts.length > 0 && milestone && milestone.status !== 'completed') {
     return `审阅并确认「${runArtifacts[0].relativePath}」，补齐未确认信息后继续推进「${milestone.title}」。`
   }
-  if (run.status === 'idle' && milestone) return `继续 Agent Run「${run.title}」，推进「${milestone.title}」。`
+  if (run.status === 'idle' && milestone) return `继续 Chat「${run.title}」，推进「${milestone.title}」。`
   return null
 }
 
@@ -197,8 +197,8 @@ export function buildProjectPulses(input: BuildProjectPulsesInput): ProjectPulse
       pendingItems.push(`目标「${focusGoal.title}」连续 ${inactiveDays} 天没有已验证的推进记录。`)
     }
 
-    if (run?.status === 'failed' && runIsCurrent) pendingItems.push(`Agent Run「${run.title}」执行失败。`)
-    if (run?.status === 'idle' && runIsCurrent && inactiveDays >= 3) pendingItems.push(`Agent Run「${run.title}」已等待继续 ${inactiveDays} 天。`)
+    if (run?.status === 'failed' && runIsCurrent) pendingItems.push(`Chat「${run.title}」执行失败。`)
+    if (run?.status === 'idle' && runIsCurrent && inactiveDays >= 3) pendingItems.push(`Chat「${run.title}」已等待继续 ${inactiveDays} 天。`)
 
     const currentFocus = focusGoal?.title
       || topDecision?.title

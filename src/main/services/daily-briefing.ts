@@ -115,7 +115,7 @@ export class DailyBriefingService {
     private readonly agentRuntime: AgentRuntime
   ) {}
 
-  async generate(projectId: string, cancellationSignal?: AbortSignal): Promise<GenerateDailyBriefingResult> {
+  async generate(projectId: string, cancellationSignal?: AbortSignal, prompt?: string): Promise<GenerateDailyBriefingResult> {
     throwIfCancelled(cancellationSignal)
     const project = this.database.listProjects().find((candidate) => candidate.id === projectId)
     if (!project) throw new Error(`项目不存在：${projectId}`)
@@ -156,7 +156,8 @@ export class DailyBriefingService {
               resolutionSummary: item.resolutionSummary,
               lastSeenAt: item.lastSeenAt
             }))
-          body = await this.agentRuntime.run(buildAgentPrompt(project.name, data, currentInbox), [], cancellationSignal)
+          const instructions = prompt?.trim() ? `\n\n用户的简报要求：\n${prompt.trim()}` : ''
+          body = await this.agentRuntime.run(buildAgentPrompt(project.name, data, currentInbox) + instructions, [], cancellationSignal)
           generation = 'agent'
         } catch {
           throwIfCancelled(cancellationSignal)

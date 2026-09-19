@@ -33,6 +33,7 @@ import {
   workAssistantImageSchema
 } from './schemas'
 import type { IpcContext } from './context'
+import { parseRemoteRunId } from '../services/mac-peer-sync'
 
 export function registerRunIpc(context: IpcContext): void {
   const {
@@ -64,7 +65,18 @@ export function registerRunIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('agent-run:create-draft', (_event, rawInput: unknown) => {
-    return dispatcher.createDraft(createAgentRunDraftSchema.parse(rawInput))
+    const input = createAgentRunDraftSchema.parse(rawInput)
+    if (input.executionHostId && input.executionHostId !== context.accountService.getState().device?.hostId && input.executionHostId !== 'local') {
+      if (!context.macPeers) throw new Error('跨 Mac 执行尚未连接。')
+      return context.macPeers.createDraft(input)
+    }
+    return dispatcher.createDraft(input)
+  })
+
+  ipcMain.handle('agent-run:execution-hosts', async (_event, rawId: unknown) => {
+    const id = z.string().trim().min(1).max(200).nullable().parse(rawId)
+    await context.macPeers?.syncNow()
+    return context.macPeers?.listHosts(id) ?? []
   })
 
   ipcMain.handle('project-agent:dispatch', (event, rawInput: unknown) => {
@@ -77,11 +89,19 @@ export function registerRunIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('agent-run:get', (_event, rawId: unknown) => {
-    return dispatcher.getDetail(z.string().trim().min(1).max(200).parse(rawId))
+    const id = z.string().trim().min(1).max(200).parse(rawId)
+    if (parseRemoteRunId(id)) return context.macPeers!.getDetail(id)
+    return dispatcher.getDetail(id)
+  })
+
+  ipcMain.handle('agent-run:load-history', (_event, rawId: unknown) => {
+    const id = z.string().trim().min(1).max(200).parse(rawId)
+    return parseRemoteRunId(id) ? context.macPeers!.loadHistory(id) : dispatcher.getDetail(id)
   })
 
   ipcMain.handle('agent-run:rename', (_event, rawInput: unknown) => {
     const input = renameAgentRunSchema.parse(rawInput)
+    if (parseRemoteRunId(input.id)) return context.macPeers!.mutate(input.id, 'agent.rename-session', { title: input.title }).then((detail) => detail!.run)
     return database.renameAgentRun(input.id, input.title)
   })
 
@@ -92,15 +112,21 @@ export function registerRunIpc(context: IpcContext): void {
         draftPrompt: z.string().max(20_000)
       })
       .parse(rawInput)
+    if (parseRemoteRunId(input.id)) return context.macPeers!.mutate(input.id, 'agent.update-draft-prompt', { draftPrompt: input.draftPrompt }).then((detail) => detail!.run)
     return database.updateAgentRunDraftPrompt(input.id, input.draftPrompt)
   })
 
   ipcMain.handle('agent-run:archive', (_event, rawId: unknown) => {
-    database.archiveAgentRun(z.string().trim().min(1).max(200).parse(rawId))
+    const id = z.string().trim().min(1).max(200).parse(rawId)
+    if (parseRemoteRunId(id)) return context.macPeers!.mutate(id, 'agent.archive-session').then(() => undefined)
+    database.archiveAgentRun(id)
   })
 
   ipcMain.handle('agent-run:update-execution-settings', (_event, rawInput: unknown) => {
     const input = updateAgentRunExecutionSettingsSchema.parse(rawInput)
+    if (parseRemoteRunId(input.id)) return context.macPeers!.mutate(input.id, 'agent.update-execution-settings', {
+      provider: input.provider, model: input.model ?? undefined, reasoningEffort: input.reasoningEffort ?? undefined
+    }).then((detail) => detail!.run)
     return database.updateAgentRunExecutionSettings(
       input.id,
       input.provider,
@@ -120,6 +146,7 @@ export function registerRunIpc(context: IpcContext): void {
 
   ipcMain.handle('agent-run:send', (event, rawInput: unknown) => {
     const input = sendAgentRunMessageSchema.parse(rawInput)
+    if (parseRemoteRunId(input.runId)) return context.macPeers!.send(input.runId, input.prompt, input.attachments, input.requestId)
     return dispatcher.sendMessage(
       input.runId,
       input.prompt,
@@ -134,13 +161,16 @@ export function registerRunIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('agent-run:stop', (_event, rawId: unknown) => {
-    return dispatcher.stopMessage(z.string().trim().min(1).max(200).parse(rawId))
+    const id = z.string().trim().min(1).max(200).parse(rawId)
+    if (parseRemoteRunId(id)) return context.macPeers!.mutate(id, 'agent.stop-message')
+    return dispatcher.stopMessage(id)
   })
 
   ipcMain.handle('agent-run:git-summary', async (_event, rawId: unknown) => {
     const id = z.string().trim().min(1).max(200).parse(rawId)
+    if (parseRemoteRunId(id)) return { available: false, repoRoot: null, branch: null, head: null, additions: 0, deletions: 0, changedFileCount: 0, changes: [], error: 'Git 工作区位于执行 Mac。' }
     const run = database.getAgentRun(id)
-    if (!run) throw new Error('Agent Run 不存在。')
+    if (!run) throw new Error('Chat 不存在。')
     if (!run.workingDirectory) {
       return {
         available: false,
@@ -164,6 +194,7 @@ export function registerRunIpc(context: IpcContext): void {
         artifactId: z.string().trim().min(1).max(200)
       })
       .parse(rawInput)
+    if (parseRemoteRunId(input.runId)) return context.macPeers!.previewArtifact(input.runId, input.artifactId)
     const artifact = database.getAgentRunArtifact(input.artifactId)
     if (!artifact || artifact.runId !== input.runId) throw new Error('Session 产物不存在。')
     return workspaceFiles.previewArtifact(artifact)

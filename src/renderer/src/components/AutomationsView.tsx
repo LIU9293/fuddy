@@ -23,6 +23,7 @@ import type {
   SaveAutomationInput
 } from '../../../shared/contracts'
 import { SelectMenu } from './SelectMenu'
+import { dailyInspectionJobId, defaultBriefingPrompt } from '../../../shared/briefing-prompt'
 
 const actionLabels: Record<AutomationAction, string> = {
   'agent-task': 'Agent 任务',
@@ -252,12 +253,17 @@ export function AutomationsView({
           {drawer === 'form' ? (
             <div className="automation-form">
               <label><span>任务名称</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：每日项目巡检" /></label>
-              <label><span>所属项目</span><SelectMenu value={draft.projectId ?? ''} options={[{ value: '', label: '全部项目' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]} onChange={(value) => { const projectId = value || null; setDraft({ ...draft, projectId, agentProvider: projects.find((project) => project.id === projectId)?.profile.defaultAgent ?? 'pi' }) }} ariaLabel="自动任务所属项目" /></label>
-              <label><span>执行动作</span><SelectMenu value={draft.action} options={Object.entries(actionLabels).map(([value, label]) => ({ value, label }))} onChange={(value) => setDraft({ ...draft, action: value as AutomationAction })} ariaLabel="自动任务动作" /></label>
+              <label><span>所属项目</span><SelectMenu disabled={draft.id === dailyInspectionJobId} value={draft.projectId ?? ''} options={[{ value: '', label: '全部项目' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]} onChange={(value) => { const projectId = value || null; setDraft({ ...draft, projectId, agentProvider: projects.find((project) => project.id === projectId)?.profile.defaultAgent ?? 'pi' }) }} ariaLabel="自动任务所属项目" /></label>
+              <label><span>执行动作</span><SelectMenu disabled={draft.id === dailyInspectionJobId} value={draft.action} options={Object.entries(actionLabels).map(([value, label]) => ({ value, label }))} onChange={(value) => setDraft({ ...draft, action: value as AutomationAction })} ariaLabel="自动任务动作" /></label>
               {draft.action === 'agent-task' && <>
                 <label><span>Agent</span><SelectMenu value={draft.agentProvider} options={agentOptions} onChange={(value) => setDraft({ ...draft, agentProvider: value as AgentRunProvider })} ariaLabel="执行 Agent" /></label>
                 <label><span>任务指令</span><textarea rows={7} value={draft.prompt} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} placeholder="描述每次计划触发时 Agent 要完成的工作和验收标准…" /></label>
               </>}
+              {draft.action === 'generate-briefing' && <label>
+                <span>简报 Prompt</span>
+                <textarea rows={12} value={draft.prompt} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} placeholder={draft.projectId ? '填写这个项目的简报要求…' : defaultBriefingPrompt} />
+                <small>修改后从下一次运行生效。系统先收集目标、Chat、修复进度与可用的只读业务数据，再按 Prompt 生成简报；数据采集和输出格式校验仍由系统完成。模型不可用时会使用模板，并在运行记录中注明。</small>
+              </label>}
               <div className="automation-form-grid">
                 <label><span>自然语言计划</span><input value={draft.scheduleDescription} onChange={(event) => setDraft({ ...draft, scheduleDescription: event.target.value })} /></label>
                 <label><span>时区</span><input value={draft.timezone} onChange={(event) => setDraft({ ...draft, timezone: event.target.value })} /></label>
@@ -287,6 +293,10 @@ export function AutomationsView({
                 <div><dt>确认门</dt><dd>{selected.requiresConfirmation ? '需要人工确认' : '自动执行'}</dd></div>
               </dl>
               {selected.lastError && <div className="automation-error"><CircleAlert size={14} /><span>{selected.lastError}</span></div>}
+              {(selected.action === 'agent-task' || selected.action === 'generate-briefing') && <div className="automation-form automation-prompt-section">
+                <label><span>{selected.action === 'generate-briefing' ? '简报 Prompt' : '任务指令'}</span><textarea aria-label="当前执行 Prompt" rows={10} readOnly value={selected.prompt || (selected.action === 'generate-briefing' && !selected.projectId ? defaultBriefingPrompt : '使用项目默认简报要求。')} /></label>
+                {selected.action === 'generate-briefing' && <small>系统补充最新项目证据，并要求输出简报标题、正文与口播；这里的 Prompt 控制总结重点和表达方式。</small>}
+              </div>}
               <div className="automation-history-heading"><strong>运行记录</strong><span>{selectedRuns.length} 次</span></div>
               <div className="automation-history">
                 {selectedRuns.length === 0 ? <p>还没有运行记录。</p> : selectedRuns.map((run) => (

@@ -6,7 +6,7 @@ import { ConnectorRuntime } from './connectors/connector-runtime'
 import { registerIpc } from './ipc'
 import { AppDatabase } from './services/database'
 import { CredentialVault } from './services/credential-vault'
-import { DailyBriefingScheduler } from './services/daily-briefing-scheduler'
+import { ensureDailyInspectionAutomation } from './services/builtin-automations'
 import { DailyBriefingService } from './services/daily-briefing'
 import { PiAgentRuntime } from './services/pi-runtime'
 import { MorningBriefingService } from './services/morning-briefing'
@@ -41,6 +41,7 @@ import { resolveFuddyRuntimeProfile } from './runtime-profile'
 import { registerWorkspaceFileProtocol } from './services/workspace-file-protocol'
 import { workspaceFilePreviewScheme } from '../shared/workspace-file-preview'
 import { AccountService, normalizeAccountApiUrl } from './services/account-service'
+import { MacPeerSyncService } from './services/mac-peer-sync'
 import {
   AccountEnrollmentCoordinator,
   resolveCompanionRelayUrl
@@ -90,13 +91,13 @@ Sentry.init({
 let mainWindow: BrowserWindow | null = null
 let splashWindow: BrowserWindow | null = null
 let database: AppDatabase | null = null
-let dailyBriefingScheduler: DailyBriefingScheduler | null = null
 let automationScheduler: AutomationScheduler | null = null
 let agentToolsMcp: ThirdPartyMcpRuntime | null = null
 let shutdownPromise: Promise<void> | null = null
 let shutdownComplete = false
 let companionSync: CompanionSyncService | null = null
 let accountEnrollmentCoordinator: AccountEnrollmentCoordinator | null = null
+let macPeerSync: MacPeerSyncService | null = null
 let pendingAgentRunNavigationId: string | null = null
 let stopAutoUpdates: (() => void) | null = null
 let taskDispatcher: TaskDispatcher | null = null
@@ -321,6 +322,11 @@ if (!hasLock) {
         apiUrl: accountApiUrl,
         runtimeChannel: runtimeProfile.channel,
         appVersion: app.getVersion(),
+        onSignedOut: (state) => {
+          for (const window of BrowserWindow.getAllWindows()) {
+            if (!window.webContents.isDestroyed()) window.webContents.send('account:state-changed', state)
+          }
+        },
         googleClientId: process.env.FUDDY_GOOGLE_CLIENT_ID?.trim()
           || (runtimeProfile.channel === 'production'
             ? '877382581311-dt2ln9r81lqe8i0d6svknfs1dfi1s889.apps.googleusercontent.com'
@@ -438,6 +444,10 @@ if (!hasLock) {
         companionRelayUrl,
         () => companionSync?.reportAccountConnectionError()
       )
+      macPeerSync = new MacPeerSyncService(database, accountService, credentialVault, runtimeProfile.channel, () => {
+        if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
+      })
+      macPeerSync.start()
       companionSync.setWorkAssistantActionExecutor((input, cancellationSignal) => (
         morningBriefingService.executeAction(input, cancellationSignal)
       ))
@@ -448,6 +458,7 @@ if (!hasLock) {
         if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
       })
       const ttsService = new TtsService(database, providerSettings)
+      ensureDailyInspectionAutomation(database)
       const automationRuntime = new AutomationRuntime(database, {
         runAgentTask: async (job, cancellationSignal) => {
           const result = await dispatcher.dispatch({
@@ -467,31 +478,16 @@ if (!hasLock) {
           const results = await goalTrackingService.checkDueGoals(projectId ?? undefined, cancellationSignal)
           return results.length > 0 ? `已检查 ${results.length} 个到期目标。` : '当前没有到期目标。'
         },
-        generateBriefing: async (projectId, cancellationSignal) => {
+        generateBriefing: async (projectId, cancellationSignal, prompt) => {
           if (projectId) {
-            const result = await dailyBriefingService.generate(projectId, cancellationSignal)
-            return result.briefing.headline
+            const result = await dailyBriefingService.generate(projectId, cancellationSignal, prompt)
+            if (result.briefing.status === 'failed') throw new Error(result.briefing.error ?? '项目巡检失败。')
+            return result.briefing.generation === 'agent' ? result.briefing.headline : `${result.briefing.headline}（模板生成：模型未配置或调用失败，未使用自定义 Prompt。）`
           }
-          const result = await morningBriefingService.generate(cancellationSignal)
-          return result.briefing.headline
-        }
-      })
-      workspaceAgentActions.setAutomationRuntime(automationRuntime)
-      automationRuntime.onChanged(() => {
-        if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('automation:changed')
-      })
-      automationScheduler = new AutomationScheduler(database, automationRuntime)
-      dailyBriefingScheduler = new DailyBriefingScheduler(
-        database,
-        morningBriefingService,
-        (headline) => {
+          const result = await morningBriefingService.generate(cancellationSignal, prompt)
           mainWindow?.webContents.send('briefing:morning-ready')
           if (Notification.isSupported()) {
-            const notification = new Notification({
-              title: '每日简报已送达',
-              body: headline,
-              silent: false
-            })
+            const notification = new Notification({ title: '每日简报已送达', body: result.briefing.headline, silent: false })
             notification.on('click', () => {
               if (!mainWindow) createWindow()
               if (mainWindow?.isMinimized()) mainWindow.restore()
@@ -500,15 +496,17 @@ if (!hasLock) {
             })
             notification.show()
           }
-        },
-        (error) => {
-          Sentry.captureException(error, { tags: { boundary: 'daily-briefing-scheduler' } })
-          console.error(
-            '[daily-briefing-scheduler] generation failed',
-            error instanceof Error ? error.message : 'Unknown error'
-          )
+          const summary = result.briefing.generation === 'agent'
+            ? result.briefing.headline
+            : `${result.briefing.headline}（模板生成：模型未配置或输出未通过校验，未使用自定义 Prompt。）`
+          return result.briefing.error ? `${summary} 部分数据未获取：${result.briefing.error}` : summary
         }
-      )
+      })
+      workspaceAgentActions.setAutomationRuntime(automationRuntime)
+      automationRuntime.onChanged(() => {
+        if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('automation:changed')
+      })
+      automationScheduler = new AutomationScheduler(database, automationRuntime)
       registerIpc(
         database,
         dispatcher,
@@ -526,7 +524,8 @@ if (!hasLock) {
         projectAgentIntegration,
         companionSync,
         accountService,
-        accountEnrollmentCoordinator
+        accountEnrollmentCoordinator,
+        macPeerSync
       )
       createWindow()
       const updateConfigurationExists = existsSync(join(process.resourcesPath, 'app-update.yml'))
@@ -559,7 +558,6 @@ if (!hasLock) {
           void Sentry.flush(5_000).then((sent) => console.info(`[sentry-test] flushed=${sent}`))
         }, 1_000)
       }
-      dailyBriefingScheduler.start()
       automationScheduler.start()
 
       app.on('activate', () => {
@@ -583,8 +581,7 @@ async function shutdown(): Promise<void> {
   if (shutdownPromise) return await shutdownPromise
   shutdownPromise = (async () => {
     nativeTheme.removeListener('updated', updateMacDockIcon)
-    dailyBriefingScheduler?.stop()
-    dailyBriefingScheduler = null
+    macPeerSync?.stop()
     automationScheduler?.stop()
     automationScheduler = null
     stopAutoUpdates?.()

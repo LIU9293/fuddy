@@ -1,6 +1,6 @@
 {
   "name": "ai-native-project-agent",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "private": true,
   "fuddyRuntimeProfile": "production",
   "type": "module",
@@ -32,6 +32,7 @@
     "prepare:whisper": "node scripts/prepare-whisper.mjs",
     "prepare:whisper:ios": "node scripts/prepare-whisper.mjs --ios",
     "dist:mac": "npm run prepare:agent-tools && npm run prepare:whisper && npm run build && electron-builder --mac dmg zip",
+    "dist:mac:unsigned": "npm run prepare:agent-tools && npm run prepare:whisper && npm run build && electron-builder --mac dmg zip --publish never -c.mac.identity=null",
     "dist:mac:dev": "npm run prepare:agent-tools && npm run prepare:whisper && npm run build && electron-builder --mac dmg zip --publish never -c.appId=dev.ainative.projectagent.dev -c.productName='Fuddy Dev' -c.extraMetadata.fuddyRuntimeProfile=development -c.mac.identity=null -c.directories.output=dist/dev",
     "package:smoke": "npm run build && electron-builder --dir --mac --publish never -c.appId=dev.ainative.projectagent.dev -c.productName='Fuddy Dev' -c.extraMetadata.fuddyRuntimeProfile=development -c.mac.identity=null -c.extraResources=[] -c.directories.output=dist/dev-smoke"
   },
@@ -118,7 +119,10 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "将你的语音在本机转写为项目消息；未安装本地模型时可按设置使用云端 ASR。"
       },
-      "target": ["dmg", "zip"]
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "publish": {
       "provider": "github",

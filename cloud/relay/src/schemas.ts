@@ -27,7 +27,8 @@ export const deviceEnrollmentSchema = z.object({
   deviceId: identifier,
   deviceName: z.string().trim().min(1).max(200),
   publicKey: z.string().trim().min(16).max(2_000),
-  grantId: identifier.nullable().optional()
+  grantId: identifier.nullable().optional(),
+  platform: z.enum(['macos', 'ios']).optional()
 })
 
 export const pushRegistrationSchema = z.object({

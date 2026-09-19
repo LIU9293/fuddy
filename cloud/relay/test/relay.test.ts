@@ -332,6 +332,18 @@ describe('companion relay', () => {
     const second = await enroll('account-ios-2')
     expect(first.status).toBe(201)
     expect(second.status).toBe(201)
+    const peerResponse = await SELF.fetch(authenticatedUrl('/v1/devices/enroll', pairing.accountId, pairing.macDeviceId), {
+      method: 'POST', headers: { Authorization: `Bearer ${pairing.macToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: 'account-peer-mac', deviceName: 'Peer Mac', platform: 'macos', publicKey: 'account-device-public-key' })
+    })
+    expect(peerResponse.status).toBe(201)
+    const peer = await peerResponse.json<CompanionPairingClaimResult>()
+    expect(peer.device).toMatchObject({ platform: 'macos', role: 'ios' })
+    const escalate = await SELF.fetch(authenticatedUrl('/v1/devices/enroll', pairing.accountId, peer.device.id), {
+      method: 'POST', headers: { Authorization: `Bearer ${peer.deviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: 'illicit-device', deviceName: 'No host authority', publicKey: 'account-device-public-key' })
+    })
+    expect(escalate.status).toBe(401)
     await expect(first.json()).resolves.toMatchObject({
       accountId: pairing.accountId,
       device: { id: 'account-ios-1', role: 'ios' }

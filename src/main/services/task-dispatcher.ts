@@ -11,8 +11,7 @@ import type {
   AgentRunProvider,
   DispatchTaskInput,
   DispatchTaskResult,
-  CreateAgentRunDraftInput,
-  WorkAssistantImageAttachment
+  CreateAgentRunDraftInput
 } from '../../shared/contracts'
 import { AppDatabase } from './database'
 import { CliAgentRuntime } from './cli-agent-runtime'
@@ -20,7 +19,7 @@ import { PiTaskHarness } from './pi-task-harness'
 import { WorkspaceFilesService } from './workspace-files'
 import { evaluateAggressivePermission } from '../../shared/permissions'
 import { normalizeWorkspaceRoots, primaryWorkspaceRoot } from '../../shared/project-workspaces'
-import { buildAgentStoragePolicy } from './agent-runtime-context'
+import { buildProjectContext } from './agent-runtime-context'
 import type { AgentTurnOutcome, AgentTurnSettledPayload } from '../../shared/companion-sync'
 import { agentToolPresentation } from '../../shared/agent-activity'
 import {
@@ -28,6 +27,8 @@ import {
   createDefaultAgentProviderRegistry
 } from './agent-provider-registry'
 import { throwIfCancelled } from './cancellation'
+import type { ChatAttachmentInput } from '../../shared/chat-attachments'
+import { persistInputAttachments, registerLinkedArtifacts, describeArtifact, snapshotOutput } from './agent-attachments'
 
 type ResolvedDispatchTaskInput = Omit<DispatchTaskInput, 'provider'> & {
   provider: AgentRunProvider
@@ -37,32 +38,17 @@ export const AGENT_RUN_INACTIVITY_TIMEOUT_MS = 10 * 60_000
 
 class AgentRunStoppedError extends Error {
   constructor() {
-    super('Agent Run 当前回复已停止。')
+    super('Chat 当前回复已停止。')
     this.name = 'AgentRunStoppedError'
   }
 }
 
-function runWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise<T>((resolvePromise, rejectPromise) => {
-    const rejectForAbort = (): void => {
-      rejectPromise(signal.reason instanceof Error ? signal.reason : new Error('Agent Run 已停止。'))
-    }
-    if (signal.aborted) {
-      rejectForAbort()
-      return
-    }
-    signal.addEventListener('abort', rejectForAbort, { once: true })
-    operation.then(
-      (value) => {
-        signal.removeEventListener('abort', rejectForAbort)
-        resolvePromise(value)
-      },
-      (error) => {
-        signal.removeEventListener('abort', rejectForAbort)
-        rejectPromise(error)
-      }
-    )
-  })
+async function runWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  // Adapters receive the same signal and own runtime cleanup. Keep the queue
+  // occupied until they settle, even when cancellation has already been requested.
+  const value = await operation
+  throwIfCancelled(signal)
+  return value
 }
 
 function projectWorkspacesFor(database: AppDatabase, projectId: string | null): string[] {
@@ -250,7 +236,7 @@ export class TaskDispatcher {
     prompt: string,
     onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined,
     userMessageId?: string,
-    attachments: WorkAssistantImageAttachment[] = [],
+    attachments: ChatAttachmentInput[] = [],
     cancellationSignal?: AbortSignal
   ): Promise<AgentRunDetail> {
     this.database.getAgentRun(runId)
@@ -319,7 +305,7 @@ export class TaskDispatcher {
     prompt: string,
     onUpdate: (update: AgentRunStreamUpdate) => void,
     userMessageId?: string,
-    attachments: WorkAssistantImageAttachment[] = [],
+    attachments: ChatAttachmentInput[] = [],
     cancellationSignal?: AbortSignal
   ): Promise<AgentRunDetail> {
     const abortController = new AbortController()
@@ -424,36 +410,22 @@ export class TaskDispatcher {
       onUpdate(update)
     }
     let run = this.database.getAgentRun(runId)
-    const attachmentFiles = attachments.map((attachment) => {
-      const safeName = attachment.name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'attachment'
-      const relativePath = `_attachments/agent-runs/${runId}/${attachment.id}-${safeName}`
-      this.workspaceFiles.writeDataUrl(run.projectId, relativePath, attachment.dataUrl)
-      return {
-        id: attachment.id,
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        relativePath,
-        absolutePath: this.workspaceFiles.resolvePath(run.projectId, relativePath)
-      }
-    })
-    const runtimePrompt = attachmentFiles.length > 0
-      ? `${prompt.trim()}\n\n用户同时提供了以下附件，请读取并结合附件内容完成任务：\n${attachmentFiles.map((file) => `- ${file.name}: ${file.absolutePath}`).join('\n')}`
-      : prompt.trim()
+    const messageId = userMessageId?.trim() || randomUUID()
+    const attachmentFiles = persistInputAttachments(this.database, this.workspaceFiles, run, messageId, attachments)
     const projectFilesBefore = new Map(
       this.workspaceFiles.list(run.projectId)
         .filter((entry) => entry.kind === 'file' && !entry.relativePath.startsWith('_attachments/'))
         .map((entry) => [entry.relativePath, `${entry.size}:${entry.modifiedAt}`])
     )
     const userMessage: AgentRunMessage = {
-      id: userMessageId?.trim() || randomUUID(),
+      id: messageId,
       runId,
       role: 'user',
       content: prompt.trim(),
       eventType: null,
       toolName: null,
-      metadata: attachmentFiles.length > 0
-        ? { attachments: attachmentFiles.map(({ absolutePath: _absolutePath, ...file }) => file) }
-        : null,
+      metadata: null,
+      attachments: attachmentFiles.descriptors,
       createdAt: new Date().toISOString()
     }
     this.database.createAgentRunMessage(userMessage)
@@ -514,9 +486,15 @@ export class TaskDispatcher {
         runId,
         projectId: run.projectId,
         projectContext: this.buildRunContext(run),
-        prompt: runtimePrompt,
+        prompt: prompt.trim(),
+        attachments: attachmentFiles.runtime,
         history: () => this.database.listAgentRunMessages(runId).filter((message) => message.id !== userMessage.id),
         sessionId: run.sessionId,
+        codexSessionOwned: this.database.ownsCodexSession(runId, run.sessionId),
+        onCodexSessionReady: ready => {
+          touchActivity()
+          run = this.database.bindCodexSession(runId, ready)
+        },
         model: run.model,
         reasoningEffort: run.reasoningEffort,
         workingDirectory: run.workingDirectory,
@@ -524,6 +502,7 @@ export class TaskDispatcher {
         filesDirectory: this.workspaceFiles.getRoot(run.projectId),
         abortController,
         onUpdate: trackedUpdate,
+        onAccountContext: context => this.database.updateAgentRunAccountContext(runId, context),
         onTool: recordTool,
         onApproval: (request) => this.waitForApproval(run.id, request, trackedUpdate),
         onSessionId: (sessionId) => {
@@ -538,15 +517,24 @@ export class TaskDispatcher {
 
       flushReasoning()
       flushVisibleTextAtTurnEnd()
-      const finalResponse = response
+      const finalResponse = registerLinkedArtifacts(this.database, this.workspaceFiles, run, response, projectWorkspacesFor(this.database, run.projectId))
+      this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
+      const assistantMessageId = randomUUID()
+      const outputAttachments = this.database.getAgentRunDetail(run.id).artifacts
+        .filter(artifact => !artifact.relativePath.startsWith('_attachments/') && (
+          finalResponse.includes(encodeURI(artifact.relativePath)) || !projectFilesBefore.has(artifact.relativePath)
+        )).flatMap(artifact => {
+          try { return [describeArtifact(artifact, this.workspaceFiles, assistantMessageId)] } catch { return [] }
+        })
       const assistantMessage: AgentRunMessage = {
-        id: randomUUID(),
+        id: assistantMessageId,
         runId,
         role: 'assistant',
         content: finalResponse,
         eventType: null,
         toolName: null,
         metadata: null,
+        attachments: outputAttachments,
         createdAt: new Date().toISOString()
       }
       this.database.createAgentRunMessage(assistantMessage)
@@ -575,7 +563,7 @@ export class TaskDispatcher {
         this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
         return this.database.getAgentRunDetail(run.id)
       }
-      const message = error instanceof Error ? error.message : 'Agent Run 执行失败。'
+      const message = error instanceof Error ? error.message : 'Chat 执行失败。'
       const systemMessage: AgentRunMessage = {
         id: randomUUID(),
         runId,
@@ -666,20 +654,7 @@ export class TaskDispatcher {
       : null
     const goal = run.goalId ? this.database.getGoal(run.goalId) : null
     const milestone = goal?.milestones.find((item) => item.id === run.milestoneId) ?? null
-    const lines = project
-      ? [
-          `项目：${project.name}`,
-          `项目简介：${project.summary}`,
-          `使命：${project.profile.mission}`,
-          `愿景：${project.profile.vision}`,
-          `当前状态：${project.profile.currentState.summary}`,
-          project.profile.currentState.facts.length > 0
-            ? `用户确认事实：${project.profile.currentState.facts.join('；')}`
-            : null,
-          `当前重点：${project.profile.focusAreas.join('、') || '未设置'}`,
-          `Workspace Roots：${normalizeWorkspaceRoots(project.profile).workspaceRoots.map((root) => `${root.label}=${root.path}${root.id === normalizeWorkspaceRoots(project.profile).primaryWorkspaceRootId ? '（主）' : ''}`).join('；') || '未设置'}`
-        ]
-      : ['项目：共享任务']
+    const lines = [buildProjectContext(project)]
     if (goal) {
       lines.push(`关联目标：${goal.title}`, `目标说明：${goal.description}`)
     }
@@ -696,13 +671,6 @@ export class TaskDispatcher {
         `事项最新证据：${decision.summary}`
       )
     }
-    const workspaceRoots = projectWorkspacesFor(this.database, run.projectId)
-    const workingDirectory = run.workingDirectory ?? this.workspaceFiles.getRoot(run.projectId)
-    lines.push(buildAgentStoragePolicy({
-      workingDirectory,
-      workspaceRoots,
-      filesDirectory: this.workspaceFiles.getRoot(run.projectId)
-    }))
     return lines.filter((line): line is string => Boolean(line)).join('\n')
   }
 
@@ -710,18 +678,15 @@ export class TaskDispatcher {
     const changed = this.workspaceFiles.list(run.projectId).filter((entry) =>
       entry.kind === 'file'
       && !entry.relativePath.startsWith('_attachments/')
+      && !entry.relativePath.startsWith('_artifacts/')
+      && !entry.relativePath.split('/').some(part => part.startsWith('.'))
+      && !/\.(pem|key)$/i.test(entry.name)
       && before.get(entry.relativePath) !== `${entry.size}:${entry.modifiedAt}`
     )
     for (const entry of changed) {
-      this.database.upsertAgentRunArtifact({
-        id: randomUUID(),
-        runId: run.id,
-        projectId: run.projectId,
-        relativePath: entry.relativePath,
-        label: entry.name,
-        mimeType: entry.mimeType,
-        createdAt: new Date().toISOString()
-      })
+      try {
+        snapshotOutput(this.database, this.workspaceFiles, run, this.workspaceFiles.resolvePath(run.projectId, entry.relativePath), entry.name, entry.mimeType)
+      } catch { /* An oversized or removed file must not prevent other outputs from being registered. */ }
     }
   }
 

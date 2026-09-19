@@ -53,6 +53,10 @@ export function registerAccountIpc(context: IpcContext): void {
             void reconcileAccountAuthorizationLoss().catch(() => undefined)
           }
         })
+    } else {
+      // A settings view can request state after a background task already signed out.
+      // Also update the root renderer, which otherwise keeps its cached signed-in state.
+      broadcastAccountState(local)
     }
     return local
   })
@@ -185,10 +189,10 @@ export function registerAccountIpc(context: IpcContext): void {
 
   ipcMain.handle('onboarding:complete-agent-detection', () => accountService.setOnboardingStep('add-project'))
 
-  ipcMain.handle('onboarding:select-project-folder', async (event) => {
+  ipcMain.handle('project:select-folder', async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const options: OpenDialogOptions = {
-      title: '选择第一个项目文件夹',
+      title: '选择项目文件夹',
       buttonLabel: '选择文件夹',
       properties: ['openDirectory', 'createDirectory']
     }

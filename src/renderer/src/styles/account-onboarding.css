@@ -69,7 +69,7 @@
 .account-eyebrow {
   margin: 0 0 8px;
   color: #777770;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.08em;
   text-align: center;
@@ -147,7 +147,7 @@
 .account-provider-note,
 .account-legal {
   color: #888880;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.45;
   text-align: center;
 }
@@ -163,7 +163,7 @@
   gap: 4px;
   margin: 9px 0 0;
   color: #888880;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .account-provider-fallback button {
@@ -185,7 +185,7 @@
   gap: 12px;
   margin: 22px 0;
   color: #9a9a93;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .account-divider::before,
@@ -204,7 +204,7 @@
 .account-form > label,
 .onboarding-field > span {
   color: #5e5e58;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 620;
 }
 
@@ -260,7 +260,7 @@
 .account-entry-error {
   margin: 0;
   color: #ad3f35;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.45;
   text-align: center;
 }
@@ -281,7 +281,7 @@
   margin: 0;
   padding: 4px 8px 4px 5px;
   color: #777770;
-  font-size: 11px;
+  font-size: 12px;
   background: transparent;
   border-radius: 7px;
   -webkit-app-region: no-drag;
@@ -301,7 +301,7 @@
   overflow: hidden;
   padding: 5px 8px;
   color: #777770;
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
   background: transparent;
@@ -348,7 +348,7 @@
 
 .agent-detection-list strong,
 .agent-detection-list small {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .agent-detection-list small {
@@ -412,12 +412,12 @@
 
 .existing-projects-note small {
   color: #777770;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .project-folder-picker span {
   overflow: hidden;
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -470,7 +470,7 @@
   place-items: center;
   width: 22px;
   height: 22px;
-  font-size: 9px;
+  font-size: 12px;
   background: #efefeb;
   border-radius: 50%;
 }
@@ -487,10 +487,12 @@
 }
 
 .onboarding-progress small {
-  font-size: 9px;
+  font-size: 12px;
 }
 
 @media (prefers-color-scheme: dark) {
+  .onboarding-progress li.is-current,
+  .onboarding-progress li.is-complete { color: var(--text-link); }
   .account-entry-shell {
     color: #ededeb;
     background: radial-gradient(circle at 50% 42%, #22231f 0, #1c1d1a 48%, #171816 100%);

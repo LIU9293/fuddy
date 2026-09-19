@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { agentAccountContextSchema, type AgentAccountContext } from '../../../shared/agent-account-context'
 import type { DatabaseSync } from 'node:sqlite'
 import type { AgentRun, AgentRunArtifact, AgentRunDetail, AgentRunMessage } from '../../../shared/contracts'
 
@@ -77,6 +78,15 @@ export class RunRepository {
     return rows.map((row) => this.map(row))
   }
 
+  updateAccountContext(id: string, context: AgentAccountContext): void {
+    const safe = agentAccountContextSchema.parse(context)
+    this.transaction(() => {
+      this.database.prepare('UPDATE agent_runs SET account_context_json = ? WHERE id = ?')
+        .run(JSON.stringify(safe), id)
+      this.publish({ type: 'agent-run.updated', entityType: 'agent-run', entityId: id, payload: this.get(id) })
+    })
+  }
+
   get(id: string): AgentRun {
     const row = this.database.prepare('SELECT * FROM agent_runs WHERE id = ?').get(id) as SqlRow | undefined
     if (!row) throw new Error(`Agent run not found: ${id}`)
@@ -150,7 +160,7 @@ export class RunRepository {
       this.database
         .prepare(`
           UPDATE agent_runs
-          SET agent = ?, kind = ?, provider = ?, model = ?, reasoning_effort = ?, session_id = NULL, updated_at = ?
+          SET agent = ?, kind = ?, provider = ?, model = ?, reasoning_effort = ?, session_id = NULL, account_context_json = NULL, updated_at = ?
           WHERE id = ? AND archived_at IS NULL
         `)
         .run(
@@ -298,6 +308,7 @@ export class RunRepository {
   }
 
   private mapMessage(row: SqlRow): AgentRunMessage {
+    const metadata = parseJson<Record<string, unknown> | null>(row.metadata_json ? String(row.metadata_json) : null, null)
     return {
       id: String(row.id),
       runId: String(row.run_id),
@@ -305,7 +316,8 @@ export class RunRepository {
       content: String(row.content),
       eventType: row.event_type ? String(row.event_type) : null,
       toolName: row.tool_name ? String(row.tool_name) : null,
-      metadata: parseJson<Record<string, unknown> | null>(row.metadata_json ? String(row.metadata_json) : null, null),
+      metadata,
+      ...(Array.isArray(metadata?.messageAttachments) ? { attachments: metadata.messageAttachments as NonNullable<AgentRunMessage['attachments']> } : {}),
       createdAt: String(row.created_at)
     }
   }
@@ -461,6 +473,7 @@ export class RunRepository {
   }
 
   createMessage(message: AgentRunMessage): AgentRunMessage {
+    if (message.attachments?.length) message = { ...message, metadata: { ...message.metadata, messageAttachments: message.attachments } }
     return this.transaction(() => {
       this.database
         .prepare(
@@ -536,6 +549,7 @@ export class RunRepository {
       provider: provider as AgentRun['provider'],
       model: row.model ? String(row.model) : null,
       reasoningEffort: row.reasoning_effort ? String(row.reasoning_effort) : null,
+      accountContext: agentAccountContextSchema.safeParse(parseJson(row.account_context_json ? String(row.account_context_json) : null, null)).data ?? null,
       title: String(row.title),
       status: row.status as AgentRun['status'],
       sessionId: row.session_id ? String(row.session_id) : null,

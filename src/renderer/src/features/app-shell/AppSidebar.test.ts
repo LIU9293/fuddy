@@ -7,6 +7,19 @@ function run(id: string, projectId: string | null): AgentRun {
 }
 
 describe('Agent Run sidebar grouping', () => {
+  it('keeps every project available before its first Run and after its last Run is archived', () => {
+    const projects = [
+      { id: 'project-b', name: 'Project B' },
+      { id: 'project-a', name: 'Project A' }
+    ] as Project[]
+
+    for (const runs of [[], [run('a-1', 'project-a')]]) {
+      const groups = groupSidebarRuns(runs, projects)
+      expect(groups.map((group) => group.projectId)).toEqual(['project-b', 'project-a'])
+      expect(groups[0]).toEqual({ id: 'project-b', title: 'Project B', projectId: 'project-b', runs: [] })
+    }
+  })
+
   it('groups Runs by configured project order and keeps shared Runs separate', () => {
     const projects = [
       { id: 'project-b', name: 'Project B' },

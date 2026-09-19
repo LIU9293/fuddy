@@ -1,0 +1,52 @@
+name: Deploy Companion Relay
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloud/relay/**'
+      - 'src/shared/companion-*.ts'
+      - 'scripts/generate-companion-contracts.mjs'
+      - '.github/workflows/deploy-relay.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: companion-relay-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy production Companion Relay
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            cloud/relay/package-lock.json
+
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix cloud/relay ci
+      - run: npm run relay:typecheck
+      - run: npm run relay:test
+
+      - name: Deploy Relay with Wrangler
+        working-directory: cloud/relay
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          APNS_PRIVATE_KEY: ${{ secrets.APNS_PRIVATE_KEY }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$APNS_PRIVATE_KEY"
+          printf '%s' "$APNS_PRIVATE_KEY" | npx wrangler secret put APNS_PRIVATE_KEY
+          npm run deploy

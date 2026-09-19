@@ -232,24 +232,17 @@ export function ProjectSettingsView({
   onNotice: (message: string) => void
 }): React.JSX.Element {
   const [draft, setDraft] = useState<UpdateProjectInput>(structuredClone(project))
-  const [listFields, setListFields] = useState({
-    surfaces: project.profile.surfaces.join('\n'),
-    focusAreas: project.profile.focusAreas.join('\n'),
-    dataSources: project.profile.dataSources.join('\n'),
-    nextMoves: project.profile.nextMoves.join('\n')
-  })
+  const previousProjectRef = useRef(project)
   const [saving, setSaving] = useState(false)
+  const [selectingFolder, setSelectingFolder] = useState(false)
   const [error, setError] = useState<string | null>(null)
   useAutoDismissMessage(error, () => setError(null))
 
   useEffect(() => {
+    const previous = previousProjectRef.current
+    previousProjectRef.current = project
+    if (previous.id === project.id && !saving && JSON.stringify(draft) !== JSON.stringify(previous)) return
     setDraft(structuredClone(project))
-    setListFields({
-      surfaces: project.profile.surfaces.join('\n'),
-      focusAreas: project.profile.focusAreas.join('\n'),
-      dataSources: project.profile.dataSources.join('\n'),
-      nextMoves: project.profile.nextMoves.join('\n')
-    })
     setError(null)
   }, [project])
 
@@ -260,31 +253,44 @@ export function ProjectSettingsView({
     }))
   }
 
-  function lines(value: string): string[] {
-    return value
-      .split('\n')
-      .map((item) => item.trim())
-      .filter(Boolean)
-  }
-
-  function updateWorkspaceRoot(id: string, patch: { label?: string; path?: string }): void {
-    updateProfile({
-      workspaceRoots: draft.profile.workspaceRoots.map((root) => (root.id === id ? { ...root, ...patch } : root))
-    })
-  }
-
-  function addWorkspaceRoot(): void {
-    const id = `workspace-${Date.now()}`
-    updateProfile({
-      workspaceRoots: [...draft.profile.workspaceRoots, { id, label: 'New workspace', path: '' }],
-      primaryWorkspaceRootId: draft.profile.primaryWorkspaceRootId ?? id
-    })
+  async function addWorkspaceRoot(): Promise<void> {
+    if (selectingFolder) return
+    const projectId = draft.id
+    setSelectingFolder(true)
+    setError(null)
+    try {
+      const path = await window.projectAgent.selectProjectFolder()
+      if (!path) return
+      setDraft((current) => {
+        if (current.id !== projectId || current.profile.workspaceRoots.some((root) => root.path === path)) return current
+        const id = `workspace-${crypto.randomUUID()}`
+        return {
+          ...current,
+          profile: {
+            ...current.profile,
+            ...normalizeWorkspaceRoots({
+              ...current.profile,
+              workspaceRoots: [...current.profile.workspaceRoots, { id, label: path.split('/').filter(Boolean).pop() || path, path }],
+              primaryWorkspaceRootId: current.profile.primaryWorkspaceRootId ?? id
+            })
+          }
+        }
+      })
+    } catch (folderError) {
+      if (previousProjectRef.current.id === projectId) {
+        setError(folderError instanceof Error ? folderError.message : '无法打开文件夹选择器。')
+      }
+    } finally {
+      setSelectingFolder(false)
+    }
   }
 
   function removeWorkspaceRoot(id: string): void {
+    if (draft.profile.workspaceRoots.length <= 1) return
     const workspaceRoots = draft.profile.workspaceRoots.filter((root) => root.id !== id)
     updateProfile({
       workspaceRoots,
+      repoPath: '',
       primaryWorkspaceRootId:
         draft.profile.primaryWorkspaceRootId === id
           ? (workspaceRoots[0]?.id ?? null)
@@ -297,23 +303,16 @@ export function ProjectSettingsView({
     setError(null)
     try {
       const workspaces = normalizeWorkspaceRoots(draft.profile)
-      await window.projectAgent.updateProject({
+      const saved = await window.projectAgent.updateProject({
         ...draft,
         name: draft.name.trim(),
         summary: draft.summary.trim(),
-        focus: draft.focus.trim(),
         profile: {
           ...draft.profile,
-          productType: draft.profile.productType.trim(),
-          stage: draft.profile.stage.trim(),
-          ...workspaces,
-          websiteUrl: draft.profile.websiteUrl?.trim() || null,
-          surfaces: lines(listFields.surfaces),
-          focusAreas: lines(listFields.focusAreas),
-          dataSources: lines(listFields.dataSources),
-          nextMoves: lines(listFields.nextMoves)
+          ...workspaces
         }
       })
+      setDraft(saved)
       await onSaved()
       onNotice(`${draft.name.trim()} 项目设置已保存。`)
     } catch (saveError) {
@@ -325,6 +324,12 @@ export function ProjectSettingsView({
 
   return (
     <section className="project-settings-page">
+      {project.shared && draft.shared && (project.shared.revision !== draft.shared.revision || project.shared.author !== draft.shared.author) && <p role="status">
+        项目信息已在其他 Mac 更新，本页修改尚未保存。
+        <button type="button" onClick={() => {
+          setDraft(structuredClone(project))
+        }}>放弃本页修改，载入最新信息</button>
+      </p>}
       <div className="project-setting-section">
         <div className="project-setting-heading">
           <h2>基本信息</h2>
@@ -385,96 +390,49 @@ export function ProjectSettingsView({
               onChange={(event) => setDraft((current) => ({ ...current, summary: event.target.value }))}
             />
           </label>
-          <label>
-            <span>Agent 分析视角</span>
-            <input
-              value={draft.focus}
-              onChange={(event) => setDraft((current) => ({ ...current, focus: event.target.value }))}
-              placeholder="Growth / Data / Operations"
-            />
-          </label>
         </div>
       </div>
 
       <div className="project-setting-section">
         <div className="project-setting-heading">
-          <h2>产品上下文</h2>
-          <p>帮助 Agent 理解项目形态、阶段和当前工作范围。</p>
-        </div>
-        <div className="project-setting-fields">
-          <label>
-            <span>产品类型</span>
-            <input
-              value={draft.profile.productType}
-              onChange={(event) => updateProfile({ productType: event.target.value })}
-            />
-          </label>
-          <label>
-            <span>当前阶段</span>
-            <input value={draft.profile.stage} onChange={(event) => updateProfile({ stage: event.target.value })} />
-          </label>
-          <label>
-            <span>产品形态（每行一项）</span>
-            <textarea
-              rows={3}
-              value={listFields.surfaces}
-              onChange={(event) => setListFields((current) => ({ ...current, surfaces: event.target.value }))}
-            />
-          </label>
-          <label>
-            <span>重点领域（每行一项）</span>
-            <textarea
-              rows={4}
-              value={listFields.focusAreas}
-              onChange={(event) => setListFields((current) => ({ ...current, focusAreas: event.target.value }))}
-            />
-          </label>
-        </div>
-      </div>
-
-      <div className="project-setting-section">
-        <div className="project-setting-heading">
-          <h2>代码与入口</h2>
-          <p>普通 Run 和 Coding Run 都从主 Workspace 启动，并可访问此处列出的项目目录。</p>
+          <h2>本机文件夹</h2>
+          <p>主文件夹和附加文件夹只用于这台 Mac，不会覆盖其他 Mac 的目录配置。Chat 从执行 Mac 的主文件夹启动。</p>
         </div>
         <div className="project-setting-fields">
           <div className="project-setting-field workspace-roots-field">
-            <span>Workspace Roots</span>
+            <span>本机文件夹</span>
             <div className="workspace-root-editor">
               {draft.profile.workspaceRoots.map((root) => (
                 <div className="workspace-root-row" key={root.id}>
                   <input
-                    aria-label="Workspace 名称"
-                    value={root.label}
-                    onChange={(event) => updateWorkspaceRoot(root.id, { label: event.target.value })}
-                    placeholder="名称"
-                  />
-                  <input
-                    aria-label="Workspace 路径"
+                    aria-label="文件夹地址"
                     value={root.path}
-                    onChange={(event) => updateWorkspaceRoot(root.id, { path: event.target.value })}
-                    placeholder="/Users/name/Code/project"
+                    title={root.path}
+                    readOnly
                   />
-                  <button type="button" onClick={() => removeWorkspaceRoot(root.id)} aria-label={`移除 ${root.label}`}>
+                  <button type="button" onClick={() => removeWorkspaceRoot(root.id)}
+                    disabled={draft.profile.workspaceRoots.length <= 1}
+                    title={draft.profile.workspaceRoots.length <= 1 ? '至少保留一个本机文件夹' : `移除 ${root.path}`}
+                    aria-label={`移除 ${root.path}`}>
                     <Trash2 size={13} />
                   </button>
                 </div>
               ))}
-              <button type="button" className="workspace-root-add" onClick={addWorkspaceRoot}>
-                <Plus size={13} /> 添加 Workspace
+              <button type="button" className="workspace-root-add" disabled={selectingFolder || saving} onClick={() => void addWorkspaceRoot()}>
+                <Plus size={13} /> 添加文件夹
               </button>
             </div>
           </div>
           <div className="project-setting-field">
-            <span>主 Workspace</span>
+            <span>本机主文件夹</span>
             <SelectMenu
               value={draft.profile.primaryWorkspaceRootId ?? ''}
               options={draft.profile.workspaceRoots.map((root) => ({
                 value: root.id,
-                label: root.label || root.path || root.id
+                label: root.path
               }))}
               onChange={(primaryWorkspaceRootId) => updateProfile({ primaryWorkspaceRootId })}
-              ariaLabel="主 Workspace"
+              ariaLabel="本机主文件夹"
             />
           </div>
           <div className="project-setting-field">
@@ -493,40 +451,6 @@ export function ProjectSettingsView({
               ariaLabel="默认 Agent"
             />
           </div>
-          <label>
-            <span>官网</span>
-            <input
-              type="url"
-              value={draft.profile.websiteUrl ?? ''}
-              onChange={(event) => updateProfile({ websiteUrl: event.target.value || null })}
-              placeholder="https://example.com"
-            />
-          </label>
-        </div>
-      </div>
-
-      <div className="project-setting-section">
-        <div className="project-setting-heading">
-          <h2>数据与下一步</h2>
-          <p>定义项目自己的证据来源和当前优先事项。</p>
-        </div>
-        <div className="project-setting-fields">
-          <label>
-            <span>数据源（每行一项）</span>
-            <textarea
-              rows={5}
-              value={listFields.dataSources}
-              onChange={(event) => setListFields((current) => ({ ...current, dataSources: event.target.value }))}
-            />
-          </label>
-          <label>
-            <span>建议下一步（每行一项）</span>
-            <textarea
-              rows={5}
-              value={listFields.nextMoves}
-              onChange={(event) => setListFields((current) => ({ ...current, nextMoves: event.target.value }))}
-            />
-          </label>
         </div>
       </div>
 
@@ -535,7 +459,7 @@ export function ProjectSettingsView({
         <button
           className="provider-save-button"
           onClick={() => void save()}
-          disabled={saving || !draft.name.trim() || !draft.summary.trim()}
+          disabled={saving || selectingFolder || !draft.name.trim() || !draft.summary.trim()}
         >
           {saving ? <LoaderCircle className="spin" size={13} /> : <ShieldCheck size={13} />}
           保存项目设置

@@ -926,7 +926,7 @@ final class SyncModelTests: XCTestCase {
         XCTAssertTrue(companionCanOpenDrawer(section: .projects, pathIsEmpty: true))
         XCTAssertTrue(companionCanOpenDrawer(section: .inbox, pathIsEmpty: true))
         XCTAssertTrue(companionCanOpenDrawer(section: .settings, pathIsEmpty: true))
-        XCTAssertFalse(companionCanOpenDrawer(section: .runs, pathIsEmpty: true))
+        XCTAssertTrue(companionCanOpenDrawer(section: .runs, pathIsEmpty: true))
         XCTAssertFalse(companionCanOpenDrawer(section: .projects, pathIsEmpty: false))
     }
 

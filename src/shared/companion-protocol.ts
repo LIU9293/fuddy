@@ -33,6 +33,7 @@ export const companionCommandTypes = [
   'agent.create-session',
   'agent.rename-session',
   'agent.update-draft-prompt',
+  'agent.update-execution-settings',
   'agent.archive-session',
   'chat.load-history',
   'artifact.request-upload',
@@ -81,7 +82,7 @@ export const companionCommandPayloadDefinitions = {
   'agent.stop-message': { swiftName: 'AgentStopMessagePayload', fields: { runId: 'string' } },
   'agent.create-session': {
     swiftName: 'AgentCreateSessionPayload',
-    fields: { runId: 'string', projectId: 'optional-string', title: 'string' }
+    fields: { runId: 'string', projectId: 'optional-string', title: 'string', provider: 'optional-string', goalId: 'optional-string', milestoneId: 'optional-string', draftPrompt: 'optional-string' }
   },
   'agent.rename-session': {
     swiftName: 'AgentRenameSessionPayload',
@@ -90,6 +91,10 @@ export const companionCommandPayloadDefinitions = {
   'agent.update-draft-prompt': {
     swiftName: 'AgentUpdateDraftPromptPayload',
     fields: { runId: 'string', draftPrompt: 'string' }
+  },
+  'agent.update-execution-settings': {
+    swiftName: 'AgentUpdateExecutionSettingsPayload',
+    fields: { runId: 'string', provider: 'string', model: 'optional-string', reasoningEffort: 'optional-string' }
   },
   'agent.archive-session': { swiftName: 'AgentArchiveSessionPayload', fields: { runId: 'string' } },
   'chat.load-history': {

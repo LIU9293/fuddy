@@ -380,12 +380,12 @@ export function WorkAssistantActionCard({
   return (
     <section
       className={`work-assistant-action-card is-${proposal.status}`}
-      aria-label={includesLegacyRunLink ? '创建新的 Agent Run' : proposal.title}
+      aria-label={includesLegacyRunLink ? '创建新的 Chat' : proposal.title}
     >
       <div className="work-assistant-action-heading">
         <span>{accepted ? <CircleCheck size={17} /> : <Bot size={17} />}</span>
         <div>
-          <strong>{includesLegacyRunLink ? '创建新的 Agent Run' : proposal.title}</strong>
+          <strong>{includesLegacyRunLink ? '创建新的 Chat' : proposal.title}</strong>
           {proposal.context && <small>{proposal.context}</small>}
         </div>
       </div>

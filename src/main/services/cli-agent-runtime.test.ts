@@ -46,6 +46,15 @@ function input(provider: CliAgentTurnInput['provider']): CliAgentTurnInput {
 }
 
 describe('coding CLI MCP injection', () => {
+  it('passes image pixels through Codex localImage and files through native OpenCode attachments', () => {
+    const attachments = [{ path: '/files/截图.png', name: '截图.png', mimeType: 'image/png' }, { path: '/files/log.txt', name: 'log.txt', mimeType: 'text/plain' }]
+    const params = buildCodexTurnStartParams('session', '看图和日志', 'high', attachments)
+    expect(params.input).toEqual([
+      { type: 'text', text: expect.stringContaining('/files/log.txt') },
+      { type: 'localImage', path: '/files/截图.png' }
+    ])
+    expect(buildCliArgs({ ...input('opencode'), attachments }, [])).toEqual(expect.arrayContaining(['--file', '/files/截图.png', '--file', '/files/log.txt', '--', 'test']))
+  })
   it('preserves Claude summarized-thinking stream deltas for the live reasoning UI', () => {
     expect(claudeRecord({
       type: 'stream_event',
@@ -194,6 +203,15 @@ describe('coding CLI MCP injection', () => {
     const args = buildCliArgs(input('opencode'), [])
     expect(args).toContain('--auto')
     expect(args).toContain('--thinking')
+  })
+
+  it('appends the temporary OpenCode instructions without overwriting native config', () => {
+    const baseEnv = { OPENCODE_CONFIG_CONTENT: JSON.stringify({ instructions: ['team.md'], model: 'user/default' }) }
+    const env = buildCliEnv('opencode', [], baseEnv, '/tmp/fuddy-context.md')
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toMatchObject({
+      instructions: ['team.md', '/tmp/fuddy-context.md'], model: 'user/default'
+    })
+    expect(JSON.parse(baseEnv.OPENCODE_CONFIG_CONTENT).instructions).toEqual(['team.md'])
   })
 
   it('passes an explicit default model to every coding CLI', () => {

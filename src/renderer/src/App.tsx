@@ -48,9 +48,9 @@ export default function App(): React.JSX.Element {
       setRenameTarget(null)
       setRenameTitle('')
       await refreshDomains(['runs'])
-      setNotice('Agent Run 已重命名。')
+      setNotice('Chat 已重命名。')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Agent Run 重命名失败。')
+      setNotice(error instanceof Error ? error.message : 'Chat 重命名失败。')
     } finally {
       setRunActionBusy(false)
     }
@@ -63,9 +63,9 @@ export default function App(): React.JSX.Element {
       await window.projectAgent.archiveAgentRun(run.id)
       if (navigation.selectedAgentRunId === run.id) navigation.openRuns()
       await refreshDomains(['runs'])
-      setNotice('Agent Run 已归档。')
+      setNotice('Chat 已归档。')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Agent Run 归档失败。')
+      setNotice(error instanceof Error ? error.message : 'Chat 归档失败。')
     } finally {
       setRunActionBusy(false)
     }
@@ -146,7 +146,7 @@ export default function App(): React.JSX.Element {
               void renameSidebarRun()
             }}
           >
-            <strong>重命名 Agent Run</strong>
+            <strong>重命名 Chat</strong>
             <input
               autoFocus
               value={renameTitle}
@@ -155,7 +155,7 @@ export default function App(): React.JSX.Element {
               onKeyDown={(event) => {
                 if (event.key === 'Escape' && !runActionBusy) setRenameTarget(null)
               }}
-              aria-label="Agent Run 新标题"
+              aria-label="Chat 新标题"
             />
             <div>
               <button type="button" disabled={runActionBusy} onClick={() => setRenameTarget(null)}>取消</button>

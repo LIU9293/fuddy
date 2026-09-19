@@ -30,4 +30,18 @@ describe('unixDescendantProcessIds', () => {
 
     expect(() => process.kill(child.pid!, 0)).toThrow()
   })
+
+  it.runIf(process.platform !== 'win32')('waits for actual exit when a child ignores SIGTERM', async () => {
+    const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); console.log("ready"); setInterval(() => {}, 1000)'], {
+      detached: true, stdio: ['ignore', 'pipe', 'ignore']
+    })
+    await once(child.stdout!, 'data')
+    try {
+      await terminateProcessTree(child, 50)
+      expect(() => process.kill(child.pid!, 0)).toThrow()
+      expect(child.signalCode).toBe('SIGKILL')
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
 })

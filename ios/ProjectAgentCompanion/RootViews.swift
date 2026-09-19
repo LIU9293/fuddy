@@ -8,13 +8,13 @@ private let companionAgentRunChatTopSpacing: CGFloat = 16
 let companionChatLatestDistanceThreshold: CGFloat = 50
 
 enum CompanionSection: String, CaseIterable, Identifiable {
-    case assistant, runs, inbox, projects, settings
+    case runs, assistant, inbox, projects, settings
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .assistant: "助理"
-        case .runs: "Runs"
+        case .runs: "Chats"
         case .inbox: "收件箱"
         case .projects: "项目"
         case .settings: "设置"
@@ -41,7 +41,7 @@ enum CompanionRoute: Hashable {
 
 @MainActor
 final class CompanionRouter: ObservableObject {
-    @Published var section: CompanionSection = .assistant
+    @Published var section: CompanionSection = .runs
     @Published var path: [CompanionRoute] = []
     @Published var drawerPresented = false
 
@@ -103,8 +103,7 @@ func companionDrawerTargetIsPresented(
 func companionCanOpenDrawer(section: CompanionSection, pathIsEmpty: Bool) -> Bool {
     guard pathIsEmpty else { return false }
     switch section {
-    case .assistant, .inbox, .projects, .settings: return true
-    case .runs: return false
+    case .assistant, .runs, .inbox, .projects, .settings: return true
     }
 }
 
@@ -134,6 +133,14 @@ struct CompanionRootView: View {
                 .onAppear {
                     updateContainerBottomSafeAreaInset(geometry.safeAreaInsets.bottom)
                     openPendingNotificationRun()
+                    #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("--design-preview-new-run") {
+                        router.path = [.newRun(projectId: store.accountProjects.first?.id)]
+                    }
+                    if ProcessInfo.processInfo.arguments.contains("--design-preview-keyboard") || ProcessInfo.processInfo.arguments.contains("--design-preview-attachments") {
+                        router.path = [.run(id: "run-preview-completed", prefill: "")]
+                    }
+                    #endif
                 }
                 .onChange(of: geometry.safeAreaInsets.bottom) { _, inset in
                     updateContainerBottomSafeAreaInset(inset)
@@ -154,7 +161,11 @@ struct CompanionRootView: View {
     private func openNotificationRun(id: String) {
         Task { @MainActor in
             await store.sync()
-            router.openRun(id: id)
+            if let routedID = store.notificationRunID(id) {
+                router.openRun(id: routedID)
+            } else {
+                store.operationError = "这个 Chat 的执行 Mac 尚未同步，请稍后在项目中查看。"
+            }
         }
     }
 
@@ -176,28 +187,17 @@ struct CompanionRootView: View {
                         .accessibilityLabel("打开侧边栏")
                     }
                     ToolbarItem(placement: .principal) {
-                        if router.section == .assistant || router.section == .runs {
-                            CompanionCompactTabBar(
-                                selection: Binding(
-                                    get: { router.section },
-                                    set: { router.select($0) }
-                                ),
-                                items: [.assistant, .runs],
-                                title: { $0.title }
-                            )
-                        } else {
-                            Text(router.section.title).font(.headline)
-                        }
+                        Text(router.section.title).font(.headline)
                     }
                 }
                 .navigationBarTitleDisplayMode(.inline)
                 .navigationDestination(for: CompanionRoute.self) { route in
                     switch route {
-                    case .run(let id, let prefill): RunDetailView(runID: id, prefilledPrompt: prefill)
+                    case .run(let id, let prefill): AccountRunDestination(runID: id, prefill: prefill)
                     case .newRun(let projectId): NewRunView(initialProjectID: projectId)
                     case .decision(let id): DecisionDetailView(decisionID: id)
                     case .project(let id):
-                        if let project = store.state.projects.first(where: { $0.id == id }) {
+                        if let project = store.accountProjects.first(where: { $0.id == id }) {
                             ProjectDetailView(project: project)
                         } else {
                             ContentUnavailableView("项目不存在", systemImage: "questionmark.folder")
@@ -211,7 +211,7 @@ struct CompanionRootView: View {
 
             Color.clear
                 .contentShape(Rectangle())
-                .ignoresSafeArea()
+                .ignoresSafeArea(.container)
                 .allowsHitTesting(router.drawerPresented)
                 .onTapGesture { withAnimation(.snappy) { router.drawerPresented = false } }
 
@@ -234,7 +234,7 @@ struct CompanionRootView: View {
     @ViewBuilder private var rootSectionContent: some View {
         if router.section == .assistant || router.section == .runs {
             ZStack(alignment: .top) {
-                primarySectionPager
+                sectionContent
                     .ignoresSafeArea(.container, edges: [.top, .bottom])
 
                 statusBanner
@@ -268,33 +268,21 @@ struct CompanionRootView: View {
 
     @ViewBuilder private var sectionContent: some View {
         switch router.section {
-        case .assistant, .runs: primarySectionPager
+        case .assistant: WorkAssistantView(topChromeHeight: 62 + statusBannerHeight)
+        case .runs: RunsListView(topContentInset: 62 + statusBannerHeight)
         case .inbox: DecisionListView()
         case .projects: ProjectListView()
         case .settings: CompanionSettingsView()
         }
     }
 
-    private var primarySectionPager: some View {
-        CompanionTwoPageContainer(
-            selection: Binding(
-                get: { router.section },
-                set: { router.select($0) }
-            ),
-            leadingSelection: .assistant,
-            trailingSelection: .runs
-        ) {
-            WorkAssistantView(topChromeHeight: 62 + statusBannerHeight)
-        } trailing: {
-            RunsListView(topContentInset: 62 + statusBannerHeight)
-        }
-    }
 
     private var statusMessage: String? {
-        if store.isPaired, let message = store.accountEnrollmentMessage { return message }
-        if let operationError = store.operationError, operationError.hasPrefix("同步失败：") { return operationError }
+        let hosts = store.executionHosts(projectID: nil)
+        if hosts.contains(where: { $0.online }) { return nil }
+        if !hosts.isEmpty { return "Mac 均离线，当前显示已同步的项目" }
+        if store.accountEnrollmentInProgress { return "正在同步账户项目…" }
         if store.connection == .offline { return "暂时无法同步，当前显示本地内容" }
-        if store.connection == .connected && !store.macOnline { return "Mac 当前离线，操作会在它上线后执行" }
         return nil
     }
 
@@ -448,32 +436,7 @@ private struct CompanionSidebar: View {
                         .foregroundStyle(.primary)
                         .frame(width: 92, height: 36, alignment: .leading)
                         .accessibilityLabel("Fuddy")
-                    if store.availableAccountSyncSpaces.count > 1 {
-                        Menu {
-                            ForEach(store.availableAccountSyncSpaces) { space in
-                                Button {
-                                    store.switchAccountSyncSpace(space.id)
-                                } label: {
-                                    if store.currentAccountSyncSpace?.id == space.id {
-                                        Label(space.hostName, systemImage: "checkmark")
-                                    } else {
-                                        Text(space.hostName)
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text(store.currentAccountSyncSpace?.hostName ?? "我的 Mac")
-                                Image(systemName: "chevron.up.chevron.down").font(.caption2)
-                            }
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        }
-                        .accessibilityLabel("切换空间")
-                    } else {
-                        Text(store.currentAccountSyncSpace?.hostName ?? (store.macOnline ? "Mac 在线" : "Mac 离线"))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    Text("我的项目").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button { withAnimation(.snappy) { router.drawerPresented = false } } label: {
@@ -483,18 +446,12 @@ private struct CompanionSidebar: View {
             }
             .padding(.bottom, 22)
 
-            ForEach([CompanionSection.assistant, .runs]) { section in
-                menuButton(section)
-            }
-
-            Divider().padding(.vertical, 8)
-
-            ForEach([CompanionSection.inbox, .projects, .settings]) { section in
+            ForEach(CompanionSection.allCases) { section in
                 menuButton(section)
             }
 
             Spacer()
-            Text("所有任务仍在已绑定的 Mac 上执行")
+            Text("项目跨设备同步，Chat 由各自的 Mac 执行")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 18)
@@ -796,11 +753,11 @@ private struct WorkAssistantActionCard: View {
                 Image(systemName: proposal.status == "accepted" ? "checkmark.circle.fill" : "sparkles")
                     .foregroundStyle(proposal.status == "accepted" ? .green : .primary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(includesLegacyRunLink ? "创建新的 Agent Run" : proposal.title).font(.subheadline.weight(.semibold))
+                    Text(includesLegacyRunLink ? "创建新的 Chat" : proposal.title).font(.subheadline.weight(.semibold))
                     if let context = proposal.context { Text(context).font(.caption).foregroundStyle(.secondary) }
                 }
             }
-            Text(includesLegacyRunLink ? "如果不继续已有 Run，也可以确认后创建一个新的 Draft Run。" : proposal.description)
+            Text(includesLegacyRunLink ? "如果不继续已有 Chat，也可以确认后创建一个新的草稿 Chat。" : proposal.description)
                 .font(.caption).foregroundStyle(.secondary)
             if proposal.status == "pending" {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1025,6 +982,22 @@ private struct MorningBriefingFullArticle: View {
     }
 }
 
+private struct ChatHostIndicator: View {
+    let name: String
+    let online: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(name).font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle)
+            Circle().fill(online ? Color.green : Color.secondary.opacity(0.4))
+                .frame(width: 7, height: 7)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name)，\(online ? "在线" : "离线")")
+    }
+}
+
 struct RunsListView: View {
     @EnvironmentObject private var store: CompanionStore
     @EnvironmentObject private var router: CompanionRouter
@@ -1041,7 +1014,7 @@ struct RunsListView: View {
 
     var body: some View {
         List {
-            ForEach(groupRunDetailsByProject(store.runs, projects: store.state.projects)) { group in
+            ForEach(groupRunDetailsByProject(store.runs, projects: store.accountProjects)) { group in
                 Section {
                     ForEach(group.runs) { detail in
                         let active = detail.run.status == "running" || detail.run.status == "queued"
@@ -1052,6 +1025,9 @@ struct RunsListView: View {
                                     Text(runMetadata(detail.run)).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer(minLength: 8)
+                                let host = store.runHostStatus(detail.id)
+                                ChatHostIndicator(name: host.name, online: host.online)
+                                .frame(maxWidth: 110, alignment: .trailing)
                                 if active { ProgressView().controlSize(.small) }
                             }
                             .padding(.vertical, 3)
@@ -1079,15 +1055,6 @@ struct RunsListView: View {
                         Text(group.title)
                         Text("\(group.runs.count)").foregroundStyle(.tertiary)
                         Spacer()
-                        Button {
-                            router.path.append(.newRun(projectId: group.projectId))
-                        } label: {
-                            Image(systemName: "plus")
-                                .frame(width: 28, height: 28)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("在\(group.title)中新建 Agent Run")
                     }
                 }
             }
@@ -1095,8 +1062,8 @@ struct RunsListView: View {
         .listStyle(.plain)
         .padding(.top, screenTopSafeAreaInset + topContentInset)
         .refreshable { await store.sync() }
-        .overlay { if store.runs.isEmpty { ContentUnavailableView("暂无 Agent Run", systemImage: "bubble.left.and.bubble.right") } }
-        .alert(renamingRun == nil ? "操作失败" : "重命名 Session", isPresented: Binding(
+        .overlay { if store.runs.isEmpty { ContentUnavailableView("暂无 Chat", systemImage: "bubble.left.and.bubble.right") } }
+        .alert(renamingRun == nil ? "操作失败" : "重命名 Chat", isPresented: Binding(
             get: { renamingRun != nil || operationError != nil },
             set: {
                 if !$0 {
@@ -1106,7 +1073,7 @@ struct RunsListView: View {
             }
         )) {
             if renamingRun != nil {
-                TextField("Session 标题", text: $renamedTitle)
+                TextField("Chat 标题", text: $renamedTitle)
                 Button("取消", role: .cancel) { renamingRun = nil }
                 Button("保存") {
                     guard let run = renamingRun else { return }
@@ -1122,11 +1089,11 @@ struct RunsListView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    router.path.append(.newRun(projectId: store.state.projects.first?.id))
+                    router.path.append(.newRun(projectId: store.accountProjects.first?.id))
                 } label: {
                     Image(systemName: "plus")
                 }
-                .accessibilityLabel("新建 Agent Run")
+                .accessibilityLabel("新建 Chat")
             }
         }
     }
@@ -1181,14 +1148,29 @@ func groupRunDetailsByProject(_ runs: [RunDetail], projects: [Project]) -> [RunP
     return groups
 }
 
+struct AccountRunDestination: View {
+    @EnvironmentObject private var store: CompanionStore
+    let runID: String
+    let prefill: String
+    var body: some View {
+        if let target = store.accountRunTarget(runID) {
+            RunDetailView(runID: target.id, prefilledPrompt: prefill).environmentObject(target.store)
+        } else if parseAccountRunID(runID) == nil {
+            RunDetailView(runID: runID, prefilledPrompt: prefill)
+        } else {
+            ContentUnavailableView("执行 Mac 尚未连接", systemImage: "desktopcomputer", description: Text("恢复连接后可查看这个 Chat。"))
+        }
+    }
+}
+
 struct NewRunView: View {
     @EnvironmentObject private var store: CompanionStore
     @EnvironmentObject private var router: CompanionRouter
     @State private var projectID: String
     @State private var title = ""
+    @State private var executionSpaceID = ""
     @State private var creating = false
     @State private var error: String?
-    @FocusState private var titleFocused: Bool
 
     init(initialProjectID: String?) {
         _projectID = State(initialValue: initialProjectID ?? "")
@@ -1199,32 +1181,42 @@ struct NewRunView: View {
             Section("所属项目") {
                 Picker("项目", selection: $projectID) {
                     Text("共享任务").tag("")
-                    ForEach(store.state.projects) { project in
+                    ForEach(store.accountProjects) { project in
                         Text(project.name).tag(project.id)
                     }
                 }
-                if let project = store.state.projects.first(where: { $0.id == projectID }) {
-                    LabeledContent("默认 Agent", value: project.profile.defaultAgent)
-                        .foregroundStyle(.secondary)
-                }
             }
-            Section("Run") {
+            Section("执行 Mac") {
+                ForEach(store.executionHosts(projectID: projectID.isEmpty ? nil : projectID)) { host in
+                    Button {
+                        executionSpaceID = host.id
+                    } label: {
+                        HStack {
+                            Text(host.label)
+                            Spacer()
+                            if executionSpaceID == host.id { Image(systemName: "checkmark") }
+                        }
+                    }
+                    .disabled(!host.selectable)
+                }
+                Text("使用执行 Mac 的项目默认 Agent。主文件夹请在对应 Mac 上配置，后续消息始终由它执行。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Chat") {
                 TextField("例如：分析项目上线阻塞", text: $title)
-                    .focused($titleFocused)
             }
             if let error {
                 Section { Text(error).foregroundStyle(.red).font(.caption) }
             }
         }
-        .navigationTitle("新建 Agent Run")
+        .navigationTitle("新建 Chat")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button(creating ? "正在创建…" : "创建") { Task { await create() } }
-                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || creating)
+                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || creating || !store.executionHosts(projectID: projectID.isEmpty ? nil : projectID).contains(where: { $0.id == executionSpaceID && $0.selectable }))
             }
         }
-        .onAppear { titleFocused = true }
     }
 
     private func create() async {
@@ -1232,9 +1224,10 @@ struct NewRunView: View {
         creating = true
         error = nil
         do {
-            let runID = try await store.createRun(
+            let runID = try await store.createAccountRun(
                 projectID: projectID.isEmpty ? nil : projectID,
-                title: title
+                title: title,
+                spaceID: executionSpaceID
             )
             router.openRun(id: runID)
         } catch {
@@ -1304,6 +1297,7 @@ private struct CompanionChatTimeline<RecordContent: View, TailContent: View>: Vi
 
     @State private var scrollPosition: String?
     @State private var didRestoreScrollPosition = false
+    @State private var followsKeyboardTransition = false
 
     private var latestAnchorID: String { "chat-latest-\(page.chatId)" }
     private var historyLoaderID: String { "chat-history-loader-\(page.chatId)" }
@@ -1346,17 +1340,37 @@ private struct CompanionChatTimeline<RecordContent: View, TailContent: View>: Vi
                 .padding(.horizontal, companionChatHorizontalPadding)
                 .padding(.top, topInset)
             }
+            .frame(width: viewportSize.width, height: viewportSize.height)
             .defaultScrollAnchor(.bottom)
             .coordinateSpace(name: scrollCoordinateSpace)
             .scrollPosition(id: $scrollPosition, anchor: .center)
             .refreshable { await store.sync() }
             .onPreferenceChange(CompanionChatBottomPositionKey.self) { bottomY in
-                guard bottomY.isFinite else { return }
+                // During keyboard animation, intermediate geometry must not turn
+                // a bottom-pinned conversation into a history-reading position.
+                guard bottomY.isFinite, !followsKeyboardTransition else { return }
                 isAtLatestMessage = companionDistanceFromLatest(
                     bottomY: bottomY,
                     viewportHeight: viewportSize.height,
                     bottomInset: bottomInset
                 ) <= companionChatLatestDistanceThreshold
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { _ in
+                followsKeyboardTransition = isAtLatestMessage
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
+                if followsKeyboardTransition {
+                    proxy.scrollTo(latestAnchorID, anchor: .bottom)
+                }
+                followsKeyboardTransition = false
+            }
+            .onChange(of: viewportSize) { _, _ in
+                guard isAtLatestMessage || followsKeyboardTransition else { return }
+                proxy.scrollTo(latestAnchorID, anchor: .bottom)
+            }
+            .onChange(of: bottomInset) { _, _ in
+                guard isAtLatestMessage || followsKeyboardTransition else { return }
+                proxy.scrollTo(latestAnchorID, anchor: .bottom)
             }
             .onAppear {
                 guard !didRestoreScrollPosition else { return }
@@ -1419,6 +1433,7 @@ struct RunDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let runID: String
     @State private var prompt: String
+    @State private var lastSubmittedText: String?
     @State private var attachments: [PendingAttachment] = []
     @State private var sending = false
     @State private var showRename = false
@@ -1495,14 +1510,23 @@ struct RunDetailView: View {
                             onSend: { Task { await send() } },
                             onStop: { Task { await stop() } }
                         )
+                        .disabled(store.connection != .connected || !store.macOnline)
                     }
                 }
                 .navigationTitle(detail.run.title)
                 .navigationBarTitleDisplayMode(.inline)
+                .onChange(of: detail.run.status) { _, status in
+                    guard status == "failed", prompt.isEmpty, attachments.isEmpty,
+                          let lastSubmittedText,
+                          detail.messages.last(where: { $0.role == "user" })?.content == lastSubmittedText
+                    else { return }
+                    // Restore text for an explicit resend; never replay an Agent command automatically.
+                    prompt = lastSubmittedText
+                }
                 .toolbarBackground(.hidden, for: .navigationBar)
                 .toolbar { toolbar(detail.run) }
-                .alert("重命名 Session", isPresented: $showRename) {
-                    TextField("Session 标题", text: $renamedTitle)
+                .alert("重命名 Chat", isPresented: $showRename) {
+                    TextField("Chat 标题", text: $renamedTitle)
                     Button("取消", role: .cancel) {}
                     Button("保存") { Task { await rename() } }
                 }
@@ -1510,7 +1534,7 @@ struct RunDetailView: View {
                     RunInfoSheet(runID: runID).environmentObject(store)
                 }
             } else {
-                ProgressView("正在从 Mac 同步 Session…")
+                ProgressView("正在从 Mac 同步 Chat…")
             }
         }
         .task(id: runID) {
@@ -1553,6 +1577,14 @@ struct RunDetailView: View {
     }
 
     @ToolbarContentBuilder private func toolbar(_ run: AgentRun) -> some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            let host = store.runHostStatus(runID)
+            VStack(spacing: 2) {
+                Text(run.title).font(.headline).lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                ChatHostIndicator(name: host.name, online: host.online)
+            }
+        }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("信息与文件", systemImage: "sidebar.right") { showSessionInfo = true }
@@ -1567,9 +1599,12 @@ struct RunDetailView: View {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return }
         sending = true; error = nil
+        lastSubmittedText = attachments.isEmpty ? text : nil
         do {
             try await store.sendMessage(runID: runID, prompt: text.isEmpty ? "请查看我附加的文件。" : text, attachments: attachments)
-            prompt = ""; attachments = []
+            if detail?.run.status != "failed" {
+                prompt = ""; attachments = []
+            }
             await store.sync()
         } catch { self.error = error.localizedDescription }
         sending = false
@@ -1788,8 +1823,11 @@ private struct ToolCallGroupView: View {
 }
 
 struct MessageView: View {
+    @EnvironmentObject private var store: CompanionStore
     let message: AgentMessage
     let active: Bool
+    @State private var previewItem: PreviewItem?
+    @State private var attachmentError: String?
 
     var body: some View {
         if message.eventType == "reasoning" {
@@ -1800,8 +1838,26 @@ struct MessageView: View {
                 content: message.content,
                 pending: message.eventType == "pending"
             ) {
-                EmptyView()
+                ForEach(message.attachments ?? []) { attachment in
+                    RemoteAttachmentRow(attachment: attachment)
+                }
             }
+            .environment(\.openURL, OpenURLAction { url in
+                if ["http", "https", "mailto"].contains(url.scheme ?? "") { return .systemAction }
+                let path = url.path.removingPercentEncoding ?? url.path
+                guard let artifact = store.state.runs.first(where: { $0.run.id == message.runId })?.artifacts.first(where: {
+                    path == $0.relativePath || path.hasSuffix("/" + $0.relativePath)
+                }) else { return .systemAction }
+                Task {
+                    do { previewItem = PreviewItem(url: try await store.openArtifact(artifact)) }
+                    catch { attachmentError = error.localizedDescription }
+                }
+                return .handled
+            })
+            .sheet(item: $previewItem) { QuickLookPreview(url: $0.url) }
+            .alert("无法打开附件", isPresented: Binding(get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } })) {
+                Button("好") { attachmentError = nil }
+            } message: { Text(attachmentError ?? "") }
         }
     }
 }
@@ -2411,7 +2467,7 @@ private func decisionWaitingLabel(_ reason: String?) -> String {
 struct ProjectListView: View {
     @EnvironmentObject private var store: CompanionStore
     var body: some View {
-        List(store.state.projects) { project in
+        List(store.accountProjects) { project in
             NavigationLink(value: CompanionRoute.project(id: project.id)) {
                 HStack(alignment: .top, spacing: 10) {
                     ProjectIconView(project: project)
@@ -2475,7 +2531,7 @@ struct ProjectDetailView: View {
     @EnvironmentObject private var router: CompanionRouter
     let project: Project
     @State private var section = ProjectDetailSection.overview
-    private var goals: [ProjectGoal] { store.state.goals.filter { $0.projectId == project.id } }
+    private var goals: [ProjectGoal] { store.projectGoals(project.id) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2512,6 +2568,17 @@ struct ProjectDetailView: View {
             ) {
                 List {
                     Section("当前重点") { Text(project.focus); Text(project.summary).foregroundStyle(.secondary) }
+                    Section("Chats") {
+                        NavigationLink("新建 Chat", value: CompanionRoute.newRun(projectId: project.id))
+                        ForEach(store.runs.filter { $0.run.projectId == project.id }) { detail in
+                            NavigationLink(value: CompanionRoute.run(id: detail.id, prefill: "")) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(detail.run.title)
+                                    Text(store.runHostLabel(detail.id)).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
                     Section("目标") {
                         if goals.isEmpty { Text("尚未设置目标").foregroundStyle(.secondary) }
                         ForEach(goals) { goal in
@@ -2616,49 +2683,17 @@ private struct ProjectSettingsView: View {
             }
 
             Section {
-                if draft.profile.workspaceRoots.isEmpty {
-                    Text("尚未配置 Workspace").foregroundStyle(.secondary)
-                }
-                ForEach($draft.profile.workspaceRoots) { $root in
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            TextField("Workspace 名称", text: $root.label)
-                            Button(role: .destructive) { removeWorkspace(id: root.id) } label: {
-                                Image(systemName: "trash")
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("移除 \(root.label)")
-                        }
-                        TextField("/Users/name/Code/project", text: $root.path)
-                            .font(.system(.subheadline, design: .monospaced))
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    }
-                    .padding(.vertical, 3)
-                }
-                Button { addWorkspace() } label: { Label("添加 Workspace", systemImage: "plus") }
-
-                if !draft.profile.workspaceRoots.isEmpty {
-                    Picker("主 Workspace", selection: primaryWorkspaceBinding) {
-                        ForEach(draft.profile.workspaceRoots) { root in
-                            Text(root.label.isEmpty ? (root.path.isEmpty ? root.id : root.path) : root.label).tag(root.id)
-                        }
-                    }
-                }
-                Picker("默认 Agent", selection: $draft.profile.defaultAgent) {
-                    Text("Pi Agent").tag("pi")
-                    Text("Codex").tag("codex")
-                    Text("Claude Code").tag("claude")
-                    Text("OpenCode").tag("opencode")
+                ForEach(store.executionHosts(projectID: project.id)) { host in
+                    Label(host.label, systemImage: "desktopcomputer")
                 }
                 TextField("官网", text: websiteBinding, prompt: Text("https://example.com"))
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             } header: {
-                Text("代码与入口")
+                Text("执行设备与入口")
             } footer: {
-                Text("所有 Agent Run 都从主 Workspace 启动，并可访问这里列出的项目目录。")
+                Text("每台 Mac 的主文件夹、附加文件夹和默认 Agent 请在对应 Mac 上配置。")
             }
 
             Section {
@@ -2722,26 +2757,6 @@ private struct ProjectSettingsView: View {
         )
     }
 
-    private var primaryWorkspaceBinding: Binding<String> {
-        Binding(
-            get: { draft.profile.primaryWorkspaceRootId ?? draft.profile.workspaceRoots.first?.id ?? "" },
-            set: { draft.profile.primaryWorkspaceRootId = $0 }
-        )
-    }
-
-    private func addWorkspace() {
-        let root = ProjectWorkspaceRoot(id: "workspace-\(UUID().uuidString.lowercased())", label: "New workspace", path: "")
-        draft.profile.workspaceRoots.append(root)
-        if draft.profile.primaryWorkspaceRootId == nil { draft.profile.primaryWorkspaceRootId = root.id }
-    }
-
-    private func removeWorkspace(id: String) {
-        draft.profile.workspaceRoots.removeAll { $0.id == id }
-        if draft.profile.primaryWorkspaceRootId == id {
-            draft.profile.primaryWorkspaceRootId = draft.profile.workspaceRoots.first?.id
-        }
-    }
-
     private func lines(_ value: String) -> [String] {
         value.split(whereSeparator: { $0.isNewline })
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -2779,7 +2794,7 @@ private struct ProjectSettingsView: View {
         feedback = nil
         do {
             let value = normalizedProject()
-            try await store.updateProject(value)
+            try await store.updateAccountProject(value)
             draft = value
             lists = ProjectSettingsListDraft(project: value)
             feedbackIsError = false
@@ -2797,17 +2812,9 @@ struct CompanionSettingsView: View {
     var body: some View {
         Form {
             if !store.availableAccountSyncSpaces.isEmpty {
-                Section("空间") {
-                    Picker(
-                        "当前空间",
-                        selection: Binding(
-                            get: { store.selectedAccountSyncSpaceID ?? store.availableAccountSyncSpaces[0].id },
-                            set: { store.switchAccountSyncSpace($0) }
-                        )
-                    ) {
-                        ForEach(store.availableAccountSyncSpaces) { space in
-                            Text(space.hostName).tag(space.id)
-                        }
+                Section("Mac 设备") {
+                    ForEach(store.executionHosts(projectID: nil)) { host in
+                        Label(host.label, systemImage: "desktopcomputer")
                     }
                 }
             }
@@ -2823,7 +2830,9 @@ struct CompanionSettingsView: View {
         }
     }
     private var connectionLabel: String {
-        switch store.connection {
+        let hosts = store.executionHosts(projectID: nil)
+        if !hosts.isEmpty { return "\(hosts.filter { $0.online }.count) / \(hosts.count) 台 Mac 在线" }
+        return switch store.connection {
         case .unpaired: "未连接"
         case .connecting: "正在连接"
         case .connected: store.macOnline ? "Mac 在线" : "Mac 离线"

@@ -223,7 +223,7 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
         )}
       </div>
 
-      {(nav.navigation === 'settings' || (nav.navigation === 'inbox' && nav.projectSection === 'goals')) && (
+      {(nav.navigation === 'settings' || (nav.navigation === 'inbox' && nav.projectSection === 'goals' && !nav.selectedProject)) && (
         <div className={`composer-area ${nav.navigation === 'settings' ? 'is-settings' : ''}`}>
           {props.notice && <NoticeToast notice={props.notice} onClose={() => props.onNotice(null)} />}
           {nav.navigation !== 'settings' && (
@@ -258,7 +258,7 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
           )}
         </div>
       )}
-      {props.notice && nav.navigation !== 'settings' && !(nav.navigation === 'inbox' && nav.projectSection === 'goals') && (
+      {props.notice && nav.navigation !== 'settings' && !(nav.navigation === 'inbox' && nav.projectSection === 'goals' && !nav.selectedProject) && (
         <NoticeToast className="notice-toast global-notice-toast" notice={props.notice} onClose={() => props.onNotice(null)} />
       )}
     </main>

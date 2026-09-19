@@ -1,7 +1,203 @@
 import Combine
+import CryptoKit
 import Foundation
 import UIKit
 @preconcurrency import UserNotifications
+
+@MainActor
+extension CompanionStore {
+    private var accountSources: [(id: String, store: CompanionStore)] {
+        guard !isPeerTransport else { return [(credentials?.syncSpaceID ?? "legacy", self)] }
+        return [(credentials?.syncSpaceID ?? "legacy", self)] + peerStores.keys.sorted().compactMap { id in
+            peerStores[id].map { (id, $0) }
+        }
+    }
+
+    var accountProjects: [Project] {
+        if isPeerTransport { return state.projects }
+        return mergedAccountProjects(accountSources.map { ($0.id, $0.store.state.projects) })
+    }
+
+    var accountRuns: [RunDetail] {
+        if isPeerTransport { return state.runs.sorted { $0.run.updatedAt > $1.run.updatedAt } }
+        return accountSources.flatMap { source in
+            source.store.state.runs.map { original in
+                var detail = original
+                detail.run.id = accountRunID(spaceID: source.id, runID: original.id)
+                detail.run.projectId = source.store.state.projects.first { $0.id == original.run.projectId }
+                    .map { accountProjectID($0, spaceID: source.id) }
+                return detail
+            }
+        }.sorted { $0.run.updatedAt > $1.run.updatedAt }
+    }
+
+    func accountRunTarget(_ id: String) -> (store: CompanionStore, id: String)? {
+        guard let route = parseAccountRunID(id),
+              let source = accountSources.first(where: { $0.id == route.spaceID }) else { return nil }
+        return (source.store, route.runID)
+    }
+
+    func notificationRunID(_ nativeID: String) -> String? {
+        if parseAccountRunID(nativeID) != nil { return nativeID }
+        let matches = accountSources.filter { $0.store.state.runs.contains { $0.id == nativeID } }
+        guard matches.count == 1, let source = matches.first else { return nil }
+        return accountRunID(spaceID: source.id, runID: nativeID)
+    }
+
+    func executionHosts(projectID: String?) -> [MobileExecutionHost] {
+        availableAccountSyncSpaces.map { space in
+            let source = accountSources.first { $0.id == space.id }?.store
+            let project = source?.state.projects.first { accountProjectID($0, spaceID: space.id) == projectID }
+            let configured = projectID == nil || project.map(accountProjectIsConfigured) == true
+            return MobileExecutionHost(id: space.id, name: space.hostName,
+                online: source?.connection == .connected && source?.macOnline == true, configured: configured)
+        }
+    }
+
+    func runHostStatus(_ id: String) -> (name: String, online: Bool) {
+        let spaceID = parseAccountRunID(id)?.spaceID ?? credentials?.syncSpaceID
+        let source = accountSources.first { $0.id == spaceID }?.store ?? self
+        let name = availableAccountSyncSpaces.first { $0.id == spaceID }?.hostName ?? "执行 Mac"
+        return (name, source.connection == .connected && source.macOnline)
+    }
+
+    func runHostLabel(_ id: String) -> String {
+        let host = runHostStatus(id)
+        return "\(host.name) · \(host.online ? "在线" : "离线")"
+    }
+
+    func createAccountRun(projectID: String?, title: String, spaceID: String) async throws -> String {
+        guard executionHosts(projectID: projectID).contains(where: { $0.id == spaceID && $0.selectable }),
+              let source = accountSources.first(where: { $0.id == spaceID }) else {
+            throw RelayError.server("请选择在线且已配置主文件夹的 Mac。")
+        }
+        await source.store.sync()
+        guard executionHosts(projectID: projectID).contains(where: { $0.id == spaceID && $0.selectable }) else {
+            throw RelayError.server("执行 Mac 已离线或目录配置已变化，请重新选择。")
+        }
+        let project = source.store.state.projects.first { accountProjectID($0, spaceID: spaceID) == projectID }
+        if projectID != nil && project == nil { throw RelayError.invalidResponse }
+        let id = try await source.store.createRun(projectID: project?.id, title: title)
+        return accountRunID(spaceID: spaceID, runID: id)
+    }
+
+    func projectGoals(_ id: String) -> [ProjectGoal] {
+        var goals: [String: ProjectGoal] = [:]
+        for source in accountSources {
+            guard let project = source.store.state.projects.first(where: { accountProjectID($0, spaceID: source.id) == id }) else { continue }
+            for goal in source.store.state.goals where goal.projectId == project.id {
+                if let existing = goals[goal.id], existing.updatedAt >= goal.updatedAt { continue }
+                goals[goal.id] = goal
+            }
+        }
+        return goals.values.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func updateAccountProject(_ project: Project) async throws {
+        for source in accountSources where source.store.connection == .connected && source.store.macOnline {
+            guard let original = source.store.state.projects.first(where: { accountProjectID($0, spaceID: source.id) == project.id }),
+                  original.shared == project.shared else { continue }
+            var local = project
+            local.id = original.id
+            local.profile.workspaceRoots = original.profile.workspaceRoots
+            local.profile.primaryWorkspaceRootId = original.profile.primaryWorkspaceRootId
+            local.profile.repoPath = original.profile.repoPath
+            local.profile.defaultAgent = original.profile.defaultAgent
+            try await source.store.updateProject(local)
+            return
+        }
+        throw RelayError.server("没有在线且持有最新项目信息的 Mac，请同步后重试。")
+    }
+
+    private func startAccountPeers() {
+        guard !isPeerTransport, peersTask == nil else { return }
+        if let session = accountSession, peerStores.isEmpty {
+            let key = "account.peer-spaces.\(session.user.id)"
+            let cached = UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode([AccountSyncSpace].self, from: $0) } ?? []
+            if availableAccountSyncSpaces.isEmpty { availableAccountSyncSpaces = cached }
+            for space in cached where space.id != (credentials?.syncSpaceID ?? selectedAccountSyncSpaceID) {
+                if let grant = try? KeychainStore.load(syncSpaceID: space.id),
+                   !accountCredentialsNeedEnrollment(grant, accountUserID: session.user.id, accountDeviceID: session.device.id, selectedSpace: space) {
+                    installPeer(grant, session: session, space: space)
+                }
+            }
+        }
+        for peer in peerStores.values { peer.start() }
+        peersTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshAccountPeers()
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+    }
+
+    private func installPeer(_ grant: CompanionCredentials, session: MobileAccountSession, space: AccountSyncSpace) {
+        let peer = CompanionStore(peerCredentials: grant, session: session)
+        peer.availableAccountSyncSpaces = [space]
+        peerStores[space.id] = peer
+        peerSubscriptions[space.id] = peer.objectWillChange.sink { [weak self] in
+            Task { @MainActor in self?.objectWillChange.send() }
+        }
+    }
+
+    private func refreshAccountPeers() async {
+        guard let api = AccountClient.configured(), let session = accountSession, accountSessionValidated else { return }
+        do {
+            let (page, refreshed) = try await api.listSyncSpaces(accountSession: session)
+            guard !Task.isCancelled, accountSession?.user.id == session.user.id else { return }
+            var current = try persistRefreshedAccountSession(refreshed)
+            availableAccountSyncSpaces = page.syncSpaces
+            UserDefaults.standard.set(try JSONEncoder().encode(page.syncSpaces), forKey: "account.peer-spaces.\(session.user.id)")
+            for id in Array(peerStores.keys) where !page.syncSpaces.contains(where: { $0.id == id }) || id == credentials?.syncSpaceID {
+                await peerStores[id]?.quiesceRelaySync()
+                peerStores[id] = nil
+                peerSubscriptions[id] = nil
+            }
+            for space in page.syncSpaces where space.id != (credentials?.syncSpaceID ?? selectedAccountSyncSpaceID) {
+                guard !Task.isCancelled, accountSession?.user.id == session.user.id else { return }
+                if let peer = peerStores[space.id] {
+                    if peer.isPaired && !accountCredentialsNeedEnrollment(peer.credentials, accountUserID: current.user.id, accountDeviceID: current.device.id, selectedSpace: space) {
+                        peer.availableAccountSyncSpaces = [space]
+                        continue
+                    }
+                    await peer.quiesceRelaySync()
+                    peerStores[space.id] = nil
+                    peerSubscriptions[space.id] = nil
+                }
+                do {
+                    var grant = try KeychainStore.load(syncSpaceID: space.id)
+                    if accountCredentialsNeedEnrollment(grant, accountUserID: current.user.id, accountDeviceID: current.device.id, selectedSpace: space) { grant = nil }
+                    if grant == nil {
+                        let key = "account.peer-enrollment.\(current.user.id).\(space.id)"
+                        if let enrollmentID = UserDefaults.standard.string(forKey: key) {
+                            let (status, afterPoll) = try await api.enrollment(spaceID: space.id, enrollmentID: enrollmentID, accountSession: current)
+                            guard !Task.isCancelled, accountSession?.user.id == session.user.id else { return }
+                            current = try persistRefreshedAccountSession(afterPoll)
+                            if status.enrollment.status == "active", let wrapped = status.enrollment.wrappedSpaceKey,
+                               let privateKey = try AccountKeychainStore.loadDevicePrivateKey() {
+                                grant = try AccountDeviceGrant.open(wrapped, enrollmentID: enrollmentID, spaceID: space.id,
+                                    deviceID: current.device.id, ownerUserID: current.user.id, privateKeyData: privateKey)
+                                try KeychainStore.save(grant!)
+                            } else if status.enrollment.status != "pending" || status.enrollment.expiresAt.flatMap(parseCompanionDate).map({ $0 <= Date() }) == true {
+                                UserDefaults.standard.removeObject(forKey: key)
+                            }
+                        } else {
+                            let (created, afterCreate) = try await api.createEnrollment(spaceID: space.id, accountSession: current)
+                            guard !Task.isCancelled, accountSession?.user.id == session.user.id else { return }
+                            current = try persistRefreshedAccountSession(afterCreate)
+                            UserDefaults.standard.set(created.enrollment.id, forKey: key)
+                        }
+                    }
+                    guard let grant else { continue }
+                    installPeer(grant, session: current, space: space)
+                    peerStores[space.id]?.start()
+                } catch {
+                    UserDefaults.standard.removeObject(forKey: "account.peer-enrollment.\(session.user.id).\(space.id)")
+                }
+            }
+        } catch { /* Retain isolated caches; each transport reports its own availability. */ }
+    }
+}
 
 @MainActor
 final class CompanionStore: ObservableObject {
@@ -43,16 +239,46 @@ final class CompanionStore: ObservableObject {
     private var notificationObservers: [NSObjectProtocol] = []
     private var notificationAuthorizationRequested = false
     private let cacheRootURL: URL
+    private var sendingOutgoingAgentIDs: Set<String> = []
+    private var cancelledOutgoingAgentIDs: Set<String> = []
+    #if DEBUG
+    private var previewAttachmentFiles: [String: URL] = [:]
+    #endif
+
+    private var agentMessageOutbox: AgentMessageOutbox {
+        let account = SHA256.hash(data: Data((credentials?.accountID ?? "unpaired").utf8)).map { String(format: "%02x", $0) }.joined()
+        return AgentMessageOutbox(directory: outgoingAccountDirectory.appendingPathComponent(account, isDirectory: true))
+    }
+
+    private var outgoingAccountDirectory: URL {
+        let owner = SHA256.hash(data: Data((credentials?.ownerUserID ?? credentials?.accountID ?? "unpaired").utf8)).map { String(format: "%02x", $0) }.joined()
+        return cacheRootURL.appendingPathComponent("outgoing-agent-messages", isDirectory: true).appendingPathComponent(owner, isDirectory: true)
+    }
     private let previewMode = ProcessInfo.processInfo.arguments.contains("--design-preview")
     private let accountHostsPreviewMode = ProcessInfo.processInfo.arguments.contains(
         "--design-preview-account-hosts")
     private let chatScrollPositionKeyPrefix = "chat.scroll-position."
+    private let isPeerTransport: Bool
+    private var peerStores: [String: CompanionStore] = [:]
+    private var peerSubscriptions: [String: AnyCancellable] = [:]
+    private var peersTask: Task<Void, Never>?
 
-    init() {
+    init(peerCredentials: CompanionCredentials? = nil, session: MobileAccountSession? = nil) {
+        isPeerTransport = peerCredentials != nil
         cacheRootURL = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0].appendingPathComponent("ProjectAgentCompanion")
+        if let peerCredentials, let session {
+            credentials = peerCredentials
+            accountSession = session
+            accountSessionValidated = true
+            selectedAccountSyncSpaceID = peerCredentials.syncSpaceID
+            configureClient(peerCredentials)
+            loadCache(spaceID: peerCredentials.syncSpaceID, allowLegacyMigration: false)
+            connection = .offline
+            return
+        }
 #if DEBUG
         if accountHostsPreviewMode {
             accountSession = MobileAccountSession(
@@ -100,6 +326,23 @@ final class CompanionStore: ObservableObject {
             macOnline = true
             seedDesignPreview()
             reconcileChatPages()
+            if !state.projects.isEmpty {
+                state.projects[0].shared = SharedProjectRevision(id: "11111111-1111-4111-8111-111111111111", revision: 1, author: "preview")
+                let other = CompanionStore(peerCredentials: CompanionCredentials(
+                    relayURL: "https://relay.example.com", accountID: "preview-laptop", deviceID: "preview-device",
+                    deviceToken: "preview", syncSpaceID: "space-laptop", ownerUserID: "preview-user"), session: accountSession)
+                other.state = CachedState()
+                other.state.projects = [state.projects[0]]
+                other.availableAccountSyncSpaces = [availableAccountSyncSpaces[1]]
+                if var run = state.runs.first {
+                    run.run.id = "laptop-preview-run"
+                    run.run.title = "MacBook 上的项目分析"
+                    run.run.projectId = state.projects[0].id
+                    other.state.runs = [run]
+                }
+                other.connection = .offline
+                peerStores["space-laptop"] = other
+            }
             return
         }
         if previewMode {
@@ -204,15 +447,15 @@ final class CompanionStore: ObservableObject {
     }
 
     var isPaired: Bool {
-        guard accountSessionValidated, let accountSession, let credentials else { return false }
-        return credentials.ownerUserID == accountSession.user.id
+        guard accountSessionValidated, let accountSession else { return false }
+        return credentials?.ownerUserID == accountSession.user.id || peerStores.values.contains { $0.isPaired }
     }
     var isSignedIn: Bool { accountSession != nil }
     var currentAccountSyncSpace: AccountSyncSpace? {
         let activeID = credentials?.syncSpaceID ?? selectedAccountSyncSpaceID
         return availableAccountSyncSpaces.first { $0.id == activeID }
     }
-    var runs: [RunDetail] { state.runs.sorted { $0.run.updatedAt > $1.run.updatedAt } }
+    var runs: [RunDetail] { accountRuns }
     var decisions: [Decision] { state.decisions.sorted { $0.createdAt > $1.createdAt } }
     var morningBriefings: [MorningBriefing] {
         state.morningBriefings.sorted { $0.generatedAt < $1.generatedAt }
@@ -270,11 +513,15 @@ final class CompanionStore: ObservableObject {
         guard !previewMode, !accountHostsPreviewMode else { return }
         beginRelayCredentialCleanupIfNeeded()
         guard isSignedIn else { return }
-        if validateAccountSession { accountSessionValidated = false }
+        if validateAccountSession {
+            beginAccountValidationIfNeeded()
+            return
+        }
         guard accountSessionValidated else {
             beginAccountValidationIfNeeded()
             return
         }
+        startAccountPeers()
         if needsAccountEnrollment {
             beginAccountEnrollmentIfNeeded()
             return
@@ -306,9 +553,14 @@ final class CompanionStore: ObservableObject {
     }
 
     func suspendForegroundTransport() {
+        peersTask?.cancel()
+        peersTask = nil
+        for peer in peerStores.values { peer.suspendForegroundTransport() }
         pollingTask?.cancel()
         pollingTask = nil
         client?.disconnect()
+        macOnline = false
+        if credentials != nil { connection = .offline }
     }
 
     func startEmailSignIn(email: String) async {
@@ -408,7 +660,9 @@ final class CompanionStore: ObservableObject {
     }
 
     func unpair() async {
+        let outgoingDirectory = outgoingAccountDirectory
         await quiesceAccountConnections(cancelValidation: true)
+        try? FileManager.default.removeItem(at: outgoingDirectory)
         client = nil
         // Credentials for inactive Sync Spaces stay in Keychain until their own
         // Relay grants can be revoked; deleting them here would orphan live tokens.
@@ -419,6 +673,13 @@ final class CompanionStore: ObservableObject {
     }
 
     private func quiesceAccountConnections(cancelValidation: Bool) async {
+        peersTask?.cancel()
+        let oldPeersTask = peersTask
+        peersTask = nil
+        await oldPeersTask?.value
+        for peer in peerStores.values { await peer.quiesceRelaySync() }
+        peerStores = [:]
+        peerSubscriptions = [:]
         let enrollmentTask = accountEnrollmentTask
         enrollmentTask?.cancel()
         accountEnrollmentTask = nil
@@ -634,7 +895,7 @@ final class CompanionStore: ObservableObject {
 
     private func beginAccountValidationIfNeeded() {
         guard accountValidationTask == nil else { return }
-        restoringAccountSession = true
+        restoringAccountSession = !accountSessionValidated
         accountValidationTask = Task { @MainActor [weak self] in
             await self?.validateAccountSession()
             self?.accountValidationTask = nil
@@ -764,6 +1025,9 @@ final class CompanionStore: ObservableObject {
     }
 
     func sync() async {
+        if !isPeerTransport {
+            for peer in peerStores.values { await peer.sync() }
+        }
         guard isPaired, client != nil else { return }
         if let activeSync {
             syncRequested = true
@@ -829,9 +1093,19 @@ final class CompanionStore: ObservableObject {
             } else if operationError?.hasPrefix("同步失败：") == true {
                 operationError = nil
             }
+            for outgoing in (try? agentMessageOutbox.list()) ?? [] {
+                do { try await deliverOutgoingAgentMessage(outgoing, using: client) }
+                catch { operationError = "附件消息等待重试：\(error.localizedDescription)"; break }
+            }
         } catch {
             if Task.isCancelled { return }
             connection = .offline
+            macOnline = false
+            if isPeerTransport, case RelayError.unauthorized = error {
+                KeychainStore.delete(syncSpaceID: credentials?.syncSpaceID)
+                credentials = nil
+                client.disconnect()
+            }
             operationError = "同步失败：\(error.localizedDescription)"
         }
     }
@@ -843,10 +1117,13 @@ final class CompanionStore: ObservableObject {
         guard let runIndex = state.runs.firstIndex(where: { $0.run.id == runID }) else {
             throw RelayError.invalidResponse
         }
-        let commandID = UUID().uuidString
+        let outgoing = try agentMessageOutbox.prepare(runID: runID, prompt: prompt, attachments: attachments)
+        let commandID = outgoing.id
         let now = ISO8601DateFormatter().string(from: Date())
-        let previousStatus = state.runs[runIndex].run.status
-        let previousUpdatedAt = state.runs[runIndex].run.updatedAt
+        let localAttachments = attachments.map {
+            (try? client.cachePendingAttachment($0, messageID: commandID, createdAt: outgoing.createdAt))
+                ?? $0.descriptor(messageID: commandID, createdAt: outgoing.createdAt)
+        }
         upsertAgentMessage(
             AgentMessage(
             id: commandID,
@@ -855,6 +1132,7 @@ final class CompanionStore: ObservableObject {
             content: prompt,
             eventType: "pending",
             toolName: nil,
+            attachments: localAttachments,
             createdAt: now
         ), in: &state.runs)
         rebuildAgentChatPage(runID: runID)
@@ -862,34 +1140,45 @@ final class CompanionStore: ObservableObject {
         state.runs[runIndex].run.updatedAt = now
         persistCache()
         do {
-            let uploaded = try await upload(attachments, using: client)
-            _ = try await client.sendCommand(
-                commandID: commandID,
-                type: .agentSendMessage,
-                payload: AgentSendMessagePayload(
-                    runId: runID,
-                    prompt: prompt,
-                    attachments: uploaded,
-                    clientMessageId: commandID
-                )
-            )
+            try await deliverOutgoingAgentMessage(outgoing, using: client)
         } catch {
-            removePendingAgentMessage(commandID)
-            if let index = state.runs.firstIndex(where: { $0.run.id == runID }) {
-                state.runs[index].run.status = previousStatus
-                state.runs[index].run.updatedAt = previousUpdatedAt
+            // Already durable: keep the optimistic message and replay this exact
+            // command on reconnect instead of asking the user to submit it again.
+            if !(error is CancellationError) {
+                operationError = "消息已保存在本机，连接恢复后重试：\(error.localizedDescription)"
             }
-            persistCache()
-            throw error
         }
     }
 
     func stopMessage(runID: String) async throws {
+        for message in try agentMessageOutbox.list() where message.runID == runID {
+            if sendingOutgoingAgentIDs.contains(message.id) { cancelledOutgoingAgentIDs.insert(message.id) }
+            try agentMessageOutbox.remove(message)
+            removePendingAgentMessage(message.id)
+        }
         let client = try activeRelayClient()
         _ = try await client.sendCommand(
             type: .agentStopMessage,
             payload: AgentStopMessagePayload(runId: runID)
         )
+    }
+
+    private func deliverOutgoingAgentMessage(_ original: OutgoingAgentMessage, using client: RelayClient) async throws {
+        guard !sendingOutgoingAgentIDs.contains(original.id) else { return }
+        sendingOutgoingAgentIDs.insert(original.id)
+        defer { sendingOutgoingAgentIDs.remove(original.id); cancelledOutgoingAgentIDs.remove(original.id) }
+        let outbox = agentMessageOutbox
+        let accountID = credentials?.accountID
+        var outgoing = original
+        for attachment in outgoing.attachments where !outgoing.uploaded.contains(where: { $0.id == attachment.id }) {
+            outgoing.uploaded.append(try await client.uploadAttachment(attachment))
+            guard !cancelledOutgoingAgentIDs.contains(original.id), credentials?.accountID == accountID, self.client === client else { throw CancellationError() }
+            try outbox.save(outgoing)
+        }
+        guard !cancelledOutgoingAgentIDs.contains(original.id), credentials?.accountID == accountID, self.client === client else { throw CancellationError() }
+        _ = try await client.sendCommand(commandID: outgoing.id, type: .agentSendMessage,
+            payload: AgentSendMessagePayload(runId: outgoing.runID, prompt: outgoing.prompt, attachments: outgoing.uploaded, clientMessageId: outgoing.id), originalCreatedAt: outgoing.createdAt)
+        try outbox.remove(outgoing)
     }
 
     func createRun(projectID: String?, title: String) async throws -> String {
@@ -933,7 +1222,7 @@ final class CompanionStore: ObservableObject {
             _ = try await client.sendCommand(
                 commandID: commandID,
                 type: .agentCreateSession,
-                payload: AgentCreateSessionPayload(runId: runID, projectId: projectID, title: trimmedTitle)
+                payload: AgentCreateSessionPayload(runId: runID, projectId: projectID, title: trimmedTitle, provider: nil, goalId: nil, milestoneId: nil, draftPrompt: nil)
             )
             return runID
         } catch {
@@ -1037,6 +1326,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func rename(runID: String, title: String) async throws {
+        if let target = accountRunTarget(runID) { return try await target.store.rename(runID: target.id, title: title) }
         let client = try activeRelayClient()
         _ = try await client.sendCommand(
             type: .agentRenameSession,
@@ -1067,6 +1357,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func archive(runID: String) async throws {
+        if let target = accountRunTarget(runID) { return try await target.store.archive(runID: target.id) }
         let client = try activeRelayClient()
         _ = try await client.sendCommand(
             type: .agentArchiveSession, payload: AgentArchiveSessionPayload(runId: runID))
@@ -1116,6 +1407,10 @@ final class CompanionStore: ObservableObject {
     }
 
     func download(_ attachment: AttachmentDescriptor) async throws -> URL {
+        #if DEBUG
+        if let file = previewAttachmentFiles[attachment.id],
+           let bytes = try? Data(contentsOf: file), RelayClient.attachmentMatches(bytes, attachment) { return file }
+        #endif
         let client = try activeRelayClient()
         return try await client.downloadAttachment(attachment)
     }
@@ -1155,6 +1450,7 @@ final class CompanionStore: ObservableObject {
     func attachment(for artifactID: String) -> AttachmentDescriptor? { state.attachments[artifactID] }
 
     private func registerPushToken(_ token: String) async {
+        for peer in peerStores.values { await peer.registerPushToken(token) }
         guard isPaired, let client else { return }
         do { try await client.registerPushToken(token) } catch {
             operationError = "推送注册失败：\(error.localizedDescription)"
@@ -1183,6 +1479,10 @@ final class CompanionStore: ObservableObject {
 
     private func configureClient(_ credentials: CompanionCredentials) {
         client = RelayClient(credentials: credentials)
+        client?.onConnectionLost = { [weak self] in
+            self?.macOnline = false
+            self?.connection = .offline
+        }
     }
 
     private func activeRelayClient() throws -> RelayClient {
@@ -1717,6 +2017,37 @@ final class CompanionStore: ObservableObject {
                 artifacts: []
                 ),
         ]
+        if ProcessInfo.processInfo.arguments.contains("--design-preview-attachments") {
+            let renderer = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 160))
+            let image = renderer.pngData { context in
+                UIColor.systemIndigo.setFill(); context.fill(CGRect(x: 0, y: 0, width: 320, height: 160))
+                ("Fuddy · 附件测试" as NSString).draw(at: CGPoint(x: 30, y: 60), withAttributes: [.font: UIFont.boldSystemFont(ofSize: 28), .foregroundColor: UIColor.white])
+            }
+            let data = [PendingAttachment(id: "preview-image", name: "结果图片.png", mimeType: "image/png", data: image),
+                PendingAttachment(id: "preview-report", name: "检查报告.md", mimeType: "text/markdown", data: Data("# 附件测试\n\n图片和报告已准备好。".utf8))]
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("attachment-design-preview")
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let descriptors = data.map { file in
+                let url = directory.appendingPathComponent(file.name)
+                try? file.data.write(to: url)
+                previewAttachmentFiles[file.id] = url
+                return file.descriptor(messageID: "preview-attachments", createdAt: now)
+            }
+            state.runs[1].messages = [AgentMessage(id: "preview-attachments", runId: "run-preview-completed", role: "assistant",
+                content: "已收到图片，结果和报告如下。", eventType: nil, toolName: nil, attachments: descriptors, createdAt: now)]
+        }
+        if ProcessInfo.processInfo.arguments.contains("--design-preview-keyboard") {
+            let messages = (1...16).map { index in
+                AgentMessage(
+                    id: "keyboard-message-\(index)", runId: "run-preview-completed", role: "assistant",
+                    content: "键盘布局测试消息 \(index)\n\n这是一段用于验证长对话滚动位置的示例内容。打开键盘后，最新消息应保持在输入框上方；阅读历史消息时，不应跳回底部。",
+                    eventType: nil, toolName: nil, createdAt: now)
+            }
+            state.runs[1].messages = messages
+            state.workAssistantMessages = messages.map {
+                WorkAssistantMessage(id: $0.id, role: "assistant", content: $0.content, createdAt: now)
+            }
+        }
     }
 #endif
 }

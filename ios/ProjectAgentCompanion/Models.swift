@@ -339,8 +339,14 @@ struct ProjectProfile: Codable, Hashable {
     )
 }
 
-struct Project: Codable, Identifiable, Hashable {
+struct SharedProjectRevision: Codable, Hashable {
     let id: String
+    let revision: Int64
+    let author: String
+}
+
+struct Project: Codable, Identifiable, Hashable {
+    var id: String
     var name: String
     var icon: String?
     var summary: String
@@ -348,6 +354,7 @@ struct Project: Codable, Identifiable, Hashable {
     var status: String
     var accent: String
     var profile: ProjectProfile
+    var shared: SharedProjectRevision?
 
     init(
         id: String,
@@ -367,6 +374,7 @@ struct Project: Codable, Identifiable, Hashable {
         self.status = status
         self.accent = accent
         self.profile = profile
+        self.shared = nil
     }
 
     init(from decoder: Decoder) throws {
@@ -379,6 +387,7 @@ struct Project: Codable, Identifiable, Hashable {
         status = try container.decode(String.self, forKey: .status)
         accent = try container.decode(String.self, forKey: .accent)
         profile = try container.decodeIfPresent(ProjectProfile.self, forKey: .profile) ?? .empty
+        shared = try container.decodeIfPresent(SharedProjectRevision.self, forKey: .shared)
     }
 }
 
@@ -525,10 +534,34 @@ struct DecisionEvidence: Codable, Hashable {
     let uri: String
 }
 
+struct ChatAccountContext: Codable, Hashable {
+    struct Limit: Codable, Hashable {
+        var name: String
+        var usedPercent: Double?
+        var windowMinutes: Double?
+        var resetsAt: String?
+        var status: String?
+    }
+    struct TurnUsage: Codable, Hashable {
+        var inputTokens: Double?
+        var outputTokens: Double?
+        var estimatedCostUsd: Double?
+    }
+    var provider: String
+    var observedAt: String
+    var authMode: String
+    var plan: String?
+    var apiProvider: String?
+    var model: String?
+    var limits: [Limit]
+    var turnUsage: TurnUsage?
+}
+
 struct AgentRun: Codable, Identifiable, Hashable {
-    let id: String
-    let projectId: String?
+    var id: String
+    var projectId: String?
     var decisionId: String? = nil
+    var accountContext: ChatAccountContext? = nil
     var provider: String
     var title: String
     var status: String
@@ -549,6 +582,7 @@ struct AgentMessage: Codable, Identifiable, Hashable {
     var toolStatus: String? = nil
     var toolKind: String? = nil
     var toolSummary: String? = nil
+    var attachments: [AttachmentDescriptor]? = nil
     let createdAt: String
 }
 

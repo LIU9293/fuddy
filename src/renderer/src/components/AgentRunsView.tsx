@@ -42,11 +42,12 @@ import type {
   CodingAgentSettings,
   GitWorkingTreeSummary,
   Project,
-  ProjectGoal,
-  WorkAssistantImageAttachment
+  ProjectGoal
 } from '../../../shared/contracts'
 import { normalizeChatMarkdown } from '../markdown'
-import { maxChatImages, prepareChatImages } from '../chat-attachments'
+import { prepareChatAttachments } from '../chat-attachments'
+import { maximumChatAttachments, isNativeImage, type ChatAttachmentInput } from '../../../shared/chat-attachments'
+import type { CompanionAttachmentDescriptor } from '../../../shared/companion-sync'
 import { ChatComposer } from './ChatComposer'
 import { ConversationShell } from './ConversationShell'
 import { AgentModelPicker } from './AgentModelPicker'
@@ -131,7 +132,7 @@ function AgentRunActionsMenu({
       <button
         type="button"
         className="agent-run-actions-trigger"
-        aria-label="Agent Run 操作"
+        aria-label="Chat 操作"
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={disabled}
@@ -140,7 +141,7 @@ function AgentRunActionsMenu({
         <Ellipsis size={18} />
       </button>
       {open && (
-        <div className="agent-run-actions-popover" role="menu" aria-label="Agent Run 操作">
+        <div className="agent-run-actions-popover" role="menu" aria-label="Chat 操作">
           <button type="button" role="menuitem" onClick={() => { setOpen(false); onRename() }}>
             <Pencil size={14} /> 重命名
           </button>
@@ -268,19 +269,41 @@ function AgentRunInfoSidebar({
   }
 
   return (
-    <aside className="agent-run-info-sidebar" aria-label="Agent Run 信息">
+    <aside className="agent-run-info-sidebar" aria-label="Chat 信息">
       <div className="agent-run-info-header">
-        <div><strong>Agent Run 信息</strong><small>上下文与文件预览</small></div>
+        <div><strong>Chat 信息</strong><small>上下文与文件预览</small></div>
         <button type="button" onClick={onClose} aria-label="收起信息栏"><X size={16} /></button>
       </div>
 
-      <div className="agent-run-info-tabs" role="tablist" aria-label="Agent Run 信息分类">
+      <div className="agent-run-info-tabs" role="tablist" aria-label="Chat 信息分类">
         <button type="button" role="tab" aria-selected={activeTab === 'info'} className={activeTab === 'info' ? 'is-active' : ''} onClick={() => onTabChange('info')}>基本信息</button>
         <button type="button" role="tab" aria-selected={activeTab === 'files'} className={activeTab === 'files' ? 'is-active' : ''} onClick={() => onTabChange('files')}>文件 <small>{detail.artifacts.length}</small></button>
       </div>
 
       <div className="agent-run-info-scroll">
         {activeTab === 'info' ? <>
+        <section className="agent-run-info-section">
+          <div className="agent-run-info-section-title"><span>账户与用量</span></div>
+          {detail.run.accountContext ? <div className="agent-run-project-summary">
+            <dl>
+              <dt>接入方式</dt><dd>{detail.run.accountContext.authMode === 'subscription' ? '订阅套餐' : detail.run.accountContext.authMode === 'api' ? 'API' : '暂未获取'}</dd>
+              {detail.run.accountContext.plan && <><dt>套餐</dt><dd>{detail.run.accountContext.plan}</dd></>}
+              {detail.run.accountContext.apiProvider && <><dt>服务商</dt><dd>{detail.run.accountContext.apiProvider}</dd></>}
+              {detail.run.accountContext.model && <><dt>模型</dt><dd>{detail.run.accountContext.model}</dd></>}
+            </dl>
+            {detail.run.accountContext.limits.length ? detail.run.accountContext.limits.map((limit, index) => <p key={`${limit.name}-${index}`}>
+              {limit.name}{limit.windowMinutes ? ` · ${limit.windowMinutes / 60} 小时` : ''}：
+              {limit.usedPercent === undefined ? '余量暂未获取' : `剩余 ${Math.round(100 - limit.usedPercent)}%`}
+              {limit.resetsAt && <small> · {formatTimestamp(limit.resetsAt)} 重置</small>}
+            </p>) : <p>套餐余量暂未获取</p>}
+            {detail.run.accountContext.turnUsage && <dl>
+              {detail.run.accountContext.turnUsage.inputTokens !== undefined && <><dt>本轮输入 token</dt><dd>{detail.run.accountContext.turnUsage.inputTokens.toLocaleString()}</dd></>}
+              {detail.run.accountContext.turnUsage.outputTokens !== undefined && <><dt>本轮输出 token</dt><dd>{detail.run.accountContext.turnUsage.outputTokens.toLocaleString()}</dd></>}
+              {detail.run.accountContext.turnUsage.estimatedCostUsd !== undefined && <><dt>本轮估算费用</dt><dd>${detail.run.accountContext.turnUsage.estimatedCostUsd.toFixed(4)}</dd></>}
+            </dl>}
+            <p>记录于 {formatTimestamp(detail.run.accountContext.observedAt)}，并非实时余额。</p>
+          </div> : <p className="agent-run-info-empty">执行 Chat 后记录服务商返回的账户与用量信息。</p>}
+        </section>
         <section className="agent-run-info-section">
           <div className="agent-run-info-section-title"><span>Git 变更</span><button type="button" onClick={onRefreshGit} disabled={gitLoading} aria-label="刷新 Git 变更"><RefreshCw size={13} className={gitLoading ? 'spin' : ''} /></button></div>
           {gitLoading && !gitSummary ? <p className="agent-run-info-empty">正在读取工作区…</p> : gitSummary?.available ? (
@@ -313,7 +336,7 @@ function AgentRunInfoSidebar({
               {milestoneTitle && <><dt>Milestone</dt><dd>{milestoneTitle}</dd></>}
               <dt>默认 Agent</dt><dd>{project.profile.defaultAgent}</dd>
             </dl>
-          </div> : <p className="agent-run-info-empty">这是一个共享 Agent Run，没有关联项目。</p>}
+          </div> : <p className="agent-run-info-empty">这是一个共享 Chat，没有关联项目。</p>}
         </section>
 
         <section className="agent-run-info-section">
@@ -341,6 +364,7 @@ function AgentRunInfoSidebar({
             {previewLoading && <div className="agent-run-file-preview-state"><LoaderCircle size={18} className="spin" /> 正在加载预览…</div>}
             {previewError && <div className="agent-run-file-preview-state is-error"><CircleAlert size={17} /><span>{previewError}</span></div>}
             {preview?.kind === 'markdown' && <div className="agent-run-markdown-preview"><Markdown content={preview.content ?? ''} onOpenLink={openPreviewLink} /></div>}
+            {preview?.kind === 'pdf' && <iframe className="agent-run-pdf-preview" title={selectedArtifact.label} src={preview.dataUrl ?? undefined} />}
             {preview?.kind === 'text' && <pre className="agent-run-text-preview">{preview.content}</pre>}
             {preview?.kind === 'image' && preview.dataUrl && <div className="agent-run-image-preview"><img src={preview.dataUrl} alt={preview.artifact.label} /></div>}
             {preview?.kind === 'unsupported' && <div className="agent-run-file-preview-state"><FileOutput size={20} /><span>暂不支持在侧边栏预览这种文件，可在 Finder 中打开。</span><button type="button" onClick={() => void window.projectAgent.revealWorkspacePath(selectedArtifact.projectId, selectedArtifact.relativePath)}>在 Finder 中显示</button></div>}
@@ -356,7 +380,7 @@ function AgentRunInfoSidebar({
                   <ChevronRight size={13} />
                 </button>
               ))}
-            </div> : <p className="agent-run-info-empty">这个 Agent Run 还没有登记文件。</p>}
+            </div> : <p className="agent-run-info-empty">这个 Chat 还没有登记文件。</p>}
           </section>
         )}
       </div>
@@ -551,7 +575,7 @@ export type AgentRunLiveState = {
 type QueuedRunMessage = {
   requestId: string
   content: string
-  attachments: WorkAssistantImageAttachment[]
+  attachments: ChatAttachmentInput[]
 }
 
 function emptyAgentRunLiveState(busy = false): AgentRunLiveState {
@@ -774,6 +798,9 @@ function Markdown({ content, onOpenLink }: { content: string; onOpenLink?: (href
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          img: ({ src, alt }) => typeof src === 'string' && !/^https?:/i.test(src)
+            ? <button className="message-attachment" type="button" onClick={() => onOpenLink?.(src)}>{alt || '查看图片'}</button>
+            : <img src={src} alt={alt} />,
           a: ({ children, href, ...props }) => (
             <a
               {...props}
@@ -791,7 +818,29 @@ function Markdown({ content, onOpenLink }: { content: string; onOpenLink?: (href
   )
 }
 
-function MessageAttachments({ metadata }: { metadata: Record<string, unknown> | null }): React.JSX.Element | null {
+function MessageAttachment({ runId, attachment, onOpen }: {
+  runId: string; attachment: CompanionAttachmentDescriptor; onOpen: (artifactId: string) => void
+}): React.JSX.Element {
+  const [thumbnail, setThumbnail] = useState<string | null>(null)
+  useEffect(() => {
+    let current = true
+    if (isNativeImage(attachment.mimeType) && attachment.artifactId) {
+      void window.projectAgent.getAgentRunArtifactPreview(runId, attachment.artifactId)
+        .then(preview => { if (current) setThumbnail(preview.dataUrl) }).catch(() => undefined)
+    }
+    return () => { current = false }
+  }, [runId, attachment.id, attachment.artifactId, attachment.mimeType])
+  return <button type="button" className="message-attachment" onClick={() => { if (attachment.artifactId) onOpen(attachment.artifactId) }}>
+    {thumbnail ? <img src={thumbnail} alt={attachment.filename} /> : <Paperclip size={16} />}
+    <span>{attachment.filename}</span>
+  </button>
+}
+
+function MessageAttachments({ message, onOpen }: { message: AgentRunMessage; onOpen: (artifactId: string) => void }): React.JSX.Element | null {
+  if (message.attachments?.length) return <div className="message-attachments" aria-label="消息附件">
+    {message.attachments.map(attachment => <MessageAttachment key={attachment.id} runId={message.runId} attachment={attachment} onOpen={onOpen} />)}
+  </div>
+  const metadata = message.metadata
   const attachments = Array.isArray(metadata?.attachments)
     ? metadata.attachments.filter((item): item is { id?: string; name: string } => {
       return Boolean(item && typeof item === 'object' && typeof (item as { name?: unknown }).name === 'string')
@@ -841,11 +890,15 @@ export function AgentRunsView({
   const [detail, setDetail] = useState<AgentRunDetail | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [creatingBusy, setCreatingBusy] = useState(false)
+  const [executionHosts, setExecutionHosts] = useState<import('../../../shared/account').ExecutionHost[]>([])
+  const [executionHostId, setExecutionHostId] = useState<string | null>(null)
+  const [hostsError, setHostsError] = useState<string | null>(null)
+  const [loadingHistory, setLoadingHistory] = useState(false)
   const [codingAgentModels, setCodingAgentModels] = useState<CodingAgentModelCatalog | null>(null)
   const [liveStateByRunId, setLiveStateByRunId] = useState<Record<string, AgentRunLiveState>>({})
   const [queuedMessagesByRunId, setQueuedMessagesByRunId] = useState<Record<string, QueuedRunMessage[]>>({})
   const [reply, setReply] = useState('')
-  const [replyAttachments, setReplyAttachments] = useState<WorkAssistantImageAttachment[]>([])
+  const [replyAttachments, setReplyAttachments] = useState<ChatAttachmentInput[]>([])
   const [replyAttachmentError, setReplyAttachmentError] = useState<string | null>(null)
   const [renamingTitle, setRenamingTitle] = useState<string | null>(null)
   const [sessionActionBusy, setSessionActionBusy] = useState(false)
@@ -861,6 +914,20 @@ export function AgentRunsView({
   const [projectId, setProjectId] = useState<string | null>(projects[0]?.id ?? null)
   const [milestoneValue, setMilestoneValue] = useState('')
   const [title, setTitle] = useState('')
+  const selectedHost = executionHosts.find((host) => executionHostId ? host.id === executionHostId : host.isCurrent)
+  const hostUnavailable = !selectedHost || !selectedHost.online || !selectedHost.workspaceConfigured
+  useEffect(() => {
+    if (!creating) return
+    let cancelled = false
+    const refresh = (): void => {
+      void window.projectAgent.listExecutionHosts(projectId).then((hosts) => {
+        if (!cancelled) { setExecutionHosts(hosts); setHostsError(null) }
+      }).catch(() => { if (!cancelled) { setExecutionHosts([]); setHostsError('暂时无法获取执行 Mac，请稍后重试。') } })
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 5000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [creating, projectId])
   const titleInputRef = useRef<HTMLInputElement | null>(null)
   const previousCreatingRef = useRef(false)
   const previousCreateProjectIdRef = useRef<string | null | undefined>(undefined)
@@ -870,6 +937,12 @@ export function AgentRunsView({
   const infoSidebarResizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null)
   const infoSidebarRunIdRef = useRef<string | null>(null)
   const selectedRunUpdatedAt = runs.find((run) => run.id === selectedRunId)?.updatedAt
+  const selectedRunHostOnline = runs.find((run) => run.id === selectedRunId)?.executionHost?.online
+  const selectedAccountContext = runs.find((run) => run.id === selectedRunId)?.accountContext
+  useEffect(() => {
+    setDetail(current => current?.run.id === selectedRunId
+      ? { ...current, run: { ...current.run, accountContext: selectedAccountContext } } : current)
+  }, [selectedRunId, selectedAccountContext])
   selectedRunIdRef.current = selectedRunId
 
   useEffect(() => {
@@ -958,12 +1031,12 @@ export function AgentRunsView({
         }
       }
     }).catch((error) => {
-      if (!cancelled) onNotice(error instanceof Error ? error.message : 'Agent Run 读取失败。')
+      if (!cancelled) onNotice(error instanceof Error ? error.message : 'Chat 读取失败。')
     }).finally(() => {
       if (!cancelled && blockingRefresh) setLoadingDetail(false)
     })
     return () => { cancelled = true }
-  }, [selectedRunId, selectedRunUpdatedAt])
+  }, [selectedRunId, selectedRunUpdatedAt, selectedRunHostOnline])
 
   useEffect(() => agentRunUpdateStore.subscribe(({ runId, update }) => {
     if (activeRequestIdByRunRef.current.has(runId) || update.type === 'created') return
@@ -1029,7 +1102,7 @@ export function AgentRunsView({
     runId: string,
     requestId: string,
     content: string,
-    attachments: WorkAssistantImageAttachment[]
+    attachments: ChatAttachmentInput[]
   ): void {
     setDetail((current) => {
       if (current?.run.id !== runId || current.messages.some((message) => message.id === requestId)) return current
@@ -1060,7 +1133,7 @@ export function AgentRunsView({
     runId: string,
     requestId: string,
     content: string,
-    attachments: WorkAssistantImageAttachment[],
+    attachments: ChatAttachmentInput[],
     update: AgentRunStreamUpdate
   ): void {
     if (update.type === 'status' && update.status === 'queued') return
@@ -1106,6 +1179,8 @@ export function AgentRunsView({
     setProvider(projectDefaultAgent(nextProjectId))
     setMilestoneValue('')
     setTitle('')
+    setExecutionHostId(null)
+    setExecutionHosts([])
   }
 
   useEffect(() => {
@@ -1123,11 +1198,12 @@ export function AgentRunsView({
   }, [creating, initialProjectId, projects])
 
   async function createRun(): Promise<void> {
-    if (!title.trim() || creatingBusy) return
+    if (!title.trim() || creatingBusy || hostUnavailable) return
     const [goalId, milestoneId] = milestoneValue ? milestoneValue.split(':') : [null, null]
     setCreatingBusy(true)
     try {
       const result = await window.projectAgent.createAgentRunDraft({
+        executionHostId: selectedHost?.isCurrent ? null : selectedHost?.id,
         projectId,
         goalId,
         milestoneId,
@@ -1139,7 +1215,7 @@ export function AgentRunsView({
       onCreatingChange(false)
       onSelectRun(result.run.id)
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Agent Run 创建失败。')
+      onNotice(error instanceof Error ? error.message : 'Chat 创建失败。')
     } finally {
       setCreatingBusy(false)
     }
@@ -1174,10 +1250,18 @@ export function AgentRunsView({
       }, (update) => handleStream(runId, requestId, question, attachments, update))
       if (selectedRunIdRef.current === runId && activeRequestIdByRunRef.current.get(runId) === requestId) {
         setDetail(updated)
+        if (updated.run.status === 'failed') {
+          setReply(current => current || question)
+          setReplyAttachments(current => current.length ? current : attachments)
+        }
       }
       await onRefresh()
     } catch (error) {
       removeQueuedMessage(runId, requestId)
+      if (selectedRunIdRef.current === runId) {
+        setReply(current => current || question)
+        setReplyAttachments(current => current.length ? current : attachments)
+      }
       onNotice(error instanceof Error ? error.message : '消息发送失败。')
       const failedDetail = await window.projectAgent.getAgentRun(runId)
       if (selectedRunIdRef.current === runId && activeRequestIdByRunRef.current.get(runId) === requestId) {
@@ -1208,9 +1292,11 @@ export function AgentRunsView({
   }
 
   async function addReplyAttachments(files: File[]): Promise<void> {
-    const result = await prepareChatImages(files, replyAttachments.length)
-    setReplyAttachments((current) => [...current, ...result.attachments].slice(0, maxChatImages))
-    setReplyAttachmentError(result.error)
+    try {
+      const result = await prepareChatAttachments(files, replyAttachments.length)
+      setReplyAttachments((current) => [...current, ...result.attachments].slice(0, maximumChatAttachments))
+      setReplyAttachmentError(result.error)
+    } catch (error) { setReplyAttachmentError(error instanceof Error ? error.message : '附件读取失败。') }
   }
 
   async function renameSession(): Promise<void> {
@@ -1221,9 +1307,9 @@ export function AgentRunsView({
       setDetail((current) => current ? { ...current, run } : current)
       setRenamingTitle(null)
       await onRefresh()
-      onNotice('Agent Run 已重命名。')
+      onNotice('Chat 已重命名。')
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Agent Run 重命名失败。')
+      onNotice(error instanceof Error ? error.message : 'Chat 重命名失败。')
     } finally {
       setSessionActionBusy(false)
     }
@@ -1257,9 +1343,9 @@ export function AgentRunsView({
       setDetail(null)
       onSelectRun(null)
       await onRefresh()
-      onNotice('Agent Run 已归档。')
+      onNotice('Chat 已归档。')
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Agent Run 归档失败。')
+      onNotice(error instanceof Error ? error.message : 'Chat 归档失败。')
     } finally {
       setSessionActionBusy(false)
     }
@@ -1268,11 +1354,11 @@ export function AgentRunsView({
   if (!selectedRunId && !creating) {
     return (
       <section className="agent-runs-view agent-run-chat-view">
-        <header className="app-page-header agent-run-page-header"><div><strong className="app-page-header-title">Agent Runs</strong></div></header>
+        <header className="app-page-header agent-run-page-header"><div><strong className="app-page-header-title">Chats</strong></div></header>
         <div className="agent-runs-empty">
           <MessageSquare size={28} />
-          <strong>{runs.length === 0 ? '还没有 Agent Run' : '选择一个 Agent Run'}</strong>
-          <button className="primary-small-button" onClick={() => onCreatingChange(true)}><Plus size={14} /> 新建 Agent Run</button>
+          <strong>{runs.length === 0 ? '还没有 Chat' : '选择一个 Chat'}</strong>
+          <button className="primary-small-button" onClick={() => onCreatingChange(true)}><Plus size={14} /> 新建 Chat</button>
         </div>
       </section>
     )
@@ -1282,17 +1368,22 @@ export function AgentRunsView({
     return (
       <section className="agent-runs-view agent-run-chat-view">
         <header className="app-page-header agent-run-page-header">
-          <div><strong className="app-page-header-title">新建 Agent Run</strong></div>
+          <div><strong className="app-page-header-title">新建 Chat</strong></div>
         </header>
         <div className="agent-run-create-shell">
           <div className="agent-run-create-form">
             <label><span>项目</span><SelectMenu value={projectId ?? ''} options={[{ value: '', label: '共享任务' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]} onChange={(value) => { const nextProjectId = value || null; setProjectId(nextProjectId); setMilestoneValue(''); setProvider(projectDefaultAgent(nextProjectId)) }} ariaLabel="Run 所属项目" /></label>
+            {executionHosts.length > 1 && <label><span>执行 Mac</span><SelectMenu
+              value={selectedHost?.id ?? ''}
+              options={executionHosts.map((host) => ({ value: host.id, label: `${host.name} · ${host.isCurrent ? '本机' : host.online ? '在线' : '离线'}${host.online && !host.workspaceConfigured ? ' · 未配置目录' : ''}`, disabled: !host.online || !host.workspaceConfigured }))}
+              onChange={(id) => { setExecutionHostId(id); setMilestoneValue('') }} ariaLabel="执行 Mac" /></label>}
+            {(hostsError || selectedHost?.unavailableReason) && <p role="status">{hostsError ?? selectedHost?.unavailableReason}</p>}
             <label><span>Agent</span><SelectMenu value={provider} options={agentOptions} onChange={(value) => setProvider(value as AgentRunProvider)} ariaLabel="执行 Agent" /></label>
             <label><span>关联 Milestone（可选）</span><SelectMenu value={milestoneValue} options={[{ value: '', label: '不关联 Milestone' }, ...milestoneOptions]} onChange={setMilestoneValue} ariaLabel="关联 Milestone" /></label>
             <label><span>Run 标题</span><input ref={titleInputRef} autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：分析项目上线阻塞" /></label>
-            <button className="run-create-submit" onClick={() => void createRun()} disabled={!title.trim() || creatingBusy}>
+            <button className="run-create-submit" onClick={() => void createRun()} disabled={!title.trim() || creatingBusy || hostUnavailable}>
               {creatingBusy ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}
-              {creatingBusy ? '正在创建…' : '创建 Agent Run'}
+              {creatingBusy ? '正在创建…' : '创建 Chat'}
             </button>
           </div>
         </div>
@@ -1305,7 +1396,7 @@ export function AgentRunsView({
   const detailMilestone = detailGoal?.milestones.find((milestone) => milestone.id === detail?.run.milestoneId)
 
   if (loadingDetail || !detail || detail.run.id !== selectedRunId) {
-    return <section className="agent-runs-view agent-run-chat-view"><div className="agent-run-loading"><LoaderCircle size={20} className="spin" /> 正在读取 Agent Run…</div></section>
+    return <section className="agent-runs-view agent-run-chat-view"><div className="agent-run-loading"><LoaderCircle size={20} className="spin" /> 正在读取 Chat…</div></section>
   }
 
   const untouchedDraft = detail.run.status === 'draft' && detail.messages.length === 0
@@ -1320,7 +1411,7 @@ export function AgentRunsView({
     if (/^(https?:|mailto:)/i.test(href) || href.startsWith('#')) return false
     const artifact = findArtifactForHref(detail.artifacts, href)
     if (artifact) openArtifact(artifact.id)
-    else onNotice('这个文件尚未登记为当前 Agent Run 的产物，无法在侧边栏预览。')
+    else onNotice('这个文件尚未登记为当前 Chat 的产物，无法在侧边栏预览。')
     return true
   }
 
@@ -1335,14 +1426,14 @@ export function AgentRunsView({
         <div>
           {renamingTitle === null ? <strong className="app-page-header-title">{detail.run.title}</strong> : (
             <form className="agent-run-rename-form" onSubmit={(event) => { event.preventDefault(); void renameSession() }}>
-              <input autoFocus value={renamingTitle} maxLength={200} onChange={(event) => setRenamingTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setRenamingTitle(null) }} aria-label="Agent Run 标题" />
+              <input autoFocus value={renamingTitle} maxLength={200} onChange={(event) => setRenamingTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setRenamingTitle(null) }} aria-label="Chat 标题" />
               <button type="submit" disabled={!renamingTitle.trim() || sessionActionBusy}>保存</button>
               <button type="button" disabled={sessionActionBusy} onClick={() => setRenamingTitle(null)}>取消</button>
             </form>
           )}
           <small className="agent-run-project-meta">
             {detailProject && <ProjectIcon project={detailProject} className="is-agent-run-meta" />}
-            <span>{detailProject?.name ?? '共享任务'} · {formatAgentProviderName(detail.run.provider)}</span>
+            <span>{detailProject?.name ?? '共享任务'} · {formatAgentProviderName(detail.run.provider)}{detail.run.executionHost ? ` · ${detail.run.executionHost.name} · ${detail.run.executionHost.online ? '在线' : '离线'}` : ' · 本机'}</span>
           </small>
         </div>
         <div className="agent-run-header-actions">
@@ -1350,7 +1441,7 @@ export function AgentRunsView({
             type="button"
             className={`agent-run-info-toggle ${infoSidebarOpen ? 'is-active' : ''}`}
             onClick={() => setInfoSidebarOpen((current) => !current)}
-            aria-label={infoSidebarOpen ? '收起 Agent Run 信息' : '展开 Agent Run 信息'}
+            aria-label={infoSidebarOpen ? '收起 Chat 信息' : '展开 Chat 信息'}
             aria-expanded={infoSidebarOpen}
           ><PanelRight size={17} /></button>
           <AgentRunActionsMenu
@@ -1376,6 +1467,8 @@ export function AgentRunsView({
         ) : null}
         composer={(
           <ChatComposer
+            imageOnly={false}
+            disabled={detail.run.executionHost?.online === false}
             value={reply}
             onChange={setReply}
             onSubmit={sendReply}
@@ -1423,6 +1516,14 @@ export function AgentRunsView({
           />
         )}
       >
+          {detail.remoteHistory?.hasMore && <button type="button" className="primary-small-button" disabled={loadingHistory || detail.run.executionHost?.online === false}
+            onClick={() => {
+              const runId = detail.run.id
+              setLoadingHistory(true)
+              void window.projectAgent.loadAgentRunHistory(runId).then((next) => {
+                if (selectedRunIdRef.current === runId) setDetail(next)
+              }).catch((error) => onNotice(error instanceof Error ? error.message : '历史消息读取失败。')).finally(() => setLoadingHistory(false))
+            }}>{loadingHistory ? '正在加载…' : '加载更早的消息'}</button>}
           {untouchedDraft && !runBusy && (
             <div className="agent-run-draft-empty" role="status">
               <Bot size={22} />
@@ -1459,7 +1560,7 @@ export function AgentRunsView({
             <article className={`chat-turn is-${message.role}`} key={message.id}>
               <div className="chat-turn-content">
                 <ConversationMessageActions content={message.content} createdAt={message.createdAt} />
-                {message.role === 'user' && <MessageAttachments metadata={message.metadata} />}
+                <MessageAttachments message={message} onOpen={openArtifact} />
                 {message.role === 'user' ? <div className="chat-bubble"><Markdown content={message.content} onOpenLink={openMessageLink} /></div> : <Markdown content={message.content} onOpenLink={openMessageLink} />}
               </div>
             </article>
@@ -1474,7 +1575,7 @@ export function AgentRunsView({
           )}
       </ConversationShell>
       </div>
-      <button className="agent-run-info-backdrop" type="button" aria-label="收起 Agent Run 信息" onClick={() => setInfoSidebarOpen(false)} />
+      <button className="agent-run-info-backdrop" type="button" aria-label="收起 Chat 信息" onClick={() => setInfoSidebarOpen(false)} />
       <AgentRunInfoSidebar
         detail={detail}
         project={detailProject}
@@ -1491,7 +1592,7 @@ export function AgentRunsView({
       <div
         className="agent-run-info-resize-handle"
         role="separator"
-        aria-label="调整 Agent Run 信息栏宽度"
+        aria-label="调整 Chat 信息栏宽度"
         aria-orientation="vertical"
         aria-valuemin={minimumAgentRunInfoWidth}
         aria-valuemax={maximumAgentRunInfoWidth}

@@ -46,7 +46,7 @@ export function createPreviewApi(empty = false): DesktopApi {
     logoutAllAccounts: unavailable,
     detectCodingAgents: unavailable,
     completeAgentDetection: unavailable,
-    selectOnboardingProjectFolder: unavailable,
+    selectProjectFolder: unavailable,
     completeProjectOnboarding: unavailable,
     getBootstrap: async () => copy(data),
     getBootstrapPatch: async (keys) => copy(Object.fromEntries(keys.map((key) => [key, data[key]])) as AppBootstrapPatch),
@@ -132,7 +132,10 @@ export function createPreviewApi(empty = false): DesktopApi {
       data.runs.unshift(detail.run)
       return copy(detail)
     },
+    listExecutionHosts: async (projectId) => [{ id: 'preview-host', name: '本机（预览）', isCurrent: true, online: true,
+      workspaceConfigured: !projectId || Boolean(data.projects.find((project) => project.id === projectId)?.profile.repoPath), unavailableReason: null }],
     getAgentRun: async (id) => copy(required(details.get(id))),
+    loadAgentRunHistory: async (id) => copy(required(details.get(id))),
     getAgentRunGitSummary: async () => ({
       available: false, repoRoot: null, branch: null, head: null, additions: 0,
       deletions: 0, changedFileCount: 0, changes: [], error: previewOnly

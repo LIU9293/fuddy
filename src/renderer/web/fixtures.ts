@@ -1,5 +1,6 @@
 import type { AccountState } from '../../shared/account'
 import type { AgentRunDetail, AppBootstrap, Project, WorkspaceFileContent } from '../../shared/contracts'
+import { dailyInspectionJobId, defaultBriefingPrompt } from '../../shared/briefing-prompt'
 
 export const previewTime = '2026-08-31T01:00:00.000Z'
 export const previewOnly = 'Web 预览不会调用原生服务或真实 Agent，请在 Fuddy Dev 中验证。'
@@ -35,6 +36,8 @@ export function previewRunDetails(): AgentRunDetail[] {
   return [{
     run: {
       id: 'preview-run', projectId: 'preview-project', provider: 'codex', title: '检查聊天页面的布局',
+      accountContext: { provider: 'codex', observedAt: previewTime, authMode: 'subscription', plan: 'pro', apiProvider: 'openai',
+        limits: [{ name: '示例额度', usedPercent: 25, windowMinutes: 300, resetsAt: previewTime }] },
       status: 'completed', sessionId: null, workingDirectory: null, startedAt: previewTime,
       completedAt: previewTime, summary: '示例对话，仅用于检查界面。', draftPrompt: null,
       createdAt: previewTime, updatedAt: previewTime
@@ -103,6 +106,12 @@ export function previewBootstrap(empty = false): AppBootstrap {
       attachments: [], taskContext: null, createdAt: previewTime
     }],
     automations: empty ? [] : [{
+      id: dailyInspectionJobId, projectId: null, name: '每日项目巡检',
+      scheduleDescription: '每天上午 09:00', cronExpression: '0 9 * * *', timezone: 'Asia/Shanghai',
+      action: 'generate-briefing', prompt: defaultBriefingPrompt, agentProvider: 'pi', enabled: true,
+      requiresConfirmation: false, maxRetries: 1, retryDelaySeconds: 30, status: 'idle',
+      lastRunAt: null, nextRunAt: '2026-09-17T01:00:00.000Z', lastError: null, createdAt: previewTime, updatedAt: previewTime
+    }, {
       id: 'preview-automation', projectId: 'preview-project', name: '每日 UI 检查（示例）',
       scheduleDescription: '每天 09:00', cronExpression: '0 9 * * *', timezone: 'Asia/Shanghai',
       action: 'agent-task', prompt: '检查主要页面的布局。', agentProvider: 'codex', enabled: false,

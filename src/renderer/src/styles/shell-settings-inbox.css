@@ -128,8 +128,8 @@
 }
 
 .settings-back-button:hover {
-  color: #292925;
-  background: rgba(53, 53, 48, 0.055);
+  color: var(--text);
+  background: var(--control-hover-background);
 }
 
 .settings-sidebar-title {
@@ -174,7 +174,7 @@
   color: #3f3f3a;
   background: transparent;
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .settings-search-field input::placeholder {
@@ -194,7 +194,7 @@
 .settings-nav-group-label {
   margin: 0 7px 7px;
   color: #a0a099;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 560;
 }
 
@@ -234,7 +234,7 @@
 .settings-search-empty {
   margin: 8px 10px;
   color: #999992;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .brand-mark,
@@ -264,7 +264,7 @@
 
 .brand-copy small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .sidebar-icon-button,
@@ -334,7 +334,7 @@
   border-radius: 10px;
   background: rgba(48, 48, 43, 0.09);
   color: #66665f;
-  font-size: 10px;
+  font-size: 12px;
   text-align: center;
 }
 
@@ -344,7 +344,7 @@
   justify-content: space-between;
   margin: 23px 8px 7px;
   color: #8a8a84;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -364,7 +364,7 @@
   border-radius: 6px;
   color: white;
   background: var(--project-accent, #73736d);
-  font-size: 11px;
+  font-size: 12px;
   font-style: normal;
   font-weight: 680;
   line-height: 1;
@@ -384,24 +384,24 @@
 }
 
 .project-icon.is-wordmark {
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: -0.055em;
 }
 
 .project-icon.is-wordmark.is-sidebar,
 .project-icon.is-wordmark.is-agent-run-meta {
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .project-icon.is-wordmark.is-agent-run-info {
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .project-icon.is-sidebar {
   width: 20px;
   height: 20px;
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .project-dot {
@@ -438,7 +438,7 @@
   align-items: center;
   padding: 0 7px;
   color: #7f7f78;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
   letter-spacing: .02em;
 }
@@ -475,7 +475,6 @@
 .sidebar-run-group-heading > span {
   min-width: 0;
   overflow: hidden;
-  font-size: 10px;
   font-weight: 650;
   letter-spacing: .02em;
   text-overflow: ellipsis;
@@ -549,15 +548,19 @@
   white-space: nowrap;
 }
 
+.sidebar-run-group-heading > span,
 .sidebar-run-list strong {
   font-size: 12px;
+}
+
+.sidebar-run-list strong {
   font-weight: 620;
 }
 
 .sidebar-run-list small,
 .sidebar-run-list > p {
   color: #909089;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .sidebar-run-list > p {
@@ -603,7 +606,7 @@
   border-radius: 7px;
   color: #4d4d47;
   background: transparent;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -717,7 +720,7 @@
   gap: 8px;
 }
 
-.main-area-header-title span {
+.main-area-header-title span:not(.project-icon) {
   color: #8b8b84;
   font-size: 12px;
 }
@@ -811,7 +814,7 @@
 .projects-list-copy > small {
   overflow: hidden;
   color: #777771;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -819,7 +822,7 @@
 
 .projects-list-copy > small {
   color: #9a9a93;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .projects-list-item > svg {
@@ -849,7 +852,7 @@
 
 .eyebrow {
   color: #86867f;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -881,7 +884,7 @@
 
 .briefing-button:hover,
 .primary-action:hover {
-  background: #10100f;
+  background: var(--primary-hover-background);
 }
 
 .briefing-button:disabled {
@@ -1008,12 +1011,12 @@
 
 .daily-briefing-copy small {
   color: #ad5c52;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .daily-briefing-meta {
   color: #7b8090;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -1035,7 +1038,7 @@
   background: rgba(255, 255, 253, 0.68);
   color: #555953;
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.65;
   white-space: pre-wrap;
 }
@@ -1053,7 +1056,7 @@
 
 .briefing-page-header small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .briefing-header-status {
@@ -1061,7 +1064,7 @@
   align-items: center;
   gap: 5px;
   color: #777771;
-  font-size: 11px;
+  font-size: 12px;
   -webkit-app-region: no-drag;
 }
 
@@ -1137,7 +1140,7 @@
 
 .chat-turn-meta time {
   color: #9a9a94;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .chat-turn-hover-actions {
@@ -1168,7 +1171,7 @@
 }
 
 .chat-turn-hover-actions time {
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -1193,7 +1196,7 @@
 .briefing-delivery-copy {
   margin: 0 0 10px;
   color: #5f5f59;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .work-assistant-run-card {
@@ -1376,7 +1379,7 @@
   border-radius: 8px;
   color: #655d85;
   background: rgba(119, 102, 178, 0.07);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .work-task-context span,
@@ -1458,7 +1461,7 @@
   border-radius: 4px;
   background: rgba(42, 42, 38, 0.07);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 0.9em;
+  font-size: max(12px, 0.9em);
 }
 
 .chat-markdown pre {
@@ -1587,7 +1590,7 @@
   align-items: center;
   justify-content: space-between;
   color: rgba(255, 255, 255, 0.65);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -1684,7 +1687,7 @@
 .audio-play-button {
   min-width: 98px;
   padding: 0 10px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
 }
 
@@ -1710,7 +1713,7 @@
   border-radius: 9px;
   color: rgba(255, 255, 255, 0.82);
   background: rgba(255, 255, 255, 0.075);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -1785,7 +1788,7 @@
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.09);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 0.9em;
+  font-size: max(12px, 0.9em);
 }
 
 .briefing-thinking {
@@ -1793,7 +1796,7 @@
   align-items: center;
   gap: 6px;
   color: #888881;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .conversation-composer-dock {

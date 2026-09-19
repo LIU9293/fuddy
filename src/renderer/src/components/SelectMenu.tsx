@@ -17,6 +17,7 @@ export interface SelectMenuOption<T extends string> {
   value: T
   label: string
   icon?: ReactNode
+  disabled?: boolean
 }
 
 export interface ActionMenuOption<T extends string> {
@@ -128,6 +129,7 @@ export function SelectMenu<T extends string>({
                 type="button"
                 role="option"
                 aria-selected={isSelected}
+                aria-disabled={option.disabled || undefined}
                 className={`select-menu-option ${isSelected ? 'is-selected' : ''}`}
                 key={option.value}
                 ref={(node) => { optionRefs.current[index] = node }}
@@ -143,6 +145,7 @@ export function SelectMenu<T extends string>({
                   }
                 }}
                 onClick={() => {
+                  if (option.disabled) return
                   onChange(option.value)
                   closeMenu(true)
                 }}

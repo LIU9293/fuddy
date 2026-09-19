@@ -8,6 +8,7 @@ import type {
 import type { CliAgentRuntime } from './cli-agent-runtime'
 import type { PiTaskHarness } from './pi-task-harness'
 import { codingAgentProviders } from '../../shared/agent-providers'
+import type { RuntimeAttachment } from '../../shared/chat-attachments'
 
 export interface AgentProviderCapabilities {
   nativeSessions: boolean
@@ -22,8 +23,11 @@ export interface AgentProviderTurnInput {
   projectId: string | null
   projectContext: string
   prompt: string
+  attachments?: RuntimeAttachment[]
   history: () => AgentRunMessage[]
   sessionId: string | null
+  codexSessionOwned?: boolean
+  onCodexSessionReady?: (ready: import('./codex-session').CodexSessionReady) => void
   model?: string | null
   reasoningEffort?: string | null
   workingDirectory: string | null
@@ -33,6 +37,7 @@ export interface AgentProviderTurnInput {
   onUpdate: (update: AgentRunStreamUpdate) => void
   onTool: (toolName: string, detail: string, metadata?: Record<string, unknown>) => void
   onSessionId: (sessionId: string) => void
+  onAccountContext?: (context: import('../../shared/agent-account-context').AgentAccountContext) => void
   onApproval: (request: Omit<AgentApprovalRequest, 'runId' | 'createdAt'>) => Promise<AgentApprovalDecision>
 }
 
@@ -58,10 +63,12 @@ export function codingAgentContinuationContext(messages: AgentRunMessage[]): str
     .slice(-codingAgentHistoryMessageLimit)
     .map((message) => {
       const content = message.content.trim()
+      const attachmentNames = message.attachments?.map(file => file.filename) ?? []
+      const attachmentContext = attachmentNames.length ? `\n附件保存在项目文件空间：${JSON.stringify(attachmentNames)}` : ''
       const clipped = content.length > codingAgentHistoryMessageCharacterLimit
         ? `${content.slice(0, codingAgentHistoryMessageCharacterLimit - 1)}…`
         : content
-      return `${message.role === 'user' ? '用户' : 'Agent'}：${clipped}`
+      return `${message.role === 'user' ? '用户' : 'Agent'}：${clipped}${attachmentContext}`
     })
 
   const retained: string[] = []
@@ -127,6 +134,7 @@ export function createDefaultAgentProviderRegistry(
         projectId: input.projectId,
         projectContext: input.projectContext,
         prompt: input.prompt,
+        attachments: input.attachments,
         history: input.history(),
         sessionId: input.sessionId,
         workingDirectory: input.workingDirectory ?? input.filesDirectory,
@@ -147,18 +155,21 @@ export function createDefaultAgentProviderRegistry(
       provider,
       capabilities: { ...sharedCapabilities },
       async runTurn(input) {
-        if (!input.workingDirectory) throw new Error('这个 Agent Run 缺少 working directory。')
-        const continuationContext = input.sessionId ? '' : codingAgentContinuationContext(input.history())
+        if (!input.workingDirectory) throw new Error('这个 Chat 缺少 working directory。')
+        const history = !input.sessionId || (provider === 'codex' && !input.codexSessionOwned) ? input.history() : []
+        const continuationContext = input.sessionId ? '' : codingAgentContinuationContext(history)
         return await cliRuntime.runTurn({
+          runId: input.runId,
+          history,
+          codexSessionOwned: input.codexSessionOwned,
+          onCodexSessionReady: input.onCodexSessionReady,
           projectId: input.projectId,
           provider,
-          prompt: [
-            input.projectContext,
-            continuationContext
-              ? `以下是这个 Fuddy Agent Run 在重建原生 Session 前的历史对话。请继续当前对话，不要重复已完成的回答：\n\n${continuationContext}`
-              : '',
-            `用户任务：\n${input.prompt}`
-          ].filter(Boolean).join('\n\n'),
+          projectContext: input.projectContext,
+          attachments: input.attachments,
+          prompt: continuationContext
+            ? `以下是这个 Fuddy Chat 在重建原生 Session 前的历史对话。请继续当前对话，不要重复已完成的回答：\n\n${continuationContext}\n\n用户任务：\n${input.prompt}`
+            : input.prompt,
           sessionId: input.sessionId,
           model: input.model,
           reasoningEffort: input.reasoningEffort,
@@ -168,6 +179,7 @@ export function createDefaultAgentProviderRegistry(
           abortController: input.abortController,
           onUpdate: input.onUpdate,
           onSessionId: input.onSessionId,
+          onAccountContext: input.onAccountContext,
           onTool: input.onTool,
           onApproval: input.onApproval
         })

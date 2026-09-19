@@ -12,7 +12,7 @@ struct AccountSyncSetupView: View {
                         .foregroundStyle(.tint)
 
                     VStack(spacing: 8) {
-                        Text("正在连接你的 Mac")
+                        Text("正在同步你的项目")
                             .font(.title2.bold())
                         Text(store.accountEnrollmentMessage ?? "正在查找你的 Mac…")
                             .font(.subheadline)
@@ -34,7 +34,7 @@ struct AccountSyncSetupView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Label("保持 Mac 上的 Fuddy 开启", systemImage: "laptopcomputer")
                             .font(.subheadline.weight(.semibold))
-                        Text("iPhone 会自动连接到同一账户下的 Mac，项目和 Agent Run 随后会出现。")
+                        Text("iPhone 会自动连接同一账户下的各台 Mac，汇总项目与 Chats，无需切换设备。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -53,7 +53,7 @@ struct AccountSyncSetupView: View {
                 .frame(maxWidth: 560)
                 .frame(maxWidth: .infinity)
             }
-            .navigationTitle("连接 Mac")
+            .navigationTitle("同步项目")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

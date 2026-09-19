@@ -316,7 +316,7 @@ function ProjectStep({ state, onStateChange }: AccountOnboardingProps): React.JS
   const [error, setError] = useState<string | null>(null)
 
   async function chooseFolder(): Promise<void> {
-    const path = await window.projectAgent.selectOnboardingProjectFolder()
+    const path = await window.projectAgent.selectProjectFolder()
     if (!path) return
     setWorkspacePath(path)
     setName(projectNameFromPath(path))

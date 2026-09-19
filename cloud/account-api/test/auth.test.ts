@@ -46,6 +46,40 @@ async function signIn(email = 'kai@example.com', inputDevice = device) {
 }
 
 describe('email authentication', () => {
+  it('allows a Mac to enroll as a client of a different Mac in the same account, but never itself or another account', async () => {
+    const email = 'mac-peers@example.com'
+    const first = await signIn(email, { ...device, id: crypto.randomUUID() })
+    await env.ACCOUNT_DB.prepare('DELETE FROM auth_email_cooldowns WHERE email = ?').bind(email).run()
+    await env.ACCOUNT_DB.prepare("UPDATE auth_challenges SET created_at = datetime('now', '-2 minutes') WHERE email = ?").bind(email).run()
+    const second = await signIn(email, { ...device, id: crypto.randomUUID(), name: '另一台 Mac' })
+    const other = await signIn('another-mac-account@example.com', { ...device, id: crypto.randomUUID() })
+    const enroll = (spaceId: string) => SELF.fetch(`https://account.test/v1/sync-spaces/${spaceId}/enrollments`, {
+      method: 'POST', headers: { authorization: `Bearer ${second.payload.session.accessToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ deviceId: second.payload.device.id })
+    })
+    const enrollmentResponse = await enroll(first.payload.device.syncSpaceId)
+    expect(enrollmentResponse.status).toBe(201)
+    const { enrollment } = await enrollmentResponse.json<{ enrollment: { id: string } }>()
+    expect((await enroll(second.payload.device.syncSpaceId)).status).toBe(409)
+    expect((await enroll(other.payload.device.syncSpaceId)).status).toBe(404)
+    await env.ACCOUNT_DB.batch([
+      env.ACCOUNT_DB.prepare('UPDATE sync_spaces SET relay_account_id=? WHERE id=?').bind('peer-relay', first.payload.device.syncSpaceId),
+      env.ACCOUNT_DB.prepare('UPDATE sync_spaces SET relay_account_id=? WHERE id=?').bind('own-relay', second.payload.device.syncSpaceId),
+      env.ACCOUNT_DB.prepare("UPDATE device_grants SET status='active' WHERE id=?").bind(enrollment.id)
+    ])
+    const revoked = await SELF.fetch(`https://account.test/v1/devices/${second.payload.device.id}`, {
+      method: 'DELETE', headers: { authorization: `Bearer ${first.payload.session.accessToken}` }
+    })
+    expect(revoked.status).toBe(204)
+    const relayAdmin = {
+      revokeDevice: vi.fn(async () => true), revokeAccount: vi.fn(async () => true),
+      claimAccountBinding: vi.fn(async () => true), confirmAccountBinding: vi.fn(async () => true),
+      releaseAccountBinding: vi.fn(async () => true), setAccountGeneration: vi.fn(async () => true)
+    } satisfies RelayAdministrationBinding
+    await processRelayRevocationJobs(env, { relayAdmin, now: new Date('2030-01-01T00:00:00.000Z') })
+    expect(relayAdmin.revokeDevice).toHaveBeenCalledWith('peer-relay', second.payload.device.id, enrollment.id)
+    expect(relayAdmin.revokeAccount).toHaveBeenCalledWith('own-relay', second.payload.device.syncSpaceId, null, 1)
+  })
   it('exchanges Mac authorization codes on the server with PKCE and the OAuth client secret', async () => {
     let requestedUrl = ''
     let tokenBody = new URLSearchParams()

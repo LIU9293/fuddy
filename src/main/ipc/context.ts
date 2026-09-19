@@ -25,6 +25,7 @@ export type PersistAttachments = (
 ) => Array<{ label: string; uri: string }>
 
 export interface IpcContext {
+  macPeers?: import('../services/mac-peer-sync').MacPeerSyncService
   database: AppDatabase
   dispatcher: TaskDispatcher
   connectorRuntime: ConnectorRuntime

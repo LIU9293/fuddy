@@ -57,7 +57,7 @@ export class ProjectAgentConnector implements ConnectorAdapter {
       impact: '项目专属 Agent 当前无法稳定执行或存在未处理阻塞。',
       urgency: status === 'offline' || status === 'failed' ? 'high' : 'medium',
       confidence: 0.9,
-      suggestedActions: ['打开 Agent Run 分析状态', '检查项目 Agent 服务日志'],
+      suggestedActions: ['打开 Chat 分析状态', '检查项目 Agent 服务日志'],
       evidenceRefs: evidence(config),
       source: 'Fuddy Connector'
     } : null

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AccountOnboardingState } from '../../shared/account'
 import { companionProtocolVersion } from '../../shared/companion-sync'
 import { AccountAuthorizationLostError, AccountService, normalizeAccountApiUrl } from './account-service'
@@ -26,6 +26,99 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe('AccountService', () => {
+  function signedInService(fetch: typeof globalThis.fetch, expiresAt = '2099-08-19T00:00:00.000Z') {
+    const database = new FakeDatabase()
+    const vault = new FakeVault()
+    database.setSetting('account.cached-state', {
+      user: { id: 'user-1', email: 'kai@example.com', displayName: null },
+      device: { id: 'device-1', platform: 'macos', name: 'Mac', hostId: 'host-1', syncSpaceId: 'space-1' },
+      refreshExpiresAt: expiresAt
+    })
+    vault.set('account.refresh-token', 'test-refresh-secret')
+    vault.set('account.access-token', 'test-access-secret')
+    const onSignedOut = vi.fn()
+    const service = new AccountService(database as never, vault, {
+      apiUrl: 'https://account.test', runtimeChannel: 'development', appVersion: '0.0.6', fetch, onSignedOut
+    })
+    return { service, database, vault, onSignedOut }
+  }
+
+  it.each(['refresh_token_reused', 'refresh_token_expired', 'untrusted-test-refresh-secret'])(
+    'notifies the renderer when background discovery loses authorization (%s)', async (code) => {
+      const { service, database, onSignedOut } = signedInService(async (url) =>
+        String(url).endsWith('/v1/auth/refresh')
+          ? response({ error: { code, message: 'raw test-refresh-secret' } }, 401)
+          : response({}, 401))
+      await expect(service.listSyncSpaces()).rejects.toBeInstanceOf(AccountAuthorizationLostError)
+      expect(onSignedOut).toHaveBeenCalledOnce()
+      expect(onSignedOut).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'signed-out', serviceMessage: '登录状态已失效，请重新登录。'
+      }))
+      const diagnostic = database.getSetting('account.last-sign-out', null)
+      expect(diagnostic).toEqual({
+        reason: 'refresh_rejected', occurredAt: expect.any(String),
+        serverCode: code.startsWith('untrusted-') ? null : code
+      })
+      expect(JSON.stringify(diagnostic)).not.toContain('secret')
+      service.getState()
+      expect(onSignedOut).toHaveBeenCalledOnce()
+    }
+  )
+
+  it('notifies once when a background state read finds an expired refresh token', () => {
+    const { service, database, onSignedOut } = signedInService(vi.fn(), '2000-01-01T00:00:00.000Z')
+    expect(service.getState().status).toBe('signed-out')
+    expect(service.getState().status).toBe('signed-out')
+    expect(onSignedOut).toHaveBeenCalledOnce()
+    expect(database.getSetting('account.last-sign-out', null)).toMatchObject({ reason: 'refresh_expired_locally' })
+  })
+
+  it('notifies when the local refresh credential is missing', () => {
+    const { service, vault, onSignedOut } = signedInService(vi.fn())
+    vault.delete('account.refresh-token')
+    expect(service.getState().status).toBe('signed-out')
+    expect(onSignedOut).toHaveBeenCalledOnce()
+    expect(vault.get('account.access-token')).toBeNull()
+  })
+
+  it.each(['offline', 'server-error'])('preserves login when refresh fails temporarily: %s', async (failure) => {
+    const { service, vault, database, onSignedOut } = signedInService(async (url) => {
+      if (!String(url).endsWith('/v1/auth/refresh')) return response({}, 401)
+      if (failure === 'offline') throw new Error('network timeout')
+      return response({}, 503)
+    })
+    await expect(service.listSyncSpaces()).rejects.toThrow()
+    expect(service.getState().status).toBe('signed-in')
+    expect(vault.get('account.refresh-token')).toBe('test-refresh-secret')
+    expect(onSignedOut).not.toHaveBeenCalled()
+    expect(database.getSetting('account.last-sign-out', null)).toBeNull()
+  })
+
+  it('does not sign out when an expired access token can be renewed', async () => {
+    const { service, onSignedOut } = signedInService(async (url, init) => {
+      if (String(url).endsWith('/v1/auth/refresh')) return response({ session: {
+        accessToken: 'new-access', refreshToken: 'new-refresh',
+        accessExpiresAt: '2099-08-19T00:00:00.000Z', refreshExpiresAt: '2099-09-19T00:00:00.000Z'
+      } })
+      return new Headers(init?.headers).get('authorization') === 'Bearer new-access'
+        ? response({ syncSpaces: [] }) : response({}, 401)
+    })
+    await service.listSyncSpaces()
+    expect(service.getState().status).toBe('signed-in')
+    expect(onSignedOut).not.toHaveBeenCalled()
+  })
+
+  it('notifies if the renewed access token is also rejected', async () => {
+    const { service, database, onSignedOut } = signedInService(async (url) =>
+      String(url).endsWith('/v1/auth/refresh') ? response({ session: {
+        accessToken: 'new-access', refreshToken: 'new-refresh',
+        accessExpiresAt: '2099-08-19T00:00:00.000Z', refreshExpiresAt: '2099-09-19T00:00:00.000Z'
+      } }) : response({}, 401))
+    await expect(service.listSyncSpaces()).rejects.toBeInstanceOf(AccountAuthorizationLostError)
+    expect(onSignedOut).toHaveBeenCalledOnce()
+    expect(database.getSetting('account.last-sign-out', null)).toMatchObject({ reason: 'access_rejected_after_refresh' })
+  })
+
   it('requires HTTPS outside local development', () => {
     expect(normalizeAccountApiUrl('https://fuddy.ai/api/account/', 'production')).toBe('https://fuddy.ai/api/account')
     expect(normalizeAccountApiUrl('http://accounts.fuddy.app', 'production')).toBeNull()
