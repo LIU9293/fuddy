@@ -2,8 +2,19 @@ import type { AccountState } from '../../shared/account'
 import type { AgentRunDetail, AppBootstrap, Project, WorkspaceFileContent } from '../../shared/contracts'
 import { dailyInspectionJobId, defaultBriefingPrompt } from '../../shared/briefing-prompt'
 
-export const previewTime = '2026-08-31T01:00:00.000Z'
+export const previewTime = '2026-09-21T02:24:00.000Z'
 export const previewOnly = 'Web 预览不会调用原生服务或真实 Agent，请在 Fuddy Dev 中验证。'
+
+// Synthetic outputs for repeatable chat layout and file-preview checks.
+const previewOutputs = [
+  'tia-rebalance-recovery-2026-09-19.md',
+  'tia-rebalance-recovery-2026-09-19-data.json',
+  'tia-2402-expiry-evidence-2026-09-19.json',
+  'injective-dual-dex-progress-2026-09-19.md'
+].map((name, index) => ({
+  id: `preview-output-${index}`, name,
+  mimeType: name.endsWith('.json') ? 'application/json' : 'text/markdown'
+}))
 
 export function previewProject(id = 'preview-project', name = 'Fuddy 示例项目'): Project {
   return {
@@ -46,14 +57,25 @@ export function previewRunDetails(): AgentRunDetail[] {
       id: 'preview-run-user', runId: 'preview-run', role: 'user', content: '帮我检查聊天页面的间距和信息层级。',
       eventType: null, toolName: null, metadata: null, createdAt: previewTime
     }, {
+      id: 'preview-run-tool', runId: 'preview-run', role: 'tool', content: '读取示例文件，仅用于 UI 预览。',
+      eventType: 'tool', toolName: 'read_file', metadata: { status: 'completed' }, createdAt: previewTime
+    }, {
       id: 'preview-run-assistant', runId: 'preview-run', role: 'assistant',
-      content: '这是 **Web Mode 示例对话**，没有执行真实检查。\n\n可以用这段内容检查：\n\n- 消息的宽度与行距\n- 列表和 **重点文字** 的排版\n- 文件预览与聊天输入框\n\n修改共享的 React 组件或 CSS 后，页面会热更新。',
+      content: '已整理好检查记录。\n\n这是聊天页面间距和信息层级的示例，主要调整如下：\n\n- 统一页面留白与文字层级\n- 文件合并展示，逐行打开\n- 精简输入区域，聚焦下一步',
+      attachments: previewOutputs.map(output => ({
+        id: output.id, artifactId: output.id, messageId: 'preview-run-assistant', filename: output.name,
+        mimeType: output.mimeType, size: 128, sha256: '0'.repeat(64), width: null, height: null,
+        thumbnailAttachmentId: null, createdAt: previewTime
+      })),
       eventType: null, toolName: null, metadata: null, createdAt: previewTime
     }],
     artifacts: [{
       id: 'preview-artifact', runId: 'preview-run', projectId: 'preview-project', relativePath: 'ui-notes.md',
       label: 'UI 检查记录', mimeType: 'text/markdown', createdAt: previewTime
-    }]
+    }, ...previewOutputs.map(output => ({
+      id: output.id, runId: 'preview-run', projectId: 'preview-project', relativePath: output.name,
+      label: output.name, mimeType: output.mimeType, createdAt: previewTime
+    }))]
   }, {
     run: {
       id: 'preview-draft', projectId: 'preview-project', provider: 'pi', title: '整理下一步工作',
@@ -72,7 +94,13 @@ export function previewFiles(): WorkspaceFileContent[] {
     },
     kind: 'markdown', content,
     previewUrl: null, previewMessage: null
-  }]
+  }, ...previewOutputs.map((output): WorkspaceFileContent => ({
+    entry: { projectId: 'preview-project', relativePath: output.name, name: output.name, kind: 'file',
+      size: 128, modifiedAt: previewTime, mimeType: output.mimeType, editable: true },
+    kind: output.mimeType === 'text/markdown' ? 'markdown' : 'text',
+    content: output.mimeType === 'text/markdown' ? content : '{"preview": true, "note": "仅用于 UI 预览，不代表真实项目状态"}',
+    previewUrl: null, previewMessage: null
+  }))]
 }
 
 export function previewBootstrap(empty = false): AppBootstrap {

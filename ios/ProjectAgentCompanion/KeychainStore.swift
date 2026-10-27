@@ -125,6 +125,55 @@ enum AccountKeychainStore {
     private static let service = "dev.ainative.projectagent.companion.account"
     private static let sessionAccount = "account-session"
     private static let deviceKeyAccount = "account-device-private-key"
+    private static let projectKeyIndexPrefix = "account-project-keys."
+    private static func projectSharesAccount(userID: String) -> String { "project-shares.\(userID)" }
+
+    static func saveProjectShares(_ shares: [MobileProjectShare], userID: String) throws {
+        try save(JSONEncoder().encode(shares), account: projectSharesAccount(userID: userID))
+    }
+
+    static func loadProjectShares(userID: String) throws -> [MobileProjectShare]? {
+        guard let data = try load(account: projectSharesAccount(userID: userID)) else { return nil }
+        return try JSONDecoder().decode([MobileProjectShare].self, from: data)
+    }
+
+    private static func projectKeyAccount(userID: String, projectID: String, epoch: Int) -> String {
+        "project-key.\(userID).\(projectID).\(epoch)"
+    }
+
+    static func saveProjectKey(_ key: String, userID: String, projectID: String, epoch: Int) throws {
+        let account = projectKeyAccount(userID: userID, projectID: projectID, epoch: epoch)
+        try save(Data(key.utf8), account: account)
+        let indexKey = projectKeyIndexPrefix + userID
+        var accounts = UserDefaults.standard.stringArray(forKey: indexKey) ?? []
+        if !accounts.contains(account) { accounts.append(account) }
+        UserDefaults.standard.set(accounts, forKey: indexKey)
+    }
+
+    static func loadProjectKey(userID: String, projectID: String, epoch: Int) throws -> String? {
+        guard let data = try load(account: projectKeyAccount(
+            userID: userID, projectID: projectID, epoch: epoch
+        )) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func deleteProjectKeys(userID: String) {
+        let indexKey = projectKeyIndexPrefix + userID
+        for account in UserDefaults.standard.stringArray(forKey: indexKey) ?? [] { delete(account: account) }
+        UserDefaults.standard.removeObject(forKey: indexKey)
+        delete(account: projectSharesAccount(userID: userID))
+    }
+
+    static func deleteProject(userID: String, projectID: String) {
+        let indexKey = projectKeyIndexPrefix + userID
+        let prefix = "project-key.\(userID).\(projectID)."
+        let accounts = UserDefaults.standard.stringArray(forKey: indexKey) ?? []
+        for account in accounts where account.hasPrefix(prefix) { delete(account: account) }
+        UserDefaults.standard.set(accounts.filter { !$0.hasPrefix(prefix) }, forKey: indexKey)
+        if let shares = try? loadProjectShares(userID: userID) {
+            try? saveProjectShares(shares.filter { $0.projectId != projectID }, userID: userID)
+        }
+    }
 
     static func saveSession(_ session: MobileAccountSession) throws {
         try save(JSONEncoder().encode(session), account: sessionAccount)

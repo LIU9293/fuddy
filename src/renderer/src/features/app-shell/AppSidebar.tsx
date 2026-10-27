@@ -16,6 +16,7 @@ import {
 import type { AgentRun, Project } from '../../../../shared/contracts'
 import { formatAgentProviderName } from '../../../../shared/model-display'
 import fuddyWordmark from '../../assets/fuddy-wordmark.png'
+import { ProjectIcon } from '../../components/ProjectIcon'
 import { ActionMenu } from '../../components/SelectMenu'
 import { settingsNavigationItems, type Navigation, type SettingsSection, type SidebarSelection } from '../../views/shared'
 import {
@@ -40,6 +41,7 @@ export interface AppSidebarProps {
   onInbox: () => void
   onFiles: () => void
   onProjects: () => void
+  onSharedProjects: () => void
   onAutomations: () => void
   onCreateRun: (projectId?: string | null) => void
   onOpenRun: (runId: string) => void
@@ -141,6 +143,8 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
             <NavigationButton active={props.sidebarSelection === 'projects'} onClick={props.onProjects} icon={<LayoutGrid size={17} />}>
               项目
             </NavigationButton>
+            <NavigationButton active={props.sidebarSelection === 'shared-projects'}
+              onClick={props.onSharedProjects} icon={<LayoutGrid size={17} />}>与我共享</NavigationButton>
             <NavigationButton active={props.sidebarSelection === 'automations'} onClick={props.onAutomations} icon={<Clock3 size={17} />}>
               自动化
             </NavigationButton>
@@ -152,7 +156,8 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
               {runGroups.map((group) => (
                 <section className="sidebar-run-group" key={group.id} aria-labelledby={`sidebar-run-group-${group.id}`}>
                   <div className="sidebar-run-group-heading">
-                    <span id={`sidebar-run-group-${group.id}`}>{group.title}</span>
+                    <SidebarProjectIcon project={props.projects.find((project) => project.id === group.projectId)} />
+                    <span className="sidebar-run-group-title" id={`sidebar-run-group-${group.id}`}>{group.title}</span>
                     <button
                       type="button"
                       onClick={() => props.onCreateRun(group.projectId)}
@@ -168,10 +173,10 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
                         className={`sidebar-run-row ${props.selectedRunId === run.id && props.navigation === 'runs' ? 'is-active' : ''}`}
                         key={run.id}
                       >
-                        <button type="button" className="sidebar-run-open" onClick={() => props.onOpenRun(run.id)}>
+                        <button type="button" className="sidebar-run-open" title={`${run.title} · ${formatAgentProviderName(run.provider)}`} onClick={() => props.onOpenRun(run.id)}>
                           <span>
                             <strong>{run.title}</strong>
-                            <small>{formatAgentProviderName(run.provider)}{run.executionHost ? ` · ${run.executionHost.name}${run.executionHost.online ? '' : ' · 离线'}` : ''}</small>
+                            {run.executionHost && <small>{run.executionHost.name}{run.executionHost.online ? '' : ' · 离线'}</small>}
                           </span>
                           {active && <LoaderCircle size={14} className="spin" />}
                         </button>
@@ -226,6 +231,16 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
         }}
       />
     </aside>
+  )
+}
+
+function SidebarProjectIcon({ project }: { project?: Project }): React.JSX.Element {
+  return (
+    <span className="sidebar-project-icon" aria-hidden="true">
+      {project?.icon?.trim()
+        ? <ProjectIcon project={project} className="is-sidebar" />
+        : <Folder size={17} />}
+    </span>
   )
 }
 

@@ -48,9 +48,11 @@ export interface PiTaskTurnInput {
   filesDirectory: string
   abortController: AbortController
   onUpdate: (update: AgentRunStreamUpdate) => void
+  onActivity?: () => void
   onTool: (toolName: string, detail: string, metadata?: Record<string, unknown>) => void
   onSessionId: (sessionId: string) => void
   onApproval: (request: Omit<AgentApprovalRequest, 'runId' | 'createdAt'>) => Promise<AgentApprovalDecision>
+  onSteerReady?: (steer: ((prompt: string, attachments: RuntimeAttachment[], requestId: string) => Promise<void>) | null) => void
 }
 
 function assistantText(message: AssistantMessage): string {
@@ -204,6 +206,12 @@ export class PiTaskHarness {
           tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', ...customTools.map((tool) => tool.name)]
         })
         session = created.session
+        input.onSteerReady?.(async (prompt, attachments) => {
+          if (input.abortController.signal.aborted) throw new Error('当前回复已停止。')
+          await session!.steer(attachmentPrompt(prompt, attachments), attachments.filter(file => isNativeImage(file.mimeType)).map(file => ({
+            type: 'image' as const, mimeType: file.mimeType, data: readFileSync(file.path).toString('base64')
+          })))
+        })
         const abortSession = (): void => { void session?.abort() }
         input.abortController.signal.addEventListener('abort', abortSession, { once: true })
         const sessionFile = session.sessionFile
@@ -212,6 +220,7 @@ export class PiTaskHarness {
         const toolArguments = new Map<string, Record<string, unknown>>()
         let lastTurnAssistant: AssistantMessage | null = null
         session.subscribe((event) => {
+          if (['message_update', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'auto_retry_start', 'auto_retry_end'].includes(event.type)) input.onActivity?.()
           if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
             input.onUpdate({ type: 'message_delta', messageId, delta: event.assistantMessageEvent.delta })
           }
@@ -257,6 +266,7 @@ export class PiTaskHarness {
         failures.push(`${index === 0 ? 'Primary' : 'Backup'}: ${message}`)
         if (mutationOccurred) break
       } finally {
+        input.onSteerReady?.(null)
         session?.dispose()
       }
     }

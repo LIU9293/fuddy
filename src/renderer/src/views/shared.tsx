@@ -20,9 +20,9 @@ import type {
 } from '../../../shared/contracts'
 import { agentProviderDefinitions, codingAgentProviders } from '../../../shared/agent-providers'
 
-export type Navigation = 'briefing' | 'inbox' | 'projects' | 'files' | 'runs' | 'automations' | 'settings'
+export type Navigation = 'briefing' | 'inbox' | 'projects' | 'shared-projects' | 'files' | 'runs' | 'automations' | 'settings'
 export type ProjectSection = 'inbox' | 'status' | 'goals' | 'settings'
-export type SidebarSelection = 'briefing' | 'inbox' | 'projects' | 'files' | 'runs' | 'automations'
+export type SidebarSelection = 'briefing' | 'inbox' | 'projects' | 'shared-projects' | 'files' | 'runs' | 'automations'
 export type SettingsSection = 'general' | 'models' | 'voice' | 'connectors' | 'permissions'
 
 export const decisionWaitingReasonLabels: Record<DecisionWaitingReason, string> = {

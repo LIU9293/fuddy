@@ -33,3 +33,32 @@
 .app-page-header a {
   -webkit-app-region: no-drag;
 }
+
+.app-page-header > .app-page-header-breadcrumb {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+}
+
+.app-page-header-context {
+  display: flex;
+  min-width: 0;
+  max-width: 40%;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 12px;
+  color: var(--conversation-text);
+  font-size: var(--page-header-title-size);
+}
+
+.app-page-header-context > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-page-header-context .project-icon { width: 27px; height: 27px; }
+.app-page-header-separator { flex-shrink: 0; color: var(--conversation-muted); }

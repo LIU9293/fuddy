@@ -10,8 +10,11 @@ import {
   groupLiveActivities,
   groupLiveActivityStages,
   groupMessageTimeline,
+  hasVisibleRunFeedback,
   RunLiveActivity,
   shouldBlockAgentRunDetailRefresh,
+  visibleLiveActivities,
+  visibleRunMessages,
   type LiveActivity
 } from './AgentRunsView'
 
@@ -59,6 +62,88 @@ describe('Agent Run live activity timeline', () => {
     })
   })
 
+  it('keeps every operation and progress segment visible past sixteen activities', () => {
+    let states = applyAgentLiveUpdateForRun({}, 'run-1', { type: 'status', status: 'running' })
+    for (let index = 0; index < 24; index += 1) {
+      states = applyAgentLiveUpdateForRun(states, 'run-1', {
+        type: 'reasoning_delta', segmentId: `progress-${index}`, delta: `检查第 ${index + 1} 个文件。`
+      })
+      for (const status of ['running', 'completed'] as const) {
+        states = applyAgentLiveUpdateForRun(states, 'run-1', {
+          type: 'tool', toolCallId: `read-${index}`, toolName: 'Read', status, detail: `file-${index}.ts`
+        })
+      }
+    }
+
+    const stages = groupLiveActivityStages(states['run-1'].activities)
+    expect(stages).toHaveLength(24)
+    expect(stages[0]).toMatchObject({ thinking: { content: '检查第 1 个文件。' }, tools: [{ id: 'read-0' }] })
+    expect(stages.at(-1)).toMatchObject({ thinking: { content: '检查第 24 个文件。' }, tools: [{ id: 'read-23' }] })
+  })
+
+  it('keeps parallel tools running until their own terminal update', () => {
+    const running = apply([
+      { type: 'tool', toolCallId: 'read-1', toolName: 'Read', status: 'running', detail: 'first.ts' },
+      { type: 'tool', toolCallId: 'read-2', toolName: 'Read', status: 'running', detail: 'second.ts' },
+      { type: 'message_delta', messageId: 'progress', delta: '正在读取两个文件。' }
+    ])
+    expect(running.filter(activity => activity.kind === 'tool').map(activity => activity.value.status))
+      .toEqual(['running', 'running'])
+    const oneFinished = applyAgentLiveUpdate(running, {
+      type: 'tool', toolCallId: 'read-1', toolName: 'Read', status: 'completed', detail: 'first.ts'
+    })
+    expect(oneFinished.filter(activity => activity.kind === 'tool').map(activity => activity.value.status))
+      .toEqual(['completed', 'running'])
+    const failed = applyAgentLiveUpdate(oneFinished, {
+      type: 'tool', toolCallId: 'read-2', toolName: 'Read', status: 'failed', detail: 'second.ts'
+    })
+    expect(failed.filter(activity => activity.kind === 'tool').map(activity => activity.value.status))
+      .toEqual(['completed', 'failed'])
+    expect(applyAgentLiveUpdate(running, { type: 'status', status: 'idle' })
+      .filter(activity => activity.kind === 'tool').map(activity => activity.value.status)).toEqual(['completed', 'completed'])
+  })
+
+  it('refreshes a tool summary as its details arrive', () => {
+    const activities = apply([
+      { type: 'tool', toolCallId: 'read-1', toolName: 'Read', status: 'running', detail: '{}' },
+      { type: 'tool', toolCallId: 'read-1', toolName: 'Read', status: 'running', detail: '{"file_path":"src/main.ts"}' }
+    ])
+    expect(activities).toHaveLength(1)
+    expect(activities[0]).toMatchObject({ kind: 'tool', value: { summary: expect.stringContaining('main.ts'), status: 'running' } })
+    const completed = applyAgentLiveUpdate(activities, {
+      type: 'tool', toolCallId: 'read-1', toolName: 'Read', status: 'completed',
+      detail: '{"file_path":"src/main.ts"}\n\nconst outputShouldStayCollapsed = true'
+    })
+    expect(completed[0]).toMatchObject({ kind: 'tool', value: { summary: 'main.ts', status: 'completed' } })
+  })
+
+  it('does not duplicate the sending turn after switching Chats and reloading persisted operations', () => {
+    const saved = [
+      message({ id: 'previous-user', role: 'user', createdAt: '1' }),
+      message({ id: 'previous-tool', role: 'tool', createdAt: '2' }),
+      message({ id: 'previous-answer', role: 'assistant', createdAt: '3' }),
+      message({ id: 'current-user', role: 'user', createdAt: '4' }),
+      message({ id: 'current-progress', role: 'assistant', eventType: 'reasoning', createdAt: '5' }),
+      message({ id: 'current-tool', role: 'tool', createdAt: '6' }),
+      message({ id: 'steer-user', role: 'user', createdAt: '7' })
+    ]
+    expect(visibleRunMessages('claude', saved, true, 'current-user').map(item => item.id))
+      .toEqual(['previous-user', 'previous-tool', 'previous-answer', 'current-user', 'steer-user'])
+    expect(visibleRunMessages('claude', saved)).toEqual(saved)
+    expect(visibleRunMessages('claude', saved, true, 'unrelated-request')).toEqual(saved)
+    expect(saved).toHaveLength(7)
+  })
+
+  it('keeps the original retry input and removes its persisted retry process from the live timeline', () => {
+    const saved = [
+      message({ id: 'retry-user', role: 'user', createdAt: '1' }),
+      message({ id: 'retry-error', role: 'system', eventType: 'error', createdAt: '2' }),
+      message({ id: 'retry-tool', role: 'tool', createdAt: '3' })
+    ]
+    expect(visibleRunMessages('claude', saved, true, 'retry-user').map(item => item.id)).toEqual(['retry-user'])
+    expect(visibleRunMessages('claude', saved).map(item => item.id)).toEqual(['retry-user', 'retry-tool'])
+  })
+
   it('renders streamed assistant text before the final response is persisted', () => {
     const markup = renderToStaticMarkup(createElement(RunLiveActivity, {
       activities: [],
@@ -82,6 +167,73 @@ describe('Agent Run live activity timeline', () => {
     expect(markup).toContain('agent-run-live-idle')
     expect(markup).toContain('spin')
     expect(markup).toContain('<span>正在思考…</span>')
+  })
+
+  it('hides only Claude SDK thinking in live and saved timelines', () => {
+    const saved = [
+      message({ id: 'thinking', role: 'assistant', eventType: 'reasoning', content: 'Long English summary', metadata: { segmentId: 'claude-thinking-0' }, createdAt: '2026-09-29T00:00:00.000Z' }),
+      message({ id: 'progress', role: 'assistant', eventType: 'reasoning', content: '先读取项目说明。', metadata: { segmentId: 'visible-thinking-0' }, createdAt: '2026-09-29T00:00:01.000Z' }),
+      message({ id: 'tool', role: 'tool', eventType: 'tool', toolName: 'Read', createdAt: '2026-09-29T00:00:02.000Z' }),
+      message({ id: 'answer', role: 'assistant', content: '检查完成。', createdAt: '2026-09-29T00:00:03.000Z' })
+    ]
+    const live = apply([
+      { type: 'reasoning_delta', segmentId: 'claude-thinking-0', delta: 'Long English summary' },
+      { type: 'tool', toolCallId: 'read-1', toolName: 'Read', status: 'completed', detail: 'README.md' },
+      { type: 'reasoning_delta', segmentId: 'visible-thinking-0', delta: '先读取项目说明。' }
+    ])
+
+    expect(visibleRunMessages('claude', saved).map(({ id }) => id)).toEqual(['progress', 'tool', 'answer'])
+    expect(visibleLiveActivities('claude', live).map(({ kind }) => kind)).toEqual(['tool', 'thinking'])
+    expect(visibleRunMessages('codex', saved)).toEqual(saved)
+    expect(visibleLiveActivities('codex', live)).toEqual(live)
+  })
+
+  it('keeps the retry error while waiting and removes it on visible streamed feedback', () => {
+    const saved = [
+      message({ id: 'user', role: 'user', createdAt: '1' }),
+      message({ id: 'error', role: 'system', eventType: 'error', createdAt: '2' })
+    ]
+    const hiddenThinking = apply([{ type: 'reasoning_delta', segmentId: 'claude-thinking-0', delta: 'SDK fixture' }])
+    expect(hasVisibleRunFeedback('claude', [], '  ', null)).toBe(false)
+    expect(hasVisibleRunFeedback('claude', hiddenThinking, '', null)).toBe(false)
+    expect(visibleRunMessages('claude', saved)).toEqual(saved)
+    const tool = apply([{ type: 'tool', toolCallId: 'read-1', toolName: 'Read', status: 'running', detail: 'README.md' }])
+    const feedback = hasVisibleRunFeedback('claude', tool, '', null)
+    expect(feedback).toBe(true)
+    expect(hasVisibleRunFeedback('claude', [], '正在读取文件', null)).toBe(true)
+    expect(hasVisibleRunFeedback('claude', apply([{ type: 'reasoning_delta', delta: '检查项目说明' }]), '', null)).toBe(true)
+    expect(visibleRunMessages('claude', saved, feedback).map(item => item.id)).toEqual(['user'])
+    expect(saved.map(item => item.id)).toEqual(['user', 'error'])
+  })
+
+  it('removes the retry error in saved history after a tool, progress or final reply', () => {
+    const saved = [
+      message({ id: 'user', role: 'user', createdAt: '1' }),
+      message({ id: 'error', role: 'system', eventType: 'error', createdAt: '2' })
+    ]
+    for (const provider of ['claude', 'codex', 'opencode', 'pi'] as const) {
+      for (const response of [
+        message({ id: 'response', role: 'tool', eventType: 'tool', createdAt: '3' }),
+        message({ id: 'response', role: 'assistant', eventType: 'reasoning', createdAt: '3' }),
+        message({ id: 'response', role: 'assistant', createdAt: '3' })
+      ]) {
+        expect(visibleRunMessages(provider, [...saved, response]).map(item => item.id)).toEqual(['user', 'response'])
+      }
+    }
+  })
+
+  it('shows only the new retry failure and preserves failed turns before a new user message', () => {
+    const saved = [
+      message({ id: 'user', role: 'user', createdAt: '1' }),
+      message({ id: 'error', role: 'system', eventType: 'error', createdAt: '2' })
+    ]
+    const nextError = message({ id: 'next-error', role: 'system', eventType: 'error', createdAt: '4' })
+    expect(visibleRunMessages('claude', [...saved, nextError]).map(item => item.id)).toEqual(['user', 'next-error'])
+    const tool = message({ id: 'tool', role: 'tool', eventType: 'tool', createdAt: '3' })
+    expect(visibleRunMessages('claude', [...saved, tool, nextError]).map(item => item.id)).toEqual(['user', 'tool', 'next-error'])
+    const newUser = message({ id: 'new-user', role: 'user', createdAt: '3' })
+    expect(visibleRunMessages('claude', [...saved, newUser], true).map(item => item.id)).toEqual(['user', 'error', 'new-user'])
+    expect(visibleRunMessages('claude', [...saved, newUser, nextError]).map(item => item.id)).toEqual(['user', 'error', 'new-user', 'next-error'])
   })
 
   it('turns commentary into an activity when the final answer starts streaming', () => {
@@ -157,6 +309,20 @@ describe('Agent Run live activity timeline', () => {
     expect(blocks).toHaveLength(4)
     expect(blocks[1]).toMatchObject({ kind: 'tool-group', values: [{ id: 'tool-1' }, { id: 'tool-2' }] })
     expect(blocks[3]).toMatchObject({ kind: 'tool-group', values: [{ id: 'tool-3' }] })
+  })
+
+  it('shows a trailing disclosure chevron on collapsed tool groups', () => {
+    const markup = renderToStaticMarkup(createElement(RunLiveActivity, {
+      activities: apply([{ type: 'tool', toolCallId: 'tool-1', toolName: 'Bash', status: 'completed', detail: 'A long command summary' }]),
+      streamingText: '',
+      approval: null,
+      onApproval: async () => undefined
+    }))
+
+    expect(markup).toContain('agent-tool-call-group-summary')
+    expect(markup).toContain('aria-expanded="false"')
+    expect(markup).toContain('agent-tool-call-chevron')
+    expect(markup).toContain('lucide-chevron-right')
   })
 
   it.each([

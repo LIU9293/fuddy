@@ -60,7 +60,7 @@ export function readInteractiveZshEnvironment(
     try {
       processHandle = options.launch
         ? options.launch(onComplete)
-        : execFile('/bin/zsh', ['-ic', environmentCommand], {
+        : execFile('/bin/zsh', ['-ilc', environmentCommand], {
             encoding: 'utf8',
             env: { ...baseEnvironment },
             timeout: shellEnvironmentDeadlineMs - 500,
@@ -73,11 +73,20 @@ export function readInteractiveZshEnvironment(
 }
 
 /**
- * GUI apps on macOS do not normally inherit variables exported by an
- * interactive .zshrc. Hydrate the main process once so every coding agent
- * receives the same unfiltered environment as the user's terminal.
+ * GUI apps on macOS do not normally inherit exports from the login .zprofile
+ * and interactive .zshrc. Hydrate once so every coding agent receives the same
+ * unfiltered environment as the user's terminal.
  */
-export async function hydrateProcessEnvironmentFromZsh(): Promise<void> {
-  const interactiveEnvironment = await readInteractiveZshEnvironment(process.env)
-  Object.assign(process.env, interactiveEnvironment)
+export async function hydrateProcessEnvironmentFromZsh(
+  environment: NodeJS.ProcessEnv = process.env,
+  options: ShellEnvironmentReadOptions = {}
+): Promise<void> {
+  const interactiveEnvironment = await readInteractiveZshEnvironment(environment, options)
+  if (Object.keys(interactiveEnvironment).length === 0) return
+  // Honor explicit unsets in shell startup files as well as exports. Keeping a
+  // stale GUI credential can override the user's native CLI authentication.
+  for (const key of Object.keys(environment)) {
+    if (!(key in interactiveEnvironment)) delete environment[key]
+  }
+  Object.assign(environment, interactiveEnvironment)
 }

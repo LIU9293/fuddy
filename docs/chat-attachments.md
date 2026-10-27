@@ -4,6 +4,8 @@ Mac 与 iPhone 的项目 Chat 都支持每条消息最多 4 个附件，单个�
 
 ## 输入
 
+iPhone 的「添加附件 → 照片」由输入栏弹出系统照片选择器，不申请整个相册的访问权限，只读取用户选中的照片。读取或转换失败会在输入栏显示错误，取消选择不会清除已有附件。
+
 1. Mac 的 IPC 校验文件类型标记、Base64、解码后大小及数量。iPhone 将消息和附件先写入每个账户 / Relay 空间独立的本地发送队列。
 2. 手机将附件 AES-GCM 加密上传至私有 R2，再提交携带附件描述的 `agent.send-message`。失败后恢复原命令 ID、创建时间和已上传描述，避免重复执行；PUT 重试遇到不可变 ID 冲突时，下载并核对已有原文。退出账户会删除其待发送队列。
 3. Mac 下载、解密、验证大小和 SHA-256，然后与本机输入一起进入 `persistInputAttachments`。附件存入项目文件空间，登记 Artifact 与消息附件描述；绝对路径只进入本机运行时，用户消息正文不拼入路径。
@@ -29,6 +31,8 @@ npm run ios:typecheck
 ```
 
 `attachment-loop.test.ts` 用隔离的加密 Relay 传输替身串联真实 CompanionSync、TaskDispatcher、附件落盘和输出回传，并检查哈希错误及命令重放。`agent-attachments.test.ts` 验证数据库重开、历史分页、文件快照与路径边界。iOS `AttachmentTests` 验证上传冲突恢复、发送队列持久化、缓存和完整性。
+
+项目共享使用独立的项目密钥、Account API 授权和私有 `PROJECT_ATTACHMENTS` R2 桶。成员 Mac 将最多 4 个输入附件加密绑定到项目、Chat 与请求 ID；执行 Mac 下载后校验上传者、明文大小及 SHA-256，再按本机附件链落盘。历史输入与产物随共享 baseline/事件发布描述，成员每次下载都重新经过项目成员及设备授权；iPhone 只查看和校验下载共享附件，暂不向共享 Chat 上传新文件。共享对象按项目和密钥版本隔离，待发布孤立对象与旧版本对象由定时清理回收。这里的自动化测试证明代码路径，真实多账户云端上传下载仍列为发布验收。
 
 真实 Codex 看图测试需要本机已登录的 Codex、Python 3 和 Pillow；只在临时项目中执行，不访问生产 Fuddy 数据，也不默认运行：
 

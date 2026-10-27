@@ -58,6 +58,85 @@ export const enrollmentSchema = z.object({
   deviceId: z.uuid()
 })
 
+export const createProjectShareSchema = z.object({
+  localProjectId: z.uuid(),
+  executionHostId: z.uuid()
+}).strict()
+
+export const updateProjectExecutionHostSchema = z.object({
+  executionHostId: z.uuid()
+}).strict()
+
+export const createProjectInvitationSchema = z.object({
+  email: z.email().max(254).transform((value) => value.trim().toLowerCase())
+}).strict()
+
+export const acceptProjectInvitationSchema = z.object({
+  token: z.string().regex(/^fuddy_invite_[A-Za-z0-9_-]{43}$/u)
+}).strict()
+
+export const completeProjectDeviceGrantSchema = z.object({
+  wrappedProjectKey: z.string().min(16).max(16384),
+  keyEpoch: z.number().int().positive().max(1_000_000)
+}).strict()
+
+export const publishProjectEventSchema = z.object({
+  eventId: z.uuid(),
+  keyEpoch: z.number().int().positive().max(1_000_000),
+  kind: z.enum(['snapshot', 'chat', 'message', 'settings']),
+  envelope: z.object({
+    algorithm: z.literal('A256GCM'),
+    keyId: z.string().regex(/^[A-Za-z0-9_-]{16}$/u),
+    nonce: z.string().regex(/^[A-Za-z0-9_-]{16}$/u),
+    ciphertext: z.string().regex(/^[A-Za-z0-9_-]{24,60000}$/u)
+  }).strict()
+}).strict()
+
+export const beginProjectBaselineSchema = z.object({
+  baselineId: z.uuid(),
+  keyEpoch: z.number().int().positive().max(1_000_000),
+  chunkCount: z.number().int().positive().max(2_000)
+}).strict()
+
+export const putProjectBaselineChunkSchema = z.object({
+  index: z.number().int().nonnegative().max(1_999),
+  envelope: publishProjectEventSchema.shape.envelope
+}).strict()
+
+export const registerProjectChatSchema = z.object({
+  runId: z.uuid(),
+  createdByUserId: z.uuid().nullable(),
+  visibility: z.enum(['draft', 'published'])
+}).strict()
+
+export const submitProjectCommandSchema = z.object({
+  commandId: z.uuid(),
+  type: z.enum(['create-chat', 'send-message', 'cancel-turn', 'stop-turn', 'rename-chat', 'archive-chat']),
+  runId: z.uuid().nullable(),
+  requestId: z.uuid().nullable(),
+  keyEpoch: z.number().int().positive().max(1_000_000),
+  envelope: publishProjectEventSchema.shape.envelope
+}).strict().superRefine((input, ctx) => {
+  if (input.type === 'create-chat' && input.runId !== null) {
+    ctx.addIssue({ code: 'custom', message: '新建 Chat 不应指定已有 Chat。' })
+  }
+  if (input.type !== 'create-chat' && input.runId === null) {
+    ctx.addIssue({ code: 'custom', message: '此操作需要指定 Chat。' })
+  }
+  if (['send-message', 'cancel-turn', 'stop-turn'].includes(input.type) && !input.requestId) {
+    ctx.addIssue({ code: 'custom', message: '此操作需要消息请求 ID。' })
+  }
+  if (!['send-message', 'cancel-turn', 'stop-turn'].includes(input.type) && input.requestId) {
+    ctx.addIssue({ code: 'custom', message: '此操作不能指定消息请求 ID。' })
+  }
+})
+
+export const completeProjectCommandSchema = z.object({
+  status: z.enum(['completed', 'failed']),
+  resultRunId: z.uuid().nullable(),
+  errorCode: z.string().trim().min(1).max(100).nullable()
+}).strict()
+
 export const completeEnrollmentSchema = z.object({
   wrappedSpaceKey: z.string().min(16).max(16384),
   keyVersion: z.number().int().positive().max(1_000_000)

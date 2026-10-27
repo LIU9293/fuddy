@@ -3,6 +3,8 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+private let companionComposerControlSize: CGFloat = 44
+
 private struct CompanionBottomSafeAreaInsetKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
@@ -223,6 +225,7 @@ struct CompanionChatComposer: View {
     var onStop: (() -> Void)? = nil
 
     @State private var photoItems: [PhotosPickerItem] = []
+    @State private var importingPhotos = false
     @State private var importingFiles = false
     @State private var attachmentError: String?
     @StateObject private var voiceInput = CompanionVoiceInput()
@@ -270,7 +273,9 @@ struct CompanionChatComposer: View {
 
             HStack(alignment: .bottom, spacing: 10) {
                 Menu {
-                    PhotosPicker(selection: $photoItems, maxSelectionCount: max(1, 4 - attachments.count), matching: .images) {
+                    Button {
+                        importingPhotos = true
+                    } label: {
                         Label("照片", systemImage: "photo.on.rectangle")
                     }
                     if !imageOnly {
@@ -283,17 +288,19 @@ struct CompanionChatComposer: View {
                 } label: {
                     Image(systemName: "plus")
                         .font(.title3.weight(.medium))
-                        .frame(width: 38, height: 38)
+                        .frame(width: companionComposerControlSize, height: companionComposerControlSize)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .disabled(attachments.count >= 4 || sending)
+                .accessibilityLabel("添加附件")
 
                 TextField(placeholder, text: $text, axis: .vertical)
                     .font(.subheadline)
                     .lineLimit(1...5)
                     .textFieldStyle(.plain)
                     .padding(.vertical, 9)
+                    .frame(minHeight: companionComposerControlSize)
 
                 Button {
                     Task {
@@ -318,7 +325,7 @@ struct CompanionChatComposer: View {
                         }
                     }
                     .font(.body.weight(.medium))
-                    .frame(width: 34, height: 38)
+                    .frame(width: companionComposerControlSize, height: companionComposerControlSize)
                     .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
@@ -342,7 +349,7 @@ struct CompanionChatComposer: View {
                     }
                     .frame(width: 38, height: 38)
                 }
-                .frame(width: 44, height: 44)
+                .frame(width: companionComposerControlSize, height: companionComposerControlSize)
                 .contentShape(Circle())
                 .buttonStyle(.plain)
                 .disabled(!canSend && !canStop)
@@ -358,8 +365,16 @@ struct CompanionChatComposer: View {
         .padding(.top, 12)
         .padding(.bottom, 6)
         .onChange(of: photoItems) { _, items in
+            guard !items.isEmpty else { return }
             Task { await addPhotos(items) }
         }
+        // Keep the presentation host alive after the attachment menu dismisses.
+        .photosPicker(
+            isPresented: $importingPhotos,
+            selection: $photoItems,
+            maxSelectionCount: max(1, 4 - attachments.count),
+            matching: .images
+        )
         .fileImporter(
             isPresented: $importingFiles,
             allowedContentTypes: [.item],
@@ -376,7 +391,9 @@ struct CompanionChatComposer: View {
             do {
                 guard let source = try await item.loadTransferable(type: Data.self),
                       let image = UIImage(data: source),
-                      let data = image.jpegData(compressionQuality: 0.9) else { continue }
+                      let data = image.jpegData(compressionQuality: 0.9) else {
+                    throw ComposerAttachmentError.unreadablePhoto
+                }
                 try append(data: data, name: "照片-\(attachments.count + 1).jpg", mimeType: "image/jpeg")
             } catch {
                 attachmentError = error.localizedDescription
@@ -411,5 +428,12 @@ struct CompanionChatComposer: View {
 
 private enum ComposerAttachmentError: LocalizedError {
     case tooLarge
-    var errorDescription: String? { "单个附件不能超过 20 MiB。" }
+    case unreadablePhoto
+
+    var errorDescription: String? {
+        switch self {
+        case .tooLarge: "单个附件不能超过 20 MiB。"
+        case .unreadablePhoto: "无法读取这张照片，请重新选择或通过文件添加。"
+        }
+    }
 }

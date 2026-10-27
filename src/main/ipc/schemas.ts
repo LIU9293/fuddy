@@ -72,7 +72,7 @@ export const dispatchTaskSchema = z.object({
 
 export const createAgentRunDraftSchema = dispatchTaskSchema.omit({ requestId: true, prompt: true }).extend({
   executionHostId: z.string().trim().min(1).max(200).nullable().optional(),
-  title: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(200).optional(),
   draftPrompt: z.string().trim().max(20_000).nullable().optional()
 })
 
@@ -87,6 +87,12 @@ export const sendAgentRunMessageSchema = z.object({
   runId: z.string().trim().min(1).max(200),
   prompt: z.string().trim().min(1).max(20_000),
   attachments: z.array(chatAttachmentSchema).max(maximumChatAttachments).optional()
+})
+
+export const retryAgentRunMessageSchema = z.object({
+  requestId: z.string().trim().min(1).max(200),
+  runId: z.string().trim().min(1).max(200),
+  errorMessageId: z.string().trim().min(1).max(200)
 })
 
 export const renameAgentRunSchema = z.object({

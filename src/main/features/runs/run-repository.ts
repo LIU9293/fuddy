@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { agentAccountContextSchema, type AgentAccountContext } from '../../../shared/agent-account-context'
 import type { DatabaseSync } from 'node:sqlite'
 import type { AgentRun, AgentRunArtifact, AgentRunDetail, AgentRunMessage } from '../../../shared/contracts'
+import type { ChatAuthorSnapshot } from '../../../shared/project-sharing'
+import { defaultAgentRunTitle, normalizeAgentRunTitle } from '../../../shared/agent-run-title'
 
 type SqlRow = Record<string, string | number | null>
 type RunEvent =
@@ -78,6 +80,13 @@ export class RunRepository {
     return rows.map((row) => this.map(row))
   }
 
+  listIncludingArchived(): AgentRun[] {
+    const rows = this.database.prepare(
+      'SELECT * FROM agent_runs ORDER BY COALESCE(updated_at, started_at, created_at) DESC'
+    ).all() as SqlRow[]
+    return rows.map((row) => this.map(row))
+  }
+
   updateAccountContext(id: string, context: AgentAccountContext): void {
     const safe = agentAccountContextSchema.parse(context)
     this.transaction(() => {
@@ -106,7 +115,7 @@ export class RunRepository {
       const normalizedTitle = title.trim()
       if (!normalizedTitle) throw new Error('Session 标题不能为空。')
       const result = this.database
-        .prepare('UPDATE agent_runs SET title = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL')
+        .prepare('UPDATE agent_runs SET title = ?, automatic_title = 0, updated_at = ? WHERE id = ? AND archived_at IS NULL')
         .run(normalizedTitle, new Date().toISOString(), id)
       if (Number(result.changes) === 0) throw new Error(`Agent run not found: ${id}`)
       const run = this.get(id)
@@ -138,6 +147,30 @@ export class RunRepository {
       })
       return updated
     })
+  }
+
+  updateAutomaticTitle(id: string, title: string, onlyIfUntitled = false): AgentRun {
+    return this.transaction(() => {
+      const normalizedTitle = normalizeAgentRunTitle(title)
+      if (!normalizedTitle) return this.get(id)
+      const result = this.database.prepare(`
+        UPDATE agent_runs SET title = ?, updated_at = ?
+        WHERE id = ? AND automatic_title = 1 AND archived_at IS NULL AND title != ?
+          AND (? = 0 OR title = ?)
+      `).run(normalizedTitle, new Date().toISOString(), id, normalizedTitle, onlyIfUntitled ? 1 : 0, defaultAgentRunTitle)
+      const run = this.get(id)
+      if (Number(result.changes) > 0) this.publish({
+        type: 'agent-run.updated', entityType: 'agent-run', entityId: id, payload: run
+      })
+      return run
+    })
+  }
+
+  canGenerateTitle(id: string): boolean {
+    return Boolean(this.database.prepare(`SELECT 1 FROM agent_runs
+      WHERE id = ? AND automatic_title = 1 AND archived_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM agent_run_messages WHERE run_id = ? AND role = 'user')`
+    ).get(id, id))
   }
 
   updateExecutionSettings(
@@ -206,6 +239,12 @@ export class RunRepository {
     return providerRow?.provider === 'codex'
       ? messages.filter((message) => !isCodexGeneratedReasoningSummary(message))
       : messages
+  }
+
+  hasMessage(runId: string, messageId: string): boolean {
+    return Boolean(this.database.prepare(
+      'SELECT 1 FROM agent_run_messages WHERE run_id = ? AND id = ?'
+    ).get(runId, messageId))
   }
 
   listChatWindow(runId: string, beforeRecordId: string | null, limit: number): {
@@ -314,6 +353,9 @@ export class RunRepository {
       runId: String(row.run_id),
       role: row.role as AgentRunMessage['role'],
       content: String(row.content),
+      authorUserId: row.author_user_id ? String(row.author_user_id) : null,
+      authorSnapshot: parseJson<ChatAuthorSnapshot | null>(row.author_snapshot_json ? String(row.author_snapshot_json) : null, null),
+      requestId: row.request_id ? String(row.request_id) : null,
       eventType: row.event_type ? String(row.event_type) : null,
       toolName: row.tool_name ? String(row.tool_name) : null,
       metadata,
@@ -335,15 +377,16 @@ export class RunRepository {
     return row ? this.mapArtifact(row) : null
   }
 
-  create(run: AgentRun): AgentRun {
+  create(run: AgentRun, automaticTitle = false): AgentRun {
     return this.transaction(() => {
       this.database
         .prepare(
           `
         INSERT INTO agent_runs (
           id, project_id, decision_id, goal_id, milestone_id, agent, kind, provider, title, status,
+          created_by_user_id, created_by_snapshot_json, visibility, automatic_title,
           model, reasoning_effort, session_id, working_directory, started_at, completed_at, summary, draft_prompt, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
         )
         .run(
@@ -357,6 +400,10 @@ export class RunRepository {
           run.provider,
           run.title,
           run.status,
+          run.createdByUserId ?? null,
+          run.createdBySnapshot ? JSON.stringify(run.createdBySnapshot) : null,
+          run.visibility ?? (run.status === 'draft' ? 'draft' : 'published'),
+          automaticTitle ? 1 : 0,
           run.model ?? null,
           run.reasoningEffort ?? null,
           run.sessionId,
@@ -380,13 +427,15 @@ export class RunRepository {
   }
 
   update(run: AgentRun): AgentRun {
+    // Titles are persisted through rename/updateAutomaticTitle so an in-flight
+    // turn's stale Run snapshot cannot undo a rename or a generated title update.
     return this.transaction(() => {
       this.database
         .prepare(
           `
         UPDATE agent_runs
         SET project_id = ?, decision_id = ?, goal_id = ?, milestone_id = ?, agent = ?, kind = ?, provider = ?,
-            title = ?, status = ?, model = ?, reasoning_effort = ?, session_id = ?, working_directory = ?, started_at = ?,
+            status = ?, visibility = ?, model = ?, reasoning_effort = ?, session_id = ?, working_directory = ?, started_at = ?,
             completed_at = ?, summary = ?, draft_prompt = ?, updated_at = ?
         WHERE id = ?
       `
@@ -399,8 +448,8 @@ export class RunRepository {
           run.provider,
           run.provider === 'pi' ? 'general' : 'coding',
           run.provider,
-          run.title,
           run.status,
+          run.visibility ?? (run.status === 'draft' ? 'draft' : 'published'),
           run.model ?? null,
           run.reasoningEffort ?? null,
           run.sessionId,
@@ -478,8 +527,10 @@ export class RunRepository {
       this.database
         .prepare(
           `
-        INSERT INTO agent_run_messages (id, run_id, role, content, event_type, tool_name, metadata_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO agent_run_messages (
+          id, run_id, role, content, author_user_id, author_snapshot_json, request_id,
+          event_type, tool_name, metadata_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
         )
         .run(
@@ -487,6 +538,9 @@ export class RunRepository {
           message.runId,
           message.role,
           message.content,
+          message.authorUserId ?? null,
+          message.authorSnapshot ? JSON.stringify(message.authorSnapshot) : null,
+          message.requestId ?? null,
           message.eventType,
           message.toolName,
           message.metadata ? JSON.stringify(message.metadata) : null,
@@ -542,6 +596,10 @@ export class RunRepository {
     const createdAt = row.created_at ? String(row.created_at) : new Date().toISOString()
     return {
       id: String(row.id),
+      createdByUserId: row.created_by_user_id ? String(row.created_by_user_id) : null,
+      createdBySnapshot: parseJson<ChatAuthorSnapshot | null>(row.created_by_snapshot_json ? String(row.created_by_snapshot_json) : null, null),
+      visibility: row.visibility === 'draft' ? 'draft' : 'published',
+      archivedAt: row.archived_at ? String(row.archived_at) : null,
       projectId: row.project_id ? String(row.project_id) : null,
       decisionId: row.decision_id ? String(row.decision_id) : null,
       goalId: row.goal_id ? String(row.goal_id) : null,

@@ -151,6 +151,9 @@ const decision = z.object({
 })
 const agentRun = z.object({
   id: identifier,
+  createdByUserId: identifier.nullable().optional(),
+  createdBySnapshot: z.object({ displayName: z.string().trim().min(1).max(200), avatarRef: z.string().nullable() }).nullable().optional(),
+  visibility: z.enum(['draft', 'published']).optional(),
   accountContext: agentAccountContextSchema.nullable().optional(),
   projectId: identifier.nullable(),
   decisionId: identifier.nullable().optional(),
@@ -172,6 +175,9 @@ const agentRun = z.object({
 })
 const agentMessage = z.object({
   id: identifier,
+  authorUserId: identifier.nullable().optional(),
+  authorSnapshot: z.object({ displayName: z.string().trim().min(1).max(200), avatarRef: z.string().nullable() }).nullable().optional(),
+  requestId: identifier.nullable().optional(),
   runId: identifier,
   role: z.enum(['user', 'assistant', 'system', 'tool']),
   content: z.string(),
@@ -434,6 +440,7 @@ const commandPayloadSchemas = {
   'assistant.send-message': z.object({ prompt: z.string().trim().min(1).max(20_000), attachments: z.array(attachment).max(4).optional() }),
   'assistant.execute-action': z.object({ messageId: identifier, proposalId: identifier, optionId: identifier }),
   'agent.send-message': z.object({ runId: identifier, prompt: z.string().trim().min(1).max(20_000), attachments: z.array(attachment).max(4).optional(), clientMessageId: identifier.optional() }),
+  'agent.retry-message': z.object({ runId: identifier, errorMessageId: identifier }),
   'agent.stop-message': z.object({ runId: identifier }),
   'agent.create-session': z.object({
     runId: identifier,

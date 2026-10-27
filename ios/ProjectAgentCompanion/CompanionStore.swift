@@ -66,7 +66,8 @@ extension CompanionStore {
         return "\(host.name) · \(host.online ? "在线" : "离线")"
     }
 
-    func createAccountRun(projectID: String?, title: String, spaceID: String) async throws -> String {
+    func createAccountRun(projectID: String?, title: String, spaceID: String,
+                          provider: String?) async throws -> String {
         guard executionHosts(projectID: projectID).contains(where: { $0.id == spaceID && $0.selectable }),
               let source = accountSources.first(where: { $0.id == spaceID }) else {
             throw RelayError.server("请选择在线且已配置主文件夹的 Mac。")
@@ -77,7 +78,8 @@ extension CompanionStore {
         }
         let project = source.store.state.projects.first { accountProjectID($0, spaceID: spaceID) == projectID }
         if projectID != nil && project == nil { throw RelayError.invalidResponse }
-        let id = try await source.store.createRun(projectID: project?.id, title: title)
+        let id = try await source.store.createRun(projectID: project?.id, title: title,
+                                                  provider: provider)
         return accountRunID(spaceID: spaceID, runID: id)
     }
 
@@ -373,6 +375,10 @@ final class CompanionStore: ObservableObject {
                 let date = parseCompanionDate(expiry),
                 date <= Date()
             {
+                if let userID = accountSession?.user.id {
+                    AccountKeychainStore.deleteProjectKeys(userID: userID)
+                    MobileProjectSharingCache.clear(userID: userID)
+                }
                 AccountKeychainStore.deleteSession()
                 accountSession = nil
             }
@@ -586,6 +592,10 @@ final class CompanionStore: ObservableObject {
         do {
             let session = try await client.verifyEmailSignIn(
                 challengeID: emailChallenge.challengeId, code: code)
+            if let previous = accountSession?.user.id, previous != session.user.id {
+                AccountKeychainStore.deleteProjectKeys(userID: previous)
+                MobileProjectSharingCache.clear(userID: previous)
+            }
             try AccountKeychainStore.saveSession(session)
             accountSession = session
             accountSessionValidated = false
@@ -606,6 +616,10 @@ final class CompanionStore: ObservableObject {
         defer { accountBusy = false }
         do {
             let session = try await client.acceptGoogleIDToken(idToken)
+            if let previous = accountSession?.user.id, previous != session.user.id {
+                AccountKeychainStore.deleteProjectKeys(userID: previous)
+                MobileProjectSharingCache.clear(userID: previous)
+            }
             try AccountKeychainStore.saveSession(session)
             accountSession = session
             accountSessionValidated = false
@@ -649,6 +663,8 @@ final class CompanionStore: ObservableObject {
         // Remove all local credentials covered by that successful operation instead
         // of retrying only the currently selected Relay with an already-revoked token.
         KeychainStore.deleteAll(ownerUserID: current.user.id)
+        AccountKeychainStore.deleteProjectKeys(userID: current.user.id)
+        MobileProjectSharingCache.clear(userID: current.user.id)
         await unpair()
         AccountKeychainStore.deleteSession()
         accountSession = nil
@@ -974,6 +990,8 @@ final class CompanionStore: ObservableObject {
             // owned by this user for direct Relay revocation before removing local access.
             await quiesceAccountConnections(cancelValidation: false)
             queueRelayCredentialCleanup(ownerUserID: current.user.id)
+            AccountKeychainStore.deleteProjectKeys(userID: current.user.id)
+            MobileProjectSharingCache.clear(userID: current.user.id)
             AccountKeychainStore.deleteSession()
             accountSession = nil
             credentials = nil
@@ -1014,7 +1032,7 @@ final class CompanionStore: ObservableObject {
     }
 
     @discardableResult
-    private func persistRefreshedAccountSession(_ session: MobileAccountSession) throws
+    func persistRefreshedAccountSession(_ session: MobileAccountSession) throws
         -> MobileAccountSession
     {
         if session != accountSession {
@@ -1181,10 +1199,11 @@ final class CompanionStore: ObservableObject {
         try outbox.remove(outgoing)
     }
 
-    func createRun(projectID: String?, title: String) async throws -> String {
+    func createRun(projectID: String?, title: String, provider: String?) async throws -> String {
         let client = try activeRelayClient()
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { throw RelayError.invalidResponse }
+        if let provider, !companionAgentProviderIDs.contains(provider) { throw RelayError.invalidResponse }
         let project = projectID.flatMap { id in state.projects.first(where: { $0.id == id }) }
         if projectID != nil && project == nil { throw RelayError.invalidResponse }
 
@@ -1197,7 +1216,7 @@ final class CompanionStore: ObservableObject {
                 run: AgentRun(
                     id: runID,
                     projectId: projectID,
-                    provider: project?.profile.defaultAgent ?? "pi",
+                    provider: provider ?? project?.profile.defaultAgent ?? "agent",
                     title: trimmedTitle,
                     status: "draft",
                     workingDirectory: nil,
@@ -1222,7 +1241,7 @@ final class CompanionStore: ObservableObject {
             _ = try await client.sendCommand(
                 commandID: commandID,
                 type: .agentCreateSession,
-                payload: AgentCreateSessionPayload(runId: runID, projectId: projectID, title: trimmedTitle, provider: nil, goalId: nil, milestoneId: nil, draftPrompt: nil)
+                payload: AgentCreateSessionPayload(runId: runID, projectId: projectID, title: trimmedTitle, provider: provider, goalId: nil, milestoneId: nil, draftPrompt: nil)
             )
             return runID
         } catch {
@@ -2017,6 +2036,12 @@ final class CompanionStore: ObservableObject {
                 artifacts: []
                 ),
         ]
+        if ProcessInfo.processInfo.arguments.contains("--design-preview-claude-thinking") {
+            state.runs[0].messages.append(AgentMessage(
+                id: "sdk-thinking-fixture", runId: "run-preview", role: "assistant",
+                content: "SDK_THINKING_SHOULD_NOT_BE_VISIBLE", eventType: "reasoning", toolName: nil,
+                metadata: AgentMessageMetadata(segmentId: "claude-thinking-0"), createdAt: now))
+        }
         if ProcessInfo.processInfo.arguments.contains("--design-preview-attachments") {
             let renderer = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 160))
             let image = renderer.pngData { context in
@@ -2043,7 +2068,9 @@ final class CompanionStore: ObservableObject {
                     content: "键盘布局测试消息 \(index)\n\n这是一段用于验证长对话滚动位置的示例内容。打开键盘后，最新消息应保持在输入框上方；阅读历史消息时，不应跳回底部。",
                     eventType: nil, toolName: nil, createdAt: now)
             }
-            state.runs[1].messages = messages
+            // Keep the completed process/table after the long history, so this
+            // fixture exercises disclosure animations as well as keyboard resizing.
+            state.runs[1].messages = messages + state.runs[1].messages
             state.workAssistantMessages = messages.map {
                 WorkAssistantMessage(id: $0.id, role: "assistant", content: $0.content, createdAt: now)
             }

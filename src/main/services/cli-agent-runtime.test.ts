@@ -63,6 +63,13 @@ describe('coding CLI MCP injection', () => {
         delta: { type: 'thinking_delta', thinking: '正在检查项目数据库连接方式。' }
       }
     })).toEqual({ reasoning: '正在检查项目数据库连接方式。' })
+    expect(claudeRecord({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: '先读取项目说明。' }
+      }
+    })).toEqual({ assistant: '先读取项目说明。' })
   })
 
   it('preserves Codex commentary and final-answer phases from app-server items', () => {

@@ -3,6 +3,46 @@ import Foundation
 let companionInitialChatBlockLimit = 100
 let workAssistantChatId = "work-assistant"
 
+func visibleRunMessages(provider: String, messages: [AgentMessage]) -> [AgentMessage] {
+    let visible = messages.filter { message in
+        provider != "claude" || message.eventType != "reasoning"
+            || !(message.metadata?.segmentId?.hasPrefix("claude-thinking-") ?? false)
+    }
+    var hasFeedback = false
+    var hasNewerError = false
+    return visible.reversed().filter { message in
+        if message.role == "user" {
+            hasFeedback = false
+            hasNewerError = false
+        } else if message.role == "system" && message.eventType == "error" {
+            let superseded = hasFeedback || hasNewerError
+            hasNewerError = true
+            return !superseded
+        } else if message.role == "tool" || (message.role == "assistant"
+            && !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+            hasFeedback = true
+        }
+        return true
+    }.reversed()
+}
+
+/// Display projection only: retain authoritative IDs and pagination cursors.
+func visibleAgentChatPage(provider: String, page: CompanionChatPage) -> CompanionChatPage {
+    let visibleIDs = Set(visibleRunMessages(provider: provider,
+        messages: page.records.flatMap(\.agentMessages)).map(\.id))
+    let records = page.records.compactMap { record -> CompanionChatRecord? in
+        let messages = record.agentMessages.filter { visibleIDs.contains($0.id) }
+        guard !messages.isEmpty else { return nil }
+        return CompanionChatRecord(
+            id: record.id, chatId: record.chatId, chatKind: record.chatKind, kind: record.kind,
+            createdAt: record.createdAt, completedAt: record.completedAt,
+            assistantMessage: record.assistantMessage, agentMessages: messages, morningBriefing: record.morningBriefing
+        )
+    }
+    return CompanionChatPage(chatId: page.chatId, chatKind: page.chatKind, records: records,
+        hasMore: page.hasMore, nextBefore: page.nextBefore)
+}
+
 func buildWorkAssistantChatRecords(
     messages: [WorkAssistantMessage],
     briefings: [MorningBriefing]

@@ -130,6 +130,10 @@ export type AgentRunMessageRole = 'user' | 'assistant' | 'system' | 'tool'
 
 export interface AgentRun {
   id: string
+  createdByUserId?: string | null
+  createdBySnapshot?: import('./project-sharing').ChatAuthorSnapshot | null
+  visibility?: 'draft' | 'published'
+  archivedAt?: string | null
   accountContext?: import('./agent-account-context').AgentAccountContext | null
   /** Presentation-only routing for a Run owned by another Mac. */
   executionHost?: { id: string; name: string; online: boolean }
@@ -157,6 +161,9 @@ export interface AgentRun {
 
 export interface AgentRunMessage {
   id: string
+  authorUserId?: string | null
+  authorSnapshot?: import('./project-sharing').ChatAuthorSnapshot | null
+  requestId?: string | null
   runId: string
   role: AgentRunMessageRole
   content: string
@@ -229,6 +236,7 @@ export interface GitWorkingTreeSummary {
 
 export type AgentRunStreamUpdate =
   | { type: 'created'; run: AgentRun }
+  | { type: 'updated'; run: AgentRun }
   | { type: 'status'; status: AgentRunStatus; detail?: string }
   | {
       type: 'message_delta'
@@ -1011,6 +1019,12 @@ export interface SendAgentRunMessageInput {
   attachments?: import('./chat-attachments').ChatAttachmentInput[]
 }
 
+export interface RetryAgentRunMessageInput {
+  requestId: string
+  runId: string
+  errorMessageId: string
+}
+
 export interface RespondAgentApprovalInput {
   requestId: string
   decision: AgentApprovalDecision
@@ -1029,7 +1043,8 @@ export interface CreateAgentRunDraftInput {
   milestoneId?: string | null
   /** Uses the project's default agent when omitted. */
   provider?: AgentRunProvider
-  title: string
+  /** Omit to use an automatic title from the Agent session. */
+  title?: string
   draftPrompt?: string | null
   workingDirectory?: string | null
 }
@@ -1069,6 +1084,38 @@ export interface DesktopApi {
   linkGoogleAccount(): Promise<import('./account').AccountIdentity[]>
   unlinkGoogleAccount(): Promise<import('./account').AccountIdentity[]>
   listAccountDevices(): Promise<import('./account').AccountDeviceSummary[]>
+  getProjectSharingOverview(projectId: string): Promise<import('./account').AccountProjectSharingOverview>
+  activateProjectSharing(projectId: string): Promise<import('./account').AccountProjectShare>
+  syncProjectSharing(projectId: string): Promise<import('./project-sharing-events').SharedProjectBaseline>
+  setProjectSharingHost(projectId: string, executionHostId: string): Promise<import('./account').AccountProjectShare>
+  inviteProjectMember(projectId: string, email: string): Promise<import('./account').AccountProjectInvitation>
+  acceptProjectInvitation(token: string): Promise<string>
+  listSharedProjects(): Promise<import('./account').AccountProjectShare[]>
+  readSharedProject(projectId: string): Promise<import('./project-sharing-events').SharedProjectBaselineData>
+  requestProjectDeviceGrant(projectId: string): Promise<import('./account').AccountProjectDeviceGrant>
+  authorizeProjectDevices(projectId: string): Promise<number>
+  submitSharedProjectCommand(input: {
+    projectId: string
+    runId: string | null
+    requestId: string | null
+    payload: import('./project-sharing-commands').SharedProjectCommandPayload
+  }): Promise<import('./project-sharing-commands').SharedProjectCommand>
+  uploadSharedProjectAttachments(input: {
+    projectId: string
+    runId: string
+    requestId: string
+    attachments: import('./chat-attachments').ChatAttachmentInput[]
+  }): Promise<import('./project-sharing-attachments').SharedAttachmentView[]>
+  downloadSharedProjectAttachment(projectId: string,
+    descriptor: import('./project-sharing-attachments').SharedAttachmentView): Promise<{
+      filename: string; mimeType: string; dataUrl: string
+    }>
+  getSharedProjectCommand(projectId: string, commandId: string): Promise<import('./project-sharing-commands').SharedProjectCommand>
+  listSharedProjectActivity(projectId: string): Promise<import('./project-sharing-commands').SharedProjectMemberActivity>
+  leaveSharedProject(projectId: string): Promise<void>
+  removeProjectMember(projectId: string, userId: string): Promise<void>
+  revokeProjectInvitation(projectId: string, invitationId: string): Promise<void>
+  closeProjectSharing(projectId: string): Promise<void>
   revokeAccountDevice(deviceId: string): Promise<void>
   logoutAccount(): Promise<import('./account').AccountState>
   logoutAllAccounts(): Promise<import('./account').AccountState>
@@ -1127,7 +1174,11 @@ export interface DesktopApi {
     input: SendAgentRunMessageInput,
     onUpdate: (update: AgentRunStreamUpdate) => void
   ): Promise<AgentRunDetail>
+  retryAgentRunMessage(input: RetryAgentRunMessageInput, onUpdate: (update: AgentRunStreamUpdate) => void): Promise<AgentRunDetail>
   stopAgentRunMessage(runId: string): Promise<AgentRunDetail>
+  listAgentRunPendingTurns(runId: string): Promise<import('./agent-turn-queue').AgentTurnQueueSummary[]>
+  cancelQueuedAgentTurn(requestId: string): Promise<boolean>
+  steerQueuedAgentTurn(requestId: string): Promise<AgentRunDetail>
   respondAgentApproval(input: RespondAgentApprovalInput): Promise<void>
   listWorkspaceFiles(projectId: string | null): Promise<WorkspaceFileEntry[]>
   readWorkspaceFile(projectId: string | null, relativePath: string): Promise<WorkspaceFileContent>

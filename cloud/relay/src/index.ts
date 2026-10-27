@@ -11,6 +11,10 @@ import {
   companionProtocolVersion
 } from '../../../src/shared/companion-sync'
 import { AccountRelay, type RelayMutationResult } from './account-relay'
+import { ProjectRelay } from './project-relay'
+import type {
+  SharedProjectBaseline, SharedProjectBaselineChunk, SharedProjectEncryptedEvent
+} from '../../../src/shared/project-sharing-events'
 import {
   commandSchema,
   commandUpdateSchema,
@@ -27,7 +31,7 @@ import {
   HttpError
 } from './request-guards'
 
-export { AccountRelay }
+export { AccountRelay, ProjectRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
 export const maximumAttachmentBytes = companionAttachmentObjectMaximumBytes
@@ -120,6 +124,46 @@ async function deleteAccountAttachments(env: Env, accountId: string): Promise<vo
 }
 
 export class RelayAdministration extends WorkerEntrypoint<Env> {
+  async appendProjectEvent(
+    projectId: string,
+    input: Omit<SharedProjectEncryptedEvent, 'projectId' | 'sequence' | 'createdAt'>
+  ): Promise<SharedProjectEncryptedEvent | 'conflict' | 'snapshot-required'> {
+    return this.env.PROJECT_RELAY.getByName(projectId).appendEvent(projectId, input)
+  }
+
+  async listProjectEvents(projectId: string, after: number, limit: number,
+    keyEpoch: number): Promise<SharedProjectEncryptedEvent[]> {
+    return this.env.PROJECT_RELAY.getByName(projectId).listEvents(projectId, after, limit, keyEpoch)
+  }
+
+  async beginProjectBaseline(projectId: string, baselineId: string, sourceDeviceId: string,
+    keyEpoch: number, chunkCount: number): Promise<SharedProjectBaseline | 'conflict'> {
+    return this.env.PROJECT_RELAY.getByName(projectId)
+      .beginBaseline(projectId, baselineId, sourceDeviceId, keyEpoch, chunkCount)
+  }
+
+  async putProjectBaselineChunk(projectId: string, sourceDeviceId: string, keyEpoch: number,
+    chunk: SharedProjectBaselineChunk): Promise<'ok' | 'conflict' | 'not-found'> {
+    return this.env.PROJECT_RELAY.getByName(projectId)
+      .putBaselineChunk(projectId, sourceDeviceId, keyEpoch, chunk)
+  }
+
+  async commitProjectBaseline(projectId: string, baselineId: string,
+    sourceDeviceId: string, keyEpoch: number): Promise<'ok' | 'incomplete' | 'not-found'> {
+    return this.env.PROJECT_RELAY.getByName(projectId)
+      .commitBaseline(projectId, baselineId, sourceDeviceId, keyEpoch)
+  }
+
+  async listProjectBaselines(projectId: string): Promise<SharedProjectBaseline[]> {
+    return this.env.PROJECT_RELAY.getByName(projectId).listBaselines(projectId)
+  }
+
+  async listProjectBaselineChunks(projectId: string, baselineId: string,
+    afterIndex: number, limit: number): Promise<SharedProjectBaselineChunk[]> {
+    return this.env.PROJECT_RELAY.getByName(projectId)
+      .listBaselineChunks(projectId, baselineId, afterIndex, limit)
+  }
+
   async revokeDevice(accountId: string, deviceId: string, grantId?: string): Promise<boolean> {
     return await relay(this.env, accountId).revokeDeviceByAuthority(deviceId, grantId)
   }

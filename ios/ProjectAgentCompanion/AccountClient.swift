@@ -199,6 +199,68 @@ struct AccountClient {
         )
     }
 
+    func projectRequest<Response: Decodable>(
+        path: String,
+        method: String = "GET",
+        body: Data? = nil,
+        accountSession: MobileAccountSession
+    ) async throws -> (Response, MobileAccountSession) {
+        guard path.hasPrefix("/v1/project-shares") || path == "/v1/project-invitations/accept" else {
+            throw AccountClientError.invalidResponse
+        }
+        return try await authorizedRequest(
+            path: path, method: method, body: body, accountSession: accountSession
+        )
+    }
+
+    func projectDelete(path: String, accountSession: MobileAccountSession) async throws -> MobileAccountSession {
+        guard path.hasPrefix("/v1/project-shares/") else { throw AccountClientError.invalidResponse }
+        var current = accountSession
+        var result = try await performAuthorized(
+            path: path, method: "DELETE", body: nil, accessToken: current.session.accessToken
+        )
+        if result.response.statusCode == 401 {
+            current = try await Self.refreshCoordinator.refreshedSession(accountSession: current) {
+                try await self.performRefresh(accountSession: $0)
+            }
+            result = try await performAuthorized(
+                path: path, method: "DELETE", body: nil, accessToken: current.session.accessToken
+            )
+        }
+        if result.response.statusCode == 401 { throw AccountClientError.authenticationRequired }
+        guard (200..<300).contains(result.response.statusCode) else {
+            let message = (try? JSONDecoder().decode(AccountAPIError.self, from: result.data))?.error.message
+            throw AccountClientError.service(message ?? "操作没有完成，请稍后重试。")
+        }
+        return current
+    }
+
+    func projectDownload(
+        path: String, accountSession: MobileAccountSession
+    ) async throws -> (Data, HTTPURLResponse, MobileAccountSession) {
+        guard path.hasPrefix("/v1/project-shares/") && path.contains("/attachments/") else {
+            throw AccountClientError.invalidResponse
+        }
+        var current = accountSession
+        var result = try await performAuthorized(
+            path: path, method: "GET", body: nil, accessToken: current.session.accessToken
+        )
+        if result.response.statusCode == 401 {
+            current = try await Self.refreshCoordinator.refreshedSession(accountSession: current) {
+                try await self.performRefresh(accountSession: $0)
+            }
+            result = try await performAuthorized(
+                path: path, method: "GET", body: nil, accessToken: current.session.accessToken
+            )
+        }
+        if result.response.statusCode == 401 { throw AccountClientError.authenticationRequired }
+        guard (200..<300).contains(result.response.statusCode) else {
+            let message = (try? JSONDecoder().decode(AccountAPIError.self, from: result.data))?.error.message
+            throw AccountClientError.service(message ?? "附件暂时无法下载。")
+        }
+        return (result.data, result.response, current)
+    }
+
     func validateSession(
         accountSession: MobileAccountSession
     ) async throws -> MobileAccountSession {
@@ -302,6 +364,9 @@ struct AccountClient {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        if path.hasPrefix("/v1/project-shares") || path == "/v1/project-invitations/accept" {
+            request.setValue("1", forHTTPHeaderField: "X-Fuddy-Project-Sharing-Version")
+        }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = body

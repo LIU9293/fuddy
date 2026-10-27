@@ -559,6 +559,9 @@ struct ChatAccountContext: Codable, Hashable {
 
 struct AgentRun: Codable, Identifiable, Hashable {
     var id: String
+    var createdByUserId: String? = nil
+    var createdBySnapshot: ChatAuthorSnapshot? = nil
+    var visibility: String? = nil
     var projectId: String?
     var decisionId: String? = nil
     var accountContext: ChatAccountContext? = nil
@@ -574,6 +577,9 @@ struct AgentRun: Codable, Identifiable, Hashable {
 
 struct AgentMessage: Codable, Identifiable, Hashable {
     let id: String
+    var authorUserId: String? = nil
+    var authorSnapshot: ChatAuthorSnapshot? = nil
+    var requestId: String? = nil
     let runId: String
     let role: String
     let content: String
@@ -583,7 +589,24 @@ struct AgentMessage: Codable, Identifiable, Hashable {
     var toolKind: String? = nil
     var toolSummary: String? = nil
     var attachments: [AttachmentDescriptor]? = nil
+    var metadata: AgentMessageMetadata? = nil
     let createdAt: String
+}
+
+struct AgentMessageMetadata: Codable, Hashable {
+    var segmentId: String?
+
+    init(segmentId: String? = nil) { self.segmentId = segmentId }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        segmentId = try? container.decode(String.self, forKey: .segmentId)
+    }
+}
+
+struct ChatAuthorSnapshot: Codable, Hashable {
+    let displayName: String
+    let avatarRef: String?
 }
 
 struct AgentArtifact: Codable, Identifiable, Hashable {
@@ -690,6 +713,7 @@ func acknowledgePendingAgentMessage(_ messageID: String, in runs: inout [RunDeta
 }
 
 struct CachedState: Codable {
+    var agentMessageMetadataVersion = 1
     var modelLabels = AgentModelLabels.fallback
     var projects: [Project] = []
     var goals: [ProjectGoal] = []
@@ -717,6 +741,18 @@ struct CachedState: Codable {
         attachments = try container.decodeIfPresent([String: AttachmentDescriptor].self, forKey: .attachments) ?? [:]
         pendingCreatedRunIDs = try container.decodeIfPresent([String: String].self, forKey: .pendingCreatedRunIDs) ?? [:]
         lastSequence = try container.decodeIfPresent(Int.self, forKey: .lastSequence) ?? 0
+        let savedMetadataVersion = try container.decodeIfPresent(Int.self, forKey: .agentMessageMetadataVersion) ?? 0
+        if savedMetadataVersion < agentMessageMetadataVersion {
+            // Older iOS builds discarded reasoning metadata on decode. Replay
+            // authoritative Mac events once to restore it, keeping offline data.
+            let needsMetadata = runs.contains { detail in
+                guard detail.run.provider == "claude" else { return false }
+                let messages = detail.messages + chatPages.filter { $0.chatId == detail.run.id }.flatMap(\.records).flatMap(\.agentMessages)
+                return messages.contains { $0.eventType == "reasoning" && $0.metadata == nil }
+            }
+            if needsMetadata { lastSequence = 0 }
+        }
+        agentMessageMetadataVersion = max(agentMessageMetadataVersion, savedMetadataVersion)
     }
 }
 

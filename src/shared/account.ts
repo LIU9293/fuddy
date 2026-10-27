@@ -18,6 +18,56 @@ export interface AccountSyncSpace {
   relayAccountId: string | null
 }
 
+export interface AccountProjectShare {
+  projectId: string
+  /** Owner-only local identity; never shown to members. */
+  localProjectId?: string
+  role: 'owner' | 'member'
+  keyAuthorityHostId: string
+  executionHostId: string
+  permissionRevision: number
+  keyEpoch: number
+}
+
+export interface AccountProjectSharingOverview {
+  share: AccountProjectShare | null
+  members: AccountProjectMember[]
+  invitations: AccountProjectInvitation[]
+}
+
+export interface AccountProjectInvitation {
+  id: string
+  projectId: string
+  email: string
+  expiresAt: string
+  status: 'pending' | 'accepted' | 'revoked'
+  token?: string
+  createdAt?: string
+}
+
+export interface AccountProjectMember {
+  userId: string
+  displayName: string | null
+  joinedAt: string
+}
+
+export interface AccountProjectDeviceGrant {
+  id: string
+  status: 'pending' | 'active'
+  keyEpoch: number
+  wrappedProjectKey?: string | null
+}
+
+export interface AccountPendingProjectDeviceGrant {
+  id: string
+  userId: string
+  deviceId: string
+  publicKey: string
+  deviceName: string
+  keyEpoch: number
+  createdAt: string
+}
+
 export type AccountServiceStatus = 'ready' | 'offline' | 'configuration-required'
 export type AccountOnboardingStep = 'detect-agent' | 'add-project' | 'complete'
 

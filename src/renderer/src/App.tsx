@@ -80,7 +80,8 @@ export default function App(): React.JSX.Element {
     )
   }
 
-  if (!accountReady) return <AccountOnboarding state={accountState} onStateChange={setAccountState} />
+  if (!accountReady) return <AccountOnboarding state={accountState} onStateChange={setAccountState}
+    onSharedInvitationAccepted={navigation.openSharedProjects} />
 
   if (!ready) {
     return (
@@ -109,6 +110,7 @@ export default function App(): React.JSX.Element {
         onInbox={navigation.openInbox}
         onFiles={navigation.openFiles}
         onProjects={navigation.openProjects}
+        onSharedProjects={navigation.openSharedProjects}
         onAutomations={navigation.openAutomations}
         onCreateRun={navigation.createRun}
         onOpenRun={navigation.openRun}
@@ -121,6 +123,8 @@ export default function App(): React.JSX.Element {
       />
 
       <AppRouteOutlet
+        currentUserId={accountState.user?.id ?? null}
+        currentUserDisplayName={accountState.user?.displayName ?? null}
         store={store}
         setBootstrap={setBootstrap}
         refresh={refresh}

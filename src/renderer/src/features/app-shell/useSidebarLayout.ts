@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 
-export const defaultSidebarWidth = 258
+export const defaultSidebarWidth = 248
 export const minimumSidebarWidth = 220
 export const maximumSidebarWidth = 420
 const sidebarWidthStorageKey = 'project-agent.sidebar-width'

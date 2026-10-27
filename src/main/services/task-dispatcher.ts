@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { basename, isAbsolute, relative, resolve } from 'node:path'
 import type {
   AgentRun,
@@ -22,12 +23,16 @@ import { normalizeWorkspaceRoots, primaryWorkspaceRoot } from '../../shared/proj
 import { buildProjectContext } from './agent-runtime-context'
 import type { AgentTurnOutcome, AgentTurnSettledPayload } from '../../shared/companion-sync'
 import { agentToolPresentation } from '../../shared/agent-activity'
+import { agentRunRetryTarget } from '../../shared/agent-run-retry'
 import {
   AgentProviderRegistry,
   createDefaultAgentProviderRegistry
 } from './agent-provider-registry'
 import { throwIfCancelled } from './cancellation'
+import { defaultAgentRunTitle, firstMessageTitle, parseGeneratedChatTitle } from '../../shared/agent-run-title'
 import type { ChatAttachmentInput } from '../../shared/chat-attachments'
+import type { RuntimeAttachment } from '../../shared/chat-attachments'
+import type { ChatActor } from '../../shared/project-sharing'
 import { persistInputAttachments, registerLinkedArtifacts, describeArtifact, snapshotOutput } from './agent-attachments'
 
 type ResolvedDispatchTaskInput = Omit<DispatchTaskInput, 'provider'> & {
@@ -66,9 +71,14 @@ export class TaskDispatcher {
   private readonly providerRegistry: AgentProviderRegistry
   private readonly runUpdateListeners = new Set<(runId: string, update: AgentRunStreamUpdate) => void>()
   private readonly turnQueueTails = new Map<string, Promise<AgentRunDetail>>()
+  private readonly pendingTurnPromises = new Map<string, Promise<AgentRunDetail>>()
+  private readonly steerOperations = new Map<string, Promise<void>>()
+  private readonly pendingTitles = new Map<AbortController, Promise<void>>()
   private readonly activeTurns = new Map<string, {
+    requestId: string
     abortController: AbortController
     settled: Promise<void>
+    steer?: (prompt: string, attachments: RuntimeAttachment[], requestId: string) => Promise<void>
   }>()
   private stopping = false
   private readonly pendingApprovals = new Map<string, {
@@ -85,10 +95,26 @@ export class TaskDispatcher {
     private readonly cliRuntime: CliAgentRuntime,
     private readonly inactivityTimeoutMs = AGENT_RUN_INACTIVITY_TIMEOUT_MS,
     private readonly onRunSettled?: (run: AgentRun, turn: AgentTurnSettledPayload) => void | Promise<void>,
-    providerRegistry?: AgentProviderRegistry
+    providerRegistry?: AgentProviderRegistry,
+    private readonly generateTitle?: (prompt: string, signal: AbortSignal) => Promise<string | null>
   ) {
     this.providerRegistry = providerRegistry ?? createDefaultAgentProviderRegistry(piHarness, cliRuntime)
     this.database.recoverInterruptedAgentRuns(new Date().toISOString())
+    this.database.recoverInterruptedAgentTurns()
+    const localUserId = this.database.getSetting<{ user?: { id?: string } } | null>('account.cached-state', null)?.user?.id
+    const recoverableTurns = this.database.listQueuedAgentTurns().filter((turn) =>
+      !turn.requestedByUserId || turn.requestedByUserId === localUserId)
+    // Queued requests have not entered a provider, so replay is safe. A request
+    // marked running needs review after a crash and is never re-executed here.
+    // A different account's request requires fresh remote authorization first.
+    if (recoverableTurns.length > 0) queueMicrotask(() => {
+      for (const turn of recoverableTurns) {
+        void this.sendMessage(turn.runId, turn.prompt, undefined, turn.requestId,
+          turn.attachments, undefined, turn.requestedByUserId
+            ? { userId: turn.requestedByUserId, snapshot: turn.authorSnapshot ?? { displayName: '历史用户', avatarRef: null } }
+            : null).catch(() => undefined)
+      }
+    })
   }
 
   onRunUpdate(listener: (runId: string, update: AgentRunStreamUpdate) => void): () => void {
@@ -123,7 +149,8 @@ export class TaskDispatcher {
   async dispatch(
     input: DispatchTaskInput,
     onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined,
-    cancellationSignal?: AbortSignal
+    cancellationSignal?: AbortSignal,
+    actor?: ChatActor | null
   ): Promise<DispatchTaskResult> {
     throwIfCancelled(cancellationSignal)
     const now = new Date().toISOString()
@@ -148,6 +175,8 @@ export class TaskDispatcher {
 
     const run: AgentRun = {
       id: randomUUID(),
+      createdByUserId: actor?.userId ?? null,
+      createdBySnapshot: actor?.snapshot ?? null,
       projectId: input.projectId,
       decisionId: input.decisionId ?? null,
       goalId: input.goalId ?? null,
@@ -155,7 +184,7 @@ export class TaskDispatcher {
       provider: resolvedInput.provider,
       model: null,
       reasoningEffort: null,
-      title: input.title?.trim() || input.prompt.trim().split('\n')[0].slice(0, 80),
+      title: input.title?.trim() || defaultAgentRunTitle,
       status: 'queued',
       sessionId: null,
       workingDirectory,
@@ -166,16 +195,16 @@ export class TaskDispatcher {
       createdAt: now,
       updatedAt: now
     }
-    this.database.createAgentRun(run)
+    this.database.createAgentRun(run, !input.title?.trim())
     const createdUpdate = { type: 'created', run } as const
     this.publishRunUpdate(run.id, createdUpdate)
     onUpdate(createdUpdate)
-    const detail = await this.sendMessage(run.id, input.prompt, onUpdate, undefined, [], cancellationSignal)
+    const detail = await this.sendMessage(run.id, input.prompt, onUpdate, undefined, [], cancellationSignal, actor)
     throwIfCancelled(cancellationSignal)
     return { detail, message: detail.run.summary }
   }
 
-  createDraft(input: CreateAgentRunDraftInput): AgentRunDetail {
+  createDraft(input: CreateAgentRunDraftInput, actor?: ChatActor | null): AgentRunDetail {
     const now = new Date().toISOString()
     const project = input.projectId
       ? this.database.listProjects().find((item) => item.id === input.projectId) ?? null
@@ -195,6 +224,8 @@ export class TaskDispatcher {
 
     const run: AgentRun = {
       id: input.id?.trim() || randomUUID(),
+      createdByUserId: actor?.userId ?? null,
+      createdBySnapshot: actor?.snapshot ?? null,
       projectId: input.projectId,
       decisionId: input.decisionId ?? null,
       goalId: input.goalId ?? null,
@@ -202,7 +233,7 @@ export class TaskDispatcher {
       provider,
       model: null,
       reasoningEffort: null,
-      title: input.title.trim(),
+      title: input.title?.trim() || defaultAgentRunTitle,
       status: 'draft',
       sessionId: null,
       workingDirectory,
@@ -213,7 +244,7 @@ export class TaskDispatcher {
       createdAt: now,
       updatedAt: now
     }
-    this.database.createAgentRun(run)
+    this.database.createAgentRun(run, !input.title?.trim() || input.title.trim() === defaultAgentRunTitle)
     this.publishRunUpdate(run.id, { type: 'created', run })
     return this.database.getAgentRunDetail(run.id)
   }
@@ -237,33 +268,120 @@ export class TaskDispatcher {
     onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined,
     userMessageId?: string,
     attachments: ChatAttachmentInput[] = [],
-    cancellationSignal?: AbortSignal
+    cancellationSignal?: AbortSignal,
+    actor?: ChatActor | null
   ): Promise<AgentRunDetail> {
     this.database.getAgentRun(runId)
+    const requestId = userMessageId?.trim() || randomUUID()
+    const normalizedPrompt = prompt.trim()
+    const existingRequest = this.database.getAgentTurn(requestId)
+    if (existingRequest && (existingRequest.runId !== runId || existingRequest.prompt !== normalizedPrompt
+      || JSON.stringify(existingRequest.attachments) !== JSON.stringify(attachments)
+      || existingRequest.requestedByUserId !== (actor?.userId ?? null))) {
+      throw new Error('请求 ID 已用于另一条消息。')
+    }
+    const inFlight = this.pendingTurnPromises.get(requestId)
+    if (inFlight) return inFlight
+    if (!existingRequest && this.database.hasAgentRunMessage(runId, requestId)) {
+      return this.database.getAgentRunDetail(runId)
+    }
+    const queued = this.database.enqueueAgentTurn({
+      requestId, runId, prompt: normalizedPrompt, attachments,
+      requestedByUserId: actor?.userId ?? null, authorSnapshot: actor?.snapshot ?? null
+    })
+    // A retry may arrive after the account display name changes. The first
+    // accepted request owns the author snapshot for both history and execution.
+    const acceptedActor: ChatActor | null = queued.requestedByUserId
+      ? {
+          userId: queued.requestedByUserId,
+          snapshot: queued.authorSnapshot ?? { displayName: '历史用户', avatarRef: null }
+        }
+      : null
+    if (queued.status === 'completed' || queued.status === 'failed') return this.database.getAgentRunDetail(runId)
+    if (queued.status === 'cancelled') throw new AgentRunStoppedError()
+    const pending = this.pendingTurnPromises.get(requestId)
+    if (pending) return pending
+    if (queued.status !== 'queued') throw new Error('这次请求的执行状态不明，需要确认后才能重试。')
     const previous = this.turnQueueTails.get(runId)
     if (previous) {
       const queuedUpdate = { type: 'status', status: 'queued' } as const
       this.publishRunUpdate(runId, queuedUpdate)
       onUpdate(queuedUpdate)
     }
-    const execute = (): Promise<AgentRunDetail> => {
+    const execute = async (): Promise<AgentRunDetail> => {
       if (this.stopping) return Promise.reject(new AgentRunStoppedError())
       if (cancellationSignal?.aborted) {
         return Promise.reject(cancellationSignal.reason instanceof Error
           ? cancellationSignal.reason
           : new Error('这次手机操作已停止。'))
       }
-      return this.executeTurn(runId, prompt, onUpdate, userMessageId, attachments, cancellationSignal)
+      const steering = this.steerOperations.get(requestId)
+      if (steering) await steering.catch(() => undefined)
+      if (this.database.getAgentTurn(requestId)?.status === 'completed') return this.database.getAgentRunDetail(runId)
+      if (!this.database.claimAgentTurn(requestId)) throw new AgentRunStoppedError()
+      return this.executeTurn(runId, normalizedPrompt, onUpdate, requestId, attachments, cancellationSignal, acceptedActor)
+        .catch((error: unknown) => {
+          this.database.settleAgentTurn(requestId, 'failed')
+          throw error
+        })
     }
     const turn = previous ? previous.then(execute, execute) : execute()
     this.turnQueueTails.set(runId, turn)
+    this.pendingTurnPromises.set(requestId, turn)
     const clearQueueTail = (): void => {
       if (this.turnQueueTails.get(runId) === turn) this.turnQueueTails.delete(runId)
+      if (this.pendingTurnPromises.get(requestId) === turn) this.pendingTurnPromises.delete(requestId)
     }
     void turn.then(clearQueueTail, clearQueueTail)
     const detail = await turn
     throwIfCancelled(cancellationSignal)
     return detail
+  }
+
+  async retryMessage(
+    runId: string,
+    errorMessageId: string,
+    onUpdate: (update: AgentRunStreamUpdate) => void = () => undefined,
+    cancellationSignal?: AbortSignal,
+    actor?: ChatActor | null
+  ): Promise<AgentRunDetail> {
+    throwIfCancelled(cancellationSignal)
+    const detail = this.database.getAgentRunDetail(runId)
+    const target = agentRunRetryTarget(detail.messages)
+    if (!target || target.error.id !== errorMessageId) throw new Error('这条错误已过期，请重试最新的失败消息。')
+    const message = target.userMessage
+    if (actor && message.authorUserId && actor.userId !== message.authorUserId) throw new Error('只能重试自己发送的消息。')
+    const requestId = message.requestId || message.id
+    const inFlight = this.pendingTurnPromises.get(requestId)
+    if (inFlight) return inFlight
+    if (detail.run.status !== 'failed') return detail
+    if (this.activeTurns.has(runId) || this.database.listAgentTurnsForRun(runId).length) {
+      throw new Error('请等待当前消息完成后再重试。')
+    }
+    let turn = this.database.getAgentTurn(requestId)
+    if (!turn) {
+      // Older messages predate the durable queue. Recover only their recorded
+      // input, validating attachment bytes against their persisted descriptor.
+      const attachments = (message.attachments ?? []).map(descriptor => {
+        const artifact = detail.artifacts.find(item => item.id === descriptor.artifactId)
+        if (!artifact) throw new Error('原消息附件已不可用，无法重试。')
+        const bytes = readFileSync(this.workspaceFiles.resolvePath(artifact.projectId, artifact.relativePath))
+        if (bytes.length !== descriptor.size || createHash('sha256').update(bytes).digest('hex') !== descriptor.sha256) {
+          throw new Error('原消息附件校验失败，无法重试。')
+        }
+        return { id: descriptor.id, name: descriptor.filename, mimeType: descriptor.mimeType,
+          dataUrl: `data:${descriptor.mimeType};base64,${bytes.toString('base64')}` }
+      })
+      turn = this.database.enqueueAgentTurn({ requestId, runId, prompt: message.content.trim(), attachments,
+        requestedByUserId: message.authorUserId ?? null, authorSnapshot: message.authorSnapshot ?? null })
+    } else {
+      if (turn.runId !== runId || turn.status !== 'failed') throw new Error('这条消息当前无法重试。')
+      if (!this.database.retryFailedAgentTurn(requestId)) throw new Error('这条消息当前无法重试。')
+    }
+    const originalActor = turn.requestedByUserId
+      ? { userId: turn.requestedByUserId, snapshot: turn.authorSnapshot ?? { displayName: `用户 ${turn.requestedByUserId.slice(0, 6)}`, avatarRef: null } }
+      : null
+    return this.sendMessage(runId, turn.prompt, onUpdate, requestId, turn.attachments, cancellationSignal, originalActor)
   }
 
   async stopMessage(runId: string): Promise<AgentRunDetail> {
@@ -276,8 +394,81 @@ export class TaskDispatcher {
     return this.database.getAgentRunDetail(runId)
   }
 
+  async stopRequest(runId: string, requestId: string, actorUserId?: string | null): Promise<AgentRunDetail> {
+    const turn = this.database.getAgentTurn(requestId)
+    if (!turn || turn.runId !== runId || turn.status !== 'running') {
+      throw new Error('这条消息当前没有运行。')
+    }
+    if (actorUserId && turn.requestedByUserId !== actorUserId) {
+      throw new Error('只能停止自己提交的消息。')
+    }
+    if (this.activeTurns.get(runId)?.requestId !== requestId) {
+      throw new Error('当前运行的不是这条消息。')
+    }
+    return this.stopMessage(runId)
+  }
+
+  listPendingTurns(runId: string): import('../../shared/agent-turn-queue').AgentTurnQueueSummary[] {
+    this.database.getAgentRun(runId)
+    return this.database.listAgentTurnsForRun(runId).map((turn) => ({
+      requestId: turn.requestId, runId: turn.runId, prompt: turn.prompt,
+      requestedByUserId: turn.requestedByUserId, authorSnapshot: turn.authorSnapshot,
+      status: turn.status, enqueuedAt: turn.enqueuedAt, attachmentCount: turn.attachments.length
+    }))
+  }
+
+  cancelQueuedTurn(requestId: string, actorUserId?: string | null): boolean {
+    const turn = this.database.getAgentTurn(requestId)
+    if (!turn) return false
+    if (actorUserId && turn.requestedByUserId !== actorUserId) {
+      throw new Error('只能取消自己提交的排队消息。')
+    }
+    return this.database.cancelQueuedAgentTurn(requestId)
+  }
+
+  async steerQueuedTurn(requestId: string, actorUserId?: string | null): Promise<AgentRunDetail> {
+    const turn = this.database.getAgentTurn(requestId)
+    if (!turn || turn.status !== 'queued') throw new Error('这条消息当前没有等待发送。')
+    if (turn.requestedByUserId && turn.requestedByUserId !== actorUserId) throw new Error('只能 Steer 自己提交的消息。')
+    const active = this.activeTurns.get(turn.runId)
+    const steer = active?.steer
+    if (!active || !steer || active.abortController.signal.aborted) {
+      throw new Error('当前 Agent 暂时无法接收 Steer；消息仍在队列中。')
+    }
+    if (!this.database.claimAgentTurnForSteer(requestId)) throw new Error('这条消息的状态已变化，请刷新后重试。')
+    const operation = Promise.resolve().then(async () => {
+      const run = this.database.getAgentRun(turn.runId)
+      const files = persistInputAttachments(this.database, this.workspaceFiles, run, requestId, turn.attachments)
+      await steer(turn.prompt, files.runtime, requestId)
+      this.database.createAgentRunMessage({
+        id: requestId,
+        requestId,
+        runId: turn.runId,
+        role: 'user',
+        content: turn.prompt,
+        eventType: null,
+        toolName: null,
+        metadata: null,
+        attachments: files.descriptors,
+        authorUserId: turn.requestedByUserId,
+        authorSnapshot: turn.authorSnapshot,
+        createdAt: new Date().toISOString()
+      })
+      this.database.finishAgentTurnSteer(requestId)
+    }).catch((error: unknown) => {
+      this.database.releaseAgentTurnSteer(requestId)
+      throw error
+    }).finally(() => {
+      this.steerOperations.delete(requestId)
+    })
+    this.steerOperations.set(requestId, operation)
+    await operation
+    return this.database.getAgentRunDetail(turn.runId)
+  }
+
   async stopAndDrain(): Promise<void> {
     this.stopping = true
+    for (const controller of this.pendingTitles.keys()) controller.abort()
     const activeTurns = [...this.activeTurns.values()]
     for (const active of activeTurns) active.abortController.abort(new AgentRunStoppedError())
     for (const runId of new Set([...this.pendingApprovals.values()].map((approval) => approval.runId))) {
@@ -285,9 +476,24 @@ export class TaskDispatcher {
     }
     await Promise.allSettled([
       ...activeTurns.map((active) => active.settled),
-      ...this.turnQueueTails.values()
+      ...this.turnQueueTails.values(),
+      ...this.pendingTitles.values()
     ])
     await this.cliRuntime.stopAndDrain?.()
+  }
+
+  private generateFirstMessageTitle(runId: string, prompt: string): void {
+    if (!this.generateTitle || this.stopping) return
+    const controller = new AbortController()
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)])
+    const task = Promise.resolve().then(() => this.generateTitle!(prompt, signal)).then(title => {
+      const normalized = parseGeneratedChatTitle(title)
+      if (normalized && !signal.aborted && !this.stopping) {
+        const updated = this.database.updateAutomaticAgentRunTitle(runId, normalized)
+        this.publishRunUpdate(runId, { type: 'updated', run: updated })
+      }
+    }).catch(() => undefined).finally(() => this.pendingTitles.delete(controller))
+    this.pendingTitles.set(controller, task)
   }
 
   private rejectPendingApprovals(runId: string): void {
@@ -306,7 +512,8 @@ export class TaskDispatcher {
     onUpdate: (update: AgentRunStreamUpdate) => void,
     userMessageId?: string,
     attachments: ChatAttachmentInput[] = [],
-    cancellationSignal?: AbortSignal
+    cancellationSignal?: AbortSignal,
+    actor?: ChatActor | null
   ): Promise<AgentRunDetail> {
     const abortController = new AbortController()
     const abortForCallerCancellation = (): void => {
@@ -321,6 +528,8 @@ export class TaskDispatcher {
     let settleActiveTurn = (): void => undefined
     const settled = new Promise<void>((resolve) => { settleActiveTurn = resolve })
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null
+    const runningTools = new Set<string>()
+    let turnFinished = false
     let activeReasoning: {
       id: string
       segmentId: string | null
@@ -371,13 +580,22 @@ export class TaskDispatcher {
     }
     const touchActivity = (): void => {
       if (inactivityTimer) clearTimeout(inactivityTimer)
+      inactivityTimer = null
+      // Tool execution time belongs to the provider/tool, not the silence
+      // watchdog. Keep waiting for its terminal event (or user cancellation).
+      if (turnFinished || abortController.signal.aborted || runningTools.size > 0) return
       inactivityTimer = setTimeout(() => {
         const minutes = Math.max(1, Math.round(this.inactivityTimeoutMs / 60_000))
-        abortController.abort(new Error(`Agent 连续 ${minutes} 分钟没有返回消息或工具活动，本轮已自动停止。你可以发送新消息重试。`))
+        abortController.abort(new Error(`未检测到正在执行的工具，且连续 ${minutes} 分钟未收到 Agent 运行进展，本轮已自动停止。可能正在等待模型响应或网络恢复，你可以发送新消息重试。`))
       }, this.inactivityTimeoutMs)
       inactivityTimer.unref?.()
     }
     const trackedUpdate = (update: AgentRunStreamUpdate): void => {
+      if (update.type === 'tool') {
+        const key = update.toolCallId ? `id:${update.toolCallId}` : `name:${update.toolName}`
+        if (update.status === 'running') runningTools.add(key)
+        else runningTools.delete(key)
+      }
       touchActivity()
       if (update.type === 'reasoning_delta') {
         if (activeVisibleText.trim()) flushVisibleTextAsReasoning()
@@ -410,6 +628,8 @@ export class TaskDispatcher {
       onUpdate(update)
     }
     let run = this.database.getAgentRun(runId)
+    const needsTitle = this.database.canGenerateAgentRunTitle(runId)
+    run = this.database.updateAutomaticAgentRunTitle(runId, firstMessageTitle(prompt), true)
     const messageId = userMessageId?.trim() || randomUUID()
     const attachmentFiles = persistInputAttachments(this.database, this.workspaceFiles, run, messageId, attachments)
     const projectFilesBefore = new Map(
@@ -417,8 +637,12 @@ export class TaskDispatcher {
         .filter((entry) => entry.kind === 'file' && !entry.relativePath.startsWith('_attachments/'))
         .map((entry) => [entry.relativePath, `${entry.size}:${entry.modifiedAt}`])
     )
-    const userMessage: AgentRunMessage = {
+    const existingUserMessage = this.database.listAgentRunMessages(runId).find(message => message.id === messageId && message.role === 'user')
+    const userMessage: AgentRunMessage = existingUserMessage ?? {
       id: messageId,
+      authorUserId: actor?.userId ?? null,
+      authorSnapshot: actor?.snapshot ?? null,
+      requestId: userMessageId ?? null,
       runId,
       role: 'user',
       content: prompt.trim(),
@@ -428,17 +652,18 @@ export class TaskDispatcher {
       attachments: attachmentFiles.descriptors,
       createdAt: new Date().toISOString()
     }
-    this.database.createAgentRunMessage(userMessage)
     const startedAt = new Date().toISOString()
-    run = this.database.updateAgentRun({
+    run = this.database.startAgentTurn(userMessage, {
       ...run,
       status: 'running',
+      visibility: 'published',
       draftPrompt: null,
       startedAt: run.startedAt ?? startedAt,
       completedAt: null,
       updatedAt: startedAt
-    })
-    this.activeTurns.set(runId, { abortController, settled })
+    }, Boolean(existingUserMessage))
+    this.activeTurns.set(runId, { requestId: messageId, abortController, settled })
+    if (needsTitle) this.generateFirstMessageTitle(runId, prompt)
     trackedUpdate({ type: 'status', status: 'running' })
 
     const recordTool = (toolName: string, detail: string, metadata?: Record<string, unknown>): void => {
@@ -502,12 +727,17 @@ export class TaskDispatcher {
         filesDirectory: this.workspaceFiles.getRoot(run.projectId),
         abortController,
         onUpdate: trackedUpdate,
+        onActivity: touchActivity,
         onAccountContext: context => this.database.updateAgentRunAccountContext(runId, context),
         onTool: recordTool,
         onApproval: (request) => this.waitForApproval(run.id, request, trackedUpdate),
         onSessionId: (sessionId) => {
           touchActivity()
           run = this.database.updateAgentRun({ ...run, sessionId, updatedAt: new Date().toISOString() })
+        },
+        onSteerReady: (steer) => {
+          const active = this.activeTurns.get(runId)
+          if (active?.abortController === abortController) active.steer = steer ?? undefined
         }
       }), abortController.signal)
       const response = result.text
@@ -546,6 +776,7 @@ export class TaskDispatcher {
         updatedAt
       })
       trackedUpdate({ type: 'status', status: 'idle' })
+      this.database.settleAgentTurn(messageId, 'completed')
       this.publishTurnSettled(run.id, userMessage.id, 'completed')
       this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
       return this.database.getAgentRunDetail(run.id)
@@ -560,12 +791,14 @@ export class TaskDispatcher {
           updatedAt: new Date().toISOString()
         })
         trackedUpdate({ type: 'status', status: 'idle', detail: '当前回复已停止。' })
+        this.database.settleAgentTurn(messageId, 'cancelled')
         this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
         return this.database.getAgentRunDetail(run.id)
       }
       const message = error instanceof Error ? error.message : 'Chat 执行失败。'
       const systemMessage: AgentRunMessage = {
         id: randomUUID(),
+        requestId: messageId,
         runId,
         role: 'system',
         content: message,
@@ -582,10 +815,12 @@ export class TaskDispatcher {
         updatedAt: new Date().toISOString()
       })
       trackedUpdate({ type: 'status', status: 'failed', detail: message })
+      this.database.settleAgentTurn(messageId, 'failed')
       this.publishTurnSettled(run.id, userMessage.id, 'failed')
       this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
       return this.database.getAgentRunDetail(run.id)
     } finally {
+      turnFinished = true
       if (inactivityTimer) clearTimeout(inactivityTimer)
       cancellationSignal?.removeEventListener('abort', abortForCallerCancellation)
       if (this.activeTurns.get(runId)?.abortController === abortController) this.activeTurns.delete(runId)

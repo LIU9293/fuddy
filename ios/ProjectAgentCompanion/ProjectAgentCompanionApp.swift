@@ -122,8 +122,7 @@ struct ProjectAgentCompanionApp: App {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(Color(uiColor: .systemGroupedBackground))
                 } else if !store.isSignedIn { AccountLoginView() }
-                else if store.isPaired { CompanionRootView() }
-                else { AccountSyncSetupView() }
+                else { CompanionRootView() }
             }
             .environmentObject(store)
             .onOpenURL { url in

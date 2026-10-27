@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomUUID } from 'node:crypto'
+import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import type {
   AccountDevice,
@@ -12,6 +12,8 @@ import type {
   StartEmailSignInResult
 } from '../../shared/account'
 import { companionProtocol } from '../../shared/companion-protocol'
+import { projectSharingProtocolVersion } from '../../shared/project-sharing-protocol'
+import { chatTitleInputLimit, parseGeneratedChatTitle } from '../../shared/agent-run-title'
 import type { FuddyRuntimeChannel } from '../runtime-profile'
 import type { CredentialVault } from './credential-vault'
 import type { AppDatabase } from './database'
@@ -19,6 +21,8 @@ import { getGoogleAuthorizationCode } from './google-desktop-oauth'
 import {
   wrapDeviceGrant,
   openDeviceGrant,
+  wrapProjectDeviceGrant,
+  openProjectDeviceGrant,
   type AccountRelayCredentials
 } from './account-device-grant'
 
@@ -39,7 +43,7 @@ interface SignOutDiagnostic {
   serverCode: string | null
 }
 
-type CredentialStore = Pick<CredentialVault, 'get' | 'set' | 'delete'>
+type CredentialStore = Pick<CredentialVault, 'get' | 'set' | 'delete' | 'deleteByPrefix'>
 
 interface CachedAccount {
   user: AccountUser
@@ -195,6 +199,22 @@ export class AccountService {
     }
   }
 
+  async generateChatTitle(prompt: string, signal?: AbortSignal): Promise<string | null> {
+    if (!this.options.apiUrl || this.getState().status !== 'signed-in') return null
+    const generation = this.authGeneration
+    try {
+      const response = await this.requestAuthorized('/v1/chat-titles', {
+        method: 'POST', body: JSON.stringify({ prompt: prompt.trim().slice(0, chatTitleInputLimit) }),
+        signal: signal ?? AbortSignal.timeout(12_000)
+      })
+      const payload: unknown = await response.json()
+      if (generation !== this.authGeneration) return null
+      return parseGeneratedChatTitle(payload && typeof payload === 'object' && 'title' in payload ? payload.title : null)
+    } catch {
+      return null
+    }
+  }
+
   async startEmailSignIn(email: string): Promise<StartEmailSignInResult> {
     const normalizedEmail = email.trim().toLowerCase()
     const response = await this.request('/v1/auth/email/start', {
@@ -275,6 +295,344 @@ export class AccountService {
   async listSyncSpaces(): Promise<import('../../shared/account').AccountSyncSpace[]> {
     const response = await this.requestAuthorized('/v1/sync-spaces', { method: 'GET' })
     return (await response.json() as { syncSpaces: import('../../shared/account').AccountSyncSpace[] }).syncSpaces
+  }
+
+  async registerProjectShare(localProjectId: string, executionHostId: string): Promise<import('../../shared/account').AccountProjectShare> {
+    const response = await this.requestAuthorized('/v1/project-shares', {
+      method: 'POST', body: JSON.stringify({ localProjectId, executionHostId })
+    })
+    return (await response.json() as { projectShare: import('../../shared/account').AccountProjectShare }).projectShare
+  }
+
+  async listProjectShares(): Promise<import('../../shared/account').AccountProjectShare[]> {
+    const response = await this.requestAuthorized('/v1/project-shares', { method: 'GET' })
+    return (await response.json() as { projectShares: import('../../shared/account').AccountProjectShare[] }).projectShares
+  }
+
+  async getProjectShare(projectId: string): Promise<import('../../shared/account').AccountProjectShare> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}`, { method: 'GET' })
+    return (await response.json() as { projectShare: import('../../shared/account').AccountProjectShare }).projectShare
+  }
+
+  async registerProjectPublisher(projectId: string): Promise<string> {
+    const response = await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/publishers/self`, { method: 'POST' }
+    )
+    return (await response.json() as { hostId: string }).hostId
+  }
+
+  async listProjectPublishers(projectId: string): Promise<Array<{
+    hostId: string; sourceDeviceId: string; hostName: string; lastSeenAt: string
+  }>> {
+    const response = await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/publishers`, { method: 'GET' }
+    )
+    return (await response.json() as { publishers: Array<{
+      hostId: string; sourceDeviceId: string; hostName: string; lastSeenAt: string
+    }> }).publishers
+  }
+
+  async publishProjectEvent(
+    projectId: string,
+    event: import('../../shared/project-sharing-events').SharedProjectEventSubmission
+  ): Promise<import('../../shared/project-sharing-events').SharedProjectEncryptedEvent> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/events`, {
+      method: 'POST', body: JSON.stringify(event)
+    })
+    return (await response.json() as {
+      event: import('../../shared/project-sharing-events').SharedProjectEncryptedEvent
+    }).event
+  }
+
+  async listProjectEvents(projectId: string, after = 0, limit = 100): Promise<{
+    events: import('../../shared/project-sharing-events').SharedProjectEncryptedEvent[]
+    nextCursor: number
+  }> {
+    const query = new URLSearchParams({ after: String(after), limit: String(limit) })
+    const response = await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/events?${query}`, { method: 'GET' }
+    )
+    return await response.json() as {
+      events: import('../../shared/project-sharing-events').SharedProjectEncryptedEvent[]
+      nextCursor: number
+    }
+  }
+
+  async uploadProjectAttachment(input: {
+    projectId: string; attachmentId: string; runId: string; requestId: string | null
+    kind: 'input' | 'artifact'; keyEpoch: number; ciphertext: Uint8Array
+  }): Promise<void> {
+    const hash = createHash('sha256').update(input.ciphertext).digest('hex')
+    await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(input.projectId)}/attachments/${encodeURIComponent(input.attachmentId)}`,
+      { method: 'PUT', headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(input.ciphertext.byteLength),
+        'X-Content-SHA256': hash,
+        'X-Project-Run-Id': input.runId,
+        'X-Project-Request-Id': input.requestId ?? '',
+        'X-Project-Attachment-Kind': input.kind,
+        'X-Project-Key-Epoch': String(input.keyEpoch)
+      }, body: Buffer.from(input.ciphertext), signal: AbortSignal.timeout(60_000) }
+    )
+  }
+
+  async downloadProjectAttachment(projectId: string, attachmentId: string): Promise<{
+    ciphertext: Uint8Array; runId: string; requestId: string | null
+    kind: string; keyEpoch: number; uploadedByUserId: string
+  }> {
+    const response = await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: 'GET', signal: AbortSignal.timeout(60_000) }
+    )
+    const ciphertext = new Uint8Array(await response.arrayBuffer())
+    const expectedHash = response.headers.get('X-Content-SHA256')
+    if (!expectedHash || createHash('sha256').update(ciphertext).digest('hex') !== expectedHash) {
+      throw new Error('共享附件传输校验失败。')
+    }
+    const runId = response.headers.get('X-Project-Run-Id')
+    const kind = response.headers.get('X-Project-Attachment-Kind')
+    const uploadedByUserId = response.headers.get('X-Uploaded-By-User-Id')
+    const keyEpoch = Number(response.headers.get('X-Project-Key-Epoch'))
+    if (!runId || !kind || !uploadedByUserId || !Number.isSafeInteger(keyEpoch)) {
+      throw new Error('共享附件范围信息缺失。')
+    }
+    return { ciphertext, runId, requestId: response.headers.get('X-Project-Request-Id') || null,
+      kind, keyEpoch, uploadedByUserId }
+  }
+
+  async beginProjectBaseline(projectId: string, baselineId: string,
+    keyEpoch: number, chunkCount: number): Promise<import('../../shared/project-sharing-events').SharedProjectBaseline> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/baselines`, {
+      method: 'POST', body: JSON.stringify({ baselineId, keyEpoch, chunkCount })
+    })
+    return (await response.json() as {
+      baseline: import('../../shared/project-sharing-events').SharedProjectBaseline
+    }).baseline
+  }
+
+  async putProjectBaselineChunk(projectId: string,
+    chunk: import('../../shared/project-sharing-events').SharedProjectBaselineChunk): Promise<void> {
+    await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/baselines/${encodeURIComponent(chunk.baselineId)}/chunks`,
+      { method: 'PUT', body: JSON.stringify({ index: chunk.index, envelope: chunk.envelope }) }
+    )
+  }
+
+  async commitProjectBaseline(projectId: string, baselineId: string): Promise<void> {
+    await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/baselines/${encodeURIComponent(baselineId)}/commit`,
+      { method: 'POST' }
+    )
+  }
+
+  async listProjectBaselines(projectId: string): Promise<import('../../shared/project-sharing-events').SharedProjectBaseline[]> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/baselines`, {
+      method: 'GET'
+    })
+    return (await response.json() as {
+      baselines: import('../../shared/project-sharing-events').SharedProjectBaseline[]
+    }).baselines
+  }
+
+  async listProjectBaselineChunks(projectId: string, baselineId: string,
+    afterIndex = -1, limit = 100): Promise<{
+      chunks: import('../../shared/project-sharing-events').SharedProjectBaselineChunk[]
+      nextIndex: number
+    }> {
+    const query = new URLSearchParams({ after: String(afterIndex), limit: String(limit) })
+    const response = await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/baselines/${encodeURIComponent(baselineId)}/chunks?${query}`,
+      { method: 'GET' }
+    )
+    return await response.json() as {
+      chunks: import('../../shared/project-sharing-events').SharedProjectBaselineChunk[]
+      nextIndex: number
+    }
+  }
+
+  async registerSharedChat(projectId: string, runId: string,
+    createdByUserId: string | null): Promise<void> {
+    await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/chats`, {
+      method: 'POST', body: JSON.stringify({ runId, createdByUserId, visibility: 'published' })
+    })
+  }
+
+  async heartbeatProjectHost(projectId: string): Promise<void> {
+    await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/host-heartbeat`, {
+      method: 'POST'
+    })
+  }
+
+  async submitProjectCommand(projectId: string,
+    submission: import('../../shared/project-sharing-commands').SharedProjectCommandSubmission
+  ): Promise<import('../../shared/project-sharing-commands').SharedProjectCommand> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/commands`, {
+      method: 'POST', body: JSON.stringify(submission)
+    })
+    return (await response.json() as {
+      command: import('../../shared/project-sharing-commands').SharedProjectCommand
+    }).command
+  }
+
+  async listHostProjectCommands(projectId: string): Promise<import('../../shared/project-sharing-commands').SharedProjectCommand[]> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/commands`, {
+      method: 'GET'
+    })
+    return (await response.json() as {
+      commands: import('../../shared/project-sharing-commands').SharedProjectCommand[]
+    }).commands
+  }
+
+  async listOwnProjectCommands(projectId: string): Promise<import('../../shared/project-sharing-commands').SharedProjectCommand[]> {
+    const response = await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/commands?mine=1`, { method: 'GET' }
+    )
+    return (await response.json() as {
+      commands: import('../../shared/project-sharing-commands').SharedProjectCommand[]
+    }).commands
+  }
+
+  async getProjectCommand(projectId: string, commandId: string): Promise<import('../../shared/project-sharing-commands').SharedProjectCommand> {
+    const response = await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/commands/${encodeURIComponent(commandId)}`,
+      { method: 'GET' }
+    )
+    return (await response.json() as {
+      command: import('../../shared/project-sharing-commands').SharedProjectCommand
+    }).command
+  }
+
+  async claimProjectCommand(projectId: string, commandId: string): Promise<import('../../shared/project-sharing-commands').SharedProjectCommand> {
+    const response = await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/commands/${encodeURIComponent(commandId)}/claim`,
+      { method: 'POST' }
+    )
+    return (await response.json() as {
+      command: import('../../shared/project-sharing-commands').SharedProjectCommand
+    }).command
+  }
+
+  async renewProjectCommand(projectId: string, commandId: string): Promise<string> {
+    const response = await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/commands/${encodeURIComponent(commandId)}/renew`,
+      { method: 'POST' }
+    )
+    return (await response.json() as { leaseExpiresAt: string }).leaseExpiresAt
+  }
+
+  async completeProjectCommand(projectId: string, commandId: string,
+    result: { status: 'completed' | 'failed'; resultRunId: string | null; errorCode: string | null }
+  ): Promise<void> {
+    await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/commands/${encodeURIComponent(commandId)}/complete`,
+      { method: 'POST', body: JSON.stringify(result) }
+    )
+  }
+
+  async setProjectExecutionHost(projectId: string, executionHostId: string): Promise<import('../../shared/account').AccountProjectShare> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/execution-host`, {
+      method: 'POST', body: JSON.stringify({ executionHostId })
+    })
+    return (await response.json() as { projectShare: import('../../shared/account').AccountProjectShare }).projectShare
+  }
+
+  async createProjectInvitation(projectId: string, email: string): Promise<import('../../shared/account').AccountProjectInvitation> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/invitations`, {
+      method: 'POST', body: JSON.stringify({ email })
+    })
+    return (await response.json() as { invitation: import('../../shared/account').AccountProjectInvitation }).invitation
+  }
+
+  async listProjectInvitations(projectId: string): Promise<import('../../shared/account').AccountProjectInvitation[]> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/invitations`, { method: 'GET' })
+    return (await response.json() as { invitations: import('../../shared/account').AccountProjectInvitation[] }).invitations
+  }
+
+  async revokeProjectInvitation(projectId: string, invitationId: string): Promise<void> {
+    await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
+      { method: 'DELETE' }
+    )
+  }
+
+  async acceptProjectInvitation(token: string): Promise<string> {
+    const response = await this.requestAuthorized('/v1/project-invitations/accept', {
+      method: 'POST', body: JSON.stringify({ token })
+    })
+    return (await response.json() as { projectId: string }).projectId
+  }
+
+  async listProjectMembers(projectId: string): Promise<import('../../shared/account').AccountProjectMember[]> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/members`, { method: 'GET' })
+    return (await response.json() as { members: import('../../shared/account').AccountProjectMember[] }).members
+  }
+
+  async removeProjectMember(projectId: string, userId: string): Promise<void> {
+    await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
+      { method: 'DELETE' }
+    )
+  }
+
+  async closeProjectShare(projectId: string): Promise<void> {
+    await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}`, { method: 'DELETE' })
+  }
+
+  async requestProjectDeviceGrant(projectId: string): Promise<import('../../shared/account').AccountProjectDeviceGrant> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/device-grant`, {
+      method: 'POST'
+    })
+    return (await response.json() as { grant: import('../../shared/account').AccountProjectDeviceGrant }).grant
+  }
+
+  async getProjectDeviceGrant(projectId: string): Promise<import('../../shared/account').AccountProjectDeviceGrant> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/device-grant`, {
+      method: 'GET'
+    })
+    return (await response.json() as { grant: import('../../shared/account').AccountProjectDeviceGrant }).grant
+  }
+
+  async listPendingProjectDeviceGrants(projectId: string): Promise<import('../../shared/account').AccountPendingProjectDeviceGrant[]> {
+    const response = await this.requestAuthorized(`/v1/project-shares/${encodeURIComponent(projectId)}/device-grants`, {
+      method: 'GET'
+    })
+    return (await response.json() as { grants: import('../../shared/account').AccountPendingProjectDeviceGrant[] }).grants
+  }
+
+  async completeProjectDeviceGrant(projectId: string, grantId: string, wrappedProjectKey: string, keyEpoch: number): Promise<void> {
+    await this.requestAuthorized(
+      `/v1/project-shares/${encodeURIComponent(projectId)}/device-grants/${encodeURIComponent(grantId)}/complete`,
+      { method: 'POST', body: JSON.stringify({ wrappedProjectKey, keyEpoch }) }
+    )
+  }
+
+  wrapProjectGrant(input: {
+    grantId: string
+    projectId: string
+    deviceId: string
+    keyEpoch: number
+    projectKey: string
+    recipientPublicKey: string
+  }): string {
+    const identity = this.getDeviceInput()
+    const privateKey = this.credentialVault.get(devicePrivateKeyReference)
+    if (!privateKey) throw new Error('Mac 设备密钥不存在，请重新登录。')
+    return wrapProjectDeviceGrant({
+      ...input, senderPublicKey: identity.publicKey, senderPrivateKey: privateKey
+    })
+  }
+
+  async openOwnProjectGrant(projectId: string): Promise<string | null> {
+    const grant = await this.getProjectDeviceGrant(projectId)
+    if (grant.status !== 'active' || !grant.wrappedProjectKey) return null
+    const deviceId = this.getState().device?.id
+    const privateKey = this.credentialVault.get(devicePrivateKeyReference)
+    if (!deviceId || !privateKey) throw new Error('设备密钥不可用。')
+    return openProjectDeviceGrant({
+      wrappedGrant: grant.wrappedProjectKey, grantId: grant.id,
+      projectId, deviceId, keyEpoch: grant.keyEpoch, recipientPrivateKey: privateKey
+    })
   }
 
   async enrollMacPeer(spaceId: string, enrollmentId?: string): Promise<{ id: string; credentials: AccountRelayCredentials | null }> {
@@ -451,6 +809,10 @@ export class AccountService {
 
   private clearLocalAuth(reason: SignOutReason, serverCode?: string): void {
     this.authGeneration += 1
+    const cached = this.database.getSetting<CachedAccount | null>(cachedAccountKey, null)
+    if (cached?.user.id) {
+      this.credentialVault.deleteByPrefix(`project-sharing.key:${cached.user.id}:`)
+    }
     this.credentialVault.delete(accessTokenReference)
     this.credentialVault.delete(refreshTokenReference)
     this.database.setSetting<CachedAccount | null>(cachedAccountKey, null)
@@ -558,7 +920,10 @@ export class AccountService {
   private async fetchResponse(path: string, init: RequestInit, accessToken?: string): Promise<Response> {
     if (!this.options.apiUrl) throw new Error('暂时无法登录，请稍后再试。')
     const headers = new Headers(init.headers)
-    headers.set('content-type', 'application/json')
+    if (!headers.has('content-type')) headers.set('content-type', 'application/json')
+    if (path.startsWith('/v1/project-shares') || path === '/v1/project-invitations/accept') {
+      headers.set('X-Fuddy-Project-Sharing-Version', String(projectSharingProtocolVersion))
+    }
     if (accessToken) headers.set('authorization', `Bearer ${accessToken}`)
     let response: Response
     try {

@@ -626,6 +626,114 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(stages[1].tools.map(\.id), ["tool-3"])
     }
 
+    func testClaudeThinkingMetadataSurvivesRelayDecodingAndCacheRoundTrip() throws {
+        let json = #"{"id":"thinking","runId":"run","role":"assistant","content":"SDK fixture","eventType":"reasoning","toolName":null,"metadata":{"segmentId":"claude-thinking-0","other":true},"createdAt":"1"}"#
+        let message = try JSONDecoder().decode(AgentMessage.self, from: Data(json.utf8))
+        XCTAssertEqual(message.metadata?.segmentId, "claude-thinking-0")
+        let cached = try JSONDecoder().decode(AgentMessage.self, from: JSONEncoder().encode(message))
+        XCTAssertEqual(cached.metadata?.segmentId, "claude-thinking-0")
+        let nonString = json.replacingOccurrences(of: "\"claude-thinking-0\"", with: "123")
+        XCTAssertNil(try JSONDecoder().decode(AgentMessage.self, from: Data(nonString.utf8)).metadata?.segmentId)
+    }
+
+    func testClaudeThinkingIsHiddenInLiveAndCompletedPagesWithoutHidingProgressOrTools() {
+        let messages = [
+            AgentMessage(id: "thinking", runId: "run", role: "assistant", content: "SDK fixture", eventType: "reasoning", toolName: nil,
+                metadata: AgentMessageMetadata(segmentId: "claude-thinking-0"), createdAt: "1"),
+            AgentMessage(id: "tool", runId: "run", role: "tool", content: "README.md", eventType: "tool", toolName: "Read", createdAt: "2"),
+            AgentMessage(id: "progress", runId: "run", role: "assistant", content: "先读取项目说明。", eventType: "reasoning", toolName: nil,
+                metadata: AgentMessageMetadata(segmentId: "visible-thinking-0"), createdAt: "3"),
+            AgentMessage(id: "unmarked", runId: "run", role: "assistant", content: "Legacy progress", eventType: "reasoning", toolName: nil, createdAt: "4")
+        ]
+        for completed in [false, true] {
+            let input = messages + (completed ? [AgentMessage(id: "answer", runId: "run", role: "assistant", content: "完成", eventType: nil, toolName: nil, createdAt: "5")] : [])
+            let source = companionChatPage(chatId: "run", chatKind: "agent", records: buildAgentChatRecords(runID: "run", messages: input),
+                hasMore: true, nextBefore: "process-thinking")
+            let visible = visibleAgentChatPage(provider: "claude", page: source)
+            XCTAssertEqual(flattenAgentChatRecords(visible.records).map(\.id), completed ? ["tool", "progress", "unmarked", "answer"] : ["tool", "progress", "unmarked"])
+            XCTAssertEqual(visible.records.first?.id, source.records.first?.id)
+            XCTAssertEqual(visible.records.first?.completedAt, completed ? "5" : nil)
+            XCTAssertEqual(visible.nextBefore, source.nextBefore)
+            XCTAssertEqual(visible.hasMore, source.hasMore)
+            XCTAssertEqual(flattenAgentChatRecords(source.records).first?.id, "thinking")
+            for provider in ["codex", "opencode", "pi"] {
+                XCTAssertEqual(visibleAgentChatPage(provider: provider, page: source), source)
+            }
+        }
+    }
+
+    func testHiddenOnlyProcessDoesNotLeaveAnEmptyDisclosureOrChangePagination() {
+        let thinking = AgentMessage(id: "thinking", runId: "run", role: "assistant", content: "SDK fixture", eventType: "reasoning", toolName: nil,
+            metadata: AgentMessageMetadata(segmentId: "claude-thinking-1"), createdAt: "1")
+        let answer = AgentMessage(id: "answer", runId: "run", role: "assistant", content: "Answer in English", eventType: nil, toolName: nil,
+            metadata: AgentMessageMetadata(segmentId: "claude-thinking-1"), createdAt: "2")
+        let source = companionChatPage(chatId: "run", chatKind: "agent", records: buildAgentChatRecords(runID: "run", messages: [thinking, answer]),
+            hasMore: true, nextBefore: "process-thinking")
+        let visible = visibleAgentChatPage(provider: "claude", page: source)
+        XCTAssertEqual(visible.records.map(\.id), ["agent-message-answer"])
+        XCTAssertEqual(visible.nextBefore, "process-thinking")
+        XCTAssertTrue(visible.hasMore)
+    }
+
+    func testRetryFeedbackRemovesOldErrorAcrossChatBlocksWithoutChangingCachedHistoryOrCursors() {
+        let input = AgentMessage(id: "user", runId: "run", role: "user", content: "问题", eventType: nil, toolName: nil, createdAt: "1")
+        let error = AgentMessage(id: "error", runId: "run", role: "system", content: "连接失败", eventType: "error", toolName: nil, createdAt: "2")
+        let thinking = AgentMessage(id: "thinking", runId: "run", role: "assistant", content: "SDK fixture", eventType: "reasoning", toolName: nil,
+            metadata: AgentMessageMetadata(segmentId: "claude-thinking-0"), createdAt: "3")
+        XCTAssertEqual(visibleRunMessages(provider: "claude", messages: [input, error, thinking]).map(\.id), ["user", "error"])
+        for provider in ["claude", "codex", "opencode", "pi"] {
+            for response in [
+                AgentMessage(id: "response", runId: "run", role: "tool", content: "README.md", eventType: "tool", toolName: "Read", createdAt: "4"),
+                AgentMessage(id: "response", runId: "run", role: "assistant", content: "正在检查", eventType: "reasoning", toolName: nil, createdAt: "4"),
+                AgentMessage(id: "response", runId: "run", role: "assistant", content: "完成", eventType: nil, toolName: nil, createdAt: "4")
+            ] {
+                let source = companionChatPage(chatId: "run", chatKind: "agent",
+                    records: buildAgentChatRecords(runID: "run", messages: [input, error, response]), hasMore: true, nextBefore: "older")
+                let visible = visibleAgentChatPage(provider: provider, page: source)
+                XCTAssertEqual(flattenAgentChatRecords(visible.records).map(\.id), ["user", "response"])
+                XCTAssertEqual(flattenAgentChatRecords(source.records).map(\.id), ["user", "error", "response"])
+                XCTAssertEqual(visible.hasMore, source.hasMore)
+                XCTAssertEqual(visible.nextBefore, source.nextBefore)
+                XCTAssertEqual(visible.records.last?.id, source.records.last?.id)
+            }
+        }
+    }
+
+    func testRetryFailureReplacesPreviousErrorButNewUserTurnsPreserveTheirOwnErrors() {
+        let input = AgentMessage(id: "user", runId: "run", role: "user", content: "问题", eventType: nil, toolName: nil, createdAt: "1")
+        let error = AgentMessage(id: "error", runId: "run", role: "system", content: "连接失败", eventType: "error", toolName: nil, createdAt: "2")
+        let nextError = AgentMessage(id: "next-error", runId: "run", role: "system", content: "再次失败", eventType: "error", toolName: nil, createdAt: "4")
+        let tool = AgentMessage(id: "tool", runId: "run", role: "tool", content: "README.md", eventType: "tool", toolName: "Read", createdAt: "3")
+        let newUser = AgentMessage(id: "new-user", runId: "run", role: "user", content: "新问题", eventType: nil, toolName: nil, createdAt: "3")
+        for provider in ["claude", "codex", "opencode", "pi"] {
+            XCTAssertEqual(visibleRunMessages(provider: provider, messages: [input, error, nextError]).map(\.id), ["user", "next-error"])
+            XCTAssertEqual(visibleRunMessages(provider: provider, messages: [input, error, tool, nextError]).map(\.id), ["user", "tool", "next-error"])
+            XCTAssertEqual(visibleRunMessages(provider: provider, messages: [input, error, newUser, nextError]).map(\.id), ["user", "error", "new-user", "next-error"])
+        }
+    }
+
+    func testOldClaudeCacheRequestsOneReplayAndKeepsOfflineDataAndPendingCommands() throws {
+        var state = CachedState()
+        state.lastSequence = 42
+        state.pendingCreatedRunIDs = ["pending-command": "run"]
+        let message = AgentMessage(id: "old-reasoning", runId: "run", role: "assistant", content: "Cached SDK fixture", eventType: "reasoning", toolName: nil, createdAt: "1")
+        let run = AgentRun(id: "run", projectId: nil, provider: "claude", title: "Cached chat", status: "idle",
+            workingDirectory: nil, summary: "", createdAt: "0", updatedAt: "2")
+        state.runs = [RunDetail(run: run, messages: [], artifacts: [])]
+        state.chatPages = [companionChatPage(chatId: "run", chatKind: "agent", records: buildAgentChatRecords(runID: "run", messages: [message]))]
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
+        legacy.removeValue(forKey: "agentMessageMetadataVersion")
+        var recovered = try JSONDecoder().decode(CachedState.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(recovered.lastSequence, 0)
+        XCTAssertEqual(recovered.chatPages, state.chatPages)
+        XCTAssertEqual(recovered.pendingCreatedRunIDs, state.pendingCreatedRunIDs)
+        XCTAssertEqual(recovered.runs.first?.run.title, "Cached chat")
+        recovered.lastSequence = 56
+        let nextLoad = try JSONDecoder().decode(CachedState.self, from: JSONEncoder().encode(recovered))
+        XCTAssertEqual(nextLoad.lastSequence, 56)
+        XCTAssertEqual(nextLoad.agentMessageMetadataVersion, 1)
+    }
+
     func testCompletedRunProcessCollapsesBeforeResultMessage() {
         let messages = [
             AgentMessage(id: "user", runId: "run", role: "user", content: "开始", eventType: nil, toolName: nil, createdAt: "2026-08-09T00:00:00.000Z"),

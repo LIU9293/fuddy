@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccountState } from '../../shared/account'
 import { AccountAuthorizationLostError } from '../services/account-service'
 import type { IpcContext } from './context'
@@ -58,6 +58,27 @@ describe('account IPC lifecycle', () => {
     electronMocks.handlers.clear()
     electronMocks.windows.length = 0
     electronMocks.writeText.mockClear()
+  })
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('keeps project sharing available and reports a missing service route', async () => {
+    vi.stubEnv('PROJECT_AGENT_PROJECT_SHARING', '0')
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const sharedId = '22222222-2222-4222-8222-222222222222'
+    const listProjectShares = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('共享服务接口不存在。'))
+    registerAccountIpc({
+      database: { listProjects: () => [{ id: projectId, shared: { id: sharedId } }] },
+      accountService: { listProjectShares }
+    } as unknown as IpcContext)
+
+    const overview = electronMocks.handlers.get('account:project-sharing-overview')!
+    await expect(overview({}, projectId)).resolves.toEqual({
+      share: null, members: [], invitations: []
+    })
+    await expect(overview({}, projectId)).rejects.toThrow('共享服务接口不存在。')
+    expect(listProjectShares).toHaveBeenCalledTimes(2)
   })
 
   it('broadcasts an already signed-out state to clear a stale root renderer', () => {

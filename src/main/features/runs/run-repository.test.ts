@@ -44,6 +44,51 @@ function reasoning(
 }
 
 describe('RunRepository reasoning visibility', () => {
+  it('upgrades version 10 without guessing historical authors and persists new identities', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'fuddy-chat-authors-'))
+    const path = join(directory, 'app.sqlite')
+    let database = createTestDatabase(path)
+    try {
+      database.createAgentRun({ ...run('old-draft', 'codex', '2026-09-22T00:00:00Z'), status: 'draft' })
+      database.createAgentRunMessage({ id: 'old-message', runId: 'old-draft', role: 'user', content: 'Old',
+        eventType: null, toolName: null, metadata: null, createdAt: '2026-09-22T00:00:00Z' })
+      database.close()
+      const legacy = new DatabaseSync(path)
+      legacy.exec(`
+        ALTER TABLE agent_runs DROP COLUMN created_by_user_id;
+        ALTER TABLE agent_runs DROP COLUMN created_by_snapshot_json;
+        ALTER TABLE agent_runs DROP COLUMN visibility;
+        ALTER TABLE agent_run_messages DROP COLUMN author_user_id;
+        ALTER TABLE agent_run_messages DROP COLUMN author_snapshot_json;
+        ALTER TABLE agent_run_messages DROP COLUMN request_id;
+        PRAGMA user_version = 10;
+      `)
+      legacy.close()
+      database = createTestDatabase(path)
+      expect(database.getAgentRun('old-draft')).toMatchObject({
+        createdByUserId: null, createdBySnapshot: null, visibility: 'draft'
+      })
+      expect(database.listAgentRunMessages('old-draft')[0]).toMatchObject({
+        authorUserId: null, authorSnapshot: null, requestId: null
+      })
+      database.createAgentRun({ ...run('new-run', 'codex', '2026-09-23T00:00:00Z'),
+        createdByUserId: 'user-1', createdBySnapshot: { displayName: 'Kai', avatarRef: null } })
+      database.createAgentRunMessage({ id: 'new-message', runId: 'new-run', role: 'user', content: 'New',
+        authorUserId: 'user-1', authorSnapshot: { displayName: 'Kai', avatarRef: null }, requestId: 'request-1',
+        eventType: null, toolName: null, metadata: null, createdAt: '2026-09-23T00:00:00Z' })
+      database.close()
+      database = createTestDatabase(path)
+      expect(database.getAgentRun('new-run')).toMatchObject({
+        createdByUserId: 'user-1', createdBySnapshot: { displayName: 'Kai', avatarRef: null }, visibility: 'published'
+      })
+      expect(database.listAgentRunMessages('new-run')[0]).toMatchObject({
+        authorUserId: 'user-1', authorSnapshot: { displayName: 'Kai', avatarRef: null }, requestId: 'request-1'
+      })
+    } finally {
+      database.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
   it('atomically binds an independent Codex session and imports history once across restarts', () => {
     const directory = mkdtempSync(join(tmpdir(), 'fuddy-codex-binding-'))
     const path = join(directory, 'app.sqlite')

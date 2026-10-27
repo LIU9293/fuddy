@@ -1,11 +1,39 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { parseShellEnvironment, readInteractiveZshEnvironment } from './shell-environment'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { hydrateProcessEnvironmentFromZsh, parseShellEnvironment, readInteractiveZshEnvironment } from './shell-environment'
 
 afterEach(() => {
   vi.useRealTimers()
 })
 
 describe('interactive shell environment', () => {
+  it('loads login and interactive exports and honors login unsets', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'fuddy-shell-login-'))
+    try {
+      writeFileSync(join(root, '.zprofile'), 'export FUDDY_TEST_LOGIN=login\nunset ANTHROPIC_API_KEY\n')
+      writeFileSync(join(root, '.zshrc'), 'export FUDDY_TEST_INTERACTIVE=interactive\n')
+      const environment: NodeJS.ProcessEnv = { ...process.env, ZDOTDIR: root, ANTHROPIC_API_KEY: 'stale-test-key' }
+      await hydrateProcessEnvironmentFromZsh(environment)
+      expect(environment.FUDDY_TEST_LOGIN).toBe('login')
+      expect(environment.FUDDY_TEST_INTERACTIVE).toBe('interactive')
+      expect(environment.ANTHROPIC_API_KEY).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves the GUI environment when shell startup fails', async () => {
+    const environment = { PATH: '/usr/bin', ANTHROPIC_AUTH_TOKEN: 'test-token' }
+    await hydrateProcessEnvironmentFromZsh(environment, {
+      launch: (onComplete) => {
+        onComplete(new Error('startup failed'), '')
+        return { kill: vi.fn() }
+      }
+    })
+    expect(environment).toEqual({ PATH: '/usr/bin', ANTHROPIC_AUTH_TOKEN: 'test-token' })
+  })
   it('ignores zsh startup output and parses the null-separated environment after the marker', () => {
     const output = [
       'zsh startup message',

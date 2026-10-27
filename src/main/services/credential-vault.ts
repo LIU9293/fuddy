@@ -43,6 +43,18 @@ export class CredentialVault {
     this.writeAll(credentials)
   }
 
+  deleteByPrefix(prefix: string): void {
+    if (!prefix) throw new Error('凭证引用前缀不能为空。')
+    const credentials = this.readAll()
+    let changed = false
+    for (const reference of Object.keys(credentials)) {
+      if (!reference.startsWith(prefix)) continue
+      delete credentials[reference]
+      changed = true
+    }
+    if (changed) this.writeAll(credentials)
+  }
+
   private readAll(): CredentialMap {
     if (!existsSync(this.path)) return {}
     if (!this.getStatus().available) return {}

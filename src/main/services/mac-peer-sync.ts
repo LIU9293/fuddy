@@ -10,6 +10,7 @@ import { commandSchema, syncEventSchema, companionAttachmentDescriptorSchema, co
 import { companionAttachmentAssociatedData, companionCommandAssociatedData, companionEventAssociatedData, openCompanionAttachment, openCompanionJson, sealCompanionAttachment, sealCompanionJson } from '../../shared/companion-crypto'
 import { flattenAgentChatRecords } from '../../shared/companion-chat'
 import { primaryWorkspaceRoot } from '../../shared/project-workspaces'
+import { defaultAgentRunTitle } from '../../shared/agent-run-title'
 import type { AccountService } from './account-service'
 import type { AccountRelayCredentials } from './account-device-grant'
 import type { CredentialVault } from './credential-vault'
@@ -505,13 +506,16 @@ export class MacPeerSyncService {
     const remoteProject = project?.shared ? peer.cache.projects.find((item) => item.shared?.id === project.shared!.id) : undefined
     if (input.projectId && !remoteProject) throw new Error('项目尚未同步到执行 Mac。')
     const runId = randomUUID()
-    await this.command(peer, 'agent.create-session', { runId, projectId: remoteProject?.id, title: input.title, provider: input.provider, draftPrompt: input.draftPrompt ?? undefined, goalId: input.goalId ?? undefined, milestoneId: input.milestoneId ?? undefined })
+    await this.command(peer, 'agent.create-session', { runId, projectId: remoteProject?.id, title: input.title ?? defaultAgentRunTitle, provider: input.provider, draftPrompt: input.draftPrompt ?? undefined, goalId: input.goalId ?? undefined, milestoneId: input.milestoneId ?? undefined })
     return this.getDetail(remoteRunId(peer.space.hostId, runId))
   }
   async mutate(id: string, type: CompanionCommandType, payload: Record<string, unknown> = {}, commandId?: string): Promise<AgentRunDetail | null> {
     const { peer, runId } = this.locate(id)
     await this.command(peer, type, { ...payload, runId }, commandId)
     return type === 'agent.archive-session' ? null : this.getDetail(id)
+  }
+  async retry(id: string, errorMessageId: string, requestId: string): Promise<AgentRunDetail> {
+    return (await this.mutate(id, 'agent.retry-message', { errorMessageId }, requestId))!
   }
   async send(id: string, prompt: string, attachments: ChatAttachmentInput[] = [], requestId?: string): Promise<AgentRunDetail> {
     const { peer, runId } = this.locate(id)

@@ -211,11 +211,11 @@ describe('TaskDispatcher project agent defaults', () => {
 
     expect(aborted).toBe(true)
     expect(result.detail.run.status).toBe('failed')
-    expect(result.detail.run.summary).toContain('没有返回消息或工具活动')
+    expect(result.detail.run.summary).toContain('未收到 Agent 运行进展')
     expect(result.detail.messages.at(-1)).toMatchObject({ role: 'system', eventType: 'error' })
     expect(onRunSettled).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'failed', summary: expect.stringContaining('没有返回消息或工具活动') }),
-      expect.objectContaining({ outcome: 'failed', summary: expect.stringContaining('没有返回消息或工具活动') })
+      expect.objectContaining({ status: 'failed', summary: expect.stringContaining('未收到 Agent 运行进展') }),
+      expect.objectContaining({ outcome: 'failed', summary: expect.stringContaining('未收到 Agent 运行进展') })
     )
     database.close()
   })

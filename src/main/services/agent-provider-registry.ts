@@ -35,10 +35,13 @@ export interface AgentProviderTurnInput {
   filesDirectory: string
   abortController: AbortController
   onUpdate: (update: AgentRunStreamUpdate) => void
+  /** Liveness only; never exposes private reasoning or raw provider payloads. */
+  onActivity?: () => void
   onTool: (toolName: string, detail: string, metadata?: Record<string, unknown>) => void
   onSessionId: (sessionId: string) => void
   onAccountContext?: (context: import('../../shared/agent-account-context').AgentAccountContext) => void
   onApproval: (request: Omit<AgentApprovalRequest, 'runId' | 'createdAt'>) => Promise<AgentApprovalDecision>
+  onSteerReady?: (steer: ((prompt: string, attachments: RuntimeAttachment[], requestId: string) => Promise<void>) | null) => void
 }
 
 export interface AgentProviderTurnResult {
@@ -142,9 +145,11 @@ export function createDefaultAgentProviderRegistry(
         filesDirectory: input.filesDirectory,
         abortController: input.abortController,
         onUpdate: input.onUpdate,
+        onActivity: input.onActivity,
         onTool: input.onTool,
         onApproval: input.onApproval,
-        onSessionId: input.onSessionId
+        onSessionId: input.onSessionId,
+        onSteerReady: input.onSteerReady
       })
       return { text, sessionId: null }
     }
@@ -178,10 +183,12 @@ export function createDefaultAgentProviderRegistry(
           filesDirectory: input.filesDirectory,
           abortController: input.abortController,
           onUpdate: input.onUpdate,
+          onActivity: input.onActivity,
           onSessionId: input.onSessionId,
           onAccountContext: input.onAccountContext,
           onTool: input.onTool,
-          onApproval: input.onApproval
+          onApproval: input.onApproval,
+          onSteerReady: input.onSteerReady
         })
       }
     })

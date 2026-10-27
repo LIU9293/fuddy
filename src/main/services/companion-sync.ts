@@ -1540,6 +1540,12 @@ export class CompanionSyncService {
         if (detail.run.status === 'failed') throw new Error(detail.run.summary || 'Chat 执行失败，请重试。')
         return detail
       }
+      case 'agent.retry-message': {
+        const detail = await this.dispatcher.retryMessage(this.requiredString(payload, 'runId'),
+          this.requiredString(payload, 'errorMessageId'), () => this.scheduleEventSync(), cancellationSignal)
+        if (detail.run.status === 'failed') throw new Error(detail.run.summary || 'Chat 执行失败，请重试。')
+        return detail
+      }
       case 'agent.stop-message':
         return await this.dispatcher.stopMessage(this.requiredString(payload, 'runId'))
       case 'agent.create-session': {

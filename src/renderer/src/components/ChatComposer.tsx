@@ -1,4 +1,4 @@
-import { ArrowUp, LoaderCircle, Mic, Paperclip, Square, X } from 'lucide-react'
+import { ArrowUp, LoaderCircle, Mic, Paperclip, Plus, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { isNativeImage, type ChatAttachmentInput } from '../../../shared/chat-attachments'
 import { blobToDataUrl, downsampleAudio, encodePcm16Wave, mergeAudioChunks, microphoneAccessError, prepareAudioForTranscription } from '../voice-input'
@@ -15,6 +15,7 @@ interface ChatComposerProps {
   leftControls?: ReactNode
   attachments?: readonly ChatAttachmentInput[]
   imageOnly?: boolean
+  allowAttachments?: boolean
   attachmentError?: string | null
   onAttachmentsSelected: (files: File[]) => void | Promise<void>
   onRemoveAttachment: (id: string) => void
@@ -22,6 +23,7 @@ interface ChatComposerProps {
   voicePrompt?: string
   modelLabel?: string
   modelControl?: ReactNode
+  layout?: 'default' | 'agent-run'
 }
 
 interface ActiveRecording {
@@ -45,13 +47,15 @@ export function ChatComposer({
   leftControls,
   attachments = [],
   imageOnly = true,
+  allowAttachments = true,
   attachmentError = null,
   onAttachmentsSelected,
   onRemoveAttachment,
   submitAriaLabel = '提交',
   voicePrompt = 'Fuddy，项目，目标，决策收件箱，工作助理，Chat',
   modelLabel,
-  modelControl
+  modelControl,
+  layout = 'default'
 }: ChatComposerProps): React.JSX.Element {
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const recordingRef = useRef<ActiveRecording | null>(null)
@@ -145,14 +149,15 @@ export function ChatComposer({
     if (canStop) void onStop?.()
     else void onSubmit()
   }
+  const modelSelector = modelControl ?? (modelLabel && <span className="composer-model-label" title={modelLabel}>{modelLabel}</span>)
 
   return (
-    <div className="composer"
+    <div className={`composer ${layout === 'agent-run' ? 'is-agent-run' : ''}`.trim()}
       onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }}
       onDrop={event => {
         if (!event.dataTransfer.files.length) return
         event.preventDefault()
-        if (!disabled && (!busy || allowSubmitWhileBusy)) void onAttachmentsSelected(Array.from(event.dataTransfer.files))
+        if (allowAttachments && !disabled && (!busy || allowSubmitWhileBusy)) void onAttachmentsSelected(Array.from(event.dataTransfer.files))
       }}>
       {attachments.length > 0 && (
         <div className="composer-image-attachments" aria-label="待发送附件">
@@ -178,7 +183,7 @@ export function ChatComposer({
         onPaste={event => {
           if (!event.clipboardData.files.length) return
           event.preventDefault()
-          if (!disabled && (!busy || allowSubmitWhileBusy)) void onAttachmentsSelected(Array.from(event.clipboardData.files))
+          if (allowAttachments && !disabled && (!busy || allowSubmitWhileBusy)) void onAttachmentsSelected(Array.from(event.clipboardData.files))
         }}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -194,7 +199,7 @@ export function ChatComposer({
       />
       <div className="composer-controls">
         <div className="composer-left-controls">
-          <input
+          {allowAttachments && <><input
             ref={imageInputRef}
             className="composer-image-input"
             type="file"
@@ -215,12 +220,13 @@ export function ChatComposer({
             title="添加附件"
             disabled={disabled || (busy && !allowSubmitWhileBusy)}
           >
-            <Paperclip size={17} />
-          </button>
+            {layout === 'agent-run' ? <Plus size={21} strokeWidth={2} /> : <Paperclip size={17} />}
+          </button></>}
           {leftControls}
+          {layout === 'default' && modelSelector}
         </div>
         <div className="composer-right-controls">
-          {modelControl ?? (modelLabel && <span className="composer-model-label" title={modelLabel}>{modelLabel}</span>)}
+          {layout === 'agent-run' && modelSelector}
           <button
             type="button"
             className={`round-icon-button composer-voice-button ${voiceState === 'recording' ? 'is-recording' : ''}`}

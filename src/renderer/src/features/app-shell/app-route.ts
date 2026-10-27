@@ -6,6 +6,7 @@ export type AppMainRoute =
   | { kind: 'inbox' }
   | { kind: 'files' }
   | { kind: 'projects' }
+  | { kind: 'shared-projects' }
   | { kind: 'project'; projectId: string; section: ProjectSection }
   | { kind: 'runs'; runId: string | null; creating: boolean; createProjectId?: string | null }
   | { kind: 'automations' }
@@ -99,6 +100,7 @@ export interface AppNavigationController {
   openInbox: () => void
   openFiles: () => void
   openProjects: () => void
+  openSharedProjects: () => void
   openAutomations: () => void
   openProject: (projectId: string, section?: ProjectSection) => void
   setProjectSection: (section: ProjectSection) => void
@@ -129,6 +131,7 @@ export function useAppNavigation(): AppNavigationController {
     openInbox: () => dispatch({ type: 'open-main', route: { kind: 'inbox' } }),
     openFiles: () => dispatch({ type: 'open-main', route: { kind: 'files' } }),
     openProjects: () => dispatch({ type: 'open-main', route: { kind: 'projects' } }),
+    openSharedProjects: () => dispatch({ type: 'open-main', route: { kind: 'shared-projects' } }),
     openAutomations: () => dispatch({ type: 'open-main', route: { kind: 'automations' } }),
     openProject: (projectId, section = 'inbox') => dispatch({ type: 'open-project', projectId, section }),
     setProjectSection: (section) => dispatch({ type: 'set-project-section', section }),

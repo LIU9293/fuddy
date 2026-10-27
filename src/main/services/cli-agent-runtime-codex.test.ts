@@ -46,6 +46,64 @@ beforeEach(() => {
 })
 
 describe('Codex app-server lifecycle', () => {
+  it('preserves the native failure message so integration failures can be diagnosed', async () => {
+    const { requests, notify } = server(rpc => ({ result: rpc.method === 'thread/resume'
+      ? { thread: { id: 'owned' } } : {} }))
+    const running = runtime().runTurn({ ...input(), sessionId: 'owned', codexSessionOwned: true })
+    const rejected = expect(running).rejects.toThrow('The configured model is not supported')
+    await vi.waitFor(() => expect(requests.some(rpc => rpc.method === 'turn/start')).toBe(true))
+    notify('turn/completed', { turn: { status: 'failed', error: { message: 'The configured model is not supported' } } })
+    await rejected
+  })
+
+  it('sends Steer to the active turn with its ID and original message ID', async () => {
+    let steer: ((prompt: string, attachments: [], requestId: string) => Promise<void>) | null = null
+    const turnInput = { ...input(), sessionId: 'owned', codexSessionOwned: true,
+      onSteerReady: (value: typeof steer) => { steer = value } }
+    const { requests, notify } = server(rpc => ({ result: rpc.method === 'thread/resume'
+      ? { thread: { id: 'owned' } }
+      : rpc.method === 'turn/start' ? { turn: { id: 'active-turn' } }
+      : rpc.method === 'turn/steer' ? { turnId: 'active-turn' } : {} }))
+    const running = runtime().runTurn(turnInput)
+    await vi.waitFor(() => expect(steer).not.toBeNull())
+    await steer!('新方向', [], 'message-2')
+    expect(requests.find(rpc => rpc.method === 'turn/steer')?.params).toEqual({
+      threadId: 'owned', expectedTurnId: 'active-turn', clientUserMessageId: 'message-2',
+      input: [{ type: 'text', text: '新方向' }]
+    })
+    notify('item/completed', { item: { type: 'agentMessage', id: 'answer', phase: 'final_answer', text: '完成' } })
+    notify('turn/completed', { turn: { status: 'completed' } })
+    await running
+    expect(steer).toBeNull()
+  })
+
+  it('counts scoped reasoning, command and MCP progress as liveness without exposing hidden payloads', async () => {
+    const onActivity = vi.fn()
+    const turnInput = { ...input(), sessionId: 'owned', codexSessionOwned: true, onActivity }
+    const { requests, notify } = server(rpc => ({ result: rpc.method === 'thread/resume' ? { thread: { id: 'owned' } } : {} }))
+    const running = runtime().runTurn(turnInput)
+    await vi.waitFor(() => expect(requests.some(rpc => rpc.method === 'turn/start')).toBe(true))
+    const before = onActivity.mock.calls.length
+    for (const method of ['item/reasoning/textDelta', 'item/reasoning/summaryTextDelta', 'item/commandExecution/outputDelta', 'item/mcpToolCall/progress']) {
+      notify(method, { threadId: 'owned', itemId: 'work', delta: 'private payload' })
+    }
+    expect(onActivity).toHaveBeenCalledTimes(before + 4)
+    notify('item/commandExecution/outputDelta', { threadId: 'another-thread', delta: 'unrelated' })
+    notify('account/rateLimits/updated', {})
+    expect(onActivity).toHaveBeenCalledTimes(before + 4)
+    expect(JSON.stringify(vi.mocked(turnInput.onUpdate).mock.calls)).not.toContain('private payload')
+    expect(turnInput.onTool).not.toHaveBeenCalled()
+    for (const type of ['dynamicToolCall', 'collabAgentToolCall']) {
+      notify('item/started', { threadId: 'owned', item: { type, id: type, tool: 'wait', status: 'inProgress' } })
+      notify('item/completed', { threadId: 'owned', item: { type, id: type, tool: 'wait', status: 'completed' } })
+      expect(turnInput.onUpdate).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool', toolCallId: type, status: 'running' }))
+      expect(turnInput.onUpdate).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool', toolCallId: type, status: 'completed' }))
+    }
+    notify('item/completed', { item: { type: 'agentMessage', id: 'answer', phase: 'final_answer', text: '完成' } })
+    notify('turn/completed', { turn: { status: 'completed' } })
+    await running
+  })
+
   it.each([null, 'owned'])('injects current instructions separately when starting/resuming %s', async sessionId => {
     const turnInput = { ...input(), sessionId, codexSessionOwned: true, projectContext: '最新事实：交易暂停' }
     const { requests, notify } = server(rpc => ({ result: rpc.method.startsWith('thread/') ? { thread: { id: sessionId ?? 'new' } } : {} }))

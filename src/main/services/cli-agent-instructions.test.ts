@@ -30,7 +30,7 @@ describe('native instruction delivery', () => {
       const path = join(root, 'image.png'); writeFileSync(path, 'pixel')
       const captured: unknown[] = []
       mocks.query.mockImplementation(async function* (args) {
-        for await (const message of args.prompt) captured.push(message)
+        captured.push((await args.prompt[Symbol.asyncIterator]().next()).value)
         yield { type: 'result', subtype: 'success', result: '完成', session_id: 'existing' }
       })
       await runtime().runTurn({ ...input('claude', 'existing'), attachments: [{ path, name: 'image.png', mimeType: 'image/png' }] })
@@ -41,12 +41,16 @@ describe('native instruction delivery', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
   it.each([null, 'existing'])('appends Claude rules to the native preset on session %s', async sessionId => {
-    mocks.query.mockImplementation(async function* () {
+    let initialMessage: unknown
+    mocks.query.mockImplementation(async function* (args) {
+      initialMessage = (await args.prompt[Symbol.asyncIterator]().next()).value
       yield { type: 'result', subtype: 'success', result: '完成', session_id: 'existing' }
     })
     await runtime().runTurn(input('claude', sessionId))
     const args = mocks.query.mock.calls[0][0]
-    expect(args.prompt).toBe('检查 rebalance')
+    expect(initialMessage).toMatchObject({
+      type: 'user', message: { content: [{ type: 'text', text: '检查 rebalance' }] }
+    })
     expect(args.options.systemPrompt).toMatchObject({ type: 'preset', preset: 'claude_code' })
     expect(args.options.systemPrompt.append).toContain('最新事实：交易暂停')
     expect(args.options.systemPrompt.append).toContain('/files')

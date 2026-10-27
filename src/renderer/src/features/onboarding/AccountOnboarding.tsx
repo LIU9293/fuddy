@@ -19,6 +19,7 @@ import { userFacingErrorMessage } from '../../user-facing-error'
 export interface AccountOnboardingProps {
   state: AccountState
   onStateChange: (state: AccountState) => void
+  onSharedInvitationAccepted?: () => void
 }
 
 type BusyAction = 'email' | 'verify' | 'google' | null
@@ -381,9 +382,26 @@ function ProjectStep({ state, onStateChange }: AccountOnboardingProps): React.JS
   )
 }
 
-function SetupView({ state, onStateChange }: AccountOnboardingProps): React.JSX.Element {
+function SetupView({ state, onStateChange,
+  onSharedInvitationAccepted }: AccountOnboardingProps): React.JSX.Element {
   const [logoutBusy, setLogoutBusy] = useState(false)
+  const [invitationToken, setInvitationToken] = useState('')
+  const [invitationBusy, setInvitationBusy] = useState(false)
+  const [invitationError, setInvitationError] = useState<string | null>(null)
   const step = state.onboarding?.step ?? 'detect-agent'
+
+  async function acceptInvitation(): Promise<void> {
+    if (!invitationToken.trim() || invitationBusy) return
+    setInvitationBusy(true)
+    setInvitationError(null)
+    try {
+      await window.projectAgent.acceptProjectInvitation(invitationToken.trim())
+      onSharedInvitationAccepted?.()
+      onStateChange(await window.projectAgent.getAccountState())
+    } catch (error) {
+      setInvitationError(errorMessage(error, '项目邀请无法接受。'))
+    } finally { setInvitationBusy(false) }
+  }
 
   async function logout(): Promise<void> {
     setLogoutBusy(true)
@@ -401,6 +419,19 @@ function SetupView({ state, onStateChange }: AccountOnboardingProps): React.JSX.
       </button>
       <main className="account-entry-main onboarding-main">
         <div className="onboarding-panel">
+          <section className="onboarding-step" aria-label="加入共享项目">
+            <h2>加入共享项目</h2>
+            <p className="account-lede">已有邀请令牌？加入后可查看已发布的 Chat 和附件、新建 Chat 并发送消息；先由所有者授权这台设备，无需配置本机 Agent 或项目文件夹。</p>
+            <label className="onboarding-field"><span>邀请令牌</span>
+              <input value={invitationToken} placeholder="fuddy_invite_…"
+                onChange={(event) => setInvitationToken(event.target.value)} />
+            </label>
+            {invitationError && <p className="account-entry-error" role="alert">{invitationError}</p>}
+            <button className="account-secondary-button" type="button"
+              disabled={invitationBusy || !invitationToken.trim()} onClick={() => void acceptInvitation()}>
+              {invitationBusy && <LoaderCircle className="spin" size={15} />} 接受邀请
+            </button>
+          </section>
           {step === 'detect-agent' && <AgentStep onStateChange={onStateChange} />}
           {step === 'add-project' && <ProjectStep state={state} onStateChange={onStateChange} />}
           <OnboardingProgress step={step} />

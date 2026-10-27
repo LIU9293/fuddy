@@ -8,7 +8,7 @@ private let companionAgentRunChatTopSpacing: CGFloat = 16
 let companionChatLatestDistanceThreshold: CGFloat = 50
 
 enum CompanionSection: String, CaseIterable, Identifiable {
-    case runs, assistant, inbox, projects, settings
+    case runs, assistant, inbox, projects, shared, settings
     var id: String { rawValue }
 
     var title: String {
@@ -17,6 +17,7 @@ enum CompanionSection: String, CaseIterable, Identifiable {
         case .runs: "Chats"
         case .inbox: "收件箱"
         case .projects: "项目"
+        case .shared: "与我共享"
         case .settings: "设置"
         }
     }
@@ -27,6 +28,7 @@ enum CompanionSection: String, CaseIterable, Identifiable {
         case .runs: "bubble.left.and.bubble.right"
         case .inbox: "tray"
         case .projects: "square.grid.2x2"
+        case .shared: "person.2"
         case .settings: "gearshape"
         }
     }
@@ -103,7 +105,7 @@ func companionDrawerTargetIsPresented(
 func companionCanOpenDrawer(section: CompanionSection, pathIsEmpty: Bool) -> Bool {
     guard pathIsEmpty else { return false }
     switch section {
-    case .assistant, .runs, .inbox, .projects, .settings: return true
+    case .assistant, .runs, .inbox, .projects, .shared, .settings: return true
     }
 }
 
@@ -133,12 +135,18 @@ struct CompanionRootView: View {
                 .onAppear {
                     updateContainerBottomSafeAreaInset(geometry.safeAreaInsets.bottom)
                     openPendingNotificationRun()
+                    if !store.isPaired {
+                        router.select(.shared)
+                    }
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--design-preview-new-run") {
                         router.path = [.newRun(projectId: store.accountProjects.first?.id)]
                     }
                     if ProcessInfo.processInfo.arguments.contains("--design-preview-keyboard") || ProcessInfo.processInfo.arguments.contains("--design-preview-attachments") {
                         router.path = [.run(id: "run-preview-completed", prefill: "")]
+                    }
+                    if ProcessInfo.processInfo.arguments.contains("--design-preview-claude-thinking") {
+                        router.path = [.run(id: "run-preview", prefill: "")]
                     }
                     #endif
                 }
@@ -272,6 +280,7 @@ struct CompanionRootView: View {
         case .runs: RunsListView(topContentInset: 62 + statusBannerHeight)
         case .inbox: DecisionListView()
         case .projects: ProjectListView()
+        case .shared: SharedProjectsView()
         case .settings: CompanionSettingsView()
         }
     }
@@ -446,7 +455,9 @@ private struct CompanionSidebar: View {
             }
             .padding(.bottom, 22)
 
-            ForEach(CompanionSection.allCases) { section in
+            ForEach(CompanionSection.allCases.filter {
+                store.isPaired || $0 == .shared || $0 == .settings
+            }) { section in
                 menuButton(section)
             }
 
@@ -1167,7 +1178,7 @@ struct NewRunView: View {
     @EnvironmentObject private var store: CompanionStore
     @EnvironmentObject private var router: CompanionRouter
     @State private var projectID: String
-    @State private var title = ""
+    @State private var provider = ""
     @State private var executionSpaceID = ""
     @State private var creating = false
     @State private var error: String?
@@ -1199,11 +1210,16 @@ struct NewRunView: View {
                     }
                     .disabled(!host.selectable)
                 }
-                Text("使用执行 Mac 的项目默认 Agent。主文件夹请在对应 Mac 上配置，后续消息始终由它执行。")
+                Text("主文件夹请在对应 Mac 上配置，后续消息始终由它执行。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Chat") {
-                TextField("例如：分析项目上线阻塞", text: $title)
+            Section("Agent") {
+                Picker("执行 Agent", selection: $provider) {
+                    Text(projectID.isEmpty ? "默认 Coding Agent" : "项目默认 Agent").tag("")
+                    ForEach(companionAgentProviderIDs, id: \.self) { id in
+                        Text(companionAgentProviderLabel(id)).tag(id)
+                    }
+                }
             }
             if let error {
                 Section { Text(error).foregroundStyle(.red).font(.caption) }
@@ -1214,7 +1230,7 @@ struct NewRunView: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button(creating ? "正在创建…" : "创建") { Task { await create() } }
-                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || creating || !store.executionHosts(projectID: projectID.isEmpty ? nil : projectID).contains(where: { $0.id == executionSpaceID && $0.selectable }))
+                    .disabled(creating || !store.executionHosts(projectID: projectID.isEmpty ? nil : projectID).contains(where: { $0.id == executionSpaceID && $0.selectable }))
             }
         }
     }
@@ -1226,8 +1242,9 @@ struct NewRunView: View {
         do {
             let runID = try await store.createAccountRun(
                 projectID: projectID.isEmpty ? nil : projectID,
-                title: title,
-                spaceID: executionSpaceID
+                title: "新建 Chat",
+                spaceID: executionSpaceID,
+                provider: provider.isEmpty ? nil : provider
             )
             router.openRun(id: runID)
         } catch {
@@ -1283,7 +1300,7 @@ func companionDistanceFromLatest(
     bottomY - max(0, viewportHeight - bottomInset)
 }
 
-private struct CompanionChatTimeline<RecordContent: View, TailContent: View>: View {
+struct CompanionChatTimeline<RecordContent: View, TailContent: View>: View {
     @EnvironmentObject private var store: CompanionStore
     let page: CompanionChatPage
     let viewportSize: CGSize
@@ -1309,19 +1326,19 @@ private struct CompanionChatTimeline<RecordContent: View, TailContent: View>: Vi
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: companionChatItemSpacing) {
                     if page.hasMore {
-                        historyLoader
+                        insetRow(historyLoader)
                             .id(historyLoaderID)
                             .task(id: page.nextBefore) {
                                 await store.loadOlderChatRecords(chatID: page.chatId)
                             }
                     }
                     ForEach(page.records) { record in
-                        recordContent(record, lastRecordID)
+                        insetRow(recordContent(record, lastRecordID))
                             .id(record.id)
                     }
-                    tail()
+                    insetRow(tail())
                     Color.clear
-                        .frame(height: bottomInset)
+                        .frame(width: viewportSize.width, height: bottomInset)
                         .id(latestAnchorID)
                         .background {
                             GeometryReader { anchor in
@@ -1333,11 +1350,7 @@ private struct CompanionChatTimeline<RecordContent: View, TailContent: View>: Vi
                         }
                 }
                 .scrollTargetLayout()
-                .frame(
-                    width: max(0, viewportSize.width - companionChatHorizontalPadding * 2),
-                    alignment: .leading
-                )
-                .padding(.horizontal, companionChatHorizontalPadding)
+                .frame(width: viewportSize.width, alignment: .leading)
                 .padding(.top, topInset)
             }
             .frame(width: viewportSize.width, height: viewportSize.height)
@@ -1404,6 +1417,14 @@ private struct CompanionChatTimeline<RecordContent: View, TailContent: View>: Vi
         }
     }
 
+    private func insetRow<Row: View>(_ row: Row) -> some View {
+        // IDs belong to full-width rows. Keep gutters inside each scroll target,
+        // so scroll-position reconciliation cannot consume an outer horizontal inset.
+        row
+            .frame(width: max(0, viewportSize.width - companionChatHorizontalPadding * 2), alignment: .leading)
+            .padding(.horizontal, companionChatHorizontalPadding)
+    }
+
     private var historyLoader: some View {
         Button {
             Task { await store.loadOlderChatRecords(chatID: page.chatId) }
@@ -1450,13 +1471,14 @@ struct RunDetailView: View {
 
     private var detail: RunDetail? { store.state.runs.first { $0.run.id == runID } }
     private var page: CompanionChatPage {
-        store.chatPage(chatID: runID) ?? CompanionChatPage(
+        let source = store.chatPage(chatID: runID) ?? CompanionChatPage(
             chatId: runID,
             chatKind: "agent",
             records: [],
             hasMore: false,
             nextBefore: nil
         )
+        return visibleAgentChatPage(provider: detail?.run.provider ?? "", page: source)
     }
 
     var body: some View {
@@ -1697,7 +1719,7 @@ private struct RunActivityStagesView: View {
                         ToolCallGroupView(messages: stage.tools, active: current)
                     }
                 }
-                .padding(.bottom, index < stages.count - 1 ? 18 : 0)
+                .padding(.bottom, index < stages.count - 1 ? 9 : 0)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -1768,12 +1790,19 @@ private struct ToolCallGroupView: View {
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                     Spacer()
                     if active { ProgressView().controlSize(.small) }
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 16, height: 16)
+                        .accessibilityHidden(true)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityValue(expanded ? "已展开" : "已收起")
             .accessibilityHint(expanded ? "轻点收起" : "轻点展开")
 
             if expanded {

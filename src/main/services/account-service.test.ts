@@ -19,6 +19,9 @@ class FakeVault {
   get(key: string): string | null { return this.values.get(key) ?? null }
   set(key: string, value: string): void { this.values.set(key, value) }
   delete(key: string): void { this.values.delete(key) }
+  deleteByPrefix(prefix: string): void {
+    for (const key of this.values.keys()) if (key.startsWith(prefix)) this.values.delete(key)
+  }
 }
 
 function response(body: unknown, status = 200): Response {
@@ -42,6 +45,42 @@ describe('AccountService', () => {
     })
     return { service, database, vault, onSignedOut }
   }
+
+  it('uses existing account authorization and sends only a bounded first message for title generation', async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => response({ title: 'Fix login redirects' }))
+    const { service } = signedInService(fetch)
+    const signal = new AbortController().signal
+    expect(await service.generateChatTitle('x'.repeat(2_000), signal)).toBe('Fix login redirects')
+    expect(fetch).toHaveBeenCalledWith('https://account.test/v1/chat-titles', expect.objectContaining({
+      method: 'POST', signal, body: JSON.stringify({ prompt: 'x'.repeat(1_500) })
+    }))
+    const init = fetch.mock.calls[0][1] as RequestInit
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer test-access-secret')
+  })
+
+  it.each([503, 429, 404])('quietly retains the fallback when title generation returns %s', async status => {
+    const { service } = signedInService(async () => response({}, status))
+    expect(await service.generateChatTitle('Fix login')).toBeNull()
+  })
+
+  it('skips title requests while signed out', async () => {
+    const fetch = vi.fn()
+    const service = new AccountService(new FakeDatabase() as never, new FakeVault(), {
+      apiUrl: 'https://account.test', runtimeChannel: 'development', appVersion: '0.0.7', fetch
+    })
+    expect(await service.generateChatTitle('Fix login')).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('does not apply a title fetched before an account switch', async () => {
+    let resolveTitle!: (value: Response) => void
+    const { service } = signedInService(async url => String(url).endsWith('/v1/chat-titles')
+      ? new Promise(resolve => { resolveTitle = resolve }) : response({}))
+    const pending = service.generateChatTitle('Fix login')
+    await service.logout()
+    resolveTitle(response({ title: 'Fix login' }))
+    expect(await pending).toBeNull()
+  })
 
   it.each(['refresh_token_reused', 'refresh_token_expired', 'untrusted-test-refresh-secret'])(
     'notifies the renderer when background discovery loses authorization (%s)', async (code) => {
@@ -79,6 +118,16 @@ describe('AccountService', () => {
     expect(service.getState().status).toBe('signed-out')
     expect(onSignedOut).toHaveBeenCalledOnce()
     expect(vault.get('account.access-token')).toBeNull()
+  })
+
+  it('removes only the signed-out account project keys when local authorization is lost', () => {
+    const { service, vault } = signedInService(vi.fn())
+    vault.set('project-sharing.key:user-1:project-a:1', 'key-a')
+    vault.set('project-sharing.key:user-2:project-b:1', 'key-b')
+    vault.delete('account.refresh-token')
+    expect(service.getState().status).toBe('signed-out')
+    expect(vault.get('project-sharing.key:user-1:project-a:1')).toBeNull()
+    expect(vault.get('project-sharing.key:user-2:project-b:1')).toBe('key-b')
   })
 
   it.each(['offline', 'server-error'])('preserves login when refresh fails temporarily: %s', async (failure) => {

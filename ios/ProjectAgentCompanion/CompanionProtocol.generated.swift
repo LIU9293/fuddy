@@ -3,7 +3,7 @@ import Foundation
 
 let companionMinimumProtocolVersion = 5
 let companionProtocolVersion = 5
-let companionContractFingerprint = "49051a2b2669e019559cc066"
+let companionContractFingerprint = "d72d3c8e8d3c3fdca088f4da"
 
 func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
     version >= companionMinimumProtocolVersion && version <= companionProtocolVersion
@@ -100,6 +100,7 @@ enum CompanionCommandType: Hashable, Codable {
     case assistantSendMessage
     case assistantExecuteAction
     case agentSendMessage
+    case agentRetryMessage
     case agentStopMessage
     case agentCreateSession
     case agentRenameSession
@@ -118,6 +119,7 @@ enum CompanionCommandType: Hashable, Codable {
         case .assistantSendMessage: "assistant.send-message"
         case .assistantExecuteAction: "assistant.execute-action"
         case .agentSendMessage: "agent.send-message"
+        case .agentRetryMessage: "agent.retry-message"
         case .agentStopMessage: "agent.stop-message"
         case .agentCreateSession: "agent.create-session"
         case .agentRenameSession: "agent.rename-session"
@@ -139,6 +141,7 @@ enum CompanionCommandType: Hashable, Codable {
         case "assistant.send-message": self = .assistantSendMessage
         case "assistant.execute-action": self = .assistantExecuteAction
         case "agent.send-message": self = .agentSendMessage
+        case "agent.retry-message": self = .agentRetryMessage
         case "agent.stop-message": self = .agentStopMessage
         case "agent.create-session": self = .agentCreateSession
         case "agent.rename-session": self = .agentRenameSession
@@ -176,6 +179,11 @@ struct AgentSendMessagePayload: Codable {
     let prompt: String
     let attachments: [AttachmentDescriptor]?
     let clientMessageId: String?
+}
+
+struct AgentRetryMessagePayload: Codable {
+    let runId: String
+    let errorMessageId: String
 }
 
 struct AgentStopMessagePayload: Codable {

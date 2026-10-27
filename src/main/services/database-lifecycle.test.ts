@@ -28,13 +28,34 @@ describe('AppDatabase lifecycle', () => {
     new AppDatabase(path).close()
 
     const database = new DatabaseSync(path)
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 10 })
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 13 })
     database.close()
 
     new AppDatabase(path).close()
     const reopened = new DatabaseSync(path)
-    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 10 })
+    expect(reopened.prepare('PRAGMA user_version').get()).toEqual({ user_version: 13 })
     reopened.close()
+  })
+
+  it('adds a durable turn queue when upgrading a version 11 database', () => {
+    const path = temporaryDatabasePath()
+    const initial = new AppDatabase(path)
+    initial.createProject({
+      name: '迁移项目', icon: '', summary: '测试保留项目', focus: '',
+      mission: '', vision: '', productType: 'macOS App', stage: '构建中'
+    })
+    initial.close()
+    const legacy = new DatabaseSync(path)
+    legacy.exec('DROP TABLE agent_turn_queue; PRAGMA user_version = 11;')
+    legacy.close()
+
+    const upgraded = new AppDatabase(path)
+    expect(upgraded.listProjects().some((project) => project.name === '迁移项目')).toBe(true)
+    expect(upgraded.listQueuedAgentTurns()).toEqual([])
+    upgraded.close()
+    const inspection = new DatabaseSync(path)
+    expect(inspection.prepare('PRAGMA user_version').get()).toEqual({ user_version: 13 })
+    inspection.close()
   })
 
   it('adds per-session model settings when upgrading a version 3 database', () => {
@@ -53,7 +74,7 @@ describe('AppDatabase lifecycle', () => {
     const upgraded = new DatabaseSync(path)
     const columns = upgraded.prepare('PRAGMA table_info(agent_runs)').all() as Array<{ name: string }>
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['model', 'reasoning_effort']))
-    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 10 })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 13 })
     upgraded.close()
   })
 
@@ -132,7 +153,7 @@ describe('AppDatabase lifecycle', () => {
       last_error: null
     })
     expect(upgradedRemoteCommand).toEqual({ protocol_version: companionProtocolVersion, status: 'executing' })
-    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 10 })
+    expect(upgraded.prepare('PRAGMA user_version').get()).toEqual({ user_version: 13 })
     upgraded.close()
   })
 

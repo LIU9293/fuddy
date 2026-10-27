@@ -12,6 +12,8 @@ import { WorkspaceFilesView } from '../../components/WorkspaceFilesView'
 import { DecisionRow, EmptyState, GoalsView } from '../../views/InboxGoalsView'
 import { ProjectsView } from '../../views/ProjectsView'
 import { ProjectSettingsView, ProjectStatusView } from '../../views/ProjectViews'
+import { ProjectSharingSettingsView } from '../../views/ProjectSharingSettingsView'
+import { SharedProjectsView } from '../../views/SharedProjectsView'
 import { SettingsView } from '../../views/SettingsView'
 import { WorkAssistantView } from '../../views/WorkAssistantView'
 import { settingsSectionTitles, useAutoDismissMessage } from '../../views/shared'
@@ -22,6 +24,8 @@ import { useGoalComposer } from './useGoalComposer'
 import { useProjectWorkflows } from './useProjectWorkflows'
 
 interface AppRouteOutletProps {
+  currentUserId: string | null
+  currentUserDisplayName: string | null
   store: AppDataStore
   setBootstrap: React.Dispatch<React.SetStateAction<AppBootstrap | null>>
   refresh: () => Promise<void>
@@ -134,6 +138,7 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
                   onSaved={() => props.refreshDomains(['projects'])}
                   onNotice={props.onNotice}
                 />
+                <ProjectSharingSettingsView project={selectedProject} runs={bootstrap.runs} />
                 <div className="project-connectors-settings">
                   <SettingsView
                     bootstrap={bootstrap}
@@ -181,6 +186,7 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
             setDecisionStatus('inbox')
           }} />
         )}
+        {nav.navigation === 'shared-projects' && <SharedProjectsView currentUserId={props.currentUserId} currentUserDisplayName={props.currentUserDisplayName} />}
         {nav.navigation === 'files' && (
           <WorkspaceFilesView projects={bootstrap.projects} initialProjectId={nav.selectedProject} onNotice={props.onNotice} />
         )}
@@ -191,6 +197,8 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
             goals={bootstrap.goals}
             modelLabels={buildAgentModelLabels(bootstrap.providerSettings)}
             codingAgentSettings={bootstrap.providerSettings.codingAgents}
+            currentUserId={props.currentUserId}
+            currentUserDisplayName={props.currentUserDisplayName}
             selectedRunId={nav.selectedAgentRunId}
             creating={nav.creatingAgentRun}
             initialProjectId={nav.creatingAgentRunProjectId}
@@ -273,6 +281,7 @@ function pageTitleForNavigation(nav: AppNavigationController, projectName: strin
     return projectName ? '项目收件箱' : '收件箱'
   }
   if (nav.navigation === 'projects') return '项目'
+  if (nav.navigation === 'shared-projects') return '与我共享'
   if (nav.navigation === 'files') return '文件'
   if (nav.navigation === 'automations') return '自动化'
   if (nav.navigation === 'settings') return settingsSectionTitles[nav.settingsSection]
@@ -280,7 +289,7 @@ function pageTitleForNavigation(nav: AppNavigationController, projectName: strin
 }
 
 function contentColumnClassName(nav: AppNavigationController): string {
-  return `content-column ${nav.navigation === 'briefing' ? 'is-briefing' : ''} ${nav.navigation === 'projects' ? 'is-projects' : ''} ${nav.navigation === 'files' ? 'is-files' : ''} ${nav.navigation === 'runs' ? 'is-runs' : ''} ${nav.navigation === 'automations' ? 'is-automations' : ''} ${nav.navigation === 'settings' ? 'is-settings' : ''} ${nav.navigation === 'inbox' && nav.projectSection === 'inbox' ? 'is-inbox-list' : ''} ${nav.navigation === 'inbox' && nav.projectSection === 'settings' ? 'is-project-settings' : ''} ${nav.navigation === 'inbox' && nav.projectSection === 'status' ? 'is-project-status' : ''}`
+  return `content-column ${nav.navigation === 'briefing' ? 'is-briefing' : ''} ${nav.navigation === 'projects' ? 'is-projects' : ''} ${nav.navigation === 'shared-projects' ? 'is-shared-projects' : ''} ${nav.navigation === 'files' ? 'is-files' : ''} ${nav.navigation === 'runs' ? 'is-runs' : ''} ${nav.navigation === 'automations' ? 'is-automations' : ''} ${nav.navigation === 'settings' ? 'is-settings' : ''} ${nav.navigation === 'inbox' && nav.projectSection === 'inbox' ? 'is-inbox-list' : ''} ${nav.navigation === 'inbox' && nav.projectSection === 'settings' ? 'is-project-settings' : ''} ${nav.navigation === 'inbox' && nav.projectSection === 'status' ? 'is-project-status' : ''}`
 }
 
 function ProjectTabs(props: {

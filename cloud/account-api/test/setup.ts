@@ -13,6 +13,10 @@ for (const statement of __ACCOUNT_MIGRATION_SQL__
 beforeEach(async () => {
   await env.ACCOUNT_DB.exec('PRAGMA foreign_keys = OFF')
   for (const table of [
+    'project_device_grants',
+    'project_invitations',
+    'project_memberships',
+    'project_shares',
     'auth_email_cooldowns',
     'relay_binding_attempts',
     'relay_revocation_jobs',

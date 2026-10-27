@@ -61,6 +61,8 @@ import { ensureCurrentDatabaseSchema } from './database-schema'
 import { ProjectRepository } from '../features/projects/project-repository'
 import { GoalRepository } from '../features/goals/goal-repository'
 import { RunRepository } from '../features/runs/run-repository'
+import { TurnQueueRepository } from '../features/runs/turn-queue-repository'
+import type { AgentTurnQueueItem, AgentTurnQueueStatus } from '../../shared/agent-turn-queue'
 import { ConnectorRepository } from '../features/connectors/connector-repository'
 import { BriefingRepository } from '../features/briefings/briefing-repository'
 import { AutomationRepository } from '../features/automations/automation-repository'
@@ -116,6 +118,7 @@ export class AppDatabase {
   private readonly projects: ProjectRepository
   private readonly goals: GoalRepository
   private readonly runs: RunRepository
+  private readonly turnQueue: TurnQueueRepository
   private readonly connectors: ConnectorRepository
   private readonly briefings: BriefingRepository
   private readonly automations: AutomationRepository
@@ -151,6 +154,7 @@ export class AppDatabase {
           event.payload as never
         )
     )
+    this.turnQueue = new TurnQueueRepository(this.database)
     this.connectors = new ConnectorRepository(this.database)
     this.briefings = new BriefingRepository(
       this.database,
@@ -221,6 +225,33 @@ export class AppDatabase {
             this.database.exec('ALTER TABLE agent_runs ADD COLUMN account_context_json TEXT')
           }
         }
+      },
+      {
+        version: 11,
+        name: 'project-chat-authorship',
+        apply: () => {
+          const runColumns = new Set(this.database.prepare('PRAGMA table_info(agent_runs)').all().map(column => String(column.name)))
+          if (!runColumns.has('created_by_user_id')) this.database.exec('ALTER TABLE agent_runs ADD COLUMN created_by_user_id TEXT')
+          if (!runColumns.has('created_by_snapshot_json')) this.database.exec('ALTER TABLE agent_runs ADD COLUMN created_by_snapshot_json TEXT')
+          if (!runColumns.has('visibility')) {
+            this.database.exec("ALTER TABLE agent_runs ADD COLUMN visibility TEXT NOT NULL DEFAULT 'published' CHECK (visibility IN ('draft', 'published'))")
+            this.database.exec("UPDATE agent_runs SET visibility = 'draft' WHERE status = 'draft'")
+          }
+          const messageColumns = new Set(this.database.prepare('PRAGMA table_info(agent_run_messages)').all().map(column => String(column.name)))
+          if (!messageColumns.has('author_user_id')) this.database.exec('ALTER TABLE agent_run_messages ADD COLUMN author_user_id TEXT')
+          if (!messageColumns.has('author_snapshot_json')) this.database.exec('ALTER TABLE agent_run_messages ADD COLUMN author_snapshot_json TEXT')
+          if (!messageColumns.has('request_id')) this.database.exec('ALTER TABLE agent_run_messages ADD COLUMN request_id TEXT')
+        }
+      },
+      {
+        version: 12,
+        name: 'durable-agent-turn-queue',
+        apply: () => ensureCurrentDatabaseSchema(this.database)
+      },
+      {
+        version: 13,
+        name: 'automatic-agent-session-titles',
+        apply: () => ensureCurrentDatabaseSchema(this.database)
       }
     ]
     const currentVersion = databaseSchemaVersion(this.database)
@@ -417,6 +448,60 @@ export class AppDatabase {
     return this.runs.list()
   }
 
+  listRunsIncludingArchived(): AgentRun[] {
+    return this.runs.listIncludingArchived()
+  }
+
+  enqueueAgentTurn(input: Pick<AgentTurnQueueItem,
+    'requestId' | 'runId' | 'prompt' | 'attachments' | 'requestedByUserId' | 'authorSnapshot'>
+  ): AgentTurnQueueItem {
+    return this.turnQueue.enqueue(input)
+  }
+
+  getAgentTurn(requestId: string): AgentTurnQueueItem | null {
+    return this.turnQueue.get(requestId)
+  }
+
+  listQueuedAgentTurns(): AgentTurnQueueItem[] {
+    return this.turnQueue.listQueued()
+  }
+
+  listAgentTurnsForRun(runId: string): AgentTurnQueueItem[] {
+    return this.turnQueue.listForRun(runId)
+  }
+
+  claimAgentTurn(requestId: string): boolean {
+    return this.turnQueue.claim(requestId)
+  }
+
+  retryFailedAgentTurn(requestId: string): boolean {
+    return this.turnQueue.retryFailed(requestId)
+  }
+
+  claimAgentTurnForSteer(requestId: string): boolean {
+    return this.turnQueue.claimForSteer(requestId)
+  }
+
+  finishAgentTurnSteer(requestId: string): void {
+    this.turnQueue.finishSteer(requestId)
+  }
+
+  releaseAgentTurnSteer(requestId: string): void {
+    this.turnQueue.releaseSteer(requestId)
+  }
+
+  settleAgentTurn(requestId: string, status: Extract<AgentTurnQueueStatus, 'completed' | 'failed' | 'cancelled'>): void {
+    this.turnQueue.settle(requestId, status)
+  }
+
+  cancelQueuedAgentTurn(requestId: string): boolean {
+    return this.turnQueue.cancelQueued(requestId)
+  }
+
+  recoverInterruptedAgentTurns(): number {
+    return this.turnQueue.recoverInterrupted()
+  }
+
   getAgentRun(id: string): AgentRun {
     return this.runs.get(id)
   }
@@ -425,8 +510,23 @@ export class AppDatabase {
     return this.runs.getDetail(id)
   }
 
+  startAgentTurn(message: AgentRunMessage, run: AgentRun, reuseMessage = false): AgentRun {
+    return this.companionTransaction(() => {
+      if (!reuseMessage) this.runs.createMessage(message)
+      return this.runs.update(run)
+    })
+  }
+
+  hasAgentRunMessage(runId: string, messageId: string): boolean {
+    return this.runs.hasMessage(runId, messageId)
+  }
+
   renameAgentRun(id: string, title: string): AgentRun {
     return this.runs.rename(id, title)
+  }
+
+  updateAutomaticAgentRunTitle(id: string, title: string, onlyIfUntitled = false): AgentRun {
+    return this.runs.updateAutomaticTitle(id, title, onlyIfUntitled)
   }
 
   updateAgentRunDraftPrompt(id: string, draftPrompt: string): AgentRun {
@@ -648,8 +748,12 @@ export class AppDatabase {
     return this.decisions.completeWithEvidence(id, resolutionSummary, evidenceRefs, completionKey, resolvedAt)
   }
 
-  createAgentRun(run: AgentRun): AgentRun {
-    return this.runs.create(run)
+  createAgentRun(run: AgentRun, automaticTitle = false): AgentRun {
+    return this.runs.create(run, automaticTitle)
+  }
+
+  canGenerateAgentRunTitle(id: string): boolean {
+    return this.runs.canGenerateTitle(id)
   }
 
   updateAgentRun(run: AgentRun): AgentRun {

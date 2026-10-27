@@ -141,6 +141,10 @@ export function ensureCurrentDatabaseSchema(database: DatabaseSync): void {
         kind TEXT NOT NULL DEFAULT 'general',
         title TEXT NOT NULL,
         status TEXT NOT NULL,
+        created_by_user_id TEXT,
+        automatic_title INTEGER NOT NULL DEFAULT 0,
+        created_by_snapshot_json TEXT,
+        visibility TEXT NOT NULL DEFAULT 'published' CHECK (visibility IN ('draft', 'published')),
         model TEXT,
         reasoning_effort TEXT,
         session_id TEXT,
@@ -159,6 +163,9 @@ export function ensureCurrentDatabaseSchema(database: DatabaseSync): void {
         run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        author_user_id TEXT,
+        author_snapshot_json TEXT,
+        request_id TEXT,
         event_type TEXT,
         tool_name TEXT,
         metadata_json TEXT,
@@ -167,6 +174,21 @@ export function ensureCurrentDatabaseSchema(database: DatabaseSync): void {
 
       CREATE INDEX IF NOT EXISTS idx_agent_run_messages_run
       ON agent_run_messages(run_id, created_at ASC);
+
+      CREATE TABLE IF NOT EXISTS agent_turn_queue (
+        request_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        prompt TEXT NOT NULL,
+        attachments_json TEXT NOT NULL DEFAULT '[]',
+        requested_by_user_id TEXT,
+        author_snapshot_json TEXT,
+        status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted')),
+        enqueued_at TEXT NOT NULL,
+        started_at TEXT,
+        settled_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_turn_queue_run
+      ON agent_turn_queue(run_id, status, enqueued_at);
 
       CREATE TABLE IF NOT EXISTS agent_run_artifacts (
         id TEXT PRIMARY KEY,
@@ -507,6 +529,10 @@ export function ensureCurrentDatabaseSchema(database: DatabaseSync): void {
   const agentRunColumns = database.prepare('PRAGMA table_info(agent_runs)').all() as Array<{
     name: string
   }>
+  if (!agentRunColumns.some((column) => column.name === 'automatic_title')) {
+    // Existing Chat titles remain owned by the user.
+    database.exec('ALTER TABLE agent_runs ADD COLUMN automatic_title INTEGER NOT NULL DEFAULT 0')
+  }
   if (!agentRunColumns.some((column) => column.name === 'goal_id')) {
     database.exec('ALTER TABLE agent_runs ADD COLUMN goal_id TEXT REFERENCES project_goals(id)')
   }

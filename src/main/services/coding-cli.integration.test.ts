@@ -1,13 +1,15 @@
 import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { CliAgentRuntime, type CliAgentTurnInput } from './cli-agent-runtime'
+import { hydrateProcessEnvironmentFromZsh } from './shell-environment'
 
 const enabled = process.env.RUN_CODING_CLI_SMOKE === '1'
 const integration = enabled ? describe : describe.skip
 
 integration('coding CLI end-to-end smoke', () => {
+  beforeAll(() => hydrateProcessEnvironmentFromZsh())
   const runtime = new CliAgentRuntime({ getLaunchConfigs: async () => [] })
 
   function input(

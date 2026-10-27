@@ -25,6 +25,7 @@ import {
   respondAgentApprovalSchema,
   saveAutomationSchema,
   sendAgentRunMessageSchema,
+  retryAgentRunMessageSchema,
   ttsEndpointSchema,
   updateDecisionSchema,
   updateAgentRunExecutionSettingsSchema,
@@ -34,6 +35,16 @@ import {
 } from './schemas'
 import type { IpcContext } from './context'
 import { parseRemoteRunId } from '../services/mac-peer-sync'
+import type { ChatActor } from '../../shared/project-sharing'
+
+function currentChatActor(context: IpcContext): ChatActor | null {
+  const user = context.accountService.getState().user
+  if (!user) return null
+  return {
+    userId: user.id,
+    snapshot: { displayName: user.displayName?.trim() || `用户 ${user.id.slice(0, 6)}`, avatarRef: null }
+  }
+}
 
 export function registerRunIpc(context: IpcContext): void {
   const {
@@ -61,7 +72,7 @@ export function registerRunIpc(context: IpcContext): void {
       if (!event.sender.isDestroyed()) {
         event.sender.send('agent-run:update', { requestId: input.requestId, runId: '', update })
       }
-    })
+    }, undefined, currentChatActor(context))
   })
 
   ipcMain.handle('agent-run:create-draft', (_event, rawInput: unknown) => {
@@ -70,7 +81,7 @@ export function registerRunIpc(context: IpcContext): void {
       if (!context.macPeers) throw new Error('跨 Mac 执行尚未连接。')
       return context.macPeers.createDraft(input)
     }
-    return dispatcher.createDraft(input)
+    return dispatcher.createDraft(input, currentChatActor(context))
   })
 
   ipcMain.handle('agent-run:execution-hosts', async (_event, rawId: unknown) => {
@@ -156,14 +167,40 @@ export function registerRunIpc(context: IpcContext): void {
         }
       },
       input.requestId,
-      input.attachments
+      input.attachments,
+      undefined,
+      currentChatActor(context)
     )
+  })
+
+  ipcMain.handle('agent-run:retry', (event, rawInput: unknown) => {
+    const input = retryAgentRunMessageSchema.parse(rawInput)
+    if (parseRemoteRunId(input.runId)) return context.macPeers!.retry(input.runId, input.errorMessageId, input.requestId)
+    return dispatcher.retryMessage(input.runId, input.errorMessageId, (update) => {
+      if (!event.sender.isDestroyed()) event.sender.send('agent-run:update', { requestId: input.requestId, runId: input.runId, update })
+    }, undefined, currentChatActor(context))
   })
 
   ipcMain.handle('agent-run:stop', (_event, rawId: unknown) => {
     const id = z.string().trim().min(1).max(200).parse(rawId)
     if (parseRemoteRunId(id)) return context.macPeers!.mutate(id, 'agent.stop-message')
     return dispatcher.stopMessage(id)
+  })
+
+  ipcMain.handle('agent-run:pending-turns', (_event, rawId: unknown) => {
+    const runId = z.string().trim().min(1).max(200).parse(rawId)
+    if (parseRemoteRunId(runId)) return []
+    return dispatcher.listPendingTurns(runId)
+  })
+
+  ipcMain.handle('agent-run:cancel-queued-turn', (_event, rawId: unknown) => {
+    const requestId = z.string().trim().min(1).max(200).parse(rawId)
+    return dispatcher.cancelQueuedTurn(requestId)
+  })
+
+  ipcMain.handle('agent-run:steer-queued-turn', (_event, rawId: unknown) => {
+    const requestId = z.string().trim().min(1).max(200).parse(rawId)
+    return dispatcher.steerQueuedTurn(requestId, currentChatActor(context)?.userId)
   })
 
   ipcMain.handle('agent-run:git-summary', async (_event, rawId: unknown) => {

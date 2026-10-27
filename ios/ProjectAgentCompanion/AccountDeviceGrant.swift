@@ -96,6 +96,51 @@ enum AccountDeviceGrant {
         )
     }
 
+    static func openProjectKey(
+        _ wrappedGrant: String,
+        grantID: String,
+        projectID: String,
+        deviceID: String,
+        keyEpoch: Int,
+        privateKeyData: Data
+    ) throws -> String {
+        guard let data = wrappedGrant.data(using: .utf8),
+              let envelope = try? JSONDecoder().decode(WrappedAccountDeviceGrant.self, from: data),
+              envelope.version == 1, envelope.algorithm == algorithm,
+              let senderSPKI = Data(base64Encoded: envelope.senderPublicKey),
+              senderSPKI.count == p256SPKIPrefix.count + 65,
+              senderSPKI.prefix(p256SPKIPrefix.count) == p256SPKIPrefix,
+              let salt = Data(base64Encoded: envelope.salt), salt.count == 32,
+              let nonce = Data(base64Encoded: envelope.nonce), nonce.count == 12,
+              let ciphertext = Data(base64Encoded: envelope.ciphertext),
+              let tag = Data(base64Encoded: envelope.tag), tag.count == 16 else {
+            throw AccountClientError.invalidResponse
+        }
+        let privateKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
+        let senderKey = try P256.KeyAgreement.PublicKey(
+            x963Representation: senderSPKI.dropFirst(p256SPKIPrefix.count)
+        )
+        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: senderKey)
+        let key = sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: salt,
+            sharedInfo: Data("fuddy-shared-project-grant-v1".utf8),
+            outputByteCount: 32
+        )
+        let sealedBox = try AES.GCM.SealedBox(
+            nonce: AES.GCM.Nonce(data: nonce), ciphertext: ciphertext, tag: tag
+        )
+        let associatedData = Data(
+            "fuddy-project-grant:v1:\(grantID):\(projectID):\(deviceID):\(keyEpoch)".utf8
+        )
+        let plaintext = try AES.GCM.open(sealedBox, using: key, authenticating: associatedData)
+        guard let projectKey = String(data: plaintext, encoding: .utf8),
+              projectKey.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil else {
+            throw AccountClientError.invalidResponse
+        }
+        return projectKey
+    }
+
     private static func relayURLPathForValidation(_ value: String) -> String? {
         guard let url = URL(string: value) else { return nil }
         var path = url.path

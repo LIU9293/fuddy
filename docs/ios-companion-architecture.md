@@ -99,6 +99,8 @@ The local path remains visible only as descriptive metadata. R2 objects are not 
 - `RelayClient`: pairing, authenticated REST calls, WebSocket wake-ups, push-token registration, and attachment downloads.
 - `KeychainStore`: device credentials.
 - `CompanionChatTimeline`: shared bounded history, upward pagination, latest-message anchoring, scroll restoration, and new-message following for every chat.
+- Chat scroll targets span the viewport width. Each row owns its 20-point horizontal content insets, including history/loading rows; the lazy stack itself has no horizontal padding. Keep these insets inside the target when changing keyboard or disclosure layouts, so scroll-position reconciliation cannot move the content into the gutter. `ChatLayoutTests` measures message bounds across animated expansion, viewport resizing, and latest-message scrolling. The offline `--design-preview --design-preview-keyboard` fixture includes long history and a completed expandable process.
+- Claude chat pages apply the same display rule as Mac: hide reasoning whose `metadata.segmentId` starts with `claude-thinking-`, retaining visible progress, tools, and final replies. The projection preserves source record IDs and pagination cursors and removes empty process blocks. iOS caches retain the segment marker; upgrading an older Claude cache resets its replay cursor once to recover metadata from authoritative events without deleting offline messages or pending commands. The offline `--design-preview --design-preview-claude-thinking` fixture exercises the active chat with a hidden SDK marker.
 - `WorkAssistantView`: thin Work Assistant configuration over the shared timeline and constrained remote message command.
 - `RunsListView` / `RunDetailView`: persistent Session list and Agent-specific configuration over the same timeline; active runs show a spinner; tool calls use collapsed `DisclosureGroup` rows; Session metadata and artifacts live in the top-right “信息与文件” Modal instead of the message timeline.
 - `DecisionListView`: inbox and constrained status commands.
@@ -160,3 +162,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 ```
 
 Device/APNs verification additionally requires selecting an Apple Developer team, enabling Push Notifications for the app identifier, and installing a development provisioning profile.
+
+## Shared projects from another account
+
+Project sharing uses a separate Account API/Relay channel and a project key, rather than granting a member access to the owner's Sync Space. In Debug builds the shared-project section can accept an invitation, request a per-device key grant, replay source baselines and events, show allowed settings and chats, create/send/stop text turns, and leave. Messages show the recorded sender name and initial avatar. Shared file downloads require current membership, validate the ciphertext transport hash and decrypted size/SHA-256, and open through Quick Look. Snapshots are encrypted per account and epoch on device; Keychain project keys and cached files are removed on sign-out, account switch, or project leave. Release builds keep this entry hidden pending two-account, multi-Mac and iPhone validation. iPhone shared-chat uploads are outside the current P6 scope.

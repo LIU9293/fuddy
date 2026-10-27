@@ -25,6 +25,7 @@ import type {
   CreateGoalInput,
   UpdateProjectInput,
   SendAgentRunMessageInput,
+  RetryAgentRunMessageInput,
   SaveAutomationInput,
   WriteWorkspaceFileInput,
   DispatchProjectAgentInput,
@@ -67,6 +68,26 @@ const api: DesktopApi = {
   linkGoogleAccount: () => ipcRenderer.invoke('account:link-google'),
   unlinkGoogleAccount: () => ipcRenderer.invoke('account:unlink-google'),
   listAccountDevices: () => ipcRenderer.invoke('account:list-devices'),
+  getProjectSharingOverview: (projectId: string) => ipcRenderer.invoke('account:project-sharing-overview', projectId),
+  activateProjectSharing: (projectId: string) => ipcRenderer.invoke('account:activate-project-sharing', projectId),
+  syncProjectSharing: (projectId: string) => ipcRenderer.invoke('account:sync-project-sharing', projectId),
+  setProjectSharingHost: (projectId: string, executionHostId: string) => ipcRenderer.invoke('account:set-project-sharing-host', { projectId, executionHostId }),
+  inviteProjectMember: (projectId: string, email: string) => ipcRenderer.invoke('account:invite-project-member', { projectId, email }),
+  acceptProjectInvitation: (token: string) => ipcRenderer.invoke('account:accept-project-invitation', token),
+  listSharedProjects: () => ipcRenderer.invoke('account:list-shared-projects'),
+  readSharedProject: (projectId: string) => ipcRenderer.invoke('account:read-shared-project', projectId),
+  requestProjectDeviceGrant: (projectId: string) => ipcRenderer.invoke('account:request-project-device-grant', projectId),
+  authorizeProjectDevices: (projectId: string) => ipcRenderer.invoke('account:authorize-project-devices', projectId),
+  submitSharedProjectCommand: (input) => ipcRenderer.invoke('account:submit-shared-project-command', input),
+  uploadSharedProjectAttachments: (input) => ipcRenderer.invoke('account:upload-shared-project-attachments', input),
+  downloadSharedProjectAttachment: (projectId, descriptor) => ipcRenderer.invoke('account:download-shared-project-attachment',
+    { projectId, descriptor }),
+  getSharedProjectCommand: (projectId: string, commandId: string) => ipcRenderer.invoke('account:get-shared-project-command', { projectId, commandId }),
+  listSharedProjectActivity: (projectId: string) => ipcRenderer.invoke('account:list-shared-project-activity', projectId),
+  leaveSharedProject: (projectId: string) => ipcRenderer.invoke('account:leave-shared-project', projectId),
+  removeProjectMember: (projectId: string, userId: string) => ipcRenderer.invoke('account:remove-project-member', { projectId, userId }),
+  revokeProjectInvitation: (projectId: string, invitationId: string) => ipcRenderer.invoke('account:revoke-project-invitation', { projectId, invitationId }),
+  closeProjectSharing: (projectId: string) => ipcRenderer.invoke('account:close-project-sharing', projectId),
   revokeAccountDevice: (deviceId: string) => ipcRenderer.invoke('account:revoke-device', { deviceId }),
   logoutAccount: () => ipcRenderer.invoke('account:logout'),
   logoutAllAccounts: () => ipcRenderer.invoke('account:logout-all'),
@@ -180,7 +201,17 @@ const api: DesktopApi = {
       ipcRenderer.removeListener('agent-run:update', listener)
     })
   },
+  retryAgentRunMessage: (input: RetryAgentRunMessageInput, onUpdate: (update: AgentRunStreamUpdate) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, envelope: AgentRunStreamEnvelope): void => {
+      if (envelope.requestId === input.requestId) onUpdate(envelope.update)
+    }
+    ipcRenderer.on('agent-run:update', listener)
+    return ipcRenderer.invoke('agent-run:retry', input).finally(() => ipcRenderer.removeListener('agent-run:update', listener))
+  },
   stopAgentRunMessage: (runId: string) => ipcRenderer.invoke('agent-run:stop', runId),
+  listAgentRunPendingTurns: (runId: string) => ipcRenderer.invoke('agent-run:pending-turns', runId),
+  cancelQueuedAgentTurn: (requestId: string) => ipcRenderer.invoke('agent-run:cancel-queued-turn', requestId),
+  steerQueuedAgentTurn: (requestId: string) => ipcRenderer.invoke('agent-run:steer-queued-turn', requestId),
   respondAgentApproval: (input: RespondAgentApprovalInput) =>
     ipcRenderer.invoke('agent-run:approval', input),
   listWorkspaceFiles: (projectId: string | null) => ipcRenderer.invoke('workspace-files:list', projectId),

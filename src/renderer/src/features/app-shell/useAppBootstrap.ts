@@ -112,7 +112,7 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
     })
     const stopAgentRuns = window.projectAgent.onAgentRunUpdate((envelope) => {
       agentRunUpdateStore.publish(envelope)
-      if (envelope.update.type === 'created') refreshPatch(['runs'])
+      if (envelope.update.type === 'created' || envelope.update.type === 'updated') refreshPatch(['runs'])
       if (envelope.update.type === 'status') refreshPatch(agentRunStatusBootstrapKeys)
     })
     return () => {

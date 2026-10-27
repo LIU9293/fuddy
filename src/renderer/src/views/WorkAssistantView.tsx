@@ -44,6 +44,8 @@ import { ChatComposer } from '../components/ChatComposer'
 import { ConversationShell } from '../components/ConversationShell'
 import { AgentRunsView } from '../components/AgentRunsView'
 import { ConversationMessageActions } from '../components/ConversationMessageActions'
+import { ConversationSpeaker } from '../components/ConversationSpeaker'
+import { UserMessageBubble } from '../components/UserMessageBubble'
 import { isProjectImageIcon, ProjectIcon } from '../components/ProjectIcon'
 import { ActionMenu, SelectMenu, SuggestionInput } from '../components/SelectMenu'
 import { WorkspaceFilesView } from '../components/WorkspaceFilesView'
@@ -618,10 +620,7 @@ export function WorkAssistantView({
               item.type === 'briefing' ? (
                 <article className="chat-turn is-assistant is-briefing" key={item.id}>
                   <div className="chat-turn-content">
-                    <ConversationMessageActions
-                      content={`${item.briefing.headline}\n\n${item.briefing.body}`}
-                      createdAt={item.createdAt}
-                    />
+                    <ConversationSpeaker label="工作助理" />
                     <p className="briefing-delivery-copy">早上好，这是今天值得关注的项目变化。</p>
                     <AudioBriefingCard
                       briefing={item.briefing}
@@ -630,15 +629,16 @@ export function WorkAssistantView({
                       canRegenerate={item.briefing.id === latestBriefing?.id}
                       onGenerate={onGenerate}
                     />
+                    <ConversationMessageActions
+                      content={`${item.briefing.headline}\n\n${item.briefing.body}`}
+                      createdAt={item.createdAt}
+                    />
                   </div>
                 </article>
               ) : (
                 <article className={`chat-turn is-${item.message.role}`} key={item.id}>
                   <div className="chat-turn-content">
-                    <ConversationMessageActions
-                      content={workAssistantMessageContent(item.message)}
-                      createdAt={item.createdAt}
-                    />
+                    {item.message.role === 'assistant' && <ConversationSpeaker label="工作助理" />}
                     {item.message.role === 'user' && item.message.taskContext && (
                       <TaskContextBadge context={item.message.taskContext} />
                     )}
@@ -646,7 +646,7 @@ export function WorkAssistantView({
                     {item.message.role === 'assistant' ? (
                       <MarkdownMessage content={workAssistantMessageContent(item.message)} />
                     ) : (
-                      <p className="chat-bubble">{workAssistantMessageContent(item.message)}</p>
+                      <UserMessageBubble content={workAssistantMessageContent(item.message)} />
                     )}
                     {item.message.actions?.map((proposal) => (
                       <WorkAssistantActionCard
@@ -663,6 +663,10 @@ export function WorkAssistantView({
                         <WorkAssistantRunLink key={run.id} run={run} onOpen={() => onOpenRun(run.id)} />
                       ) : null
                     })}
+                    <ConversationMessageActions
+                      content={workAssistantMessageContent(item.message)}
+                      createdAt={item.createdAt}
+                    />
                   </div>
                 </article>
               )
@@ -672,19 +676,20 @@ export function WorkAssistantView({
             <>
               <article className="chat-turn is-user is-pending">
                 <div className="chat-turn-content">
-                  <ConversationMessageActions
-                    content={pendingTurn.userMessage.content}
-                    createdAt={pendingTurn.userMessage.createdAt}
-                  />
                   {pendingTurn.userMessage.taskContext && (
                     <TaskContextBadge context={pendingTurn.userMessage.taskContext} />
                   )}
                   <MessageImageAttachments attachments={pendingTurn.userMessage.attachments} />
-                  <p className="chat-bubble">{pendingTurn.userMessage.content}</p>
+                  <UserMessageBubble content={pendingTurn.userMessage.content} />
+                  <ConversationMessageActions
+                    content={pendingTurn.userMessage.content}
+                    createdAt={pendingTurn.userMessage.createdAt}
+                  />
                 </div>
               </article>
               <article className="chat-turn is-assistant is-pending">
                 <div className="chat-turn-content">
+                  <ConversationSpeaker label="工作助理" />
                   {pendingTurn.plan.length > 0 && (
                     <div className="agent-plan" aria-label="Agent 计划">
                       {pendingTurn.plan.map((entry, index) => (

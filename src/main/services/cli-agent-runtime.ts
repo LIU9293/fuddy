@@ -40,10 +40,12 @@ export interface CliAgentTurnInput {
   filesDirectory: string
   abortController: AbortController
   onUpdate: (update: AgentRunStreamUpdate) => void
+  onActivity?: () => void
   onSessionId: (sessionId: string) => void
   onAccountContext?: (context: AgentAccountContext) => void
   onTool: (toolName: string, detail: string, metadata?: Record<string, unknown>) => void
   onApproval: (request: Omit<AgentApprovalRequest, 'runId' | 'createdAt'>) => Promise<AgentApprovalDecision>
+  onSteerReady?: (steer: ((prompt: string, attachments: RuntimeAttachment[], requestId: string) => Promise<void>) | null) => void
 }
 
 export interface CliAgentTurnResult {
@@ -117,6 +119,24 @@ export function buildCodexTurnStartParams(
   }
 }
 
+export function buildCodexTurnSteerParams(
+  threadId: string,
+  turnId: string,
+  requestId: string,
+  prompt: string,
+  attachments: RuntimeAttachment[] = []
+): JsonRecord {
+  return {
+    threadId,
+    expectedTurnId: turnId,
+    clientUserMessageId: requestId,
+    input: [
+      { type: 'text', text: attachmentPrompt(prompt, attachments) },
+      ...attachments.filter(file => isNativeImage(file.mimeType)).map(file => ({ type: 'localImage', path: file.path }))
+    ]
+  }
+}
+
 function recordSessionId(record: JsonRecord): string | null {
   return textValue(record.thread_id) || textValue(record.session_id) || textValue(record.sessionID) || null
 }
@@ -175,7 +195,7 @@ export function codexAppServerToolRecord(item: JsonRecord): ParsedCliRecord['too
       status
     }
   }
-  if (type === 'mcpToolCall') {
+  if (type === 'mcpToolCall' || type === 'dynamicToolCall' || type === 'collabAgentToolCall' || type === 'collabToolCall') {
     return {
       id,
       name: textValue(item.tool) || textValue(item.name) || 'mcp_tool',
@@ -365,6 +385,69 @@ export function claudeAttachmentPrompt(input: Pick<CliAgentTurnInput, 'prompt' |
   })()
 }
 
+function claudeUserMessage(prompt: string, attachments: RuntimeAttachment[], sessionId: string | null, priority?: 'now'): SDKUserMessage {
+  return {
+    type: 'user', session_id: sessionId ?? '', parent_tool_use_id: null,
+    ...(priority ? { priority } : {}),
+    message: { role: 'user', content: [
+      { type: 'text', text: attachmentPrompt(prompt, attachments) },
+      ...attachments.filter(file => isNativeImage(file.mimeType)).map(file => ({
+        type: 'image' as const,
+        source: { type: 'base64' as const, media_type: file.mimeType as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif', data: readFileSync(file.path).toString('base64') }
+      }))
+    ] }
+  }
+}
+
+const CLAUDE_BACKGROUND_WAIT_NOTICE_MS = 1_500
+
+function claudeStreamMessageId(sessionId: string | null, turnIndex: number): string {
+  return turnIndex === 0 ? `stream-${sessionId ?? 'new'}` : `stream-${sessionId ?? 'new'}-${turnIndex}`
+}
+
+class ClaudeInputStream implements AsyncIterable<SDKUserMessage> {
+  private readonly messages: Array<{
+    value: SDKUserMessage
+    resolve: () => void
+    reject: (error: Error) => void
+  }> = []
+  private readonly waiters: Array<(result: IteratorResult<SDKUserMessage>) => void> = []
+  private closed = false
+
+  push(message: SDKUserMessage): Promise<void> {
+    if (this.closed) return Promise.reject(new Error('Claude 当前回复已结束。'))
+    return new Promise<void>((resolve, reject) => {
+      const waiter = this.waiters.shift()
+      if (waiter) {
+        waiter({ value: message, done: false })
+        resolve()
+      } else {
+        this.messages.push({ value: message, resolve, reject })
+      }
+    })
+  }
+
+  close(): void {
+    this.closed = true
+    for (const message of this.messages.splice(0)) message.reject(new Error('Claude 当前回复已结束。'))
+    for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true })
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: () => {
+        const message = this.messages.shift()
+        if (message) {
+          message.resolve()
+          return Promise.resolve({ value: message.value, done: false })
+        }
+        if (this.closed) return Promise.resolve({ value: undefined, done: true })
+        return new Promise<IteratorResult<SDKUserMessage>>((resolve) => this.waiters.push(resolve))
+      }
+    }
+  }
+}
+
 export class CliAgentRuntime {
   private readonly adapters = new Map<CliAgentTurnInput['provider'], CliAgentProviderRuntimeAdapter>()
   private readonly activeTurns = new Set<Promise<CliAgentTurnResult>>()
@@ -440,12 +523,30 @@ export class CliAgentRuntime {
     let sessionId = input.sessionId
     let streamedText = ''
     let finalText = ''
+    // Background subagents wake Claude Code for follow-up turns after the first
+    // `result`. Newer CLIs report `session_state_changed: idle` only once that
+    // work has settled; older CLIs keep the one-result-per-turn behavior.
+    let reportsSessionState = false
+    let turnIndex = 0
+    let turnCompleted = false
+    let liveBackgroundTasks: string[] = []
+    let backgroundWait: { id: string; detail: string } | null = null
+    let backgroundWaitTimer: NodeJS.Timeout | null = null
+    const finishBackgroundWait = (): void => {
+      if (backgroundWaitTimer) clearTimeout(backgroundWaitTimer)
+      backgroundWaitTimer = null
+      if (!backgroundWait) return
+      input.onUpdate({ type: 'tool', toolCallId: backgroundWait.id, toolName: '后台任务', status: 'completed', detail: backgroundWait.detail })
+      backgroundWait = null
+    }
     const pendingTools = new Map<string, { name: string; detail: string; metadata: JsonRecord }>()
     let accountContext = emptyAccountContext('claude', input.model)
     input.onAccountContext?.(accountContext)
     input.onUpdate({ type: 'status', status: 'running', detail: '正在通过 Claude Agent SDK 启动 Claude Code' })
+    const inputStream = new ClaudeInputStream()
+    void inputStream.push(claudeUserMessage(input.prompt, input.attachments ?? [], sessionId)).catch(() => undefined)
     const stream = query({
-      prompt: claudeAttachmentPrompt(input),
+      prompt: inputStream,
       options: {
         abortController: input.abortController,
         cwd: input.workingDirectory,
@@ -454,7 +555,7 @@ export class CliAgentRuntime {
         ...claudeSdkReasoningOptions(input.reasoningEffort),
         ...(input.sessionId ? { resume: input.sessionId } : {}),
         pathToClaudeCodeExecutable: executable,
-        env: buildCliEnv('claude', mcpServers),
+        env: { ...buildCliEnv('claude', mcpServers), CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' },
         additionalDirectories,
         includePartialMessages: true,
         thinking: { type: 'adaptive', display: 'summarized' },
@@ -469,12 +570,33 @@ export class CliAgentRuntime {
         }]))
       }
     })
+    try {
     for await (const message of stream) {
       const record = message as unknown as JsonRecord
+      if (['assistant', 'user', 'stream_event', 'tool_progress', 'result'].includes(textValue(record.type))) input.onActivity?.()
+      if (record.type === 'system' && record.subtype === 'session_state_changed') {
+        reportsSessionState = true
+        if (record.state === 'idle') break
+      }
+      if (record.type === 'system' && record.subtype === 'background_tasks_changed' && Array.isArray(record.tasks)) {
+        liveBackgroundTasks = record.tasks
+          .map(task => task && typeof task === 'object' ? textValue((task as JsonRecord).description) || textValue((task as JsonRecord).task_id) : '')
+          .filter(Boolean)
+      }
+      if (turnCompleted && ['assistant', 'stream_event'].includes(textValue(record.type)) && !record.parent_tool_use_id) {
+        turnCompleted = false
+        turnIndex += 1
+        streamedText = ''
+        finishBackgroundWait()
+      }
       if (record.type === 'system' && record.subtype === 'init') {
         const account = await optionalAccountMetadata(() => stream.accountInfo())
         accountContext = { ...accountContext, ...claudeAccountContext(account ?? { apiKeySource: record.apiKeySource }), ...claudeModelContext(record), observedAt: new Date().toISOString() }
         input.onAccountContext?.(accountContext)
+        input.onSteerReady?.(async (prompt, attachments) => {
+          if (input.abortController.signal.aborted) throw new Error('Claude 当前回复已停止。')
+          await inputStream.push(claudeUserMessage(prompt, attachments, sessionId, 'now'))
+        })
       }
       if (record.type === 'rate_limit_event') {
         const limit = claudeLimitContext(record.rate_limit_info)
@@ -492,7 +614,9 @@ export class CliAgentRuntime {
         sessionId = found
         input.onSessionId(found)
       }
-      const parsed = claudeRecord(record)
+      // Subagent stream events carry `parent_tool_use_id`; only the main
+      // thread's text belongs in this Run's reply.
+      const parsed = record.parent_tool_use_id ? {} as ParsedCliRecord : claudeRecord(record)
       if (parsed.reasoning) input.onUpdate({
         type: 'reasoning_delta',
         segmentId: parsed.reasoningSegmentId,
@@ -553,16 +677,40 @@ export class CliAgentRuntime {
       if (parsed.assistant) {
         if (record.type === 'stream_event') {
           streamedText += parsed.assistant
-          input.onUpdate({ type: 'message_delta', messageId: `stream-${sessionId ?? 'new'}`, delta: parsed.assistant })
+          input.onUpdate({ type: 'message_delta', messageId: claudeStreamMessageId(sessionId, turnIndex), delta: parsed.assistant })
         } else if (record.type === 'result') {
           finalText = parsed.assistant
-          if (!streamedText) input.onUpdate({ type: 'message_delta', messageId: `stream-${sessionId ?? 'new'}`, delta: parsed.assistant })
+          if (!streamedText) input.onUpdate({ type: 'message_delta', messageId: claudeStreamMessageId(sessionId, turnIndex), delta: parsed.assistant })
         }
       }
       if (record.type === 'result' && record.is_error === true) {
         const errors = Array.isArray(record.errors) ? record.errors.map(String).join('; ') : textValue(record.result)
         throw new Error(errors || 'Claude Code 执行失败。')
       }
+      if (record.type === 'result') {
+        if (!reportsSessionState) break
+        turnCompleted = true
+        if (liveBackgroundTasks.length > 0 && !backgroundWaitTimer && !backgroundWait) {
+          // Only surface the wait when Claude does not go idle right away
+          // (background shells never delay idle; subagents do).
+          backgroundWaitTimer = setTimeout(() => {
+            backgroundWaitTimer = null
+            backgroundWait = {
+              id: `claude-background-${sessionId ?? 'new'}-${turnIndex}`,
+              detail: `等待完成：${liveBackgroundTasks.join('；')}`.slice(0, 4_000)
+            }
+            // A running tool keeps the inactivity watchdog from stopping a
+            // silent subagent while the main thread waits for its result.
+            input.onUpdate({ type: 'tool', toolCallId: backgroundWait.id, toolName: '后台任务', status: 'running', detail: backgroundWait.detail })
+          }, CLAUDE_BACKGROUND_WAIT_NOTICE_MS)
+        }
+      }
+    }
+    } finally {
+      finishBackgroundWait()
+      input.onSteerReady?.(null)
+      inputStream.close()
+      stream.close?.()
     }
     const text = (finalText || streamedText).trim()
     if (!text) throw new Error('Claude Code 没有返回 Agent 消息。')
@@ -587,6 +735,7 @@ export class CliAgentRuntime {
       let stderr = ''
       let nextId = 1
       let sessionId = input.sessionId
+      let activeTurnId: string | null = null
       let finalAnswerText = ''
       let legacyText = ''
       let lastAgentMessageText = ''
@@ -623,6 +772,7 @@ export class CliAgentRuntime {
       const finishError = (error: Error): void => {
         if (settled) return
         settled = true
+        input.onSteerReady?.(null)
         closePending()
         input.abortController.signal.removeEventListener('abort', abortChild)
         void terminateProcessTree(child).then(() => reject(codexSessionError(error)), reject)
@@ -636,6 +786,7 @@ export class CliAgentRuntime {
         const text = (finalAnswerText || legacyText || lastAgentMessageText).trim()
         if (!text) return finishError(new Error('Codex app-server 没有返回 Agent 消息。'))
         settled = true
+        input.onSteerReady?.(null)
         closePending()
         input.abortController.signal.removeEventListener('abort', abortChild)
         void terminateProcessTree(child).then(() => resolve({ text, sessionId }), reject)
@@ -665,6 +816,21 @@ export class CliAgentRuntime {
           return
         }
         const params = record.params && typeof record.params === 'object' ? record.params as JsonRecord : {}
+        if (method === 'turn/started' && params.turn && typeof params.turn === 'object') {
+          activeTurnId = textValue((params.turn as JsonRecord).id) || activeTurnId
+        }
+        // Progress can arrive without visible text, especially with summary=none.
+        // Only signal receipt; do not persist or render private reasoning data.
+        if (params.threadId === sessionId && (
+          method === 'item/started' || method === 'item/completed'
+          || method === 'item/agentMessage/delta' || method === 'item/plan/delta'
+          || method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta'
+          || method === 'item/mcpToolCall/progress'
+          || method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/summaryPartAdded'
+          || method === 'item/reasoning/textDelta'
+          || method === 'turn/started' || method === 'turn/plan/updated' || method === 'turn/diff/updated'
+          || (method === 'error' && params.willRetry === true)
+        )) input.onActivity?.()
         if (method === 'account/rateLimits/updated') publishContext(codexLimitContext(params))
         if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
           const messageId = textValue(params.itemId) || textValue(params.item_id) || `stream-${sessionId ?? 'new'}`
@@ -719,7 +885,8 @@ export class CliAgentRuntime {
         }
         if (method === 'turn/completed') {
           const turn = params.turn && typeof params.turn === 'object' ? params.turn as JsonRecord : {}
-          if (turn.status === 'failed') finishError(new Error('Codex Turn 执行失败。'))
+          const error = turn.error && typeof turn.error === 'object' ? turn.error as JsonRecord : {}
+          if (turn.status === 'failed') finishError(new Error(textValue(error.message) || 'Codex Turn 执行失败。'))
           else finishSuccess()
         }
       }
@@ -778,7 +945,14 @@ export class CliAgentRuntime {
         if (prepared.ready && input.onCodexSessionReady) input.onCodexSessionReady(prepared.ready)
         else if (found !== input.sessionId) input.onSessionId(found)
         throwIfCancelled(input.abortController.signal)
-        await request('turn/start', buildCodexTurnStartParams(found, input.prompt, input.reasoningEffort, input.attachments))
+        const started = await request('turn/start', buildCodexTurnStartParams(found, input.prompt, input.reasoningEffort, input.attachments))
+        const startedTurn = started.turn && typeof started.turn === 'object' ? started.turn as JsonRecord : {}
+        activeTurnId = textValue(startedTurn.id) || activeTurnId
+        if (activeTurnId) input.onSteerReady?.(async (prompt, attachments, requestId) => {
+          if (!activeTurnId || settled) throw new Error('Codex 当前回复已结束。')
+          const response = await request('turn/steer', buildCodexTurnSteerParams(found, activeTurnId, requestId, prompt, attachments))
+          if (textValue(response.turnId) !== activeTurnId) throw new Error('Codex 未接受这条 Steer 消息。')
+        })
       })().catch(finishError)
     })
   }
@@ -844,6 +1018,7 @@ export class CliAgentRuntime {
           input.onSessionId(foundSessionId)
         }
         const parsed = opencodeRecord(record)
+        if (['text', 'reasoning', 'tool_use', 'step_start', 'step_finish'].includes(textValue(record.type))) input.onActivity?.()
         const usage = opencodeStepUsage(record)
         const part = record.part && typeof record.part === 'object' ? record.part as JsonRecord : {}
         const stepId = textValue(part.id)
@@ -918,6 +1093,9 @@ export class CliAgentRuntime {
         input.abortController.signal.removeEventListener('abort', abortChild)
         resolve({ text, sessionId: latestSessionId })
       })
+      // OpenCode reads piped stdin before starting even when the prompt is
+      // already in argv. An open pipe leaves it waiting forever for EOF.
+      child.stdin?.end()
     })
   }
 }

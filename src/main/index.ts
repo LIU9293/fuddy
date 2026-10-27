@@ -42,6 +42,9 @@ import { registerWorkspaceFileProtocol } from './services/workspace-file-protoco
 import { workspaceFilePreviewScheme } from '../shared/workspace-file-preview'
 import { AccountService, normalizeAccountApiUrl } from './services/account-service'
 import { MacPeerSyncService } from './services/mac-peer-sync'
+import { ProjectSharingHost } from './services/project-sharing-host'
+import { ProjectSharingKeyStore } from './services/project-sharing-key-store'
+import { ProjectSharingTransport } from './services/project-sharing-transport'
 import {
   AccountEnrollmentCoordinator,
   resolveCompanionRelayUrl
@@ -101,6 +104,7 @@ let macPeerSync: MacPeerSyncService | null = null
 let pendingAgentRunNavigationId: string | null = null
 let stopAutoUpdates: (() => void) | null = null
 let taskDispatcher: TaskDispatcher | null = null
+let projectSharingHost: ProjectSharingHost | null = null
 
 app.on('render-process-gone', (_event, webContents, details) => {
   if (details.reason === 'clean-exit' || details.reason === 'killed') return
@@ -381,7 +385,9 @@ if (!hasLock) {
         async (run, turn) => {
           showAgentRunNotification(turn)
           if (turn.outcome === 'completed') await decisionRemediationService.sync(run.projectId)
-        }
+        },
+        undefined,
+        (prompt, signal) => accountService.generateChatTitle(prompt, signal)
       )
       taskDispatcher = dispatcher
       dispatcher.onRunUpdate((runId, update) => {
@@ -527,6 +533,10 @@ if (!hasLock) {
         accountEnrollmentCoordinator,
         macPeerSync
       )
+      const keys = new ProjectSharingKeyStore(accountService, credentialVault)
+      projectSharingHost = new ProjectSharingHost(database, accountService, keys,
+        new ProjectSharingTransport(database, accountService, keys, workspaceFiles), dispatcher)
+      projectSharingHost.start()
       createWindow()
       const updateConfigurationExists = existsSync(join(process.resourcesPath, 'app-update.yml'))
       stopAutoUpdates = startAutoUpdateService((error) => {
@@ -582,6 +592,8 @@ async function shutdown(): Promise<void> {
   shutdownPromise = (async () => {
     nativeTheme.removeListener('updated', updateMacDockIcon)
     macPeerSync?.stop()
+    projectSharingHost?.stop()
+    projectSharingHost = null
     automationScheduler?.stop()
     automationScheduler = null
     stopAutoUpdates?.()

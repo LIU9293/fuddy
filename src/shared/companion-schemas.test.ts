@@ -23,6 +23,13 @@ function projectEvent(payload: unknown): Record<string, unknown> {
 }
 
 describe('Companion wire schemas', () => {
+  it('validates a constrained error retry without accepting replacement input', () => {
+    const command = { commandId: 'retry-1', protocolVersion: companionProtocolVersion,
+      type: 'agent.retry-message', createdAt: '2026-10-06T03:00:00.000Z',
+      payload: { runId: 'run-1', errorMessageId: 'error-1', prompt: 'replacement' } }
+    expect(commandSchema.parse(command).payload).toEqual({ runId: 'run-1', errorMessageId: 'error-1' })
+    expect(commandSchema.safeParse({ ...command, payload: { runId: 'run-1' } }).success).toBe(false)
+  })
   it('validates the complete nested project contract', () => {
     const project = testProject('project-1', 'Project One')
     const parsed = syncEventSchema.safeParse(projectEvent(project))
@@ -152,6 +159,14 @@ describe('Companion wire schemas', () => {
     }
 
     expect(commandSchema.safeParse(command).success).toBe(true)
+    expect(commandSchema.safeParse({
+      ...command,
+      payload: { ...command.payload, provider: 'opencode' }
+    }).success).toBe(true)
+    expect(commandSchema.safeParse({
+      ...command,
+      payload: { ...command.payload, provider: 'other' }
+    }).success).toBe(false)
     expect(commandSchema.safeParse({
       ...command,
       payload: { ...command.payload, title: '' }

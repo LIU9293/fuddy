@@ -1,5 +1,7 @@
 import Foundation
 
+let companionAgentProviderIDs = ["pi", "codex", "claude", "opencode"]
+
 func companionAgentProviderLabel(_ provider: String) -> String {
     switch provider {
     case "pi": "Fuddy Agent"

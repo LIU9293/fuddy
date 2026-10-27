@@ -29,6 +29,7 @@ export const companionCommandTypes = [
   'assistant.send-message',
   'assistant.execute-action',
   'agent.send-message',
+  'agent.retry-message',
   'agent.stop-message',
   'agent.create-session',
   'agent.rename-session',
@@ -79,6 +80,7 @@ export const companionCommandPayloadDefinitions = {
       clientMessageId: 'optional-string'
     }
   },
+  'agent.retry-message': { swiftName: 'AgentRetryMessagePayload', fields: { runId: 'string', errorMessageId: 'string' } },
   'agent.stop-message': { swiftName: 'AgentStopMessagePayload', fields: { runId: 'string' } },
   'agent.create-session': {
     swiftName: 'AgentCreateSessionPayload',

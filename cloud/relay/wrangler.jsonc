@@ -26,6 +26,10 @@
       {
         "name": "ACCOUNT_RELAY",
         "class_name": "AccountRelay"
+      },
+      {
+        "name": "PROJECT_RELAY",
+        "class_name": "ProjectRelay"
       }
     ]
   },
@@ -33,6 +37,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["AccountRelay"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ProjectRelay"]
     }
   ],
   "r2_buckets": [

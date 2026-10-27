@@ -1,7 +1,9 @@
 import type { RelayAdministrationBinding } from '../../relay/src/administration-contract'
 
 export type Environment = {
+  AI?: Pick<Ai, 'run'>
   ACCOUNT_DB: D1Database
+  PROJECT_ATTACHMENTS: R2Bucket
   ENVIRONMENT: string
   EMAIL_DELIVERY_MODE: string
   OTP_PEPPER: string

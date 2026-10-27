@@ -61,6 +61,14 @@ enum CompanionCrypto {
         try JSONDecoder().decode(type, from: open(envelope: envelope, key: encodedKey, associatedData: associatedData))
     }
 
+    static func openBytes(
+        envelope: CompanionEncryptedEnvelope,
+        key encodedKey: String,
+        associatedData: String
+    ) throws -> Data {
+        try open(envelope: envelope, key: encodedKey, associatedData: associatedData)
+    }
+
     static func sealAttachment(_ plaintext: Data, key encodedKey: String, associatedData: String) throws -> Data {
         let sealed = try AES.GCM.seal(
             plaintext,

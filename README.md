@@ -8,7 +8,7 @@ Mac 项目设置通过原生目录选择器添加本机文件夹，只显示目�
 
 Mac 与 iPhone 的产品界面统一将 Agent Runs 称为 **Chats**（单个为 Chat）；已有会话、持久化 ID 与同步协议保持兼容。
 
-项目 Chat 已接通 Mac / iPhone 图片与文件附件：统一数量和大小校验、持久附件描述、原生 Agent 图片输入，以及加密产物回传。手机发送队列可在重连后恢复，已校验的附件缓存可离线打开；Mac 支持选择、粘贴和拖入文件。生成的图片与报告保留内容快照，双端消息显示可打开的附件卡片。实现边界与验证命令见 [Chat 附件链路](docs/chat-attachments.md)。
+项目 Chat 已接通 Mac / iPhone 图片与文件附件：统一数量和大小校验、持久附件描述、原生 Agent 图片输入，以及加密产物回传。手机发送队列可在重连后恢复，已校验的附件缓存可离线打开；Mac 支持选择、粘贴和拖入文件。iPhone 从输入栏弹出系统照片选择器，只访问选中的照片，无需授权整个相册；照片读取失败会显示错误。生成的图片与报告保留内容快照，双端消息显示可打开的附件卡片。实现边界与验证命令见 [Chat 附件链路](docs/chat-attachments.md)。
 
 项目 Chat 将用户原话与 Fuddy 指令、项目背景分开传递。Codex 使用 `developerInstructions`，Claude SDK 在原生 system prompt 后追加，Pi 追加 system prompt，OpenCode 通过临时 `instructions` 文件加载并在本轮结束后删除。每轮恢复会话时刷新精简项目背景，保留有效事实及其来源、目标和收件箱证据，省略使命、愿景、初始设置占位信息与空值；背景不再拼入用户消息。主目录通过运行参数提供，Codex / Claude 使用原生附加目录参数；Pi / OpenCode 的附加 Workspace 以简短上下文补充。文件空间仅说明地址和产物用途。重建丢失的原生会话时仍补入已有可见对话。
 
@@ -26,13 +26,17 @@ iPhone Chat 详情在标题下方显示执行 Mac 名称与状态点（在线绿
 - 新建 Agent Session 只创建草稿，不自动发送消息。“去处理”和 Milestone“开始任务”都会直接创建或打开关联 Session、进入聊天，并把持久化的建议任务放进输入框，用户确认或修改后再发送；
 - 工作助理运行在 Pi 的持久 Agent Session 中，使用原生 Tool Call 和自动上下文压缩：可以管理项目、目标、收件箱、Agent Run 和自动化，读取每日简报、联网公开来源，并受约束地读取项目文件空间及已配置 Workspace 中的文件/代码；只读能力可直接执行，改变 App 状态的能力通过 `ask_user` 展示持久确认 Action，创建 Run 只预填不发送；
 - Codex 使用 app-server，Claude Code 使用 Agent SDK，OpenCode 使用本机 CLI；三者均保存原生 Session ID，可在后续消息中恢复同一上下文；
+- Mac Chat 在 Agent 运行期间发送的新消息先进入持久队列；排队消息可取消，Pi、Codex 和 Claude Code 还可选择 Steer，立即送入当前运行轮次。若当前轮已结束或原生接口拒绝，消息仍按队列顺序执行；OpenCode 的单次 CLI 运行暂不提供 Steer。
 - Fuddy 的 Codex Chat 独立续接，不再与 Codex 桌面端交替操作同一个会话 ID。升级后首次发送时，旧会话通过 `thread/read` 读取历史、确认没有正在执行的轮次，再用 `thread/fork` 从已确认的最后一轮派生新 ID；新 ID、归属记录与缺失的可见对话原子保存，之后一直恢复新 ID。原生完整上下文由 Codex 保留，Fuddy 只补入缺失的用户消息和公开回复，不导入隐藏推理或工具原始输出；迁移后不再同步原会话的新消息。迁移失败或历史不完整时不发送本轮消息、不清空原 ID；已绑定会话遇到外部占用时提示重试，不自动再派生，也不停止其他应用。沿用 CLI 的登录、配置与原生存储，不修改 `CODEX_HOME` 或复制凭证；请只在 Fuddy Mac / iPhone 内继续 Fuddy 会话。
 - 手机和 Fuddy Mac 的同一 Chat 共用发送队列；取消后等待运行时退出再放行下一轮。Agent 执行失败时远程命令也标记失败；当前页面的纯文本失败消息回填输入框供用户编辑后重发，不自动重放命令。
+- 本机 Chat 发送队列已持久化：排队消息在进入 Agent 上下文前可以取消，重复请求不会重复执行；重启后只恢复尚未开始的本账户请求，执行状态不明的请求需人工确认。真人消息显示发送时的姓名和首字头像，旧消息来源不明时显示“历史用户”。项目共享已接通 Mac 的项目邀请、成员权限、设备授权、加密历史、附件与产物及多人 Chat 命令；iPhone Debug 客户端可接受邀请、阅读、发送文本、停止请求和退出。Mac 与 iPhone 入口及 Account API 共享路由不再受环境或构建开关控制，项目所有者仍需主动开启共享并发布历史。Account API、Relay 与 D1 新迁移已部署；真实双账户、多 Mac/iPhone 联调与迁移演练仍未完成，不能把健康检查或本地测试视为端到端验收。实施边界见 [项目共享计划](docs/project-sharing-plan.md) 与 [阶段性 Review](docs/project-sharing-review.md)。
 - Coding Agents 设置会检测本机安装状态、版本、可选模型及各模型支持的 Reasoning Effort；Mac 聊天输入框的无底色模型入口也可向上展开，直接选择默认或 Session 级 Agent、模型与 Reasoning Level。运行时仅在用户选择后显式传入对应参数；
-- macOS GUI 启动时读取交互式 zsh 环境，因此本机 Agent 能获得与终端一致、未经应用过滤的环境变量和认证配置；应用不会修改 `.zshrc`；
+- macOS GUI 启动时读取登录且交互式的 zsh 环境（`.zprofile` 与 `.zshrc`），继承导出变量并尊重显式 unset，因此本机 Agent 能获得与终端一致、未经应用过滤的环境变量和认证配置；应用不会修改 Shell 配置文件；
+- Agent Run 最新失败消息的错误卡片提供“重试”，沿用原消息、附件、发送者与原生 Session，不重复插入用户消息；重试收到回复或工具进度后移除旧错误卡片，再次失败时只显示新错误，Mac 与 iOS 保持一致；正在运行、排队或执行 Mac 离线时禁用重试；
+- Mac 与 iOS 同样隐藏 Claude SDK 的 `claude-thinking-*` 段落，保留正常进度说明、工具调用与最终回复；iOS 升级后会自动重放同步，补回旧缓存丢失的段落标记；
 - Agent Run 当前按产品约定使用 Full Access / 自动批准模式。Codex、Claude Code 和 OpenCode 分别使用各自支持的完全访问参数；
-- Agent 对话已支持流式回复、思考摘要、折叠工具调用链、当前工具运行态、Session 重命名 / 归档，以及 10 分钟无活动运行超时。Codex、Claude Code 和 OpenCode 的原始事件先归一为“思考阶段 + 连续操作组”，工具统一保留运行 / 完成 / 失败状态和可读摘要；Mac 与 iPhone 消费同一套展示语义，原始参数和输出只在二级展开中显示；
-- Mac 主区域统一使用纯色页面背景和全宽顶部 Header；项目列表是独立页面，所有已添加项目常驻主侧边栏，即使没有 Run 或所有 Run 已归档，也可从项目标题旁的加号新建 Run；Agent Run Session 按项目分组且只在运行时显示加载图标；主侧边栏支持拖拽调整宽度；临时成功和错误提示会在 5 秒后自动消失；
+- Agent 对话已支持流式回复、思考摘要、折叠工具调用链、当前工具运行态、Session 重命名 / 归档，以及无活动超时保护：没有正在执行的工具且连续 10 分钟未收到运行进展时才自动停止；工具运行期间暂停计时，所有并行工具完成或失败后重新计时。Provider 的命令输出、MCP 进展和未展示的模型流事件也计入活动，不记录或展示隐藏推理；工具自身超时和用户手动停止仍然有效。Codex、Claude Code 和 OpenCode 的原始事件先归一为“思考阶段 + 连续操作组”，工具统一保留运行 / 完成 / 失败状态和可读摘要；Mac 与 iPhone 消费同一套展示语义，原始参数和输出只在二级展开中显示；
+- Mac 主区域统一使用纯色页面背景和全宽顶部 Header；Agent Run 顶部用项目与会话标题的单行导航，工作助理与 Agent Run 共用聊天对齐、消息署名、底部时间和紧凑输入框，Light / Dark 都使用同一套语义颜色。项目列表是独立页面，所有已添加项目常驻主侧边栏，即使没有 Run 或所有 Run 已归档，也可从项目标题旁的加号新建 Run；Agent Run Session 按项目分组且只在运行时显示加载图标；回复的相关文件集中展示在正文下方，一个容器内每个文件独占一行，并显示文件数量，点击可预览；主侧边栏支持拖拽调整宽度；临时成功和错误提示会在 5 秒后自动消失；
 - Renderer App Shell 使用单一的 route 状态机表达页面、项目 Section、Settings 返回路径和 Run 选择，领域数据通过可按 Projects、Goals、Decisions、Runs 等 key 独立订阅的 store 更新；Sidebar、Route Outlet、Goal Composer 与跨页面 Workflow 均有独立边界，`App.tsx` 只负责应用装配。
 - 主进程、Renderer 未处理异常及 Electron 子进程异常已接入 Sentry 崩溃报告。
 - 账户改造已进入可运行首版：独立 `cloud/account-api` Worker 使用 D1 管理 Email / Google Identity、短期 access token、完整历史重放检测的原子 refresh token 轮换、Device、Mac Host、默认 Sync Space 与 enrollment；生产 Worker 已部署到 `https://fuddy.ai/api/account`，邮箱验证码通过已验证的 Resend `fuddy.ai` 域名发送，发送冷却和校验次数都由 D1 原子占位，签名 Webhook 会幂等记录投递结果并抑制退信/投诉地址。每个账户最多保留 20 台活跃设备，其中最多 5 台 Mac；每台设备最多保留 10 个活跃 Session。Cron 除了持久重试 Relay 撤销，也会分批清理过期验证码、限流窗口、已撤销 Session、邮件回执和安全审计历史，避免免费托管的 D1 数据只增不减。Mac 必须先登录，随后按“检测 Coding Agent → 添加第一个项目（可跳过）”完成两步 onboarding；手机连接不再是设置步骤。Fuddy session 与设备私钥只进入 credential vault。一个账户可以同时登录多台 Mac，每台 Mac 对应独立同步空间；iPhone 登录同一账户后自动连接各 Mac，默认展示账户级项目；项目详情与 Runs 列表汇总各执行机的 Run，新建时选择在线且已配置主文件夹的 Mac，后续操作固定回到原执行机。每台 iPhone、每个空间仍有独立 grant、Relay Token、Space Data Key 与本地缓存，设置展示设备状态，不再切换全局空间。Mac 先用 Relay Token 获取五分钟内单次有效的所有权证明，Account API 在 D1 预占后才通过私有 Cloudflare Service Binding 消耗证明并绑定 `spaceId + bindingId + generation`；D1 落库失败会释放 Relay 绑定。设备/空间撤销先原子写入 D1，再由 Cron 持久重试，旧任务不能修改或撤销不属于它的 Relay。Mac 轮询保留为恢复路径。在线 Mac 使用设备 P-256 公钥和 ECDH/HKDF/AES-GCM 封装授权，账户服务器只保存密文 grant。安全提醒邮件、完整账户删除、分段 baseline v2、主动 wake-up、密钥轮换与 Sign in with Apple 仍是正式多用户发布前的未完成项。
@@ -45,6 +49,9 @@ iPhone Chat 详情在标题下方显示执行 Mac 名称与状态点（在线绿
 - Companion Relay 默认地址为 [`fuddy.ai/api/relay`](https://fuddy.ai/api/relay/health)，使用 Durable Objects、Hibernation WebSocket 和私有 R2；当前产品只提供托管免费版，尚不开放自托管入口。每个 Relay 账户的单个 R2 密文对象最多 20 MiB（因此原文件上限为 20 MiB 减去固定 32 字节加密封装），已登记附件密文总量最多 100 GiB；Relay 会先在 Durable Object 中原子预占容量，超限请求不会写入 R2，上传失败或过期的预占会自动释放。旧 [`workers.dev`](https://project-agent-companion-relay.moghub.workers.dev) 入口与旧的一次性配对协议继续保留，供已安装版本无损升级，但配对期只允许认证、认领和生成账户所有权证明；只有 Account API 确认 `spaceId + bindingId` 后才能写事件、命令或附件，十分钟内未完成绑定的配对凭证会由 DO alarm 清理。事件、命令结果与附件使用在线 Mac 为设备封装的 Space Data Key 进行 AES-256-GCM 端到端加密；Relay 只保存密文、路由元数据和状态，不持有解密密钥。设备 Token 只保存哈希，账户设备撤销会同步撤销 Relay 访问。每批事件在 DO 内一次授权并通过 SQLite 同步事务幂等写入，随后只发送一个 `sync.available(lastSequence)` 唤醒提示；Mac 与 iPhone 收到提示后仍以 ordered replay 为准。Mac 至少每 24 小时生成一次完整状态快照；Relay 写入新快照后立即删除它之前的事件，并始终保留最新快照作为恢复基线。每个 Relay 账户最多保留 5,000 条事件；达到上限时 Relay 不会删除尚未纳入恢复基线的增量，而是要求 Mac 事务性重建 outbox、优先上传新快照，再删除旧基线与增量。如果当前状态本身需要超过 5,000 条 baseline 事件，Mac 会在替换 Relay 现有完整基线前明确报错，要求先归档不再需要的项目或 Run，不会循环上传半成品。命令最多保留 1,000 条，达到上限时优先回收最老的终态命令并在 30 天首次接纳 / 重试窗口内保留 ID tombstone；tombstone 空间不足时拒绝新命令，不会提前删除仍可重试的 ID。APNs 只携带通用唤醒/完成提醒，不包含业务正文；Release 配置默认使用 production APNs，开发命令显式覆盖为 development。
 
 - iOS App 登录后默认进入 Chats 列表。Chat 与助理共用键盘避让和底部跟随逻辑：停在最新消息时，键盘或输入框高度变化会保持最新消息可见；阅读历史消息时不会主动跳回底部。
+- iPhone 新建 Chat 时可选择 Fuddy Agent、Codex、Claude Code 或 OpenCode；不显式选择时沿用执行 Mac 的项目默认 Agent（无项目时使用默认 Coding Agent）。共享项目成员新建 Chat 时也可选择 Agent，实际执行仍由项目的执行 Mac 负责。
+
+iOS 工作助理与项目 Chat 的消息共用固定 20pt 左右留白，留白包含在每条消息的滚动定位区域内；布局测试覆盖消息展开、键盘高度变化与窄屏重排。输入栏的附件、语音和发送按钮共用 44pt 操作区域，单行文字与图标垂直居中，多行输入时按钮保持在底部同一行。
 
 目前仍属于本机 / 个人设备 MVP。仓库已提供 GitHub Actions macOS App 构建、Relay 部署与 iOS Simulator XCTest 门禁；个人开源 Release 默认生成 unsigned DMG / ZIP，不需要 Apple Developer、Cloudflare 或 APNs 凭证。需要公开分发时再接入签名、公证和自动更新凭证。
 
@@ -258,6 +265,8 @@ Mac 界面文字最小为 12px，说明、状态、菜单、文件预览与首�
 
 Mac 主侧边栏保留工作助理、决策收件箱、文件、项目和自动化入口；项目列表使用独立页面，Agent Run Session 列表常驻侧边栏，直接进入对应聊天：
 
+侧栏项目标题优先显示已配置的项目图标，未配置时显示文件夹；项目名和下方 Chat 标题的文字左侧对齐，均使用与主导航一致的 14px 常规字重。
+
 ### 工作助理
 
 - 作为跨项目的通用 Agent 对话频道，不以某一天的简报为边界；
@@ -295,16 +304,17 @@ Mac 主侧边栏保留工作助理、决策收件箱、文件、项目和自动�
 - iPhone Runs 列表左滑显示“归档 / 重命名”，不再显示三个点按钮；运行中或排队中的 Run 保留重命名，但不能归档。详情页的操作菜单保持不变。
 - 每个 Run 都是一个可恢复、可继续对话的持久 Session；Mac 主侧边栏与 iPhone Chats 页面都按项目分组，不展示消息摘要；Mac 可从列表或分组标题的“+”创建 Draft Run，iPhone 仅保留页面右上角的“+”创建入口；
 - 点击 Run 后在右侧打开 Session 对话，展示完整消息、工具活动和错误；默认收起、可拖拽调宽的右侧信息栏分为“基本信息 / 文件”，集中展示 Git 增删行、项目与 Workspace 摘要，并在栏内预览 Run 产出的 Markdown、文本和图片；
+- Mac 的工作助理、项目 Chat 与共享 Chat 按原文显示用户消息，保留换行、空行和列表编号；只有一位真人参与的 Chat 隐藏用户头像与姓名，多人参与时按消息保存的发送者身份署名。旧消息可按同一用户 ID 找回已有署名；确实没有身份记录时显示“未记录发送者”，不猜测归属；
 - Session 可以选择关联一个 Goal / Milestone，也可以作为独立任务运行；
 - Agent Run 不再区分“普通任务”和“代码任务”，只选择执行 Agent；Pi、Codex、Claude Code 和 OpenCode 都接收同一种 Run 和项目上下文；
 - Pi 使用内置 Agent Harness；Codex、Claude Code 和 OpenCode 连接本机已登录的运行时，并继续拥有各自的认证、模型配置和 Session；
 - 每个项目可在项目设置中选择默认 Agent；全局 Coding Agents 设置另有一个默认 Coding Agent，供“去处理”等未显式选择 Agent 的入口使用；单次 Run 仍可覆盖；
 - Session 保存对应运行时返回的 Session ID，后续消息恢复同一个 Agent 上下文；工作目录使用项目主 Workspace，其他 Workspace Roots 和项目文件空间作为额外可访问目录；
-- 新建 Agent Run 先进入 `draft`，创建页只配置项目、Agent、关联里程碑和标题；聊天页明确显示“草稿 · 尚未运行”，第一条消息由用户发送；
+- 新建 Agent Run 先进入 `draft`，创建页只配置项目、执行 Mac、Agent 和可选关联里程碑，无需填写标题；Mac 与 iPhone 新 Chat 先显示“新建 Chat”。发送首条消息后，通过现有 Fuddy 账户登录调用 Cloudflare Workers AI，统一生成跟随用户输入语言的标题，不再读取各 Coding Agent 的原生标题。标题请求独立于 Agent 回复；离线、未登录、超时或额度耗尽时保留首条消息首行的简短摘录（最多 48 个字符，截断加省略号），手动重命名后保留用户标题。聊天页明确显示“草稿 · 尚未运行”，第一条消息由用户发送；
 - 从决策收件箱点击“去处理”时，系统直接创建草稿 Session 并把建议任务预填到聊天输入框，不自动执行；
 - 从 Goal Milestone 点击“开始任务”时复用已有未归档关联 Run，或创建新的草稿 Run；预填 Prompt 会在 Mac 与 iPhone 间同步，编辑后自动保存，首条消息仍由用户发送；
 - Codex、Claude Code 与 OpenCode 使用各自本机默认账号和配置，不注入 CC Switch 配置；应用继承交互式 zsh 环境，并只在用户选择模型或 Reasoning Effort 后显式传入对应参数；
-- 三个外部 Agent 默认使用完整本机访问和自动批准模式。每段思考摘要独立保存和显示；两个 Thinking 之间的连续工具调用归为一个默认折叠的调用组，当前 Thinking、正在运行的工具和可见回复增量会实时显示。
+- 三个外部 Agent 默认使用完整本机访问和自动批准模式。每段思考摘要独立保存和显示；两个 Thinking 之间的连续工具调用归为一个默认折叠的调用组，当前 Thinking、正在运行的工具和可见回复增量会实时显示。当前回复保留完整活动和操作计数，并行工具分别跟随各自的完成 / 失败事件更新状态；切换 Chat 或后台刷新时，已落库的当前回复不会与实时活动重复展示。
 
 ### 项目状态
 
@@ -482,6 +492,7 @@ Backend
 - Codex 优先使用 Codex SDK、App Server 或 `codex exec --json`；
 - Claude 优先使用 Agent SDK 或 `claude -p --output-format stream-json`；
 - 当前外部 Agent Run 使用 Codex app-server JSON-RPC、官方 Claude Agent SDK 与 OpenCode CLI；三者的 Session ID、流式结果和工具事件都回投同一个 Agent Run；
+- Claude Code 启动后台子代理时，Fuddy 以 SDK 的 `session_state_changed: idle` 作为本轮结束信号：先回复的内容照常显示，等待期间时间线显示“后台任务”，子代理完成后的后续回复继续写入同一轮；不支持该事件的旧版 CLI 仍在首个 `result` 结束。
 - Coding Agent Runtime 不覆盖各 CLI 的账号或基础配置。Electron 主进程启动时读取交互式 zsh 环境，确保从 Finder 启动时也能继承终端中的 `PATH`、API Key 和 Provider 变量；
 - 外部 Agent Run 使用 Full Access / 自动批准策略；用户仍可停止当前 Run，工具事件和结果进入同一个 Session 记录；
 - 不通过 Computer Use 点击 Codex / Claude UI 来派发任务；没有结构化接口的 App 才回退到 Computer Use。
@@ -563,7 +574,7 @@ Agent 仍必须服从用户明确的任务范围，不能因为拥有完整访�
 - Agent Session 草稿创建、默认 Coding Agent / 模型传递、思考摘要、工具调用链，以及重命名和归档；
 - Coding Agent 使用项目主 Workspace 作为 `cwd`，并获得所有 Workspace Roots 与项目产物目录；
 - Electron 主进程从交互式 zsh 继承本机 Agent 环境，不改写或过滤用户的 `.zshrc` 配置；
-- Agent Run 10 分钟无活动超时与应用启动时的遗留运行状态修正；
+- Agent Run 在无运行中工具且无运行进展时的 10 分钟超时保护，以及应用启动时的遗留运行状态修正；
 - Sentry 主进程、Renderer 和 Electron 子进程崩溃上报；
 - Pi Agent Runtime、Codex、Claude、OpenCode、Browser Use MCP、CUA Driver MCP 与 TTS 的适配器边界；
 - 固定版本和 SHA-256 校验的第三方工具准备流程，以及 Browser Use / CUA Driver 的真实 MCP smoke；
@@ -624,9 +635,15 @@ npm run ios:generate
 npm run ios:typecheck
 RUN_AGENT_TOOLS_SMOKE=1 npx vitest run src/main/services/third-party-mcp-runtime.integration.test.ts
 RUN_CODING_CLI_SMOKE=1 npx vitest run src/main/services/coding-cli.integration.test.ts
+RUN_CLOUDFLARE_TITLE_SMOKE=1 CLOUDFLARE_ACCOUNT_ID=<your-account-id> npx vitest run src/main/services/agent-title.integration.test.ts
+RUN_CLOUDFLARE_TITLE_WORKER_SMOKE=1 FUDDY_TITLE_SMOKE_WORKER_URL=http://127.0.0.1:8799 npx vitest run src/main/services/agent-title-worker.integration.test.ts
 RUN_MORNING_BRIEFING_SMOKE=1 npx vitest run src/main/services/morning-briefing.integration.test.ts
 RUN_ASR_SMOKE=1 WHISPER_MODEL_PATH=/path/to/ggml-large-v3-turbo-q5_0.bin WHISPER_AUDIO_PATH=/path/to/sample.wav npx vitest run src/main/services/asr-service.integration.test.ts
 ```
+
+标题服务位于 Account API 的 `POST /v1/chat-titles`，使用 `AI` binding，默认模型为 `@cf/qwen/qwen3-30b-a3b-fp8`（`/no_think`，最多输出 64 tokens）。仅发送首条消息的前 1,500 个字符，不发送项目文件、Agent 回复或后续聊天历史；服务不会记录请求内容。每个账户每小时最多 60 次标题请求，Worker 推理超时 10 秒，客户端超时 12 秒。Cloudflare 的 AI binding 需要随 Account API 部署，客户端无需填写模型 API key。单元测试禁用远程 binding；上面的多语言实测命令会使用已有 Wrangler 登录（或环境变量 `CLOUDFLARE_API_TOKEN`）并消耗少量真实 AI 额度，不接触生产 Fuddy 数据。可用 `FUDDY_TITLE_SMOKE_REPORT_DIR` 保存合成测试输入、标题、耗时和用量；`FUDDY_TITLE_SMOKE_COMPARE=1` 可同时比较 Granite 3B 与 Llama 1B。
+
+Worker 链路实测须先在独立临时 `--persist-to` 目录执行 Account API 的本地 D1 migrations，再启动测试邮件模式的本地 `wrangler dev`（用测试 pepper、指定端口，`AI` binding 保持 remote）。该测试只接受 localhost，使用内存凭证与临时桌面数据库；Agent 回复使用桩，真实验证账户登录、Worker 路由、远程 AI、四个 provider 的标题持久化及 Companion 同步事件。Account API 的部署入口为 `src/worker.ts`，仅导出 Worker handler，测试辅助函数和常量留在 `src/index.ts`。
 
 生产 Companion Relay 的部署由 GitHub Actions 执行。推送到 `main` 且改动涉及 `cloud/relay/**`、共享 Companion 协议或部署工作流时，`Deploy Companion Relay` 会先安装依赖、运行 Relay typecheck / tests，再使用 GitHub 的 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 和 `APNS_PRIVATE_KEY` 部署 `cloud/relay/wrangler.jsonc`。也可以在 Actions 页面手动运行；连续部署按顺序执行，不会并发覆盖。首次配置需要在仓库的 `production` Environment 或 Repository Secrets 中保存这三个值。
 
