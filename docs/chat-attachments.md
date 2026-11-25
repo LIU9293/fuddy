@@ -1,6 +1,6 @@
 # Chat 附件链路
 
-Mac 与 iPhone 的项目 Chat 都支持每条消息最多 4 个附件，单个文件最多 20 MiB 减去 32 字节加密封装。图片支持 PNG / JPEG / WEBP / GIF 原生输入；iPhone 相册选图转为 JPEG，其他文档按文件交给 Agent。Mac 支持选择、粘贴和拖入附件；工作助理继续使用图片输入。
+Mac 与 iPhone 的项目 Chat 支持每条消息最多 4 个附件，单个文件最多 20 MiB 减去 32 字节加密封装。图片支持 PNG / JPEG / WEBP / GIF 原生输入。iPhone 相册选图转为 JPEG，其他文档按文件交给 Agent。Mac 支持选择、粘贴和拖入附件。
 
 ## 输入
 

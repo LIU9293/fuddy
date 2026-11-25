@@ -2,7 +2,6 @@ import { useMemo, useReducer } from 'react'
 import type { Navigation, ProjectSection, SettingsSection, SidebarSelection } from '../../views/shared'
 
 export type AppMainRoute =
-  | { kind: 'briefing' }
   | { kind: 'files' }
   | { kind: 'projects' }
   | { kind: 'shared-projects' }
@@ -26,7 +25,7 @@ type AppRouteAction =
   | { type: 'set-settings-section'; section: SettingsSection }
   | { type: 'set-settings-project'; projectId: string | null }
 
-export const initialAppRoute: AppRoute = { kind: 'briefing' }
+export const initialAppRoute: AppRoute = { kind: 'runs', runId: null, creating: false }
 
 export function appRouteReducer(route: AppRoute, action: AppRouteAction): AppRoute {
   switch (action.type) {
@@ -95,7 +94,6 @@ export interface AppNavigationController {
   selectedAgentRunId: string | null
   creatingAgentRun: boolean
   creatingAgentRunProjectId: string | null | undefined
-  openBriefing: () => void
   openFiles: () => void
   openProjects: () => void
   openSharedProjects: () => void
@@ -125,7 +123,6 @@ export function useAppNavigation(): AppNavigationController {
     selectedAgentRunId: selectedRunForRoute(route),
     creatingAgentRun: creatingRunForRoute(route),
     creatingAgentRunProjectId: creatingRunProjectForRoute(route),
-    openBriefing: () => dispatch({ type: 'open-main', route: { kind: 'briefing' } }),
     openFiles: () => dispatch({ type: 'open-main', route: { kind: 'files' } }),
     openProjects: () => dispatch({ type: 'open-main', route: { kind: 'projects' } }),
     openSharedProjects: () => dispatch({ type: 'open-main', route: { kind: 'shared-projects' } }),

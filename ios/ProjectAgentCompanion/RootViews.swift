@@ -1,4 +1,3 @@
-import AVFoundation
 import SwiftUI
 import UIKit
 
@@ -8,12 +7,11 @@ private let companionAgentRunChatTopSpacing: CGFloat = 16
 let companionChatLatestDistanceThreshold: CGFloat = 50
 
 enum CompanionSection: String, CaseIterable, Identifiable {
-    case runs, assistant, projects, shared, settings
+    case runs, projects, shared, settings
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .assistant: "助理"
         case .runs: "Chats"
         case .projects: "项目"
         case .shared: "与我共享"
@@ -23,7 +21,6 @@ enum CompanionSection: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .assistant: "sparkles"
         case .runs: "bubble.left.and.bubble.right"
         case .projects: "square.grid.2x2"
         case .shared: "person.2"
@@ -97,13 +94,6 @@ func companionDrawerTargetIsPresented(
         ? clampedPrediction
         : clampedCurrent
     return projectedReveal >= drawerWidth * 0.5
-}
-
-func companionCanOpenDrawer(section: CompanionSection, pathIsEmpty: Bool) -> Bool {
-    guard pathIsEmpty else { return false }
-    switch section {
-    case .assistant, .runs, .projects, .shared, .settings: return true
-    }
 }
 
 struct CompanionRootView: View {
@@ -236,7 +226,7 @@ struct CompanionRootView: View {
     }
 
     @ViewBuilder private var rootSectionContent: some View {
-        if router.section == .assistant || router.section == .runs {
+        if router.section == .runs {
             ZStack(alignment: .top) {
                 sectionContent
                     .ignoresSafeArea(.container, edges: [.top, .bottom])
@@ -272,7 +262,6 @@ struct CompanionRootView: View {
 
     @ViewBuilder private var sectionContent: some View {
         switch router.section {
-        case .assistant: WorkAssistantView(topChromeHeight: 62 + statusBannerHeight)
         case .runs: RunsListView(topContentInset: 62 + statusBannerHeight)
         case .projects: ProjectListView()
         case .shared: SharedProjectsView()
@@ -300,7 +289,7 @@ struct CompanionRootView: View {
                         drawerDragRejected = true
                         return
                     }
-                    let canOpen = companionCanOpenDrawer(section: router.section, pathIsEmpty: router.path.isEmpty)
+                    let canOpen = router.path.isEmpty
                     guard router.drawerPresented || (canOpen && value.translation.width > 0) else {
                         drawerDragRejected = true
                         return
@@ -495,83 +484,6 @@ private struct CompanionSidebar: View {
     }
 }
 
-struct WorkAssistantView: View {
-    @EnvironmentObject private var store: CompanionStore
-    let topChromeHeight: CGFloat
-    @State private var prompt = ""
-    @State private var attachments: [PendingAttachment] = []
-    @State private var sending = false
-    @State private var error: String?
-    @State private var isAtLatestMessage = true
-    @State private var scrollToLatestRequest = 0
-
-    private var page: CompanionChatPage {
-        store.chatPage(chatID: workAssistantChatId) ?? CompanionChatPage(
-            chatId: workAssistantChatId,
-            chatKind: "assistant",
-            records: [],
-            hasMore: false,
-            nextBefore: nil
-        )
-    }
-
-    var body: some View {
-        CompanionChatSurface(
-            topChromeHeight: topChromeHeight,
-            isAtLatestMessage: isAtLatestMessage,
-            onScrollToLatest: { scrollToLatestRequest += 1 }
-        ) { viewportSize, topInset, bottomInset in
-            CompanionChatTimeline(
-                page: page,
-                viewportSize: viewportSize,
-                topInset: topInset,
-                bottomInset: bottomInset,
-                isAtLatestMessage: $isAtLatestMessage,
-                scrollToLatestRequest: scrollToLatestRequest,
-                latestContentRevision: page.records.last.map { "\($0.id)-\($0.hashValue)" } ?? "empty"
-            ) { record, _ in
-                if let message = record.assistantMessage {
-                    AssistantMessageView(message: message)
-                } else if let briefing = record.morningBriefing {
-                    MorningBriefingCard(briefing: briefing)
-                }
-            } tail: {
-                EmptyView()
-            }
-        } composer: {
-            VStack(spacing: 0) {
-                if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.top, 6) }
-                CompanionChatComposer(
-                    text: $prompt,
-                    attachments: $attachments,
-                    placeholder: "询问工作助理",
-                    sending: sending,
-                    imageOnly: true,
-                    onSend: { Task { await send() } }
-                )
-            }
-        }
-        .toolbarBackground(.hidden, for: .navigationBar)
-        .overlay {
-            if page.records.isEmpty {
-                ContentUnavailableView("开始和工作助理对话", systemImage: "sparkles", description: Text("每日总结也会出现在这里"))
-            }
-        }
-    }
-
-    private func send() async {
-        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty else { return }
-        sending = true; error = nil
-        do {
-            try await store.sendWorkAssistantMessage(text.isEmpty ? "请查看我附加的图片。" : text, attachments: attachments)
-            prompt = ""; attachments = []
-            await store.sync()
-        } catch { self.error = error.localizedDescription }
-        sending = false
-    }
-}
-
 private struct CompanionConversationMessage<Supplement: View>: View {
     let role: String
     let content: String
@@ -617,373 +529,6 @@ private struct CompanionConversationMessage<Supplement: View>: View {
             MarkdownText(content, expandsHorizontally: role != "user")
                 .font(role == "system" ? .caption : .subheadline)
             supplement()
-        }
-    }
-}
-
-private struct AssistantMessageView: View {
-    @EnvironmentObject private var store: CompanionStore
-    @EnvironmentObject private var router: CompanionRouter
-    let message: WorkAssistantMessage
-    @State private var executingProposalID: String?
-    @State private var actionError: String?
-
-    var body: some View {
-        CompanionConversationMessage(
-            role: message.role,
-            content: displayedContent,
-            pending: false
-        ) {
-            ForEach(message.attachments) { attachment in
-                RemoteAttachmentRow(attachment: attachment)
-            }
-            ForEach(actionProposals) { proposal in
-                WorkAssistantActionCard(
-                    proposal: proposal,
-                    options: actionOptions(for: proposal),
-                    busy: executingProposalID == proposal.id,
-                    onExecute: { option in
-                        Task { await execute(proposal: proposal, option: option) }
-                    }
-                )
-            }
-            if let actionError {
-                Text(actionError).font(.caption).foregroundStyle(.red)
-            }
-            ForEach(linkedRunIDs, id: \.self) { runID in
-                if let run = store.state.runs.first(where: { $0.run.id == runID })?.run {
-                    Button {
-                        router.openRun(id: runID)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "bubble.left.and.text.bubble.right")
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(run.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                Text(
-                                    run.status == "draft"
-                                        ? "草稿 · 首条消息尚未发送"
-                                        : "\(companionAgentProviderLabel(run.provider)) · \(companionRunStatusLabel(run.status))"
-                                )
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption.weight(.semibold))
-                        }
-                        .padding(12)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
-    private var actionProposals: [WorkAssistantActionProposal] {
-        message.actions.filter { proposal in
-            let acceptedOption = proposal.options.first(where: { $0.id == proposal.acceptedOptionId })
-            return acceptedOption?.capability != "agent-run.open"
-                && proposal.options.contains(where: { $0.capability != "agent-run.open" })
-        }
-    }
-
-    private var displayedContent: String {
-        guard message.actions.contains(where: { proposal in
-            proposal.options.contains(where: { $0.capability == "agent-run.open" })
-        }) else { return message.content }
-        return message.content
-            .replacingOccurrences(of: "确认后会打开它并预填建议消息，不会自动发送。", with: "可以通过下方链接直接回到这个 Run。")
-            .replacingOccurrences(of: "确认后会打开这个 Run 并预填建议消息，不会自动发送。", with: "可以通过下方链接直接打开这个 Run。")
-            .replacingOccurrences(of: "确认后会打开这个 Run，不会追加或发送消息。", with: "可以通过下方链接直接打开这个 Run。")
-            .replacingOccurrences(of: "请确认后打开。", with: "可以通过下方链接直接打开。")
-    }
-
-    private func actionOptions(for proposal: WorkAssistantActionProposal) -> [WorkAssistantActionOption] {
-        proposal.options.filter { $0.capability != "agent-run.open" }
-    }
-
-    private var linkedRunIDs: [String] {
-        workAssistantLinkedRunIDs(for: message)
-    }
-
-    private func execute(proposal: WorkAssistantActionProposal, option: WorkAssistantActionOption) async {
-        guard executingProposalID == nil else { return }
-        executingProposalID = proposal.id
-        actionError = nil
-        do {
-            let runID = try await store.executeWorkAssistantAction(
-                messageID: message.id,
-                proposalID: proposal.id,
-                optionID: option.id
-            )
-            if let runID { router.openRun(id: runID) }
-        } catch {
-            actionError = error.localizedDescription
-        }
-        executingProposalID = nil
-    }
-}
-
-func workAssistantLinkedRunIDs(for message: WorkAssistantMessage) -> [String] {
-    guard message.role == "assistant" else { return [] }
-
-    var result: [String] = []
-    let acceptedCreateRun = message.actions.contains { proposal in
-        guard proposal.status == "accepted", let acceptedOptionID = proposal.acceptedOptionId else { return false }
-        return proposal.options.first(where: { $0.id == acceptedOptionID })?.capability == "agent-run.create"
-    }
-    if let linkedRunID = message.linkedRunId,
-       message.actions.isEmpty || acceptedCreateRun {
-        result.append(linkedRunID)
-    }
-    for proposal in message.actions {
-        for option in proposal.options where option.capability == "agent-run.open" {
-            if let runID = option.payload.runId, !result.contains(runID) { result.append(runID) }
-        }
-    }
-    return result
-}
-
-private struct WorkAssistantActionCard: View {
-    let proposal: WorkAssistantActionProposal
-    let options: [WorkAssistantActionOption]
-    let busy: Bool
-    let onExecute: (WorkAssistantActionOption) -> Void
-
-    private var includesLegacyRunLink: Bool {
-        options.count != proposal.options.count
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 9) {
-                Image(systemName: proposal.status == "accepted" ? "checkmark.circle.fill" : "sparkles")
-                    .foregroundStyle(proposal.status == "accepted" ? .green : .primary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(includesLegacyRunLink ? "创建新的 Chat" : proposal.title).font(.subheadline.weight(.semibold))
-                    if let context = proposal.context { Text(context).font(.caption).foregroundStyle(.secondary) }
-                }
-            }
-            Text(includesLegacyRunLink ? "如果不继续已有 Chat，也可以确认后创建一个新的草稿 Chat。" : proposal.description)
-                .font(.caption).foregroundStyle(.secondary)
-            if proposal.status == "pending" {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(options) { option in
-                        Button {
-                            onExecute(option)
-                        } label: {
-                            HStack(spacing: 5) {
-                                if busy { ProgressView().controlSize(.mini) }
-                                Text(option.label)
-                            }
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(option.style == "primary" ? Color.white : Color.primary)
-                            .padding(.horizontal, 12)
-                            .frame(minHeight: 36)
-                            .background(
-                                option.style == "primary" ? Color.primary : Color.secondary.opacity(0.11),
-                                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(busy)
-                    }
-                }
-            } else {
-                Label(
-                    proposal.status == "dismissed"
-                        ? "已取消"
-                        : "已确认：\(options.first(where: { $0.id == proposal.acceptedOptionId })?.label ?? "已处理")",
-                    systemImage: "checkmark"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-        }
-        .padding(13)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.primary.opacity(0.08)))
-    }
-}
-
-private struct MorningBriefingCard: View {
-    let briefing: MorningBriefing
-    @State private var showingFullBriefing = false
-    @State private var speechSynthesizer = AVSpeechSynthesizer()
-    @State private var playbackMonitor: Task<Void, Never>?
-    @State private var playing = false
-    @State private var paused = false
-    @State private var playbackError: String?
-
-    private var durationMinutes: Int {
-        max(1, Int(ceil(Double(briefing.estimatedDurationSeconds) / 60)))
-    }
-
-    private var narration: String {
-        let value = briefing.narration.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? "\(briefing.headline)。\(briefing.body)" : value
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Label("每日总结", systemImage: "sun.max.fill")
-                        .font(.caption.bold())
-                    Text("\(briefing.reportDate) · 全部项目")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.68))
-                }
-                Spacer()
-                Text("约 \(durationMinutes) 分钟 · 中文")
-                    .font(.caption2).foregroundStyle(.white.opacity(0.72))
-            }
-            Text(briefing.headline).font(.headline.bold())
-
-            HStack(spacing: 10) {
-                Button(action: togglePlayback) {
-                    Label(
-                        playing && !paused ? "暂停" : paused ? "继续播放" : "播放简报",
-                        systemImage: playing && !paused ? "pause.fill" : "play.fill"
-                    )
-                    .font(.footnote.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.white)
-                .foregroundStyle(.indigo)
-                .accessibilityHint("使用 iPhone 中文语音朗读每日总结")
-
-                if playing {
-                    Button(action: stopPlayback) {
-                        Image(systemName: "stop.fill")
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                    .accessibilityLabel("停止播放")
-                }
-
-                Spacer(minLength: 4)
-
-                Button {
-                    showingFullBriefing = true
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("阅读全文")
-                        Image(systemName: "chevron.right")
-                    }
-                }
-                .font(.footnote.bold())
-                .foregroundStyle(.white)
-            }
-
-            if let playbackError {
-                Text(playbackError)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.82))
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(18)
-        .background(Color.indigo.opacity(0.92), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .sheet(isPresented: $showingFullBriefing) {
-            MorningBriefingFullArticle(briefing: briefing)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
-        .onDisappear(perform: stopPlayback)
-    }
-
-    private func togglePlayback() {
-        playbackError = nil
-
-        if speechSynthesizer.isPaused {
-            speechSynthesizer.continueSpeaking()
-            playing = true
-            paused = false
-            return
-        }
-
-        if speechSynthesizer.isSpeaking {
-            speechSynthesizer.pauseSpeaking(at: .word)
-            playing = true
-            paused = true
-            return
-        }
-
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-            try session.setActive(true)
-
-            let utterance = AVSpeechUtterance(string: narration)
-            utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
-            utterance.rate = 0.48
-            utterance.pitchMultiplier = 0.98
-            speechSynthesizer.speak(utterance)
-            playing = true
-            paused = false
-            monitorPlayback()
-        } catch {
-            playbackError = "暂时无法播放语音：\(error.localizedDescription)"
-            playing = false
-            paused = false
-        }
-    }
-
-    private func monitorPlayback() {
-        playbackMonitor?.cancel()
-        playbackMonitor = Task { @MainActor in
-            while !Task.isCancelled && (speechSynthesizer.isSpeaking || speechSynthesizer.isPaused) {
-                try? await Task.sleep(for: .milliseconds(200))
-            }
-            guard !Task.isCancelled else { return }
-            playing = false
-            paused = false
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        }
-    }
-
-    private func stopPlayback() {
-        playbackMonitor?.cancel()
-        playbackMonitor = nil
-        speechSynthesizer.stopSpeaking(at: .immediate)
-        playing = false
-        paused = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-    }
-}
-
-private struct MorningBriefingFullArticle: View {
-    @Environment(\.dismiss) private var dismiss
-    let briefing: MorningBriefing
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("\(briefing.reportDate) · 全部项目")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(briefing.headline)
-                            .font(.title3.bold())
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    Divider()
-                    MarkdownText(briefing.body)
-                        .font(.subheadline)
-                        .lineSpacing(4)
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 22)
-            }
-            .navigationTitle("每日总结")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
-                }
-            }
         }
     }
 }
@@ -2359,7 +1904,6 @@ struct ProjectDetailView: View {
     @EnvironmentObject private var router: CompanionRouter
     let project: Project
     @State private var section = ProjectDetailSection.overview
-    private var goals: [ProjectGoal] { store.projectGoals(project.id) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2405,20 +1949,6 @@ struct ProjectDetailView: View {
                                     Text(store.runHostLabel(detail.id)).font(.caption).foregroundStyle(.secondary)
                                 }
                             }
-                        }
-                    }
-                    Section("目标") {
-                        if goals.isEmpty { Text("尚未设置目标").foregroundStyle(.secondary) }
-                        ForEach(goals) { goal in
-                            VStack(alignment: .leading, spacing: 7) {
-                                HStack { Text(goal.title).font(.headline); Spacer(); Text(goal.priority).font(.caption.bold()).foregroundStyle(.secondary) }
-                                ProgressView(value: goal.progress)
-                                Text(goal.agentSummary).font(.subheadline).foregroundStyle(.secondary)
-                                ForEach(goal.milestones) { milestone in
-                                    Label(milestone.title, systemImage: milestone.status == "completed" ? "checkmark.circle.fill" : "circle")
-                                        .font(.caption).foregroundStyle(milestone.status == "completed" ? Color.green : Color.secondary)
-                                }
-                            }.padding(.vertical, 5)
                         }
                     }
                 }

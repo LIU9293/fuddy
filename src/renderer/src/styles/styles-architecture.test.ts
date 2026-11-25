@@ -59,15 +59,12 @@ describe('renderer CSS architecture', () => {
     }
   })
 
-  it('keeps Work Assistant and Agent Run on the same conversation shell', () => {
-    const workAssistant = readFileSync(join(rendererDirectory, 'views/WorkAssistantView.tsx'), 'utf8')
+  it('keeps Agent Run on the shared conversation shell', () => {
     const agentRuns = readFileSync(join(rendererDirectory, 'components/AgentRunsView.tsx'), 'utf8')
     const sharedStyles = readFileSync(join(stylesDirectory, 'shell-and-navigation.css'), 'utf8')
     const agentRunStyles = readFileSync(join(stylesDirectory, 'agent-runs.css'), 'utf8')
 
-    expect(workAssistant).toContain('<ConversationShell')
     expect(agentRuns).toContain('<ConversationShell')
-    expect(workAssistant).not.toContain('briefing-composer-dock')
     expect(agentRuns).not.toContain('agent-run-composer-dock')
     expect(agentRuns).not.toContain('className="agent-run-conversation"')
     expect(sharedStyles).toContain('.conversation-composer-dock')

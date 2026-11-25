@@ -1,17 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
-  AskMorningBriefingInput,
   AgentRunStreamEnvelope,
   AgentRunStreamUpdate,
-  AgentSessionUpdate,
   AppBootstrapDataKey,
-  AgentStreamEnvelope,
   ConfigureAgentProviderInput,
   ConfigureAsrProviderInput,
   ConfigureCodingAgentSettingsInput,
   ConfigureConnectorInput,
   ConfigurePostgresInput,
-  ConfigureTtsProviderInput,
   CreateDecisionInput,
   CreateProjectInput,
   CreateAgentRunDraftInput,
@@ -20,16 +16,12 @@ import type {
   CreateAgentRunInput,
   CreateWorkspaceFolderInput,
   PermissionIntent,
-  GoalStatus,
-  GoalPriority,
-  CreateGoalInput,
   UpdateProjectInput,
   SendAgentRunMessageInput,
   RetryAgentRunMessageInput,
   SaveAutomationInput,
   WriteWorkspaceFileInput,
   DispatchProjectAgentInput,
-  ExecuteWorkAssistantActionInput,
   RespondAgentApprovalInput,
   TranscribeAudioInput,
   AsrDownloadProgress
@@ -107,16 +99,6 @@ const api: DesktopApi = {
   openMicrophoneSettings: () => ipcRenderer.invoke('capability:open-microphone-settings'),
   updateProject: (input: UpdateProjectInput) => ipcRenderer.invoke('project:update', input),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
-  createGoal: (input: CreateGoalInput) => ipcRenderer.invoke('goal:create', input),
-  checkGoal: (id: string) => ipcRenderer.invoke('goal:check', id),
-  updateGoalStatus: (id: string, status: GoalStatus) =>
-    ipcRenderer.invoke('goal:update-status', { id, status }),
-  updateGoalPriority: (id: string, priority: GoalPriority) =>
-    ipcRenderer.invoke('goal:update-priority', { id, priority }),
-  completeGoalMilestone: (goalId: string, milestoneId: string) =>
-    ipcRenderer.invoke('goal:complete-milestone', { goalId, milestoneId }),
-  deleteGoalMilestone: (goalId: string, milestoneId: string) =>
-    ipcRenderer.invoke('goal:delete-milestone', { goalId, milestoneId }),
   createDecision: (input: CreateDecisionInput) => ipcRenderer.invoke('decision:create', input),
   updateDecisionStatus: (id: string, status: DecisionStatus) =>
     ipcRenderer.invoke('decision:update-status', { id, status }),
@@ -233,23 +215,6 @@ const api: DesktopApi = {
     ipcRenderer.invoke('connector:configure-postgres', input),
   configureConnector: (input: ConfigureConnectorInput) =>
     ipcRenderer.invoke('connector:configure', input),
-  generateDailyBriefing: (projectId: string) =>
-    ipcRenderer.invoke('briefing:generate-daily', projectId),
-  generateMorningBriefing: () => ipcRenderer.invoke('briefing:generate-morning'),
-  askMorningBriefing: (
-    input: AskMorningBriefingInput,
-    onUpdate: (update: AgentSessionUpdate) => void
-  ) => {
-    const listener = (_event: Electron.IpcRendererEvent, envelope: AgentStreamEnvelope): void => {
-      if (envelope.requestId === input.requestId) onUpdate(envelope.update)
-    }
-    ipcRenderer.on('briefing:ask-update', listener)
-    return ipcRenderer.invoke('briefing:ask', input).finally(() => {
-      ipcRenderer.removeListener('briefing:ask-update', listener)
-    })
-  },
-  executeWorkAssistantAction: (input: ExecuteWorkAssistantActionInput) =>
-    ipcRenderer.invoke('work-assistant:execute-action', input),
   configureAgentProvider: (input: ConfigureAgentProviderInput) =>
     ipcRenderer.invoke('provider:configure-agent', input),
   configureCodingAgents: (input: ConfigureCodingAgentSettingsInput) =>
@@ -269,22 +234,11 @@ const api: DesktopApi = {
     ipcRenderer.on('asr:download-progress', listener)
     return () => ipcRenderer.removeListener('asr:download-progress', listener)
   },
-  configureTtsProvider: (input: ConfigureTtsProviderInput) =>
-    ipcRenderer.invoke('provider:configure-tts', input),
-  getMorningBriefingAudio: (briefingId: string) =>
-    ipcRenderer.invoke('tts:get-briefing-audio', briefingId),
-  testTtsProvider: () => ipcRenderer.invoke('tts:test'),
-  designElevenLabsVoice: () => ipcRenderer.invoke('tts:design-elevenlabs-voice'),
   saveAutomation: (input: SaveAutomationInput) => ipcRenderer.invoke('automation:save', input),
   setAutomationEnabled: (id: string, enabled: boolean) =>
     ipcRenderer.invoke('automation:set-enabled', { id, enabled }),
   runAutomation: (id: string) => ipcRenderer.invoke('automation:run', id),
   approveAutomationRun: (runId: string) => ipcRenderer.invoke('automation:approve', runId),
-  onMorningBriefingReady: (callback: () => void) => {
-    const listener = (): void => callback()
-    ipcRenderer.on('briefing:morning-ready', listener)
-    return () => ipcRenderer.removeListener('briefing:morning-ready', listener)
-  },
   onAutomationsChanged: (callback: () => void) => {
     const listener = (): void => callback()
     ipcRenderer.on('automation:changed', listener)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { projectNameFromPath } from './AccountOnboarding'
+import { projectNameFromPath } from '../../views/shared'
 
 describe('projectNameFromPath', () => {
   it('uses the selected folder name for the first project', () => {

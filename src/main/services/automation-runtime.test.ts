@@ -20,7 +20,6 @@ function setup(overrides: Partial<AutomationActions> = {}): {
   const actions: AutomationActions = {
     runAgentTask: vi.fn().mockResolvedValue({ summary: 'Agent 完成', agentRunId: 'run-1' }),
     runConnectors: vi.fn().mockResolvedValue('巡检完成'),
-    checkGoals: vi.fn().mockResolvedValue('目标检查完成'),
     generateBriefing: vi.fn().mockResolvedValue('简报完成'),
     ...overrides
   }
@@ -50,6 +49,24 @@ afterEach(() => {
 })
 
 describe('AutomationRuntime', () => {
+  it('disables retired jobs on upgrade and keeps project briefings runnable', async () => {
+    const { database, runtime, actions } = setup()
+    const active = runtime.save(input({ action: 'generate-briefing', prompt: '项目简报' }))
+    database.saveAutomation({ ...active, id: 'old-goals', action: 'check-goals' })
+    database.saveAutomation({ ...active, id: 'old-assistant', projectId: null })
+
+    const upgraded = new AutomationRuntime(database, actions)
+    for (const id of ['old-goals', 'old-assistant']) {
+      expect(database.getAutomation(id)).toMatchObject({ enabled: false, nextRunAt: null })
+      expect(() => upgraded.setEnabled(id, true)).toThrow('已下线')
+      await expect(upgraded.runNow(id)).rejects.toThrow('已下线')
+    }
+    expect(database.getAutomation(active.id).enabled).toBe(true)
+    expect((await upgraded.runNow(active.id)).run.status).toBe('completed')
+    expect(actions.generateBriefing).toHaveBeenCalledOnce()
+    database.close()
+  })
+
   it('persists a valid job and calculates its next run', () => {
     const { database, runtime } = setup()
     const job = runtime.save(input())

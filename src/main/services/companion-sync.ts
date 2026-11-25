@@ -26,8 +26,7 @@ import type {
   CompanionChatKind,
   CompanionChatPage,
   CompanionRelayChatPage,
-  CompanionRelaySnapshotPayload,
-  CompanionRelayWorkAssistantMessage
+  CompanionRelaySnapshotPayload
 } from '../../shared/companion-sync'
 import {
   companionAttachmentPlaintextMaximumBytes,
@@ -36,9 +35,9 @@ import {
   companionRelayMaximumRetainedEvents
 } from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
-import type { AgentRunProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
+import type { AgentRunProvider, DecisionStatus } from '../../shared/contracts'
 import { attachmentStorageId, incomingAttachmentDirectory } from './agent-attachments'
-import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
+import type { AgentRunArtifact, AgentRunMessage } from '../../shared/contracts'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { agentToolPresentation } from '../../shared/agent-activity'
 import { updateProjectSchema } from '../../shared/project-validation'
@@ -156,19 +155,14 @@ export function companionAgentMessageForRelay(message: AgentRunMessage): AgentRu
   }
 }
 
-export async function companionChatPageForRelay(
-  page: CompanionChatPage,
-  prepareWorkAssistantMessage: (message: BriefingMessage) => Promise<CompanionRelayWorkAssistantMessage>
-): Promise<CompanionRelayChatPage> {
+export function companionChatPageForRelay(page: CompanionChatPage): CompanionRelayChatPage {
   return {
     ...page,
-    records: await Promise.all(page.records.map(async (record) => ({
+    records: page.records.map((record) => ({
       ...record,
-      assistantMessage: record.assistantMessage
-        ? await prepareWorkAssistantMessage(record.assistantMessage)
-        : null,
+      assistantMessage: null,
       agentMessages: record.agentMessages.map(companionAgentMessageForRelay)
-    })))
+    }))
   }
 }
 
@@ -301,10 +295,6 @@ async function responseJson<T>(response: Response): Promise<T> {
 }
 
 export class CompanionSyncService {
-  private executeWorkAssistantAction: ((
-    input: { messageId: string; proposalId: string; optionId: string },
-    cancellationSignal: AbortSignal
-  ) => unknown) | null = null
   private configuration: CompanionMacConfiguration | null
   private accountConfigurations: Record<string, CompanionMacConfiguration>
   private state: CompanionMacStatus['state'] = 'not-configured'
@@ -336,11 +326,6 @@ export class CompanionSyncService {
     private readonly database: AppDatabase,
     private readonly credentials: CredentialVault,
     private readonly dispatcher: TaskDispatcher,
-    private readonly askWorkAssistant: (
-      question: string,
-      attachments: WorkAssistantImageAttachment[],
-      cancellationSignal: AbortSignal
-    ) => Promise<unknown>,
     private readonly incomingAttachmentsRoot = resolve(process.cwd(), '.companion-uploads'),
     private readonly defaultCodingAgent: () => AgentRunProvider = () => 'codex',
     private readonly workspaceFiles?: WorkspaceFilesService,
@@ -404,15 +389,6 @@ export class CompanionSyncService {
   publishModelLabels(): void {
     if (!this.configuration) return
     this.database.enqueueCompanionModelLabels(this.modelLabels())
-  }
-
-  setWorkAssistantActionExecutor(
-    executor: (
-      input: { messageId: string; proposalId: string; optionId: string },
-      cancellationSignal: AbortSignal
-    ) => unknown
-  ): void {
-    this.executeWorkAssistantAction = executor
   }
 
   async start(): Promise<void> {
@@ -946,6 +922,7 @@ export class CompanionSyncService {
   private async flushOutbox(): Promise<void> {
     if (this.stopped) return
     const context = this.authenticatedContext()
+    this.database.discardRetiredCompanionEvents()
     while (true) {
       if (this.stopped) return
       const pending = this.database.listPendingCompanionEvents(companionEventBatchMaximumCount)
@@ -1115,21 +1092,10 @@ export class CompanionSyncService {
 
   private async prepareEventPayload(event: CompanionOutboxEvent): Promise<unknown> {
     if (event.type === 'chat-page.updated') {
-      return companionChatPageForRelay(
-        event.payload as CompanionChatPage,
-        (message) => this.prepareWorkAssistantMessage(message)
-      )
+      return companionChatPageForRelay(event.payload as CompanionChatPage)
     }
     if (event.type === 'snapshot.created') {
       const snapshot = event.payload as CompanionSnapshotPayload
-      const preparedWorkAssistantMessages = new Map<string, Promise<CompanionRelayWorkAssistantMessage>>()
-      const prepareWorkAssistantMessage = (message: BriefingMessage): Promise<CompanionRelayWorkAssistantMessage> => {
-        const existing = preparedWorkAssistantMessages.get(message.id)
-        if (existing) return existing
-        const prepared = this.prepareWorkAssistantMessage(message)
-        preparedWorkAssistantMessages.set(message.id, prepared)
-        return prepared
-      }
       const attachments = (await Promise.all(
         snapshot.runs.flatMap((detail) => detail.artifacts.map((artifact) =>
           this.prepareArtifact(artifact as AgentRunArtifact)
@@ -1142,19 +1108,14 @@ export class CompanionSyncService {
           ...detail,
           messages: detail.messages.map((message) => companionAgentMessageForRelay(message as AgentRunMessage))
         })),
-        workAssistantMessages: await Promise.all(
-          (snapshot.workAssistantMessages ?? []).map((message) => prepareWorkAssistantMessage(message as BriefingMessage))
-        ),
-        chatPages: snapshot.chatPages
-          ? await Promise.all(snapshot.chatPages.map((page) => companionChatPageForRelay(page, prepareWorkAssistantMessage)))
-          : undefined
+        goals: [],
+        morningBriefings: [],
+        workAssistantMessages: [],
+        chatPages: snapshot.chatPages?.filter((page) => page.chatKind === 'agent').map(companionChatPageForRelay)
       }
     }
     if (event.type === 'agent-message.created') {
       return companionAgentMessageForRelay(event.payload as AgentRunMessage)
-    }
-    if (event.type === 'work-assistant-message.created' || event.type === 'work-assistant-message.updated') {
-      return await this.prepareWorkAssistantMessage(event.payload as BriefingMessage)
     }
     if (event.type !== 'artifact.updated') return event.payload
     const artifactId = event.entityId
@@ -1264,71 +1225,6 @@ export class CompanionSyncService {
     return existsSync(filePath) ? filePath : null
   }
 
-  private async prepareWorkAssistantMessage(message: BriefingMessage): Promise<CompanionRelayWorkAssistantMessage> {
-    const attachments: CompanionAttachmentDescriptor[] = []
-    for (const image of message.attachments) {
-      const marker = ';base64,'
-      const markerIndex = image.dataUrl.indexOf(marker)
-      if (!image.dataUrl.startsWith(`data:${image.mimeType}`) || markerIndex < 0) continue
-      const bytes = Buffer.from(image.dataUrl.slice(markerIndex + marker.length), 'base64')
-      if (bytes.byteLength <= 0 || bytes.byteLength > 5 * 1024 * 1024) continue
-      const sha256 = createHash('sha256').update(bytes).digest('hex')
-      await this.uploadAttachmentBytes(image.id, image.mimeType, bytes, sha256)
-      attachments.push({
-        id: image.id,
-        messageId: message.id,
-        artifactId: null,
-        filename: image.name,
-        mimeType: image.mimeType,
-        size: bytes.byteLength,
-        sha256,
-        width: null,
-        height: null,
-        thumbnailAttachmentId: null,
-        createdAt: message.createdAt
-      })
-    }
-    return { ...message, attachments }
-  }
-
-  private async uploadAttachmentBytes(
-    attachmentId: string,
-    mimeType: string,
-    bytes: Buffer,
-    sha256: string
-  ): Promise<void> {
-    const context = this.authenticatedContext()
-    const sealed = await sealCompanionAttachment(
-      context.encryptionKey,
-      bytes,
-      companionAttachmentAssociatedData(context.configuration.accountId, attachmentId)
-    )
-    const encryptedSha256 = createHash('sha256').update(sealed).digest('hex')
-    const response = await fetchWithTimeout(
-      this.authenticatedUrl(`/v1/attachments/${encodeURIComponent(attachmentId)}`, context.configuration),
-      {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${context.token}`,
-          'Content-Type': 'application/octet-stream',
-          'Content-Length': String(sealed.byteLength),
-          'X-Content-SHA256': encryptedSha256,
-          'X-Companion-Encryption': 'A256GCM'
-        },
-        body: sealed as unknown as BodyInit
-      },
-      companionAttachmentRequestTimeoutMs
-    )
-    if (response.status !== 409 || !await this.existingAttachmentMatches(
-      context,
-      attachmentId,
-      bytes.byteLength,
-      sha256
-    )) {
-      await responseJson(response)
-    }
-  }
-
   private async hashFile(path: string): Promise<string> {
     const hash = createHash('sha256')
     for await (const chunk of createReadStream(path)) hash.update(chunk)
@@ -1406,7 +1302,7 @@ export class CompanionSyncService {
         this.emitStatus()
       })
       .finally(async () => {
-        if (remoteCommand.type === 'agent.send-message' || remoteCommand.type === 'assistant.send-message') {
+        if (remoteCommand.type === 'agent.send-message') {
           await rm(incomingAttachmentDirectory(this.incomingAttachmentsRoot, remoteCommand.commandId), { recursive: true, force: true }).catch(() => undefined)
         }
         this.activeCommands.delete(remoteCommand.commandId)
@@ -1496,32 +1392,9 @@ export class CompanionSyncService {
     if (cancellationSignal.aborted) throw cancellationSignal.reason
     const payload = remoteCommand.payload as Record<string, unknown>
     switch (remoteCommand.type) {
-      case 'assistant.send-message': {
-        const attachments = await this.materializeIncomingAttachments(remoteCommand.commandId, payload)
-        if (cancellationSignal.aborted) throw cancellationSignal.reason
-        const images = attachments
-          .filter((attachment) => ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(attachment.descriptor.mimeType))
-          .map((attachment): WorkAssistantImageAttachment => ({
-            id: attachment.descriptor.id,
-            name: attachment.descriptor.filename,
-            mimeType: attachment.descriptor.mimeType as WorkAssistantImageAttachment['mimeType'],
-            dataUrl: `data:${attachment.descriptor.mimeType};base64,${attachment.bytes.toString('base64')}`
-          }))
-        if (images.length !== attachments.length) throw new Error('工作助理当前只支持图片附件。')
-        return await this.askWorkAssistant(
-          this.requiredString(payload, 'prompt'),
-          images,
-          cancellationSignal
-        )
-      }
-      case 'assistant.execute-action': {
-        if (!this.executeWorkAssistantAction) throw new Error('工作助理 Action 能力尚未初始化。')
-        return this.executeWorkAssistantAction({
-          messageId: this.requiredString(payload, 'messageId'),
-          proposalId: this.requiredString(payload, 'proposalId'),
-          optionId: this.requiredString(payload, 'optionId')
-        }, cancellationSignal)
-      }
+      case 'assistant.send-message':
+      case 'assistant.execute-action':
+        throw new Error('工作助理已下线。')
       case 'agent.send-message': {
         const runId = this.requiredString(payload, 'runId')
         const clientMessageId = typeof payload.clientMessageId === 'string' && payload.clientMessageId.trim()
@@ -1601,11 +1474,7 @@ export class CompanionSyncService {
           before === companionLatestChatCursor ? null : before,
           before === companionLatestChatCursor ? Math.min(limit, 20) : limit
         )
-        const prepared = await companionChatPageForRelay(
-          page,
-          (message) => this.prepareWorkAssistantMessage(message)
-        )
-        return compactCompanionChatPage(prepared, companionCommandChatPageMaximumBytes)
+        return compactCompanionChatPage(companionChatPageForRelay(page), companionCommandChatPageMaximumBytes)
       }
       case 'artifact.request-upload': {
         const artifactId = this.requiredString(payload, 'artifactId')

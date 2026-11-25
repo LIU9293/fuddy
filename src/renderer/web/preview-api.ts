@@ -154,31 +154,6 @@ export function createPreviewApi(empty = false): DesktopApi {
       data.projects[index] = copy(input)
       return copy(input)
     },
-    createGoal: unavailable,
-    checkGoal: unavailable,
-    updateGoalStatus: async (id, status) => {
-      const goal = required(data.goals.find((item) => item.id === id))
-      goal.status = status
-      goal.updatedAt = now()
-      goal.completedAt = status === 'completed' ? now() : null
-      return copy(goal)
-    },
-    updateGoalPriority: async (id, priority) => {
-      const goal = required(data.goals.find((item) => item.id === id))
-      goal.priority = priority
-      return copy(goal)
-    },
-    completeGoalMilestone: async (goalId, milestoneId) => {
-      const goal = required(data.goals.find((item) => item.id === goalId))
-      const milestone = required(goal.milestones.find((item) => item.id === milestoneId))
-      Object.assign(milestone, { status: 'completed', completedAt: now(), updatedAt: now() })
-      return copy(goal)
-    },
-    deleteGoalMilestone: async (goalId, milestoneId) => {
-      const goal = required(data.goals.find((item) => item.id === goalId))
-      goal.milestones = goal.milestones.filter((item) => item.id !== milestoneId)
-      return copy(goal)
-    },
     createDecision: unavailable,
     updateDecisionStatus: unavailable,
     evaluatePermission: unavailable,
@@ -261,10 +236,6 @@ export function createPreviewApi(empty = false): DesktopApi {
     setConnectorEnabled: unavailable,
     configurePostgres: unavailable,
     configureConnector: unavailable,
-    generateDailyBriefing: unavailable,
-    generateMorningBriefing: unavailable,
-    askMorningBriefing: unavailable,
-    executeWorkAssistantAction: unavailable,
     configureAgentProvider: unavailable,
     configureCodingAgents: async (input) => {
       data.providerSettings.codingAgents = copy(input)
@@ -286,10 +257,6 @@ export function createPreviewApi(empty = false): DesktopApi {
     deleteAsrModel: unavailable,
     transcribeAudio: unavailable,
     onAsrDownloadProgress: noSubscription,
-    configureTtsProvider: unavailable,
-    getMorningBriefingAudio: unavailable,
-    testTtsProvider: unavailable,
-    designElevenLabsVoice: unavailable,
     saveAutomation: async (input) => {
       const existing = data.automations.find((item) => item.id === input.id)
       const automation = {
@@ -307,7 +274,6 @@ export function createPreviewApi(empty = false): DesktopApi {
     },
     runAutomation: unavailable,
     approveAutomationRun: unavailable,
-    onMorningBriefingReady: noSubscription,
     onAutomationsChanged: noSubscription
   }
   return api

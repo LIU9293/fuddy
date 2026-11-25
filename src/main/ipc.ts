@@ -6,14 +6,10 @@ import { evaluateAggressivePermission } from '../shared/permissions'
 import { connectorCatalog, ConnectorRuntime } from './connectors/connector-runtime'
 import { getCapabilities } from './services/capabilities'
 import { CredentialVault } from './services/credential-vault'
-import { DailyBriefingService } from './services/daily-briefing'
-import { MorningBriefingService } from './services/morning-briefing'
 import { ProviderSettingsService } from './services/provider-settings'
 import { AppDatabase } from './services/database'
 import { TaskDispatcher } from './services/task-dispatcher'
-import { TtsService } from './services/tts-service'
 import { AsrService } from './services/asr-service'
-import { GoalTrackingService } from './services/goal-tracking'
 import { WorkspaceFilesService } from './services/workspace-files'
 import { AutomationRuntime } from './services/automation-runtime'
 import { listProjectAnalyticsProfileSummaries } from './analytics/project-analytics-profiles'
@@ -42,12 +38,8 @@ export function registerIpc(
   connectorRuntime: ConnectorRuntime,
   decisionRemediationService: DecisionRemediationService,
   credentialVault: CredentialVault,
-  dailyBriefingService: DailyBriefingService,
-  morningBriefingService: MorningBriefingService,
-  goalTrackingService: GoalTrackingService,
   providerSettings: ProviderSettingsService,
   asrService: AsrService,
-  ttsService: TtsService,
   workspaceFiles: WorkspaceFilesService,
   automationRuntime: AutomationRuntime,
   projectAgentIntegration: ProjectAgentIntegrationService,
@@ -81,12 +73,8 @@ export function registerIpc(
     connectorRuntime,
     decisionRemediationService,
     credentialVault,
-    dailyBriefingService,
-    morningBriefingService,
-    goalTrackingService,
     providerSettings,
     asrService,
-    ttsService,
     workspaceFiles,
     automationRuntime,
     projectAgentIntegration,

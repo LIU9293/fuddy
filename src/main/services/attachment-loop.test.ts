@@ -75,7 +75,7 @@ describe('phone attachment → Mac Agent → encrypted output loop', () => {
       throw new Error(`Unexpected test relay request ${method} ${path}`)
     }))
     const credentials = { get: (ref: string) => ref.startsWith('companion.account-key:') ? key : 'test-token' } as CredentialVault
-    const service = new CompanionSyncService(database, credentials, dispatcher, async () => ({}), join(root, 'incoming'), () => 'codex', files)
+    const service = new CompanionSyncService(database, credentials, dispatcher, join(root, 'incoming'), () => 'codex', files)
     try {
       await service.syncNow()
       await vi.waitFor(() => expect(database.getCompanionCommand(command.commandId)?.status).toBe(tampered ? 'failed' : 'completed'))

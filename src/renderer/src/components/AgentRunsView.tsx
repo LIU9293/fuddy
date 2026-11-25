@@ -31,7 +31,7 @@ import {
   X,
   Wrench
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type {
   AgentApprovalRequest,
   AgentInputRequest,
@@ -47,7 +47,6 @@ import type {
   CodingAgentSettings,
   GitWorkingTreeSummary,
   Project,
-  ProjectGoal
 } from '../../../shared/contracts'
 import { AgentInputCard } from './AgentInputCard'
 import { ChatMarkdown as Markdown } from './ChatMarkdown'
@@ -219,7 +218,6 @@ export function shouldBlockAgentRunDetailRefresh(
 function AgentRunInfoSidebar({
   detail,
   project,
-  milestoneTitle,
   gitSummary,
   gitLoading,
   activeTab,
@@ -231,7 +229,6 @@ function AgentRunInfoSidebar({
 }: {
   detail: AgentRunDetail
   project: Project | null | undefined
-  milestoneTitle?: string
   gitSummary: GitWorkingTreeSummary | null
   gitLoading: boolean
   activeTab: 'info' | 'files'
@@ -341,7 +338,6 @@ function AgentRunInfoSidebar({
             <dl>
               {project.profile.stage && <><dt>阶段</dt><dd>{project.profile.stage}</dd></>}
               {project.focus && <><dt>当前重点</dt><dd>{project.focus}</dd></>}
-              {milestoneTitle && <><dt>Milestone</dt><dd>{milestoneTitle}</dd></>}
               <dt>默认 Agent</dt><dd>{project.profile.defaultAgent}</dd>
             </dl>
           </div> : <p className="agent-run-info-empty">这是一个共享 Chat，没有关联项目。</p>}
@@ -1024,7 +1020,6 @@ function MessageAttachments({ message, onOpen }: { message: AgentRunMessage; onO
 export function AgentRunsView({
   runs,
   projects,
-  goals,
   modelLabels,
   codingAgentSettings,
   currentUserId,
@@ -1032,8 +1027,6 @@ export function AgentRunsView({
   selectedRunId,
   creating,
   initialProjectId,
-  prefill,
-  onPrefillConsumed,
   onSelectRun,
   onCreatingChange,
   onRefresh,
@@ -1041,7 +1034,6 @@ export function AgentRunsView({
 }: {
   runs: AgentRun[]
   projects: Project[]
-  goals: ProjectGoal[]
   modelLabels: AgentModelLabels
   codingAgentSettings: CodingAgentSettings
   currentUserId?: string | null
@@ -1049,8 +1041,6 @@ export function AgentRunsView({
   selectedRunId: string | null
   creating: boolean
   initialProjectId?: string | null
-  prefill: { runId: string; prompt: string; requestId: string } | null
-  onPrefillConsumed: () => void
   onSelectRun: (runId: string | null) => void
   onCreatingChange: (creating: boolean) => void
   onRefresh: () => Promise<void>
@@ -1083,7 +1073,6 @@ export function AgentRunsView({
   const [gitRefreshKey, setGitRefreshKey] = useState(0)
   const [provider, setProvider] = useState<AgentRunProvider>(projects[0]?.profile.defaultAgent ?? codingAgentSettings.defaultAgent)
   const [projectId, setProjectId] = useState<string | null>(projects[0]?.id ?? null)
-  const [milestoneValue, setMilestoneValue] = useState('')
   const selectedHost = executionHosts.find((host) => executionHostId ? host.id === executionHostId : host.isCurrent)
   const hostUnavailable = !selectedHost || !selectedHost.online || !selectedHost.workspaceConfigured
   useEffect(() => {
@@ -1241,12 +1230,6 @@ export function AgentRunsView({
     return () => window.clearTimeout(timer)
   }, [replyAttachmentError])
 
-  const milestoneOptions = useMemo(() => goals
-    .filter((goal) => !projectId || goal.projectId === projectId)
-    .flatMap((goal) => goal.milestones.map((milestone) => ({
-      value: `${goal.id}:${milestone.id}`,
-      label: milestone.title
-    }))), [goals, projectId])
 
   useEffect(() => {
     if (!selectedRunId) {
@@ -1303,16 +1286,6 @@ export function AgentRunsView({
     }).catch(() => undefined)
     if (terminal) void onRefreshRef.current()
   }), [])
-
-  useEffect(() => {
-    if (!prefill || !detail || detail.run.id !== prefill.runId) return
-    if (detail.run.status === 'running' || detail.run.status === 'queued') {
-      onNotice('这个 Run 正在执行，已为你打开当前进度。')
-    } else {
-      setReply(prefill.prompt)
-    }
-    onPrefillConsumed()
-  }, [prefill, detail?.run.id])
 
   useEffect(() => {
     if (!detail?.run.id || !infoSidebarOpen) return
@@ -1450,7 +1423,6 @@ export function AgentRunsView({
     setDetail(null)
     setProjectId(nextProjectId)
     setProvider(projectDefaultAgent(nextProjectId))
-    setMilestoneValue('')
     setExecutionHostId(null)
     setExecutionHosts([])
   }
@@ -1470,14 +1442,11 @@ export function AgentRunsView({
 
   async function createRun(): Promise<void> {
     if (creatingBusy || hostUnavailable) return
-    const [goalId, milestoneId] = milestoneValue ? milestoneValue.split(':') : [null, null]
     setCreatingBusy(true)
     try {
       const result = await window.projectAgent.createAgentRunDraft({
         executionHostId: selectedHost?.isCurrent ? null : selectedHost?.id,
         projectId,
-        goalId,
-        milestoneId,
         provider
       })
       setDetail(result)
@@ -1681,14 +1650,13 @@ export function AgentRunsView({
         </header>
         <div className="agent-run-create-shell">
           <div className="agent-run-create-form">
-            <label><span>项目</span><SelectMenu value={projectId ?? ''} options={[{ value: '', label: '共享任务' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]} onChange={(value) => { const nextProjectId = value || null; setProjectId(nextProjectId); setMilestoneValue(''); setProvider(projectDefaultAgent(nextProjectId)) }} ariaLabel="Run 所属项目" /></label>
+            <label><span>项目</span><SelectMenu value={projectId ?? ''} options={[{ value: '', label: '共享任务' }, ...projects.map((project) => ({ value: project.id, label: project.name }))]} onChange={(value) => { const nextProjectId = value || null; setProjectId(nextProjectId); setProvider(projectDefaultAgent(nextProjectId)) }} ariaLabel="Run 所属项目" /></label>
             {executionHosts.length > 1 && <label><span>执行 Mac</span><SelectMenu
               value={selectedHost?.id ?? ''}
               options={executionHosts.map((host) => ({ value: host.id, label: `${host.name} · ${host.isCurrent ? '本机' : host.online ? '在线' : '离线'}${host.online && !host.workspaceConfigured ? ' · 未配置目录' : ''}`, disabled: !host.online || !host.workspaceConfigured }))}
-              onChange={(id) => { setExecutionHostId(id); setMilestoneValue('') }} ariaLabel="执行 Mac" /></label>}
+              onChange={setExecutionHostId} ariaLabel="执行 Mac" /></label>}
             {(hostsError || selectedHost?.unavailableReason) && <p role="status">{hostsError ?? selectedHost?.unavailableReason}</p>}
             <label><span>Agent</span><SelectMenu value={provider} options={agentProviderOptions(codingAgentModels, provider)} onChange={(value) => setProvider(value as AgentRunProvider)} ariaLabel="执行 Agent" /></label>
-            <label><span>关联 Milestone（可选）</span><SelectMenu value={milestoneValue} options={[{ value: '', label: '不关联 Milestone' }, ...milestoneOptions]} onChange={setMilestoneValue} ariaLabel="关联 Milestone" /></label>
             <button className="run-create-submit" onClick={() => void createRun()} disabled={creatingBusy || hostUnavailable}>
               {creatingBusy ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}
               {creatingBusy ? '正在创建…' : '创建 Chat'}
@@ -1700,8 +1668,6 @@ export function AgentRunsView({
   }
 
   const detailProject = detail ? projects.find((project) => project.id === detail.run.projectId) : null
-  const detailGoal = detail?.run.goalId ? goals.find((goal) => goal.id === detail.run.goalId) : null
-  const detailMilestone = detailGoal?.milestones.find((milestone) => milestone.id === detail?.run.milestoneId)
 
   if (loadingDetail || !detail || detail.run.id !== selectedRunId) {
     return <section className="agent-runs-view agent-run-chat-view"><div className="agent-run-loading"><LoaderCircle size={20} className="spin" /> 正在读取 Chat…</div></section>
@@ -1990,7 +1956,6 @@ export function AgentRunsView({
       <AgentRunInfoSidebar
         detail={detail}
         project={detailProject}
-        milestoneTitle={detailMilestone?.title}
         gitSummary={gitSummary}
         gitLoading={gitSummaryLoading}
         activeTab={infoSidebarTab}

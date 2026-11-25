@@ -87,6 +87,24 @@ function jsonResponse(value: unknown, status = 200): Response {
   })
 }
 
+function createSyncTestRun(database: AppDatabase, now: string): void {
+  database.createAgentRun({
+    id: 'sync-test-run',
+    projectId: null,
+    provider: 'codex',
+    title: 'Sync test',
+    status: 'idle',
+    sessionId: null,
+    workingDirectory: null,
+    startedAt: now,
+    completedAt: null,
+    summary: '',
+    draftPrompt: null,
+    createdAt: now,
+    updatedAt: now
+  })
+}
+
 describe('Companion sync transport policy', () => {
   it.each([200, 401, 503])('migrates the managed Relay alias before validating its identity (%s)', async (status) => {
     const directory = mkdtempSync(join(tmpdir(), 'companion-managed-relay-migration-'))
@@ -128,7 +146,7 @@ describe('Companion sync transport policy', () => {
       set: (key: string, value: string) => { secrets.set(key, value) },
       delete: (key: string) => { secrets.delete(key) }
     } as unknown as CredentialVault
-    const service = new CompanionSyncService(database, credentials, {} as TaskDispatcher, async () => ({ accepted: true }))
+    const service = new CompanionSyncService(database, credentials, {} as TaskDispatcher)
     try {
       if (status === 503) {
         await expect(service.ensureAccountRelay('https://fuddy.ai/api/relay', undefined, 'space-a', 'user-a'))
@@ -171,8 +189,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
     database.setSetting('companion.retention-snapshots', {
       [configuration.accountId]: '2030-01-01T00:00:00.000Z'
@@ -250,8 +267,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     const status = await service.syncNow()
@@ -304,8 +320,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     const status = await service.syncNow()
@@ -363,8 +378,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       credentials,
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
     const pendingSync = new Promise<CompanionMacStatus>(() => undefined)
     const syncNow = vi.spyOn(service, 'syncNow').mockReturnValue(pendingSync)
@@ -398,15 +412,7 @@ describe('Companion sync transport policy', () => {
       pairedAt: now,
       encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
     } satisfies CompanionMacConfiguration)
-    database.createBriefingMessage({
-      id: 'drain-message',
-      briefingId: null,
-      role: 'assistant',
-      content: 'Keep this pending after sign-out.',
-      attachments: [],
-      taskContext: null,
-      createdAt: now
-    })
+    database.enqueueCompanionSnapshot()
     let uploadStarted!: () => void
     let finishUpload!: () => void
     const started = new Promise<void>((resolve) => { uploadStarted = resolve })
@@ -423,8 +429,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     const syncing = service.syncNow()
@@ -451,8 +456,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      { stopMessage } as unknown as TaskDispatcher,
-      async () => ({ accepted: true })
+      { stopMessage } as unknown as TaskDispatcher
     )
     const internals = service as unknown as {
       activeCommands: Map<string, Promise<void>>
@@ -481,8 +485,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
     const command: CompanionCommand = {
       commandId: 'revoked-command-1',
@@ -536,8 +539,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
     const internals = service as unknown as {
       activeCommandAbortControllers: Map<string, AbortController>
@@ -556,104 +558,21 @@ describe('Companion sync transport policy', () => {
     database.close()
   })
 
-  it('propagates shutdown cancellation into an active phone Work Assistant turn', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-assistant-drain-'))
-    directories.push(directory)
-    const database = createTestDatabase(join(directory, 'app.sqlite'))
-    let receivedSignal: AbortSignal | null = null
-    const askWorkAssistant = vi.fn(async (
-      _question: string,
-      _attachments: unknown[],
-      cancellationSignal: AbortSignal
-    ) => {
-      receivedSignal = cancellationSignal
-      await new Promise<void>((_resolve, reject) => {
-        cancellationSignal.addEventListener('abort', () => reject(cancellationSignal.reason), { once: true })
-      })
-    })
-    const service = new CompanionSyncService(
-      database,
-      testCredentials(),
-      {} as TaskDispatcher,
-      askWorkAssistant
-    )
-    const command: CompanionCommand = {
-      commandId: 'assistant-command-1',
-      protocolVersion: companionProtocolVersion,
-      type: 'assistant.send-message',
-      payload: { prompt: '继续处理' },
-      sourceDeviceId: 'test-phone',
-      status: 'queued',
-      result: null,
-      error: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+  it.each(['assistant.send-message', 'assistant.execute-action'] as const)(
+    'rejects the retired phone command %s before execution',
+    async (type) => {
+      const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-retired-'))
+      directories.push(directory)
+      const database = createTestDatabase(join(directory, 'app.sqlite'))
+      const service = new CompanionSyncService(database, testCredentials(), {} as TaskDispatcher)
+      const internals = service as unknown as {
+        performCommand(command: { type: typeof type; payload: unknown }, signal: AbortSignal): Promise<unknown>
+      }
+      await expect(internals.performCommand({ type, payload: {} }, new AbortController().signal))
+        .rejects.toThrow('工作助理已下线')
+      database.close()
     }
-    const internals = service as unknown as {
-      activeCommands: Map<string, Promise<void>>
-      activeCommandAbortControllers: Map<string, AbortController>
-      performCommand: (command: CompanionCommand, signal: AbortSignal) => Promise<unknown>
-    }
-    const controller = new AbortController()
-    const activeCommand = internals.performCommand(command, controller.signal).then(() => undefined)
-    internals.activeCommands.set(command.commandId, activeCommand)
-    internals.activeCommandAbortControllers.set(command.commandId, controller)
-    await vi.waitFor(() => expect(receivedSignal).not.toBeNull())
-
-    await service.stopAndDrain()
-
-    expect((receivedSignal as AbortSignal | null)?.aborted).toBe(true)
-    await expect(activeCommand).rejects.toThrow('账户连接已停止')
-    database.close()
-  })
-
-  it('propagates shutdown cancellation into an active confirmed Work Assistant action', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-action-drain-'))
-    directories.push(directory)
-    const database = createTestDatabase(join(directory, 'app.sqlite'))
-    let receivedSignal: AbortSignal | null = null
-    const executeAction = vi.fn(async (_input: unknown, cancellationSignal: AbortSignal) => {
-      receivedSignal = cancellationSignal
-      await new Promise<void>((_resolve, reject) => {
-        cancellationSignal.addEventListener('abort', () => reject(cancellationSignal.reason), { once: true })
-      })
-    })
-    const service = new CompanionSyncService(
-      database,
-      testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
-    )
-    service.setWorkAssistantActionExecutor(executeAction)
-    const command: CompanionCommand = {
-      commandId: 'assistant-action-command-1',
-      protocolVersion: companionProtocolVersion,
-      type: 'assistant.execute-action',
-      payload: { messageId: 'message-1', proposalId: 'proposal-1', optionId: 'send' },
-      sourceDeviceId: 'test-phone',
-      status: 'queued',
-      result: null,
-      error: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    }
-    const internals = service as unknown as {
-      activeCommands: Map<string, Promise<void>>
-      activeCommandAbortControllers: Map<string, AbortController>
-      performCommand: (command: CompanionCommand, signal: AbortSignal) => Promise<unknown>
-    }
-    const controller = new AbortController()
-    const activeCommand = internals.performCommand(command, controller.signal).then(() => undefined)
-    internals.activeCommands.set(command.commandId, activeCommand)
-    internals.activeCommandAbortControllers.set(command.commandId, controller)
-    await vi.waitFor(() => expect(receivedSignal).not.toBeNull())
-
-    await service.stopAndDrain()
-
-    expect((receivedSignal as AbortSignal | null)?.aborted).toBe(true)
-    await expect(activeCommand).rejects.toThrow('账户连接已停止')
-    database.close()
-  })
+  )
 
   it('identifies account-owned Relay state for signed-out startup cleanup', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-account-identity-'))
@@ -669,8 +588,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     expect(service.hasAccountRelayIdentity()).toBe(true)
@@ -705,8 +623,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       credentials,
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     service.forgetAccountRelays('user-1')
@@ -747,8 +664,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       credentials,
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     await expect(service.disconnect()).rejects.toThrow('Relay unavailable')
@@ -804,8 +720,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       credentials,
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     await expect(service.disconnect()).rejects.toThrow('Relay unavailable')
@@ -876,8 +791,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       credentials,
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     const disconnecting = service.disconnect()
@@ -940,8 +854,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     await expect(service.beginPairing('https://replacement-relay.example.com')).rejects.toThrow(
@@ -1014,8 +927,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       credentials,
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
     const syncNow = vi.spyOn(service, 'syncNow').mockResolvedValue(service.getStatus())
     ;(service as unknown as { connectSocket: () => void }).connectSocket = vi.fn()
@@ -1105,8 +1017,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     await expect(service.ensureAccountRelay(
@@ -1250,22 +1161,25 @@ describe('Companion sync transport policy', () => {
       encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
     }
     database.setSetting('companion.mac-configuration', configuration)
-    database.createBriefingMessage({
+    createSyncTestRun(database, now)
+    database.createAgentRunMessage({
       id: 'oversized-message',
-      briefingId: null,
+      runId: 'sync-test-run',
       role: 'assistant',
       content: 'x'.repeat(companionEventBatchMaximumBytes),
-      attachments: [],
-      taskContext: null,
+      eventType: null,
+      toolName: null,
+      metadata: null,
       createdAt: now
     })
-    database.createBriefingMessage({
+    database.createAgentRunMessage({
       id: 'later-message',
-      briefingId: null,
+      runId: 'sync-test-run',
       role: 'assistant',
       content: 'This event must still arrive.',
-      attachments: [],
-      taskContext: null,
+      eventType: null,
+      toolName: null,
+      metadata: null,
       createdAt: now
     })
     const publishedEntityIds: string[] = []
@@ -1286,15 +1200,14 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     const status = await service.syncNow()
 
     expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 1 })
     expect(status.lastError).toContain('有 1 条内容无法发送')
-    expect(publishedEntityIds).toEqual(['later-message'])
+    expect(publishedEntityIds).toEqual(['sync-test-run', 'later-message'])
     service.stop()
     database.close()
   })
@@ -1311,13 +1224,15 @@ describe('Companion sync transport policy', () => {
       pairedAt: now,
       encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
     } satisfies CompanionMacConfiguration)
-    database.createBriefingMessage({
+    createSyncTestRun(database, now)
+    database.createAgentRunMessage({
       id: 'large-snapshot-message',
-      briefingId: null,
+      runId: 'sync-test-run',
       role: 'assistant',
       content: 'x'.repeat(companionEventBatchMaximumBytes),
-      attachments: [],
-      taskContext: null,
+      eventType: null,
+      toolName: null,
+      metadata: null,
       createdAt: now
     })
     database.enqueueCompanionPairingSnapshot()
@@ -1341,8 +1256,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     const status = await service.syncNow()
@@ -1367,13 +1281,15 @@ describe('Companion sync transport policy', () => {
       pairedAt: now,
       encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
     } satisfies CompanionMacConfiguration)
-    database.createBriefingMessage({
+    createSyncTestRun(database, now)
+    database.createAgentRunMessage({
       id: 'relay-ceiling-message',
-      briefingId: null,
+      runId: 'sync-test-run',
       role: 'assistant',
       content: 'x'.repeat(companionSnapshotEventMaximumBytes),
-      attachments: [],
-      taskContext: null,
+      eventType: null,
+      toolName: null,
+      metadata: null,
       createdAt: now
     })
     database.enqueueCompanionPairingSnapshot()
@@ -1402,8 +1318,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     const status = await service.syncNow()
@@ -1411,7 +1326,7 @@ describe('Companion sync transport policy', () => {
     expect(publishedPage).toMatchObject({
       records: [],
       hasMore: true,
-      nextBefore: 'assistant-message-relay-ceiling-message'
+      nextBefore: 'agent-message-relay-ceiling-message'
     })
     expect(status).toMatchObject({ state: 'connected', pendingEvents: 0, isolatedEvents: 0 })
     service.stop()
@@ -1463,8 +1378,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
 
     const status = await service.syncNow()
@@ -1533,9 +1447,7 @@ describe('Companion sync transport policy', () => {
       nextBefore: null
     }
 
-    const relayPage = await companionChatPageForRelay(page, async () => {
-      throw new Error('Agent pages must not prepare Work Assistant messages.')
-    })
+    const relayPage = companionChatPageForRelay(page)
 
     expect(relayPage.records[0]?.agentMessages[0]).toMatchObject({
       metadata: null,
@@ -1661,8 +1573,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       credentials,
-      dispatcher,
-      async () => ({ accepted: true })
+      dispatcher
     )
 
     await service.syncNow()
@@ -1739,8 +1650,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      { sendMessage } as unknown as TaskDispatcher,
-      async () => ({ accepted: true })
+      { sendMessage } as unknown as TaskDispatcher
     )
 
     await service.syncNow()
@@ -1810,8 +1720,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      dispatcher,
-      async () => ({ accepted: true })
+      dispatcher
     )
 
     await service.syncNow()
@@ -1875,7 +1784,6 @@ describe('Companion sync transport policy', () => {
       database,
       testCredentials(),
       { createDraft } as unknown as TaskDispatcher,
-      async () => ({ accepted: true }),
       directory,
       () => 'claude'
     )
@@ -1962,8 +1870,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      dispatcher,
-      async () => ({ accepted: true })
+      dispatcher
     )
 
     await service.syncNow()
@@ -2046,8 +1953,7 @@ describe('Companion sync transport policy', () => {
     const service = new CompanionSyncService(
       database,
       testCredentials(),
-      { createDraft } as unknown as TaskDispatcher,
-      async () => ({ accepted: true })
+      { createDraft } as unknown as TaskDispatcher
     )
 
     await service.syncNow()
@@ -2056,151 +1962,6 @@ describe('Companion sync transport policy', () => {
     expect(database.getCompanionCommand(remoteCommand.commandId)?.status).toBe('completed')
     expect(database.getAgentRun('recovered-created-run').title).toBe('Recovered creation')
     expect(remoteUpdates.at(-1)).toMatchObject({ status: 'completed' })
-    service.stop()
-    database.close()
-  })
-
-  it('uploads a snapshot Work Assistant image once when it also appears in the chat page', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-snapshot-image-'))
-    directories.push(directory)
-    const database = createTestDatabase(join(directory, 'app.sqlite'))
-    const now = new Date().toISOString()
-    const configuration: CompanionMacConfiguration = {
-      relayUrl: 'https://relay.example.com',
-      accountId: 'test-account',
-      macDeviceId: 'test-mac',
-      pairedAt: now,
-      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
-    }
-    database.setSetting('companion.mac-configuration', configuration)
-    database.createBriefingMessage({
-      id: 'assistant-image-message',
-      briefingId: null,
-      role: 'assistant',
-      content: 'Snapshot image',
-      attachments: [{
-        id: 'snapshot-image',
-        name: 'pixel.png',
-        mimeType: 'image/png',
-        dataUrl: 'data:image/png;base64,cGl4ZWw='
-      }],
-      taskContext: null,
-      createdAt: now
-    })
-    database.enqueueCompanionPairingSnapshot()
-    let uploadCount = 0
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
-      const url = new URL(String(input))
-      const method = init.method ?? 'GET'
-      if (url.pathname === '/v1/attachments/snapshot-image' && method === 'PUT') {
-        uploadCount += 1
-        return jsonResponse({ uploaded: true }, 201)
-      }
-      if (url.pathname === '/v1/events/batch' && method === 'POST') {
-        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
-        return jsonResponse({
-          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
-          lastSequence: body.events.length
-        }, 201)
-      }
-      if (url.pathname === '/v1/commands/pending' && method === 'GET') {
-        return jsonResponse({ commands: [] })
-      }
-      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
-    }))
-    const service = new CompanionSyncService(
-      database,
-      testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
-    )
-
-    const status = await service.syncNow()
-
-    expect(status.state).toBe('connected')
-    expect(uploadCount).toBe(1)
-    expect(database.countPendingCompanionEvents()).toBe(0)
-    service.stop()
-    database.close()
-  })
-
-  it('reuses an uploaded history image when retrying after a later upload fails', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'project-agent-companion-history-image-retry-'))
-    directories.push(directory)
-    const database = createTestDatabase(join(directory, 'app.sqlite'))
-    const now = new Date().toISOString()
-    const configuration: CompanionMacConfiguration = {
-      relayUrl: 'https://relay.example.com',
-      accountId: 'test-account',
-      macDeviceId: 'test-mac',
-      pairedAt: now,
-      encryptionKeyId: await companionAccountKeyId(testEncryptionKey)
-    }
-    database.setSetting('companion.mac-configuration', configuration)
-    database.createBriefingMessage({
-      id: 'assistant-retry-images',
-      briefingId: null,
-      role: 'assistant',
-      content: 'Retry images',
-      attachments: [
-        { id: 'retry-image-1', name: 'one.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,b25l' },
-        { id: 'retry-image-2', name: 'two.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,dHdv' }
-      ],
-      taskContext: null,
-      createdAt: now
-    })
-    database.enqueueCompanionPairingSnapshot()
-    let firstImageUploadCount = 0
-    let secondImageUploadCount = 0
-    let firstImageSealed: Uint8Array | null = null
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init: RequestInit = {}) => {
-      const url = new URL(String(input))
-      const method = init.method ?? 'GET'
-      if (url.pathname === '/v1/attachments/retry-image-1' && method === 'PUT') {
-        firstImageUploadCount += 1
-        if (firstImageUploadCount === 1) {
-          firstImageSealed = new Uint8Array(init.body as Uint8Array)
-          return jsonResponse({ uploaded: true }, 201)
-        }
-        return jsonResponse({ error: 'Attachment IDs are immutable and already in use.' }, 409)
-      }
-      if (url.pathname === '/v1/attachments/retry-image-1' && method === 'GET') {
-        if (!firstImageSealed) throw new Error('Expected the first encrypted upload to be retained.')
-        const responseBody = new Uint8Array(firstImageSealed)
-        return new Response(responseBody.buffer, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } })
-      }
-      if (url.pathname === '/v1/attachments/retry-image-2' && method === 'PUT') {
-        secondImageUploadCount += 1
-        return secondImageUploadCount === 1
-          ? jsonResponse({ error: 'Temporary attachment failure.' }, 500)
-          : jsonResponse({ uploaded: true }, 201)
-      }
-      if (url.pathname === '/v1/events/batch' && method === 'POST') {
-        const body = JSON.parse(String(init.body)) as { events: Array<{ eventId: string }> }
-        return jsonResponse({
-          accepted: body.events.map((event, index) => ({ eventId: event.eventId, sequence: index + 1 })),
-          lastSequence: body.events.length
-        }, 201)
-      }
-      if (url.pathname === '/v1/commands/pending' && method === 'GET') return jsonResponse({ commands: [] })
-      throw new Error(`Unexpected relay request: ${method} ${url.pathname}`)
-    }))
-    const service = new CompanionSyncService(
-      database,
-      testCredentials(),
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
-    )
-
-    expect((await service.syncNow()).state).toBe('error')
-    expect(database.listPendingCompanionEvents().map((event) => event.type)).toEqual(expect.arrayContaining([
-      'snapshot.created',
-      'chat-page.updated'
-    ]))
-    expect((await service.syncNow()).state).toBe('connected')
-    expect(firstImageUploadCount).toBe(2)
-    expect(secondImageUploadCount).toBe(2)
-    expect(database.countPendingCompanionEvents()).toBe(0)
     service.stop()
     database.close()
   })
@@ -2306,7 +2067,6 @@ describe('Companion sync transport policy', () => {
       database,
       credentials,
       {} as TaskDispatcher,
-      async () => ({ accepted: true }),
       join(directory, 'incoming'),
       () => 'codex',
       files

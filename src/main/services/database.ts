@@ -43,17 +43,15 @@ import type {
   WorkAssistantTaskContext
 } from '../../shared/contracts'
 import type { ConnectorCatalogItem } from '../../shared/contracts'
+import { isAvailableAutomation } from '../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../shared/project-workspaces'
 import { companionEventDefinitions, companionProtocolVersion } from '../../shared/companion-sync'
 import type { CompanionChatKind, CompanionChatPage } from '../../shared/companion-sync'
 import {
   buildAgentChatRecords,
-  buildWorkAssistantChatRecords,
   companionInitialChatBlockLimit,
   companionMaximumChatPageLimit,
-  flattenAgentChatRecords,
-  workAssistantChatId,
-  workAssistantPageCollections
+  flattenAgentChatRecords
 } from '../../shared/companion-chat'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
 import { databaseSchemaVersion, runDatabaseMigrations, type DatabaseMigration } from './database-migrations'
@@ -290,16 +288,12 @@ export class AppDatabase {
   ): AppBootstrap {
     return {
       projects: this.listProjects(),
-      goals: this.listGoals(),
       decisions: this.listDecisions(),
       decisionRemediations: this.listDecisionRemediations(),
       runs: this.listRuns(),
       connectors: this.listConnectors(),
       connectorRuns: this.listConnectorRuns(),
-      dailyBriefings: this.listDailyBriefings(),
-      morningBriefings: this.listMorningBriefings(),
-      briefingMessages: this.listBriefingMessages(),
-      automations: this.listAutomations(),
+      automations: this.listAutomations().filter(isAvailableAutomation),
       automationRuns: this.listAutomationRuns(),
       providerSettings,
       connectorCatalog,
@@ -322,16 +316,12 @@ export class AppDatabase {
     for (const key of keys) {
       switch (key) {
         case 'projects': patch.projects = this.listProjects(); break
-        case 'goals': patch.goals = this.listGoals(); break
         case 'decisions': patch.decisions = this.listDecisions(); break
         case 'decisionRemediations': patch.decisionRemediations = this.listDecisionRemediations(); break
         case 'runs': patch.runs = this.listRuns(); break
         case 'connectors': patch.connectors = this.listConnectors(); break
         case 'connectorRuns': patch.connectorRuns = this.listConnectorRuns(); break
-        case 'dailyBriefings': patch.dailyBriefings = this.listDailyBriefings(); break
-        case 'morningBriefings': patch.morningBriefings = this.listMorningBriefings(); break
-        case 'briefingMessages': patch.briefingMessages = this.listBriefingMessages(); break
-        case 'automations': patch.automations = this.listAutomations(); break
+        case 'automations': patch.automations = this.listAutomations().filter(isAvailableAutomation); break
         case 'automationRuns': patch.automationRuns = this.listAutomationRuns(); break
         case 'providerSettings': patch.providerSettings = providerSettings; break
         case 'connectorCatalog': patch.connectorCatalog = connectorCatalog; break
@@ -830,8 +820,6 @@ export class AppDatabase {
   }
 
   private companionSnapshotPayload(modelLabels: AgentModelLabels): CompanionSnapshotPayload {
-    const assistantPage = this.getCompanionChatPage('assistant', workAssistantChatId)
-    const assistantCollections = workAssistantPageCollections(assistantPage)
     const runDetails = this.listRuns().map((run) => {
       const page = this.getCompanionChatPage('agent', run.id)
       return {
@@ -847,13 +835,13 @@ export class AppDatabase {
       generatedAt: new Date().toISOString(),
       modelLabels,
       projects: this.listProjects(),
-      goals: this.listGoals(),
+      goals: [],
       decisions: this.listDecisions(),
-      morningBriefings: assistantCollections.briefings,
-      workAssistantMessages: assistantCollections.messages,
+      morningBriefings: [],
+      workAssistantMessages: [],
       attachments: [],
       runs: runDetails.map(({ detail }) => detail),
-      chatPages: [assistantPage, ...runDetails.map(({ page }) => page)]
+      chatPages: runDetails.map(({ page }) => page)
     }
     return snapshot
   }
@@ -864,22 +852,7 @@ export class AppDatabase {
     before?: string | null,
     limit?: number
   ): CompanionChatPage {
-    if (chatKind === 'assistant') {
-      if (chatId !== workAssistantChatId) throw new Error('工作助理聊天 ID 无效。')
-      const pageLimit = Math.min(
-        companionMaximumChatPageLimit,
-        Math.max(1, Math.trunc(limit ?? companionInitialChatBlockLimit))
-      )
-      const window = this.briefings.listChatWindow(before ?? null, pageLimit)
-      const records = buildWorkAssistantChatRecords(window.messages, window.briefings)
-      return {
-        chatId,
-        chatKind,
-        records,
-        hasMore: window.hasMore,
-        nextBefore: window.hasMore ? records[0]?.id ?? null : null
-      }
-    }
+    if (chatKind !== 'agent') throw new Error('工作助理已下线。')
     if (!this.listRuns().some((run) => run.id === chatId)) {
       throw new Error('没有找到这个 Chat。')
     }
@@ -942,9 +915,6 @@ export class AppDatabase {
       for (const project of snapshot.projects) {
         this.enqueueCompanionEvent('project.created', 'project', project.id, project)
       }
-      for (const goal of snapshot.goals) {
-        this.enqueueCompanionEvent('goal.created', 'goal', goal.id, goal)
-      }
       for (const decision of snapshot.decisions) {
         this.enqueueCompanionEvent('decision.created', 'decision', decision.id, decision)
       }
@@ -982,6 +952,10 @@ export class AppDatabase {
       }
       return baseline
     })
+  }
+
+  discardRetiredCompanionEvents(): void {
+    this.companion.discardRetiredEvents()
   }
 
   listPendingCompanionEvents(limit = 100): CompanionOutboxEvent[] {

@@ -20,7 +20,7 @@ export default function App(): React.JSX.Element {
   const [runActionBusy, setRunActionBusy] = useState(false)
   const [accountState, setAccountState] = useState<AccountState | null>(null)
   const accountReady = accountState?.status === 'signed-in' && accountState.onboarding?.step === 'complete'
-  const { ready, store, setBootstrap, refresh, refreshDomains } = useAppBootstrap({
+  const { ready, store, refresh, refreshDomains } = useAppBootstrap({
     enabled: accountReady,
     onError: setNotice,
     onOpenAgentRun: navigation.openRun
@@ -106,7 +106,6 @@ export default function App(): React.JSX.Element {
         layout={sidebarLayout}
         onCloseSettings={navigation.closeSettings}
         onSettingsSection={navigation.setSettingsSection}
-        onBriefing={navigation.openBriefing}
         onFiles={navigation.openFiles}
         onProjects={navigation.openProjects}
         onSharedProjects={navigation.openSharedProjects}
@@ -125,7 +124,6 @@ export default function App(): React.JSX.Element {
         currentUserId={accountState.user?.id ?? null}
         currentUserDisplayName={accountState.user?.displayName ?? null}
         store={store}
-        setBootstrap={setBootstrap}
         refresh={refresh}
         refreshDomains={refreshDomains}
         navigation={navigation}

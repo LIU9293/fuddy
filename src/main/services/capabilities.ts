@@ -44,28 +44,12 @@ export function getCapabilities(providerSettings?: ProviderSettings): Capability
     agentEndpointReady(providerSettings.agent.primary) ||
     (providerSettings.agent.backupEnabled && agentEndpointReady(providerSettings.agent.backup))
   ))
-  const primaryTts = providerSettings?.tts.primary
-  const ttsEndpointReady = (endpoint: ProviderSettings['tts']['primary']): boolean =>
-    endpoint.mode === 'system' || endpoint.apiKeyConfigured
-  const hasTtsProvider = Boolean(providerSettings && (
-    ttsEndpointReady(providerSettings.tts.primary) ||
-    (providerSettings.tts.backupEnabled && ttsEndpointReady(providerSettings.tts.backup))
-  ))
-  const effectiveTts = providerSettings && ttsEndpointReady(providerSettings.tts.primary)
-    ? providerSettings.tts.primary
-    : providerSettings?.tts.backupEnabled && ttsEndpointReady(providerSettings.tts.backup)
-      ? providerSettings.tts.backup
-      : primaryTts
-  const ttsLabel = effectiveTts?.mode === 'elevenlabs'
-    ? 'ElevenLabs'
-    : effectiveTts?.mode === 'openai-compatible' ? 'OpenAI-compatible' : '系统语音'
-
   return [
     {
       id: 'pi',
-      label: 'Fuddy Agent',
+      label: '项目简报模型',
       status: hasAgentProvider ? 'ready' : 'needs-setup',
-      detail: hasAgentProvider ? '已连接，可用于工作助理' : '选择一个可用模型后即可使用'
+      detail: hasAgentProvider ? '已连接，可生成项目简报' : '选择一个可用模型后即可使用'
     },
     {
       id: 'browser',
@@ -99,14 +83,6 @@ export function getCapabilities(providerSettings?: ProviderSettings): Capability
       label: 'OpenCode',
       status: opencode.available ? 'ready' : 'needs-setup',
       detail: opencode.available ? '已安装' : '未安装'
-    },
-    {
-      id: 'tts',
-      label: 'TTS',
-      status: hasTtsProvider ? 'ready' : 'needs-setup',
-      detail: effectiveTts && hasTtsProvider
-        ? `${ttsLabel} · ${effectiveTts.mode === 'system' ? '已就绪' : effectiveTts.model}${effectiveTts !== primaryTts ? ' · Backup 可用' : providerSettings?.tts.backupEnabled ? ' · Backup 已启用' : ''}`
-        : primaryTts ? `${ttsLabel} 尚未配置 API Key` : '系统中文语音已就绪；云端高质量语音可选'
     }
   ]
 }

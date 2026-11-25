@@ -48,7 +48,6 @@ import { WorkspaceFilesView } from '../components/WorkspaceFilesView'
 import { AutomationsView } from '../components/AutomationsView'
 import { normalizeChatMarkdown } from '../markdown'
 import { maxChatImages, prepareChatImages } from '../chat-attachments'
-import { workAssistantRunIds } from '../work-assistant-links'
 import { chatIsAtLatest } from '../chat-scroll'
 import { microphoneAccessError } from '../voice-input'
 import fuddyWordmark from '../assets/fuddy-wordmark.png'
@@ -56,7 +55,6 @@ import type {
   AgentPlanEntry,
   AgentRun,
   AgentProviderMode,
-  AgentSessionUpdate,
   AgentEndpointSettings,
   AppBootstrap,
   AsrModelStatus,
@@ -67,24 +65,12 @@ import type {
   ConnectorInstance,
   ConnectorKind,
   ConnectorRun,
-  BriefingMessage,
   DecisionItem,
   DecisionKind,
   DecisionStatus,
   DecisionWaitingReason,
-  GoalMilestone,
-  GoalPriority,
-  GoalStatus,
-  MorningBriefing,
   Project,
-  ProjectGoal,
-  TtsEndpointSettings,
-  TtsProviderMode,
-  UpdateProjectInput,
-  WorkAssistantImageAttachment,
-  WorkAssistantActionProposal,
-  WorkAssistantTaskContext,
-  WorkAssistantTaskReference
+  UpdateProjectInput
 } from '../../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../../shared/project-workspaces'
 import type { CompanionMacStatus } from '../../../shared/companion-sync'
@@ -143,10 +129,6 @@ export function SettingsView({
   const [asrSettings, setAsrSettings] = useState(bootstrap.providerSettings.asr)
   const [asrApiKey, setAsrApiKey] = useState('')
   const [asrModelStatus, setAsrModelStatus] = useState<AsrModelStatus | null>(null)
-  const [ttsPrimary, setTtsPrimary] = useState(bootstrap.providerSettings.tts.primary)
-  const [ttsBackup, setTtsBackup] = useState(bootstrap.providerSettings.tts.backup)
-  const [ttsBackupEnabled, setTtsBackupEnabled] = useState(bootstrap.providerSettings.tts.backupEnabled)
-  const [ttsApiKeys, setTtsApiKeys] = useState({ primary: '', backup: '' })
   const [providerBusy, setProviderBusy] = useState<
     | 'agent'
     | 'coding-agents'
@@ -154,8 +136,6 @@ export function SettingsView({
     | 'asr'
     | 'asr-download'
     | 'asr-delete'
-    | 'tts'
-    | 'tts-test'
     | null
   >(null)
   const [providerError, setProviderError] = useState<string | null>(null)
@@ -169,10 +149,9 @@ export function SettingsView({
   const [accountDevices, setAccountDevices] = useState<AccountDeviceSummary[]>([])
   const [accountBusy, setAccountBusy] = useState(false)
   const [accountError, setAccountError] = useState<string | null>(null)
-  const [modelSettingsTab, setModelSettingsTab] = useState<'assistant' | 'coding'>('assistant')
+  const [modelSettingsTab, setModelSettingsTab] = useState<'briefing' | 'coding'>('coding')
   const [editingAgentSlot, setEditingAgentSlot] = useState<'primary' | 'backup' | null>(null)
   const [expandedCodingAgent, setExpandedCodingAgent] = useState<SettingsAgentProvider | null>(null)
-  const [voiceSettingsTab, setVoiceSettingsTab] = useState<'input' | 'output'>('input')
   const [voiceAdvancedOpen, setVoiceAdvancedOpen] = useState(false)
   const [microphoneTesting, setMicrophoneTesting] = useState(false)
   useAutoDismissMessage(postgresError, () => setPostgresError(null))
@@ -228,9 +207,6 @@ export function SettingsView({
     setAgentBackupEnabled(bootstrap.providerSettings.agent.backupEnabled)
     setCodingAgents(bootstrap.providerSettings.codingAgents)
     setAsrSettings(bootstrap.providerSettings.asr)
-    setTtsPrimary(bootstrap.providerSettings.tts.primary)
-    setTtsBackup(bootstrap.providerSettings.tts.backup)
-    setTtsBackupEnabled(bootstrap.providerSettings.tts.backupEnabled)
   }, [bootstrap.providerSettings])
 
   async function logoutAccount(): Promise<void> {
@@ -391,37 +367,6 @@ export function SettingsView({
       mode,
       baseUrl: current.mode === 'cc-switch-codex-oauth' ? 'https://api.openai.com/v1' : current.baseUrl
     })
-  }
-
-  function updateTtsEndpoint(slot: 'primary' | 'backup', patch: Partial<TtsEndpointSettings>): void {
-    const setter = slot === 'primary' ? setTtsPrimary : setTtsBackup
-    setter((current) => ({ ...current, ...patch }))
-  }
-
-  function changeTtsMode(slot: 'primary' | 'backup', mode: TtsProviderMode): void {
-    const current = slot === 'primary' ? ttsPrimary : ttsBackup
-    if (current.mode === mode) return
-    if (mode === 'elevenlabs') {
-      updateTtsEndpoint(slot, {
-        mode,
-        baseUrl: 'https://api.elevenlabs.io/v1',
-        model: 'eleven_multilingual_v2',
-        voice: '',
-        instructions: ''
-      })
-      return
-    }
-    if (mode === 'openai-compatible') {
-      updateTtsEndpoint(slot, {
-        mode,
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-4o-mini-tts',
-        voice: 'marin',
-        instructions: '使用自然、清晰、克制的中文语气，像一位熟悉业务的项目助理。'
-      })
-      return
-    }
-    updateTtsEndpoint(slot, { mode })
   }
 
   function latestRunFor(connectorId: string): ConnectorRun | undefined {
@@ -738,45 +683,6 @@ export function SettingsView({
     }
   }
 
-  async function saveTtsProvider(testAfterSave = false): Promise<void> {
-    setProviderBusy(testAfterSave ? 'tts-test' : 'tts')
-    setProviderError(null)
-    try {
-      await window.projectAgent.configureTtsProvider({
-        primary: {
-          mode: ttsPrimary.mode,
-          baseUrl: ttsPrimary.baseUrl,
-          model: ttsPrimary.model,
-          voice: ttsPrimary.voice,
-          instructions: ttsPrimary.instructions,
-          apiKey: ttsApiKeys.primary.trim() || undefined
-        },
-        backup: {
-          mode: ttsBackup.mode,
-          baseUrl: ttsBackup.baseUrl,
-          model: ttsBackup.model,
-          voice: ttsBackup.voice,
-          instructions: ttsBackup.instructions,
-          apiKey: ttsApiKeys.backup.trim() || undefined
-        },
-        backupEnabled: ttsBackupEnabled
-      })
-      setTtsApiKeys({ primary: '', backup: '' })
-      if (testAfterSave) {
-        const result = await window.projectAgent.testTtsProvider()
-        if (result.audioDataUrl) await new Audio(result.audioDataUrl).play()
-        onNotice(result.message)
-      } else {
-        onNotice('语音配置已保存；默认配置失败时会自动切换到备用配置。')
-      }
-      await onRefresh()
-    } catch (error) {
-      setProviderError(error instanceof Error ? error.message : '语音输出设置没有完成，请重试。')
-    } finally {
-      setProviderBusy(null)
-    }
-  }
-
   async function saveAsrProvider(): Promise<void> {
     setProviderBusy('asr')
     setProviderError(null)
@@ -844,11 +750,6 @@ export function SettingsView({
     return endpoint.apiKeyConfigured ? '已配置' : '缺少 Key'
   }
 
-  function endpointStatus(mode: TtsProviderMode, configured: boolean): string {
-    if (mode === 'system') return '系统语音'
-    return configured ? '已配置' : '缺少 Key'
-  }
-
   function renderAgentEndpoint(slot: 'primary' | 'backup', endpoint: AgentEndpointSettings): React.JSX.Element {
     const apiKey = agentApiKeys[slot]
     return (
@@ -900,99 +801,6 @@ export function SettingsView({
     )
   }
 
-  function renderTtsEndpoint(slot: 'primary' | 'backup', endpoint: TtsEndpointSettings): React.JSX.Element {
-    const apiKey = ttsApiKeys[slot]
-    return (
-      <div className="provider-fields">
-        <div className="provider-field">
-          <span>语音服务</span>
-          <SelectMenu
-            value={endpoint.mode}
-            options={[
-              { value: 'system', label: 'macOS 系统中文语音' },
-              { value: 'openai-compatible', label: 'OpenAI Compatible Speech API' },
-              { value: 'elevenlabs', label: 'ElevenLabs' }
-            ]}
-            onChange={(mode) => changeTtsMode(slot, mode)}
-            ariaLabel={`${slot === 'primary' ? '默认' : '备用'}语音服务`}
-          />
-        </div>
-        {endpoint.mode === 'system' ? (
-          <p className="provider-inline-note">无需 API Key，使用系统语音在本机播放。</p>
-        ) : (
-          <>
-            <label>
-              <span>Base URL</span>
-              <input
-                value={endpoint.baseUrl}
-                onChange={(event) => updateTtsEndpoint(slot, { baseUrl: event.target.value })}
-                placeholder={
-                  endpoint.mode === 'elevenlabs' ? 'https://api.elevenlabs.io/v1' : 'https://api.openai.com/v1'
-                }
-              />
-            </label>
-            <label>
-              <span>Model</span>
-              {endpoint.mode === 'elevenlabs' ? (
-                <SuggestionInput
-                  value={endpoint.model}
-                  suggestions={['eleven_flash_v2_5', 'eleven_multilingual_v2', 'eleven_v3']}
-                  onChange={(model) => updateTtsEndpoint(slot, { model })}
-                  ariaLabel="ElevenLabs 模型"
-                  placeholder="eleven_flash_v2_5"
-                />
-              ) : (
-                <input
-                  value={endpoint.model}
-                  onChange={(event) => updateTtsEndpoint(slot, { model: event.target.value })}
-                  placeholder="gpt-4o-mini-tts"
-                />
-              )}
-            </label>
-            <label>
-              <span>{endpoint.mode === 'elevenlabs' ? 'Voice ID' : 'Voice'}</span>
-              {endpoint.mode === 'openai-compatible' ? (
-                <SuggestionInput
-                  value={endpoint.voice}
-                  suggestions={['marin', 'cedar', 'coral', 'nova', 'alloy']}
-                  onChange={(voice) => updateTtsEndpoint(slot, { voice })}
-                  ariaLabel="OpenAI 语音"
-                  placeholder="marin"
-                />
-              ) : (
-                <input
-                  value={endpoint.voice}
-                  onChange={(event) => updateTtsEndpoint(slot, { voice: event.target.value })}
-                  placeholder="粘贴 ElevenLabs Voice ID"
-                />
-              )}
-            </label>
-            {endpoint.mode === 'openai-compatible' && (
-              <label>
-                <span>声音指令</span>
-                <textarea
-                  rows={3}
-                  value={endpoint.instructions}
-                  onChange={(event) => updateTtsEndpoint(slot, { instructions: event.target.value })}
-                />
-              </label>
-            )}
-            <label>
-              <span>API Key</span>
-              <input
-                type="password"
-                autoComplete="off"
-                value={apiKey}
-                onChange={(event) => setTtsApiKeys((current) => ({ ...current, [slot]: event.target.value }))}
-                placeholder={endpoint.apiKeyConfigured ? '已保存；留空保持不变' : '输入 API Key'}
-              />
-            </label>
-          </>
-        )}
-      </div>
-    )
-  }
-
   const companionIssue = companionError ?? companionStatus?.lastError ?? null
   const asrModelLabel =
     asrModelStatus?.state === 'installed'
@@ -1012,9 +820,9 @@ export function SettingsView({
             {section === 'general'
               ? '管理账户、登录设备和这台 Mac 可以使用的功能。'
               : section === 'models'
-                ? '选择工作助理与 Coding Agent 使用的模型。'
+                ? '配置 Coding Agent 与项目简报使用的模型。'
                 : section === 'voice'
-                  ? '管理语音输入、输出与本机语音能力。'
+                  ? '管理本机和云端语音转写。'
                   : '查看 Agent 权限、系统授权与本机数据策略。'}
           </p>
         </header>
@@ -1181,11 +989,11 @@ export function SettingsView({
           <div className="settings-segmented-control" role="tablist" aria-label="模型设置">
             <button
               role="tab"
-              aria-selected={modelSettingsTab === 'assistant'}
-              className={modelSettingsTab === 'assistant' ? 'is-active' : ''}
-              onClick={() => setModelSettingsTab('assistant')}
+              aria-selected={modelSettingsTab === 'briefing'}
+              className={modelSettingsTab === 'briefing' ? 'is-active' : ''}
+              onClick={() => setModelSettingsTab('briefing')}
             >
-              工作助理
+              项目简报
             </button>
             <button
               role="tab"
@@ -1197,12 +1005,12 @@ export function SettingsView({
             </button>
           </div>
 
-          {modelSettingsTab === 'assistant' ? (
+          {modelSettingsTab === 'briefing' ? (
             <>
               <div className="settings-list-section-heading">
                 <div>
-                  <h2>工作助理模型</h2>
-                  <p>默认模型不可用时，助理会自动尝试备用配置。</p>
+                  <h2>项目简报模型</h2>
+                  <p>默认模型不可用时，自动尝试备用配置。</p>
                 </div>
               </div>
               <div className="settings-flat-list settings-editable-list">
@@ -1451,295 +1259,175 @@ export function SettingsView({
 
       {section === 'voice' && (
         <section className="settings-list-page">
-          <div className="settings-segmented-control" role="tablist" aria-label="语音设置">
-            <button
-              role="tab"
-              aria-selected={voiceSettingsTab === 'input'}
-              className={voiceSettingsTab === 'input' ? 'is-active' : ''}
-              onClick={() => {
-                setVoiceSettingsTab('input')
-                setVoiceAdvancedOpen(false)
-              }}
-            >
-              语音输入
-            </button>
-            <button
-              role="tab"
-              aria-selected={voiceSettingsTab === 'output'}
-              className={voiceSettingsTab === 'output' ? 'is-active' : ''}
-              onClick={() => {
-                setVoiceSettingsTab('output')
-                setVoiceAdvancedOpen(false)
-              }}
-            >
-              语音输出
-            </button>
+          <div className="settings-list-section-heading">
+            <div>
+              <h2>语音识别</h2>
+              <p>优先在 Mac 本地转写，需要时再回退到云端。</p>
+            </div>
           </div>
-
-          {voiceSettingsTab === 'input' ? (
-            <>
-              <div className="settings-list-section-heading">
-                <div>
-                  <h2>语音识别</h2>
-                  <p>优先在 Mac 本地转写，需要时再回退到云端。</p>
-                </div>
+          <div className="settings-flat-list settings-editable-list">
+            <article>
+              <div>
+                <strong>本地 Whisper</strong>
+                <p>large-v3-turbo Q5 · {asrModelLabel}</p>
               </div>
-              <div className="settings-flat-list settings-editable-list">
-                <article>
-                  <div>
-                    <strong>本地 Whisper</strong>
-                    <p>large-v3-turbo Q5 · {asrModelLabel}</p>
-                  </div>
-                  <span
-                    className={`settings-row-status ${asrModelStatus?.state === 'installed' ? 'is-ready' : 'is-needs-setup'}`}
-                  >
-                    {asrModelLabel}
-                  </span>
-                  {asrModelStatus?.state === 'installed' ? (
-                    <ActionMenu
-                      ariaLabel="管理 Whisper 模型"
-                      trigger={<MoreHorizontal size={16} />}
-                      options={[{ value: 'delete', label: '删除本地模型', icon: <Trash2 size={13} />, danger: true }]}
-                      onSelect={() => void deleteAsrModel()}
-                    />
-                  ) : (
-                    <button
-                      className="settings-row-button"
-                      onClick={() => void downloadAsrModel()}
-                      disabled={providerBusy !== null}
-                    >
-                      {providerBusy === 'asr-download' ? (
-                        <LoaderCircle className="spin" size={13} />
-                      ) : (
-                        <RefreshCw size={13} />
-                      )}{' '}
-                      下载模型
-                    </button>
-                  )}
-                  {asrModelStatus?.state === 'downloading' && (
-                    <div className="asr-download-progress">
-                      <i
-                        style={{
-                          width: `${Math.min(100, (asrModelStatus.bytesDownloaded / asrModelStatus.totalBytes) * 100)}%`
-                        }}
-                      />
-                    </div>
-                  )}
-                </article>
-                <article>
-                  <div>
-                    <strong>输入方式</strong>
-                    <p>{asrSettings.mode === 'local-first' ? '本地优先，失败时回退云端' : '仅使用云端 ASR'}</p>
-                  </div>
-                  <div className="settings-row-control">
-                    <SelectMenu
-                      value={asrSettings.mode}
-                      options={[
-                        { value: 'local-first', label: '本地优先，失败时回退云端' },
-                        { value: 'cloud', label: '仅使用云端 ASR' }
-                      ]}
-                      onChange={(mode) =>
-                        setAsrSettings((current) => ({ ...current, mode: mode as typeof current.mode }))
-                      }
-                      ariaLabel="语音输入方式"
-                    />
-                  </div>
-                </article>
-                <article>
-                  <div>
-                    <strong>隐私</strong>
-                    <p>{asrSettings.mode === 'local-first' ? '录音默认不离开设备' : '录音会发送到已配置的云端服务'}</p>
-                  </div>
-                  <span className="settings-row-status">
-                    {asrSettings.mode === 'local-first' ? '本地优先' : '云端处理'}
-                  </span>
-                </article>
-                <article className="microphone-test-row">
-                  <div>
-                    <strong>测试麦克风</strong>
-                    <p>确认 Fuddy 可以接收当前系统输入。</p>
-                  </div>
-                  <button
-                    className="provider-save-button"
-                    onClick={() => void testMicrophone()}
-                    disabled={microphoneTesting}
-                  >
-                    {microphoneTesting ? <LoaderCircle className="spin" size={13} /> : <Mic2 size={13} />}
-                    {microphoneTesting ? '正在测试…' : '开始测试'}
-                  </button>
-                </article>
-                <article className={voiceAdvancedOpen ? 'is-expanded' : ''}>
-                  <button
-                    className="settings-disclosure-button"
-                    onClick={() => setVoiceAdvancedOpen((value) => !value)}
-                    aria-expanded={voiceAdvancedOpen}
-                  >
-                    <span>
-                      <strong>高级配置</strong>
-                      <small>API 地址、模型参数与回退设置</small>
-                    </span>
-                    <ChevronDown size={16} />
-                  </button>
-                  {voiceAdvancedOpen && (
-                    <div className="settings-edit-panel">
-                      <div className="provider-fields">
-                        <label>
-                          <span>Cloud Base URL</span>
-                          <input
-                            value={asrSettings.cloudBaseUrl}
-                            onChange={(event) =>
-                              setAsrSettings((current) => ({ ...current, cloudBaseUrl: event.target.value }))
-                            }
-                            placeholder="https://api.openai.com/v1"
-                          />
-                        </label>
-                        <label>
-                          <span>Cloud Model</span>
-                          <input
-                            value={asrSettings.cloudModel}
-                            onChange={(event) =>
-                              setAsrSettings((current) => ({ ...current, cloudModel: event.target.value }))
-                            }
-                            placeholder="gpt-transcribe"
-                          />
-                        </label>
-                        <label>
-                          <span>Cloud API Key</span>
-                          <input
-                            type="password"
-                            autoComplete="off"
-                            value={asrApiKey}
-                            onChange={(event) => setAsrApiKey(event.target.value)}
-                            placeholder={
-                              asrSettings.cloudApiKeyConfigured ? '已保存；留空保持不变' : '使用云端或回退时需要'
-                            }
-                          />
-                        </label>
-                        {asrSettings.mode === 'local-first' && (
-                          <div className="provider-field">
-                            <span>自动回退</span>
-                            <label className="provider-toggle">
-                              <input
-                                type="checkbox"
-                                checked={asrSettings.fallbackToCloud}
-                                onChange={(event) =>
-                                  setAsrSettings((current) => ({ ...current, fallbackToCloud: event.target.checked }))
-                                }
-                              />
-                              <i />
-                              <span>{asrSettings.fallbackToCloud ? '已启用' : '未启用'}</span>
-                            </label>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </article>
-              </div>
-              {providerError && <p className="provider-settings-error">{providerError}</p>}
-              <div className="provider-page-actions">
-                <button
-                  className="provider-save-button"
-                  onClick={() => void saveAsrProvider()}
-                  disabled={providerBusy !== null}
-                >
-                  {providerBusy === 'asr' ? <LoaderCircle className="spin" size={13} /> : <ShieldCheck size={13} />}{' '}
-                  保存语音输入配置
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="settings-list-section-heading">
-                <div>
-                  <h2>语音输出</h2>
-                  <p>选择默认声音，并在不可用时自动切换到备用声音。</p>
-                </div>
-              </div>
-              <div className="settings-flat-list settings-editable-list">
-                <article>
-                  <div>
-                    <strong>默认语音</strong>
-                    <p>
-                      {ttsPrimary.mode === 'system'
-                        ? 'macOS 系统中文语音'
-                        : `${ttsPrimary.mode} · ${ttsPrimary.voice || '未选择声音'}`}
-                    </p>
-                  </div>
-                  <span
-                    className={`settings-row-status ${ttsPrimary.mode === 'system' || ttsPrimary.apiKeyConfigured ? 'is-ready' : 'is-needs-setup'}`}
-                  >
-                    {endpointStatus(ttsPrimary.mode, ttsPrimary.apiKeyConfigured)}
-                  </span>
-                  <button className="settings-row-button" onClick={() => setVoiceAdvancedOpen((value) => !value)}>
-                    {voiceAdvancedOpen ? '收起' : '编辑'}
-                  </button>
-                </article>
-                <article>
-                  <div>
-                    <strong>备用语音</strong>
-                    <p>
-                      {ttsBackupEnabled
-                        ? `${ttsBackup.mode} · ${ttsBackup.voice || '默认声音'}`
-                        : '默认语音失败时不自动切换'}
-                    </p>
-                  </div>
-                  <label className="provider-toggle">
-                    <input
-                      type="checkbox"
-                      checked={ttsBackupEnabled}
-                      onChange={(event) => setTtsBackupEnabled(event.target.checked)}
-                    />
-                    <i />
-                    <span>{ttsBackupEnabled ? '已启用' : '未启用'}</span>
-                  </label>
-                </article>
-                {voiceAdvancedOpen && (
-                  <article className="is-expanded voice-output-editor">
-                    <div className="settings-edit-panel">
-                      <div className="settings-inline-editor-heading">
-                        <strong>默认语音</strong>
-                        <span>服务、声音和凭证</span>
-                      </div>
-                      {renderTtsEndpoint('primary', ttsPrimary)}
-                      {ttsBackupEnabled && (
-                        <>
-                          <div className="settings-inline-editor-heading is-secondary">
-                            <strong>备用语音</strong>
-                            <span>默认语音失败时使用</span>
-                          </div>
-                          {renderTtsEndpoint('backup', ttsBackup)}
-                        </>
-                      )}
-                    </div>
-                  </article>
-                )}
-              </div>
-              {providerError && <p className="provider-settings-error">{providerError}</p>}
-              <div className="provider-page-actions">
+              <span
+                className={`settings-row-status ${asrModelStatus?.state === 'installed' ? 'is-ready' : 'is-needs-setup'}`}
+              >
+                {asrModelLabel}
+              </span>
+              {asrModelStatus?.state === 'installed' ? (
+                <ActionMenu
+                  ariaLabel="管理 Whisper 模型"
+                  trigger={<MoreHorizontal size={16} />}
+                  options={[{ value: 'delete', label: '删除本地模型', icon: <Trash2 size={13} />, danger: true }]}
+                  onSelect={() => void deleteAsrModel()}
+                />
+              ) : (
                 <button
                   className="settings-row-button"
-                  onClick={() => void saveTtsProvider(false)}
+                  onClick={() => void downloadAsrModel()}
                   disabled={providerBusy !== null}
                 >
-                  {providerBusy === 'tts' ? <LoaderCircle className="spin" size={13} /> : <ShieldCheck size={13} />}{' '}
-                  保存
-                </button>
-                <button
-                  className="provider-save-button"
-                  onClick={() => void saveTtsProvider(true)}
-                  disabled={providerBusy !== null || ttsPrimary.mode === 'system'}
-                >
-                  {providerBusy === 'tts-test' ? (
+                  {providerBusy === 'asr-download' ? (
                     <LoaderCircle className="spin" size={13} />
                   ) : (
-                    <Play size={12} fill="currentColor" />
+                    <RefreshCw size={13} />
                   )}{' '}
-                  保存并试听
+                  下载模型
                 </button>
+              )}
+              {asrModelStatus?.state === 'downloading' && (
+                <div className="asr-download-progress">
+                  <i
+                    style={{
+                      width: `${Math.min(100, (asrModelStatus.bytesDownloaded / asrModelStatus.totalBytes) * 100)}%`
+                    }}
+                  />
+                </div>
+              )}
+            </article>
+            <article>
+              <div>
+                <strong>输入方式</strong>
+                <p>{asrSettings.mode === 'local-first' ? '本地优先，失败时回退云端' : '仅使用云端 ASR'}</p>
               </div>
-            </>
-          )}
+              <div className="settings-row-control">
+                <SelectMenu
+                  value={asrSettings.mode}
+                  options={[
+                    { value: 'local-first', label: '本地优先，失败时回退云端' },
+                    { value: 'cloud', label: '仅使用云端 ASR' }
+                  ]}
+                  onChange={(mode) =>
+                    setAsrSettings((current) => ({ ...current, mode: mode as typeof current.mode }))
+                  }
+                  ariaLabel="语音输入方式"
+                />
+              </div>
+            </article>
+            <article>
+              <div>
+                <strong>隐私</strong>
+                <p>{asrSettings.mode === 'local-first' ? '录音默认不离开设备' : '录音会发送到已配置的云端服务'}</p>
+              </div>
+              <span className="settings-row-status">
+                {asrSettings.mode === 'local-first' ? '本地优先' : '云端处理'}
+              </span>
+            </article>
+            <article className="microphone-test-row">
+              <div>
+                <strong>测试麦克风</strong>
+                <p>确认 Fuddy 可以接收当前系统输入。</p>
+              </div>
+              <button
+                className="provider-save-button"
+                onClick={() => void testMicrophone()}
+                disabled={microphoneTesting}
+              >
+                {microphoneTesting ? <LoaderCircle className="spin" size={13} /> : <Mic2 size={13} />}
+                {microphoneTesting ? '正在测试…' : '开始测试'}
+              </button>
+            </article>
+            <article className={voiceAdvancedOpen ? 'is-expanded' : ''}>
+              <button
+                className="settings-disclosure-button"
+                onClick={() => setVoiceAdvancedOpen((value) => !value)}
+                aria-expanded={voiceAdvancedOpen}
+              >
+                <span>
+                  <strong>高级配置</strong>
+                  <small>API 地址、模型参数与回退设置</small>
+                </span>
+                <ChevronDown size={16} />
+              </button>
+              {voiceAdvancedOpen && (
+                <div className="settings-edit-panel">
+                  <div className="provider-fields">
+                    <label>
+                      <span>Cloud Base URL</span>
+                      <input
+                        value={asrSettings.cloudBaseUrl}
+                        onChange={(event) =>
+                          setAsrSettings((current) => ({ ...current, cloudBaseUrl: event.target.value }))
+                        }
+                        placeholder="https://api.openai.com/v1"
+                      />
+                    </label>
+                    <label>
+                      <span>Cloud Model</span>
+                      <input
+                        value={asrSettings.cloudModel}
+                        onChange={(event) =>
+                          setAsrSettings((current) => ({ ...current, cloudModel: event.target.value }))
+                        }
+                        placeholder="gpt-transcribe"
+                      />
+                    </label>
+                    <label>
+                      <span>Cloud API Key</span>
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        value={asrApiKey}
+                        onChange={(event) => setAsrApiKey(event.target.value)}
+                        placeholder={
+                          asrSettings.cloudApiKeyConfigured ? '已保存；留空保持不变' : '使用云端或回退时需要'
+                        }
+                      />
+                    </label>
+                    {asrSettings.mode === 'local-first' && (
+                      <div className="provider-field">
+                        <span>自动回退</span>
+                        <label className="provider-toggle">
+                          <input
+                            type="checkbox"
+                            checked={asrSettings.fallbackToCloud}
+                            onChange={(event) =>
+                              setAsrSettings((current) => ({ ...current, fallbackToCloud: event.target.checked }))
+                            }
+                          />
+                          <i />
+                          <span>{asrSettings.fallbackToCloud ? '已启用' : '未启用'}</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </article>
+          </div>
+          {providerError && <p className="provider-settings-error">{providerError}</p>}
+          <div className="provider-page-actions">
+            <button
+              className="provider-save-button"
+              onClick={() => void saveAsrProvider()}
+              disabled={providerBusy !== null}
+            >
+              {providerBusy === 'asr' ? <LoaderCircle className="spin" size={13} /> : <ShieldCheck size={13} />}{' '}
+              保存语音输入配置
+            </button>
+          </div>
         </section>
       )}
 
@@ -1860,7 +1548,7 @@ export function SettingsView({
               <div>
                 <span className="settings-kicker">连接与数据</span>
                 <h2>已配置的 Connectors</h2>
-                <p>Connector 为项目状态、目标检查和简报提供证据。</p>
+                <p>Connector 为项目状态和项目简报提供证据。</p>
               </div>
               <button className="secondary-action-button" onClick={() => void runAll()} disabled={runningAll}>
                 <RefreshCw size={14} className={runningAll ? 'spin' : ''} />

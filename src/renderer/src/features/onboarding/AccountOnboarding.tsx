@@ -15,6 +15,7 @@ import type {
 } from '../../../../shared/account'
 import fuddyWordmark from '../../assets/fuddy-wordmark.png'
 import { userFacingErrorMessage } from '../../user-facing-error'
+import { projectNameFromPath } from '../../views/shared'
 
 export interface AccountOnboardingProps {
   state: AccountState
@@ -26,11 +27,6 @@ type BusyAction = 'email' | 'verify' | 'google' | null
 
 function errorMessage(error: unknown, fallback: string): string {
   return userFacingErrorMessage(error, fallback)
-}
-
-function projectNameFromPath(path: string): string {
-  const normalized = path.replace(/\/+$/u, '')
-  return normalized.split('/').filter(Boolean).at(-1) ?? '我的项目'
 }
 
 function EntryChrome({ children }: { children: React.ReactNode }): React.JSX.Element {
@@ -445,5 +441,3 @@ export function AccountOnboarding(props: AccountOnboardingProps): React.JSX.Elem
   if (props.state.status === 'signed-out') return <LoginView {...props} />
   return <SetupView {...props} />
 }
-
-export { projectNameFromPath }

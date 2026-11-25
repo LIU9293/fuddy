@@ -306,7 +306,7 @@ struct CompanionChatComposer: View {
                     Task {
                         if voiceInput.state == .recording {
                             if let transcript = await voiceInput.stopAndTranscribe(
-                                prompt: "Fuddy，项目，目标，工作助理，Agent Run"
+                                prompt: "Fuddy，项目，Agent Run"
                             ), !transcript.isEmpty {
                                 text = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                     ? transcript

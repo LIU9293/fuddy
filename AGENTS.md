@@ -2,7 +2,7 @@
 
 ## Product intent
 
-Fuddy is a macOS Electron app for operating several real projects through one work assistant, a decision inbox, project goals, automation, files, and persistent Agent Run sessions. Preserve the product's conversation-first, evidence-backed design. Do not turn it into a generic kanban board or a dashboard of unsupported metrics.
+Fuddy is a macOS Electron app for operating several real projects through persistent Agent Run sessions, automation, and files. Preserve the product's conversation-first, evidence-backed design. Do not turn it into a generic kanban board or a dashboard of unsupported metrics.
 
 The current product language is primarily Chinese. Keep UI copy concise, direct, and consistent with the existing terminology in `README.md`.
 
@@ -108,7 +108,7 @@ RUN_COMPANION_RELAY_SMOKE=1 npx vitest run src/main/services/companion-sync.inte
 ### UI conventions
 
 - The main area should carry one primary task. Agent Run details use the full chat layout with the Session list in the sidebar.
-- Treat page layout as a shared system, not a collection of page-specific values. Top-level task pages such as Work Assistant, Decision Inbox, and Agent Run must use the shared page-header primitive and its tokens for height, horizontal padding, title typography, border, and background; do not copy or redefine those values in feature CSS.
+- Top-level task pages use the shared page-header primitive and its tokens for height, horizontal padding, title typography, border, and background.
 - Reuse the established layout family for each surface. Chat pages share the same conversation rail, max width, timeline spacing, and composer shell. Settings sections share one page-intro, segmented-control, group, and row system. Add a consolidated variant only when the interaction genuinely requires a different layout; do not create one-off header, row, or content-width rules for a single page.
 - When adding or changing a screen, compare it with at least one sibling screen at a resizable window width and in both Light and Dark mode. Prefer shared components, semantic layout classes, and design tokens over duplicated JSX or literal CSS dimensions.
 - In Session lists, show a spinner only while running; completed and failed sessions do not need status icons or a “current” label.

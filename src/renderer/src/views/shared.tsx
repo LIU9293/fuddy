@@ -10,15 +10,20 @@ import type {
   ConnectorInstance
 } from '../../../shared/contracts'
 
-export type Navigation = 'briefing' | 'project' | 'projects' | 'shared-projects' | 'files' | 'runs' | 'automations' | 'settings'
-export type ProjectSection = 'status' | 'goals' | 'settings'
+export type Navigation = 'project' | 'projects' | 'shared-projects' | 'files' | 'runs' | 'automations' | 'settings'
+export type ProjectSection = 'status' | 'settings'
+
+export function projectNameFromPath(path: string): string {
+  const normalized = path.replace(/\/+$/u, '')
+  return normalized.split('/').filter(Boolean).at(-1) ?? '我的项目'
+}
 export type SidebarSelection = Exclude<Navigation, 'project' | 'settings'>
 export type SettingsSection = 'general' | 'models' | 'voice' | 'connectors' | 'permissions'
 
 export const settingsSectionTitles: Record<SettingsSection, string> = {
   general: '通用',
   models: '模型',
-  voice: '语音与 TTS',
+  voice: '语音输入',
   connectors: '连接器',
   permissions: '权限与安全'
 }
@@ -26,7 +31,7 @@ export const settingsSectionTitles: Record<SettingsSection, string> = {
 export const settingsNavigationItems = [
   { id: 'general', label: '通用', icon: Settings2 },
   { id: 'models', label: '模型', icon: Bot },
-  { id: 'voice', label: '语音与 TTS', icon: Headphones },
+  { id: 'voice', label: '语音输入', icon: Headphones },
   { id: 'permissions', label: '权限与安全', icon: ShieldCheck }
 ] satisfies Array<{ id: Exclude<SettingsSection, 'connectors'>; label: string; icon: typeof Settings2 }>
 

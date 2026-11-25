@@ -25,7 +25,6 @@ import {
   respondAgentApprovalSchema,
   saveAutomationSchema,
   sendAgentRunMessageSchema,
-  ttsEndpointSchema,
   updateDecisionSchema,
   workspacePathSchema,
   workspaceProjectIdSchema,
@@ -40,12 +39,8 @@ export function registerProjectIpc(context: IpcContext): void {
     connectorRuntime,
     decisionRemediationService,
     credentialVault,
-    dailyBriefingService,
-    morningBriefingService,
-    goalTrackingService,
     providerSettings,
     asrService,
-    ttsService,
     workspaceFiles,
     automationRuntime,
     projectAgentIntegration,
@@ -58,64 +53,6 @@ export function registerProjectIpc(context: IpcContext): void {
 
   ipcMain.handle('project:create', (_event, rawInput: unknown) => {
     return database.createProject(createProjectSchema.parse(rawInput))
-  })
-
-  ipcMain.handle('goal:create', (_event, rawInput: unknown) => {
-    const input = z
-      .object({
-        projectId: z.string().trim().min(1).max(200),
-        prompt: z.string().trim().min(1).max(4_000),
-        attachments: z.array(workAssistantImageSchema).max(4).optional(),
-        priority: z.enum(['P0', 'P1', 'P2']).optional(),
-        status: z.enum(['planned', 'active']).optional()
-      })
-      .parse(rawInput)
-    const evidenceRefs = persistAttachments(input.projectId, `goals/${randomUUID()}`, input.attachments)
-    return goalTrackingService.createFromPrompt(input.projectId, input.prompt, {
-      priority: input.priority,
-      status: input.status,
-      attachments: input.attachments,
-      evidenceRefs
-    })
-  })
-
-  ipcMain.handle('goal:check', (_event, rawId: unknown) => {
-    return goalTrackingService.check(z.string().trim().min(1).max(200).parse(rawId))
-  })
-
-  ipcMain.handle('goal:update-status', (_event, rawInput: unknown) => {
-    const input = z
-      .object({
-        id: z.string().trim().min(1).max(200),
-        status: z.enum(['planned', 'active', 'at-risk', 'completed', 'paused'])
-      })
-      .parse(rawInput)
-    return database.updateGoalStatus(input.id, input.status as GoalStatus)
-  })
-
-  ipcMain.handle('goal:update-priority', (_event, rawInput: unknown) => {
-    const input = z
-      .object({
-        id: z.string().trim().min(1).max(200),
-        priority: z.enum(['P0', 'P1', 'P2'])
-      })
-      .parse(rawInput)
-    return database.updateGoalPriority(input.id, input.priority)
-  })
-
-  const goalMilestoneSchema = z.object({
-    goalId: z.string().trim().min(1).max(200),
-    milestoneId: z.string().trim().min(1).max(200)
-  })
-
-  ipcMain.handle('goal:complete-milestone', (_event, rawInput: unknown) => {
-    const input = goalMilestoneSchema.parse(rawInput)
-    return database.completeGoalMilestone(input.goalId, input.milestoneId)
-  })
-
-  ipcMain.handle('goal:delete-milestone', (_event, rawInput: unknown) => {
-    const input = goalMilestoneSchema.parse(rawInput)
-    return database.deleteGoalMilestone(input.goalId, input.milestoneId)
   })
 
   ipcMain.handle('decision:create', (_event, rawInput: unknown) => {

@@ -25,7 +25,6 @@ import {
   respondAgentApprovalSchema,
   saveAutomationSchema,
   sendAgentRunMessageSchema,
-  ttsEndpointSchema,
   updateDecisionSchema,
   workspacePathSchema,
   workspaceProjectIdSchema,
@@ -40,12 +39,8 @@ export function registerWorkspaceIpc(context: IpcContext): void {
     connectorRuntime,
     decisionRemediationService,
     credentialVault,
-    dailyBriefingService,
-    morningBriefingService,
-    goalTrackingService,
     providerSettings,
     asrService,
-    ttsService,
     workspaceFiles,
     automationRuntime,
     projectAgentIntegration,
@@ -130,58 +125,5 @@ export function registerWorkspaceIpc(context: IpcContext): void {
     if (input.kind === 'cloudflare') return connectorRuntime.configureCloudflare(input)
     if (input.kind === 'ga4') return connectorRuntime.configureGa4(input)
     return connectorRuntime.configureProjectAgent(input)
-  })
-
-  ipcMain.handle('briefing:generate-daily', (_event, rawProjectId: unknown) => {
-    return dailyBriefingService.generate(z.string().trim().min(1).max(200).parse(rawProjectId))
-  })
-
-  ipcMain.handle('briefing:generate-morning', () => {
-    return morningBriefingService.generate()
-  })
-
-  ipcMain.handle('briefing:ask', (event, rawInput: unknown) => {
-    const input = z
-      .object({
-        requestId: z.string().trim().min(1).max(200),
-        briefingId: z.string().trim().min(1).max(200).nullable(),
-        question: z.string().trim().min(1).max(4_000),
-        attachments: z.array(workAssistantImageSchema).max(4),
-        taskContext: z
-          .object({
-            projectId: z.string().trim().min(1).max(200),
-            goalId: z.string().trim().min(1).max(200),
-            milestoneId: z.string().trim().min(1).max(200)
-          })
-          .nullable()
-          .optional()
-      })
-      .parse(rawInput)
-    return morningBriefingService.ask(
-      input.briefingId,
-      input.question,
-      input.taskContext ?? null,
-      input.attachments,
-      (update) => {
-        if (!event.sender.isDestroyed()) {
-          event.sender.send('briefing:ask-update', {
-            requestId: input.requestId,
-            briefingId: input.briefingId,
-            update
-          })
-        }
-      }
-    )
-  })
-
-  ipcMain.handle('work-assistant:execute-action', (_event, rawInput: unknown) => {
-    const input = z
-      .object({
-        messageId: z.string().trim().min(1).max(200),
-        proposalId: z.string().trim().min(1).max(200),
-        optionId: z.string().trim().min(1).max(300)
-      })
-      .parse(rawInput)
-    return morningBriefingService.executeAction(input)
   })
 }

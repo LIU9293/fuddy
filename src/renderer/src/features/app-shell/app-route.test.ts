@@ -16,13 +16,13 @@ describe('app route state machine', () => {
     const route = appRouteReducer(initialAppRoute, {
       type: 'open-project',
       projectId: 'project-1',
-      section: 'goals'
+      section: 'settings'
     })
 
     expect(navigationForRoute(route)).toBe('project')
     expect(sidebarSelectionForRoute(route)).toBe('projects')
     expect(selectedProjectForRoute(route)).toBe('project-1')
-    expect(projectSectionForRoute(route)).toBe('goals')
+    expect(projectSectionForRoute(route)).toBe('settings')
   })
 
   it('returns from settings to the exact prior route', () => {

@@ -6,19 +6,13 @@ import { ConnectorRuntime } from './connectors/connector-runtime'
 import { registerIpc } from './ipc'
 import { AppDatabase } from './services/database'
 import { CredentialVault } from './services/credential-vault'
-import { ensureDailyInspectionAutomation } from './services/builtin-automations'
 import { DailyBriefingService } from './services/daily-briefing'
 import { PiAgentRuntime } from './services/pi-runtime'
-import { MorningBriefingService } from './services/morning-briefing'
 import { ProviderSettingsService } from './services/provider-settings'
 import { TaskDispatcher } from './services/task-dispatcher'
-import { TtsService } from './services/tts-service'
 import { AsrService } from './services/asr-service'
-import { GoalTrackingService } from './services/goal-tracking'
-import { WorkspaceAgentActions } from './services/workspace-agent-actions'
 import { DecisionRemediationService } from './services/decision-remediation'
 import { WorkspaceFilesService } from './services/workspace-files'
-import { ProjectInspectionService } from './services/project-inspection'
 import { AutomationRuntime } from './services/automation-runtime'
 import { AutomationScheduler } from './services/automation-scheduler'
 import { CliAgentRuntime } from './services/cli-agent-runtime'
@@ -30,8 +24,6 @@ import { ProjectAgentIntegrationService } from './services/project-agent-integra
 import { SENTRY_DSN, SENTRY_PROJECT } from '../shared/sentry'
 import { hydrateProcessEnvironmentFromZsh } from './services/shell-environment'
 import { CompanionSyncService } from './services/companion-sync'
-import { WebResearchService } from './services/web-research'
-import { PiWorkAssistantAgent } from './services/work-assistant-agent'
 import { agentRunNotificationContent } from './services/agent-run-notifications'
 import { buildAgentModelLabels } from '../shared/model-display'
 import { loadProjectAnalyticsProfiles } from './analytics/project-analytics-profiles'
@@ -411,46 +403,10 @@ if (!hasLock) {
       const projectAgentIntegration = new ProjectAgentIntegrationService(database, credentialVault, (input, onUpdate) =>
         dispatcher.dispatch(input, onUpdate)
       )
-      const goalTrackingService = new GoalTrackingService(database, runtime)
-      const workspaceAgentActions = new WorkspaceAgentActions(
-        database,
-        runtime,
-        goalTrackingService,
-        dispatcher,
-        new ProjectInspectionService(database, workspaceFiles),
-        new WebResearchService()
-      )
-      const workAssistantAgent = new PiWorkAssistantAgent(
-        providerSettings,
-        database,
-        workspaceAgentActions,
-        join(userDataPath, 'work-assistant-pi-session'),
-        userDataPath
-      )
-      const morningBriefingService = new MorningBriefingService(
-        database,
-        dailyBriefingService,
-        runtime,
-        goalTrackingService,
-        workspaceAgentActions,
-        undefined,
-        workAssistantAgent
-      )
-      workspaceAgentActions.setMorningBriefingGenerator((cancellationSignal) => (
-        morningBriefingService.generate(cancellationSignal)
-      ))
       companionSync = new CompanionSyncService(
         database,
         credentialVault,
         dispatcher,
-        (question, attachments, cancellationSignal) => morningBriefingService.ask(
-          null,
-          question,
-          null,
-          attachments,
-          () => undefined,
-          cancellationSignal
-        ),
         join(userDataPath, 'companion-uploads'),
         () => providerSettings.getPublicSettings().codingAgents.defaultAgent,
         workspaceFiles,
@@ -466,17 +422,12 @@ if (!hasLock) {
         if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
       })
       macPeerSync.start()
-      companionSync.setWorkAssistantActionExecutor((input, cancellationSignal) => (
-        morningBriefingService.executeAction(input, cancellationSignal)
-      ))
       companionSync.onStatusChanged((status) => {
         if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:status-changed', status)
       })
       companionSync.onDataChanged(() => {
         if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
       })
-      const ttsService = new TtsService(database, providerSettings)
-      ensureDailyInspectionAutomation(database)
       const automationRuntime = new AutomationRuntime(database, {
         runAgentTask: async (job, cancellationSignal) => {
           const result = await dispatcher.dispatch({
@@ -491,35 +442,12 @@ if (!hasLock) {
           const result = await connectorRuntime.runConnectors(projectId, cancellationSignal)
           return `Connector 巡检完成，${result.succeeded} 成功，${result.failed} 失败。`
         },
-        checkGoals: async (projectId, cancellationSignal) => {
-          const results = await goalTrackingService.checkDueGoals(projectId ?? undefined, cancellationSignal)
-          return results.length > 0 ? `已检查 ${results.length} 个到期目标。` : '当前没有到期目标。'
-        },
         generateBriefing: async (projectId, cancellationSignal, prompt) => {
-          if (projectId) {
-            const result = await dailyBriefingService.generate(projectId, cancellationSignal, prompt)
-            if (result.briefing.status === 'failed') throw new Error(result.briefing.error ?? '项目巡检失败。')
-            return result.briefing.generation === 'agent' ? result.briefing.headline : `${result.briefing.headline}（模板生成：模型未配置或调用失败，未使用自定义 Prompt。）`
-          }
-          const result = await morningBriefingService.generate(cancellationSignal, prompt)
-          mainWindow?.webContents.send('briefing:morning-ready')
-          if (Notification.isSupported()) {
-            const notification = new Notification({ title: '每日简报已送达', body: result.briefing.headline, silent: false })
-            notification.on('click', () => {
-              if (!mainWindow) createWindow()
-              if (mainWindow?.isMinimized()) mainWindow.restore()
-              mainWindow?.show()
-              mainWindow?.focus()
-            })
-            notification.show()
-          }
-          const summary = result.briefing.generation === 'agent'
-            ? result.briefing.headline
-            : `${result.briefing.headline}（模板生成：模型未配置或输出未通过校验，未使用自定义 Prompt。）`
-          return result.briefing.error ? `${summary} 部分数据未获取：${result.briefing.error}` : summary
+          const result = await dailyBriefingService.generate(projectId, cancellationSignal, prompt)
+          if (result.briefing.status === 'failed') throw new Error(result.briefing.error ?? '项目巡检失败。')
+          return result.briefing.generation === 'agent' ? result.briefing.headline : `${result.briefing.headline}（模板生成：模型未配置或调用失败，未使用自定义 Prompt。）`
         }
       })
-      workspaceAgentActions.setAutomationRuntime(automationRuntime)
       automationRuntime.onChanged(() => {
         if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('automation:changed')
       })
@@ -530,12 +458,8 @@ if (!hasLock) {
         connectorRuntime,
         decisionRemediationService,
         credentialVault,
-        dailyBriefingService,
-        morningBriefingService,
-        goalTrackingService,
         providerSettings,
         asrService,
-        ttsService,
         workspaceFiles,
         automationRuntime,
         projectAgentIntegration,

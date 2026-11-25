@@ -164,15 +164,6 @@ export const agentEndpointSchema = z.object({
   apiKey: z.string().trim().max(4_000).optional()
 })
 
-export const ttsEndpointSchema = z.object({
-  mode: z.enum(['system', 'openai-compatible', 'elevenlabs']),
-  baseUrl: z.string().trim().min(1).max(1_000),
-  model: z.string().trim().max(200),
-  voice: z.string().trim().max(300),
-  instructions: z.string().trim().max(1_000),
-  apiKey: z.string().trim().max(4_000).optional()
-})
-
 export const saveAutomationSchema = z.object({
   id: z.string().trim().min(1).max(200).optional(),
   projectId: z.string().trim().min(1).max(200).nullable(),
@@ -180,7 +171,7 @@ export const saveAutomationSchema = z.object({
   scheduleDescription: z.string().trim().min(1).max(500),
   cronExpression: z.string().trim().min(1).max(200),
   timezone: z.string().trim().min(1).max(100),
-  action: z.enum(['agent-task', 'run-connectors', 'check-goals', 'generate-briefing']),
+  action: z.enum(['agent-task', 'run-connectors', 'generate-briefing']),
   prompt: z.string().trim().max(20_000),
   agentProvider: agentRunProviderSchema,
   enabled: z.boolean(),

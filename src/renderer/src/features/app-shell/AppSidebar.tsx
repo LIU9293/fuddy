@@ -1,6 +1,5 @@
 import {
   ArchiveX,
-  Bot,
   ChevronRight,
   CircleDashed,
   Clock3,
@@ -37,7 +36,6 @@ export interface AppSidebarProps {
   layout: SidebarLayoutController
   onCloseSettings: () => void
   onSettingsSection: (section: SettingsSection) => void
-  onBriefing: () => void
   onFiles: () => void
   onProjects: () => void
   onSharedProjects: () => void
@@ -138,9 +136,6 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
           </div>
 
           <nav className="primary-nav" aria-label="主导航">
-            <NavigationButton active={props.sidebarSelection === 'briefing'} onClick={props.onBriefing} icon={<Bot size={17} />}>
-              工作助理
-            </NavigationButton>
             <NavigationButton active={props.sidebarSelection === 'files'} onClick={props.onFiles} icon={<Folder size={17} />}>
               文件
             </NavigationButton>

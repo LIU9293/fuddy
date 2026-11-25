@@ -4,8 +4,8 @@ import { AppDataStore } from './app-data-store'
 
 function bootstrap(): AppBootstrap {
   return {
-    projects: [], goals: [], decisions: [], decisionRemediations: [], runs: [], connectors: [], connectorRuns: [],
-    dailyBriefings: [], morningBriefings: [], briefingMessages: [], automations: [], automationRuns: [],
+    projects: [], decisions: [], decisionRemediations: [], runs: [], connectors: [], connectorRuns: [],
+    automations: [], automationRuns: [],
     providerSettings: {} as AppBootstrap['providerSettings'],
     connectorCatalog: [], analyticsProfiles: [], capabilities: [],
     credentialStorage: {} as AppBootstrap['credentialStorage'], permissionMode: 'full-access'

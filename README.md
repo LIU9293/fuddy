@@ -14,17 +14,16 @@ Mac 与 iPhone 的产品界面统一将 Agent Runs 称为 **Chats**（单个为 
 
 iPhone Chat 详情在标题下方显示执行 Mac 名称与状态点（在线绿色、离线灰色），输入框上方不再重复显示主机状态；VoiceOver 仍可读出在线状态。
 
-项目详情默认进入「状态」，可切换到「目标」和「设置」。目标页可直接创建目标、检查进展和管理里程碑。
+Mac 启动后默认进入 Chats。项目详情提供「状态」和「设置」，可在项目列表选择本机文件夹添加项目。旧版工作助理与目标历史继续保存在本机数据库中。
 
 ## 当前实现状态
 
 当前版本已经跑通从项目上下文到真实 Agent Session 的桌面端主链路：
 
-- 工作助理、每日简报、项目状态 / 目标 / 设置、文件、Agent Runs 和自动化已接入同一套本地数据模型；
+- 项目状态、设置、文件、Chats 和自动化共享同一套本地数据模型。
 - Agent Run 不再区分 Coding / General，统一使用 T3 的原生 Provider，另可通过 ACP Registry 添加 Agent；
 - 每个项目支持一个或多个 Workspace Roots，并指定主 Workspace。普通 Run 与自动任务都在真实项目目录执行，同时把其他 Roots 和项目产物目录提供给 Agent；
-- 新建 Agent Session 只创建草稿，不自动发送消息。Milestone“开始任务”会直接创建或打开关联 Session、进入聊天，并把持久化的建议任务放进输入框，用户确认或修改后再发送；
-- 工作助理运行在 Pi 的持久 Agent Session 中，使用原生 Tool Call 和自动上下文压缩：可以管理项目、目标、Agent Run 和自动化，读取每日简报、联网公开来源，并受约束地读取项目文件空间及已配置 Workspace 中的文件/代码；只读能力可直接执行，改变 App 状态的能力通过 `ask_user` 展示持久确认 Action，创建 Run 只预填不发送；
+- 新建 Chat 先保存草稿，首条消息由用户发送。
 - T3 保存各 Provider 的原生会话引用，后续消息恢复同一上下文。
 - Mac Chat 在 Agent 运行期间发送的新消息先进入持久队列。排队消息可以取消。当前 Agent 支持追加时，点 `Steer` 可把待发消息交给 T3 投递到本轮。若原轮已结束，T3 可以将消息安排到下一轮。
 - Fuddy 的 Codex Chat 独立续接，不再与 Codex 桌面端交替操作同一个会话 ID。升级后首次发送时，旧会话通过 `thread/read` 读取历史、确认没有正在执行的轮次，再用 `thread/fork` 从已确认的最后一轮派生新 ID；新 ID、归属记录与缺失的可见对话原子保存，之后一直恢复新 ID。原生完整上下文由 Codex 保留，Fuddy 只补入缺失的用户消息和公开回复，不导入隐藏推理或工具原始输出；迁移后不再同步原会话的新消息。迁移失败或历史不完整时不发送本轮消息、不清空原 ID；已绑定会话遇到外部占用时提示重试，不自动再派生，也不停止其他应用。沿用 CLI 的登录、配置与原生存储，不修改 `CODEX_HOME` 或复制凭证；请只在 Fuddy Mac / iPhone 内继续 Fuddy 会话。
@@ -36,22 +35,21 @@ iPhone Chat 详情在标题下方显示执行 Mac 名称与状态点（在线绿
 - Mac 与 iOS 同样隐藏 Claude SDK 的 `claude-thinking-*` 段落，保留正常进度说明、工具调用与最终回复；iOS 升级后会自动重放同步，补回旧缓存丢失的段落标记；
 - Agent Run 当前按产品约定使用 Full Access / 自动批准模式。T3 负责将 `full-access` 映射到各 Provider 支持的权限级别；
 - Agent 对话已支持流式回复、思考摘要、折叠工具调用链、当前工具运行态、Session 重命名 / 归档，以及无活动超时保护：没有正在执行的工具且连续 10 分钟未收到运行进展时才自动停止；工具运行期间暂停计时，所有并行工具完成或失败后重新计时。Provider 的命令输出、MCP 进展和未展示的模型流事件也计入活动，不记录或展示隐藏推理；工具自身超时和用户手动停止仍然有效。T3 的运行事件先归一为“思考阶段 + 连续操作组”，工具统一保留运行 / 完成 / 失败状态和可读摘要；Mac 与 iPhone 消费同一套展示语义，原始参数和输出只在二级展开中显示；
-- Mac 主区域统一使用纯色页面背景和全宽顶部 Header；Agent Run 顶部用项目与会话标题的单行导航，工作助理与 Agent Run 共用聊天对齐、消息署名、底部时间和紧凑输入框，Light / Dark 都使用同一套语义颜色。项目列表是独立页面，所有已添加项目常驻主侧边栏，点击项目标题可展开或折叠 Chat。即使没有 Run 或所有 Run 已归档，也可从项目标题旁的新建 Chat 入口创建 Run；Agent Run Session 按项目分组且只在运行时显示加载图标；回复的相关文件集中展示在正文下方，一个容器内每个文件独占一行，并显示文件数量，点击可预览；主侧边栏支持拖拽调整宽度；临时成功和错误提示会在 5 秒后自动消失；
-- Renderer App Shell 使用单一的 route 状态机表达页面、项目 Section、Settings 返回路径和 Run 选择，领域数据通过可按 Projects、Goals、Runs 等 key 独立订阅的 store 更新；Sidebar、Route Outlet、Goal Composer 与跨页面 Workflow 均有独立边界，`App.tsx` 只负责应用装配。
+- Mac 主区域统一使用纯色页面背景和全宽顶部 Header；Agent Run 顶部用项目与会话标题的单行导航，Chat 使用一致的消息对齐、署名与输入布局，Light / Dark 都使用同一套语义颜色。项目列表是独立页面，所有已添加项目常驻主侧边栏，点击项目标题可展开或折叠 Chat。即使没有 Run 或所有 Run 已归档，也可从项目标题旁的新建 Chat 入口创建 Run；Agent Run Session 按项目分组且只在运行时显示加载图标；回复的相关文件集中展示在正文下方，一个容器内每个文件独占一行，并显示文件数量，点击可预览；主侧边栏支持拖拽调整宽度；临时成功和错误提示会在 5 秒后自动消失；
+- Renderer App Shell 用统一路由管理页面、项目状态与设置、设置返回路径及 Chat 选择。数据可以按项目、Chats 等域独立刷新。
 - 主进程、Renderer 未处理异常及 Electron 子进程异常已接入 Sentry 崩溃报告。
 - 账户改造已进入可运行首版：独立 `cloud/account-api` Worker 使用 D1 管理 Email / Google Identity、短期 access token、完整历史重放检测的原子 refresh token 轮换、Device、Mac Host、默认 Sync Space 与 enrollment；生产 Worker 已部署到 `https://fuddy.ai/api/account`，邮箱验证码通过已验证的 Resend `fuddy.ai` 域名发送，发送冷却和校验次数都由 D1 原子占位，签名 Webhook 会幂等记录投递结果并抑制退信/投诉地址。每个账户最多保留 20 台活跃设备，其中最多 5 台 Mac；每台设备最多保留 10 个活跃 Session。Cron 除了持久重试 Relay 撤销，也会分批清理过期验证码、限流窗口、已撤销 Session、邮件回执和安全审计历史，避免免费托管的 D1 数据只增不减。Mac 必须先登录，随后按“检测 Coding Agent → 添加第一个项目（可跳过）”完成两步 onboarding；手机连接不再是设置步骤。Fuddy session 与设备私钥只进入 credential vault。一个账户可以同时登录多台 Mac，每台 Mac 对应独立同步空间；iPhone 登录同一账户后自动连接各 Mac，默认展示账户级项目；项目详情与 Runs 列表汇总各执行机的 Run，新建时选择在线且已配置主文件夹的 Mac，后续操作固定回到原执行机。每台 iPhone、每个空间仍有独立 grant、Relay Token、Space Data Key 与本地缓存，设置展示设备状态，不再切换全局空间。Mac 先用 Relay Token 获取五分钟内单次有效的所有权证明，Account API 在 D1 预占后才通过私有 Cloudflare Service Binding 消耗证明并绑定 `spaceId + bindingId + generation`；D1 落库失败会释放 Relay 绑定。设备/空间撤销先原子写入 D1，再由 Cron 持久重试，旧任务不能修改或撤销不属于它的 Relay。Mac 轮询保留为恢复路径。在线 Mac 使用设备 P-256 公钥和 ECDH/HKDF/AES-GCM 封装授权，账户服务器只保存密文 grant。安全提醒邮件、完整账户删除、分段 baseline v2、主动 wake-up、密钥轮换与 Sign in with Apple 仍是正式多用户发布前的未完成项。
-- 多 Mac 项目模型已在代码中接入：账户共享项目身份、产品上下文、目标与 Milestone，每台 Mac 独立配置主文件夹、附加文件夹和默认 Agent；新建 Run 可选择在线且已配置目录的执行 Mac，后续消息与操作固定回到原机器。跨 Mac 复用加密 Relay、客户端授权和持久化命令去重；初次设备授权需要目标 Mac 在线。使用前须同步升级 Account API、Relay 与各 Mac，真实双机验收尚待执行。迁移和连接流程见 [`docs/multi-mac-projects.md`](docs/multi-mac-projects.md)。
+- 多 Mac 项目模型已在代码中接入：账户共享项目身份与产品上下文，每台 Mac 独立配置主文件夹、附加文件夹和默认 Agent；新建 Run 可选择在线且已配置目录的执行 Mac，后续消息与操作固定回到原机器。跨 Mac 复用加密 Relay、客户端授权和持久化命令去重；初次设备授权需要目标 Mac 在线。使用前须同步升级 Account API、Relay 与各 Mac，真实双机验收尚待执行。迁移和连接流程见 [`docs/multi-mac-projects.md`](docs/multi-mac-projects.md)。
 - SQLite 使用递增版本和逐步事务执行迁移；迁移失败不会推进版本。领域读写已按 Projects、Goals、Runs、Connectors、Briefings、Automations、Companion 与 Decisions 拆成独立 Repository，`AppDatabase` 只负责连接、迁移与组合。已发布的 Companion outbox 事件默认保留 30 天并分批清理，避免本地同步历史无限增长；无法满足契约或传输上限的单条事件会进入可见的本地隔离状态，不会阻塞其后的有序队列。
 - Companion 的事件、实体和 Payload，以及远程命令与 Payload 使用同一套强类型协议；本地 outbox DTO 与 Relay wire DTO 明确分型，Relay 在写入前执行完整嵌套 Zod 校验并移除已知协议版本中的未知字段。Swift 事件/命令枚举、命令 Payload、Snapshot 和非实体 Event Payload 由共享 manifest 生成。生成器还为核心同步 DTO 生成协议指纹，构建检查会阻止 Mac / iOS DTO 漂移后发布；未知未来事件类型仍可被安全忽略。
-- 项目 Agent Run 通过 T3 Provider Registry 调度。工作助理继续使用独立的跨项目对话。
 - 所有聊天输入框已支持语音输入。Mac 首次录音会明确请求系统麦克风权限；已拒绝时打开“隐私与安全性 → 麦克风”供用户恢复授权。Mac 默认使用可选下载的 Whisper `large-v3-turbo Q5` 本地模型，未安装或本地失败时可回退到 OpenAI-compatible `/audio/transcriptions`；iPhone Release 构建通过准备脚本把同一模型预置进 App，并始终在设备上转写。录音只填入输入框，不会自动发送。
-- 已加入原生 SwiftUI iOS Companion 工程。iPhone 登录 Fuddy 后会自动发现同账户的 Sync Space，由在线 Mac 完成设备授权并开始同步；新版界面不再提供二维码扫描或手动配对。本地 SQLite outbox 会把项目、目标、每日总结、工作助理、Agent Run、消息和产物增量同步到 Cloudflare Relay。outbox 仍逐条落盘，但网络层按最多 100 条 / 512 KiB 批量提交；首次 baseline 使用轻量快照加按实体 / 聊天页有序事件，大型历史页会保留能安全传输的最新记录与续传游标，极端页面从较小窗口恢复，不会让大量 Run 或附件阻塞首次同步。协议升级时 Relay 保留仍待回放的加密事件，Mac 会用原版本关联数据排空既有加密命令并以当前协议回传终态，避免静默丢失用户操作。命令状态不重复携带原始输入，只有历史分页和附件上传保留 iPhone 真正消费的结果，超限结果会降级为可恢复失败。工具完整输出只留在 Mac，Relay 与 iPhone 只接收工具类别、完成 / 失败状态、可读摘要和最多 600 字的细节。手机侧边栏依次为 Chats、助理、项目和设置，不再显示分割线或顶部“助理 / Runs”切换；Chats 直接打开按项目分组的列表，助理直接打开对话。Chat 列表右侧显示执行 Mac 名称及在线绿点（离线灰点）。已验证账户回到前台时在后台校验身份，保留当前页面与消息滚动位置；首次恢复账户仍显示加载页，身份失效时回到登录。Chat 列表按项目分组，仅保留页面右上角的创建入口，新建由 Mac 落库的 Draft Run；工作助理与 Agent Run 共用同一种 Chat Record、100 个展示 Block 的初始窗口、默认落在最新消息的滚动逻辑，以及向上滚动触发的受约束历史分页；差异只保留 Agent、预置 Prompt、附件能力和特殊卡片。两类聊天共用支持照片 / 文件上传的输入组件，但隐藏 Mac 专属的 Agent / 模型 / Reasoning 选择入口；每日总结直接进入助理时间线，Agent 的思考摘要与工具操作在运行中实时显示，完成后按同一阶段结构整体折叠。项目详情提供与 Mac 对齐的概览 / 设置，可编辑基本信息、产品上下文、一个或多个 Workspace、主 Workspace、默认 Agent、入口与数据源，并通过受约束的 `project.update` 命令交由 Mac 落库。Session 聊天不再内嵌产物列表，右上角“信息与文件”Modal 集中展示基本信息和文件；缺少云端副本时，iPhone 会通过受约束的命令请求在线 Mac 实时上传，再进行大小与 SHA-256 校验并用 Quick Look 打开。手机也支持离线缓存和 Session 重命名 / 归档，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
+- 已加入原生 SwiftUI iOS Companion 工程。iPhone 登录 Fuddy 后会自动发现同账户的 Sync Space，由在线 Mac 完成设备授权并开始同步；新版界面不再提供二维码扫描或手动配对。本地 SQLite outbox 会把项目、Chat、消息和产物增量同步到 Cloudflare Relay。outbox 仍逐条落盘，但网络层按最多 100 条 / 512 KiB 批量提交；首次 baseline 使用轻量快照加按实体 / 聊天页有序事件，大型历史页会保留能安全传输的最新记录与续传游标，极端页面从较小窗口恢复，不会让大量 Run 或附件阻塞首次同步。协议升级时 Relay 保留仍待回放的加密事件，Mac 会用原版本关联数据排空既有加密命令并以当前协议回传终态，避免静默丢失用户操作。命令状态不重复携带原始输入，只有历史分页和附件上传保留 iPhone 真正消费的结果，超限结果会降级为可恢复失败。工具完整输出只留在 Mac，Relay 与 iPhone 只接收工具类别、完成 / 失败状态、可读摘要和最多 600 字的细节。手机侧边栏提供 Chats、项目、与我共享和设置。Chat 列表右侧显示执行 Mac 名称及在线绿点（离线灰点）。已验证账户回到前台时在后台校验身份，保留当前页面与消息滚动位置；首次恢复账户仍显示加载页，身份失效时回到登录。Chat 列表按项目分组，仅保留页面右上角的创建入口，新建由 Mac 落库的 Draft Run；Chat 初始加载最新 100 个展示块，向上滚动可继续读取历史。Agent 的思考摘要与工具操作实时更新，完成后按阶段折叠。项目详情提供与 Mac 对齐的概览 / 设置，可编辑基本信息、产品上下文、一个或多个 Workspace、主 Workspace、默认 Agent、入口与数据源，并通过受约束的 `project.update` 命令交由 Mac 落库。Session 聊天不再内嵌产物列表，右上角“信息与文件”Modal 集中展示基本信息和文件；缺少云端副本时，iPhone 会通过受约束的命令请求在线 Mac 实时上传，再进行大小与 SHA-256 校验并用 Quick Look 打开。手机也支持离线缓存和 Session 重命名 / 归档，所有实际 Agent 与工具操作仍在 Mac 执行；完整架构见 [`docs/ios-companion-architecture.md`](docs/ios-companion-architecture.md)。
 - Companion Relay 默认地址为 [`fuddy.ai/api/relay`](https://fuddy.ai/api/relay/health)，使用 Durable Objects、Hibernation WebSocket 和私有 R2；当前产品只提供托管免费版，尚不开放自托管入口。每个 Relay 账户的单个 R2 密文对象最多 20 MiB（因此原文件上限为 20 MiB 减去固定 32 字节加密封装），已登记附件密文总量最多 100 GiB；Relay 会先在 Durable Object 中原子预占容量，超限请求不会写入 R2，上传失败或过期的预占会自动释放。旧 [`workers.dev`](https://project-agent-companion-relay.moghub.workers.dev) 入口与旧的一次性配对协议继续保留，供已安装版本无损升级，但配对期只允许认证、认领和生成账户所有权证明；只有 Account API 确认 `spaceId + bindingId` 后才能写事件、命令或附件，十分钟内未完成绑定的配对凭证会由 DO alarm 清理。事件、命令结果与附件使用在线 Mac 为设备封装的 Space Data Key 进行 AES-256-GCM 端到端加密；Relay 只保存密文、路由元数据和状态，不持有解密密钥。设备 Token 只保存哈希，账户设备撤销会同步撤销 Relay 访问。每批事件在 DO 内一次授权并通过 SQLite 同步事务幂等写入，随后只发送一个 `sync.available(lastSequence)` 唤醒提示；Mac 与 iPhone 收到提示后仍以 ordered replay 为准。Mac 至少每 24 小时生成一次完整状态快照；Relay 写入新快照后立即删除它之前的事件，并始终保留最新快照作为恢复基线。每个 Relay 账户最多保留 5,000 条事件；达到上限时 Relay 不会删除尚未纳入恢复基线的增量，而是要求 Mac 事务性重建 outbox、优先上传新快照，再删除旧基线与增量。如果当前状态本身需要超过 5,000 条 baseline 事件，Mac 会在替换 Relay 现有完整基线前明确报错，要求先归档不再需要的项目或 Run，不会循环上传半成品。命令最多保留 1,000 条，达到上限时优先回收最老的终态命令并在 30 天首次接纳 / 重试窗口内保留 ID tombstone；tombstone 空间不足时拒绝新命令，不会提前删除仍可重试的 ID。APNs 只携带通用唤醒/完成提醒，不包含业务正文；Release 配置默认使用 production APNs，开发命令显式覆盖为 development。
 
-- iOS App 登录后默认进入 Chats 列表。Chat 与助理共用键盘避让和底部跟随逻辑：停在最新消息时，键盘或输入框高度变化会保持最新消息可见；阅读历史消息时不会主动跳回底部。
+- iOS 登录后默认进入 Chats。停在最新消息时，键盘或输入框高度变化会保持最新消息可见。阅读历史消息时，滚动位置会保持稳定。
 - Mac 与 iPhone 新建 Chat 时可选择 T3 Agent。留空时沿用执行 Mac 的项目默认值或全局默认值。
 
-iOS 工作助理与项目 Chat 的消息共用固定 20pt 左右留白，留白包含在每条消息的滚动定位区域内；布局测试覆盖消息展开、键盘高度变化与窄屏重排。输入栏的附件、语音和发送按钮共用 44pt 操作区域，单行文字与图标垂直居中，多行输入时按钮保持在底部同一行。
+iOS Chat 消息左右留白固定为 20pt，包含在消息的滚动定位区域内。布局测试覆盖消息展开、键盘高度变化与窄屏重排。附件、语音和发送按钮共用 44pt 操作区域，多行输入时保持贴底。
 
 目前仍属于本机 / 个人设备 MVP。仓库已提供 GitHub Actions macOS App 构建、Relay 部署与 iOS Simulator XCTest 门禁；个人开源 Release 默认生成 unsigned DMG / ZIP，不需要 Apple Developer、Cloudflare 或 APNs 凭证。需要公开分发时再接入签名、公证和自动更新凭证。
 
@@ -122,31 +120,9 @@ AI Marketing 当前以牙刷品牌和婴儿睡袋品牌作为首批试点。Vows
 2. Vows：创建活动 → 完成邀请 → 分享 → 访客打开 → 回执 / 互动，并接入现有营销 Agent；
 3. AI Marketing：品牌输入 → 生成 → 人工修改 → 交付 → 投放反馈，记录单条素材成本、耗时与可用率。
 
-## 3. 目标、工作助理与简报
+## 3. 项目现状与简报
 
-目标是项目内的一级对象，不是设置中的一段文字。每个项目先保存一份带来源和更新时间的“项目现状”；用户确认事实优先于 Agent 推断和 Repo 证据。每个目标包含独立的优先级（P0 / P1 / P2）与生命周期状态（已规划 / 进行中 / 有风险 / 暂停 / 已完成），以及结果描述、一个主指标（Baseline / Current / Target）、截止时间、下一次 Check-in、里程碑、监控数据源、Agent 总结与置信度。Check-in 单独留存历史，Agent 可以根据已有证据更新当前值、里程碑、进度和风险状态，但不能静默修改成功标准、目标值或截止日期。
-
-工作助理可以创建目标、检查进展、暂停、恢复或完成目标。写操作通过 `ask_user` 生成带按钮的持久确认，点击时重新校验相关项目和目标。
-
-目标创建与 Check-in 不依赖 Renderer 中的业务文案。Agent 会在执行时读取最新 Project Profile、Repo 状态、README / 项目规划、已有 Skill 摘要和 Connector 运行结果，再生成结构化目标与证据。Git、README 和测试结果只能证明工程能力及开发进展，不能被当作生产用户、收入或转化率证据；缺少业务 Connector 数据时，Baseline / Current 必须保持未知。
-
-正常进展进入目标历史和每日简报。Agent Run 的结果与证据可以关联回原目标。
-
-“工作助理”是独立一级通用聊天频道，用来跨项目讨论、规划和推进任务，不依赖当天是否已经生成简报。对话由 Pi `SessionManager` 持久化，后续消息恢复同一 Session，并由 Pi 在接近上下文窗口时自动压缩；应用不再手工截取最近几轮来模拟记忆。“每日简报”是工作助理每天 09:00 自动发送的一种特殊消息，由助理 Agent 汇总所有项目的数据和信号；消息内是一张三分钟以内的中文语音卡片，支持直接播放和在卡片内展开全文。简报、任务讨论和用户追问共同组成一条连续时间线，输入框始终固定在聊天区域底部。助理 Agent 在自动任务或用户手动触发时生成简报，建议结构固定为：
-
-1. **发生了什么**：基于最新证据总结变化；
-2. **这意味着什么**：解释影响、风险与机会；
-3. **接下来关注什么**：给出少量、明确、可行动的重点；
-4. **证据来源**：链接到 Repo、自动任务结果、分析数据或人工更新；
-5. **待确认事项**：需要用户判断或授权的选择。
-
-工作助理的能力统一按授权等级组织：
-
-- **只读**：列出/检查项目与 Agent Run、搜索项目文件、读取已配置 Workspace、联网搜索与读取 HTTP/HTTPS 页面（包括本机和私有网络服务）、读取历史简报；结果必须保留来源，且不能把网页或 Repo 信息直接当作已确认的生产事实。
-- **确认后执行**：新建或更新项目、创建/修改 Agent Run、管理目标、生成简报、创建或启停自动化。Agent 必须调用 `ask_user` 生成真实按钮；确认 Action 会持久化到助理消息，点击时重新校验对象状态。打开已有 Run 只是只读跳转，不需要确认。
-- **明确执行**：向 Run 发送消息、归档 Run、触发会写入外部系统的 Agent 工作。工作助理本身不修改项目代码，而是把任务交给项目绑定的 Agent Run。
-
-用户要求“处理 PR / 问题 / 事项”时，助理先按 Decision ID、PR URL/编号、项目和历史消息查找已有 Run。强匹配的运行中、草稿、空闲或可恢复中断 Run 优先复用，并展示“继续这个 Run / 新建 Run”Action；没有匹配时才建议创建 Draft Run。用户确认后跳转并把建议 Prompt 放进 Input，但不自动发送。每日简报的定时投递和手动生成复用同一个 `briefing.generate` 能力，Scheduler 只是另一种触发入口。
+项目状态包含用户确认的事实、当前重点及更新时间。简报可由项目自动化按需生成，并使用结构化的只读 Connector 数据。Repo 证据用于描述工程进展。生产使用量、收入和转化率需要对应的生产数据源。
 
 ## 4. 单个项目的信息模型
 
@@ -160,15 +136,10 @@ AI Marketing 当前以牙刷品牌和婴儿睡袋品牌作为首批试点。Vows
 - 用户的责任范围；
 - AI 当前采用的分析视角。
 
-### 目标与现状
+### 项目现状
 
-- 长期目标；
-- 当前里程碑；
-- 当前重点；
-- 成功标准；
-- 用户最近一次人工总结；
-- AI 对目标达成的判断与置信度；
-- 下一次复盘时间。
+- 当前重点与近期变化。
+- 已确认的事实、来源及更新时间。
 
 ### Repo 与环境
 
@@ -216,13 +187,12 @@ AI Marketing 当前以牙刷品牌和婴儿睡袋品牌作为首批试点。Vows
 - 失败提醒与重试策略；
 - 可审计的运行记录。
 
-“每日项目巡检”是内置的自动化 Job，默认每天上海时间 09:00 检查目标、修复进度与可用的只读业务数据，并生成跨项目简报。详情展示实际用于总结的 Prompt，编辑后从下一次运行生效；也可调整计划、暂停和立即运行，所有执行进入同一份运行记录。Prompt 控制简报重点和表达，系统仍负责数据采集、证据约束与输出格式校验；模型不可用或输出无效时，运行记录会明确注明模板生成。首次升级会补齐缺少的上一日简报，之后由统一 Cron 调度补跑错过的计划；保存的 Prompt、时间和暂停状态不会被重启覆盖，旧的独立定时器已移除。
+自动化可选择 Agent 任务、Connector 巡检或指定项目的简报。项目简报使用已配置的只读数据源和可选 Prompt。模型不可用或输出未通过校验时，运行记录会标记模板生成。
 
-自动任务示例（除每日项目巡检外，按需创建）：
+自动任务示例：
 
 | 自动任务 | 计划 | 作用 |
 | --- | --- | --- |
-| 每日项目巡检 | 每天 09:00 | 检查目标与项目证据，生成跨项目简报与语音卡片；Prompt 可编辑 |
 | 增长周报 | 每周一 09:00 | 为增长阶段项目总结渠道与实验表现 |
 | Trading 风险巡检 | 每 30 分钟 | 检查回撤、敞口和风险规则 |
 
@@ -230,22 +200,9 @@ AI Marketing 当前以牙刷品牌和婴儿睡袋品牌作为首批试点。Vows
 
 Mac 界面文字最小为 12px，说明、状态、菜单、文件预览与首次设置采用同一底线；相对字号也设有 12px 下限。字号直接维护在组件原始样式中，避免重复的后置覆盖；聊天正文和较大的标题继续使用各自的字号层级。
 
-Mac 主侧边栏保留工作助理、文件、项目和自动化入口；项目列表使用独立页面，Agent Run Session 列表常驻侧边栏，直接进入对应聊天：
+Mac 主侧边栏提供文件、项目、共享项目与自动化。Chats 按项目分组，可直接打开会话。
 
 侧栏项目标题优先显示已配置的项目图标，未配置时显示文件夹；项目名和下方 Chat 标题的文字左侧对齐，均使用与主导航一致的 14px 常规字重。
-
-### 工作助理
-
-- 作为跨项目的通用 Agent 对话频道，不以某一天的简报为边界；
-- 页面采用标准 AI Chat 结构，任务讨论、多天简报和追问进入同一条消息时间线；
-- 从目标里程碑点击“开始任务”时，携带项目、目标和里程碑 ID 进入工作助理，并先讨论完成标准与第一步；
-- 开始任务不会自动把里程碑标记为完成，完成状态必须由后续证据或用户明确确认；
-- 每日简报汇总全部项目，而不是逐项目展示多份报告；
-- 每天 09:00 自动发送一张中文语音卡片，并触发桌面通知；
-- 中文语音控制在三分钟以内，全文默认折叠并直接在卡片内展开；
-- 聊天输入框固定在页面底部；
-- 支持结合项目现状、目标、里程碑和最近简报继续讨论；
-- 云端 TTS 不可用时保留系统语音兜底。
 
 ### 文件
 
@@ -260,14 +217,12 @@ Mac 主侧边栏保留工作助理、文件、项目和自动化入口；项目�
 - iPhone Runs 列表左滑显示“归档 / 重命名”，不再显示三个点按钮；运行中或排队中的 Run 保留重命名，但不能归档。详情页的操作菜单保持不变。
 - 每个 Run 都是一个可恢复、可继续对话的持久 Session；Mac 主侧边栏与 iPhone Chats 页面都按项目分组，不展示消息摘要；Mac 可用分组标题旁的新建 Chat 入口创建 Draft Run，iPhone 通过页面右上角的“+”创建；
 - 点击 Run 后在右侧打开 Session 对话，展示完整消息、工具活动和错误；默认收起、可拖拽调宽的右侧信息栏分为“基本信息 / 文件”，集中展示 Git 增删行、项目与 Workspace 摘要，并在栏内预览 Run 产出的 Markdown、文本和图片；
-- Mac 的工作助理、项目 Chat 与共享 Chat 按原文显示用户消息，保留换行、空行和列表编号；只有一位真人参与的 Chat 隐藏用户头像与姓名，多人参与时按消息保存的发送者身份署名。旧消息可按同一用户 ID 找回已有署名；确实没有身份记录时显示“未记录发送者”，不猜测归属；
-- Session 可以选择关联一个 Goal / Milestone，也可以作为独立任务运行；
+- Mac 的项目 Chat 与共享 Chat 按原文显示用户消息，保留换行、空行和列表编号；只有一位真人参与的 Chat 隐藏用户头像与姓名，多人参与时按消息保存的发送者身份署名。旧消息可按同一用户 ID 找回已有署名；确实没有身份记录时显示“未记录发送者”，不猜测归属；
 - 每个 Chat 使用统一的 Run 和项目上下文。执行 Agent 可在创建时或聊天输入栏选择。
 - T3 使用各 Agent 原生的账号、模型配置和会话。
 - 每个项目可在项目设置中选择默认 Agent；全局 Coding Agents 设置另有一个默认 Coding Agent，供未显式选择 Agent 的入口使用；单次 Run 仍可覆盖；
 - Session 保存对应运行时返回的 Session ID，后续消息恢复同一个 Agent 上下文；工作目录使用项目主 Workspace，其他 Workspace Roots 和项目文件空间作为额外可访问目录；
-- 新建 Agent Run 先进入 `draft`，创建页只配置项目、执行 Mac、Agent 和可选关联里程碑，无需填写标题；Mac 与 iPhone 新 Chat 先显示“新建 Chat”。发送首条消息后，通过现有 Fuddy 账户登录调用 Cloudflare Workers AI，统一生成跟随用户输入语言的标题，不再读取各 Coding Agent 的原生标题。标题请求独立于 Agent 回复；离线、未登录、超时或额度耗尽时保留首条消息首行的简短摘录（最多 48 个字符，截断加省略号），手动重命名后保留用户标题。聊天页明确显示“草稿 · 尚未运行”，第一条消息由用户发送；
-- 从 Goal Milestone 点击“开始任务”时复用已有未归档关联 Run，或创建新的草稿 Run；预填 Prompt 会在 Mac 与 iPhone 间同步，编辑后自动保存，首条消息仍由用户发送；
+- 新建 Agent Run 先进入 `draft`，创建页只配置项目、执行 Mac 和 Agent，无需填写标题；Mac 与 iPhone 新 Chat 先显示“新建 Chat”。发送首条消息后，通过现有 Fuddy 账户登录调用 Cloudflare Workers AI，统一生成跟随用户输入语言的标题，不再读取各 Coding Agent 的原生标题。标题请求独立于 Agent 回复；离线、未登录、超时或额度耗尽时保留首条消息首行的简短摘录（最多 48 个字符，截断加省略号），手动重命名后保留用户标题。聊天页明确显示“草稿 · 尚未运行”，第一条消息由用户发送；
 - Codex、Claude Code 与 OpenCode 使用各自本机默认账号和配置，不注入 CC Switch 配置；应用继承交互式 zsh 环境，并只在用户选择模型或 Reasoning Effort 后显式传入对应参数；
 - 项目 Chat 默认使用完整本机访问和自动批准模式。每段思考摘要独立保存和显示；两个 Thinking 之间的连续工具调用归为一个默认折叠的调用组，当前 Thinking、正在运行的工具和可见回复增量会实时显示。当前回复保留完整活动和操作计数，并行工具分别跟随各自的完成 / 失败事件更新状态；切换 Chat 或后台刷新时，已落库的当前回复不会与实时活动重复展示。
 
@@ -284,28 +239,6 @@ npm run dev
 
 - 状态页统一维护项目使命、愿景、当前现状和已确认事实；
 - 用户确认的现状优先于 Agent 推断与 Repo 证据，并显示来源和更新时间；
-- 使命、愿景和项目现状不再混在目标或设置页中。
-
-### 项目目标
-
-- 目标页使用按 P0 / P1 / P2 排序的统一单列列表，不再按进行中、Roadmap 或已完成拆分区块；
-- P0 / P1 / P2 只表示优先级；已规划 / 进行中等状态单独管理，只有进行中和有风险的目标进入例行 Check-in；
-- 每个目标都可以独立展开或折叠；折叠后保留标题、状态、指标和里程碑数量，展开后显示进度、里程碑和最近一次 Agent Check-in；
-- 用户可以在统一输入框中直接描述结果，或在工作助理中要求 Agent 操作，由目标 Agent 创建结构化目标和 2–5 个可验证里程碑；
-- 未完成里程碑提供“开始任务”操作，点击后进入工作助理的结构化任务上下文，而不是直接修改完成状态；
-- 里程碑是信息行而不是可选择列表；每项的三点菜单可由用户明确标记完成或删除，删除时保留历史 Agent Run 并解除其里程碑关联；
-- 支持手动“检查进展”，每天 09:00 生成简报前也会检查已到期的目标；
-- Check-in 优先使用项目 Connector 的真实数据和证据，没有证据时明确保持未知，不虚构完成度；
-- Check-in 根据当前证据更新目标的进度和风险状态；
-- 用户可以暂停、恢复、标记风险或完成目标；恢复后会重新安排 Check-in。
-
-可以直接对 Agent 说：
-
-- “分析 Vows 当前状态，并创建下一个目标”；
-- “检查 Vows 当前目标的进展”；
-- “暂停这个目标”或“把这个目标标记为完成”；
-
-Vows 当前以用户确认现状为准：产品已可正常使用，用户自主创建婚礼 Event 的完整流程已经打通。当前 Roadmap 包含一个 P0 当前目标（社交媒体账号与宣传内容体系）、一个 P1 规划目标（婚礼模板优化与升学宴、百日宴等场景扩展）以及两个 P2 规划目标（定价方式、H5 与海外用户支持）。
 
 ### 自动化
 
@@ -327,15 +260,12 @@ Vows 当前以用户确认现状为准：产品已可正常使用，用户自主
 
 - 进入设置后，主侧边栏切换成设置二级导航，并提供返回原主页面的入口；
 - 设置二级导航只显示实际可进入的设置项，不提供无行为的“所有设置”下拉或搜索入口；
-- 全局设置拆分为“通用、模型、语音与 TTS、权限与安全”；项目 Connector 移入对应项目的“设置”Tab；
+- 全局设置拆分为“通用、模型、语音输入、权限与安全”；项目 Connector 移入对应项目的“设置”Tab；
 - 每个设置页面使用扁平单列布局，不再用嵌套 Card 重复标题或描述；
-- Agent 与 TTS 分开配置，各自包含一套 Primary 和可选 Backup；Primary 请求失败时自动切换一次，并在运行结果中记录实际 Provider；
-- 工作助理的内置模型 Provider 支持 OpenAI-compatible API（自动兼容 `/responses` 与 `/chat/completions`），并保留 CC Switch Codex OAuth 本地反代兼容模式；这套配置不注入 Codex、Claude Code 或 OpenCode；
+- 项目简报的内置模型 Provider 支持 OpenAI-compatible API（自动兼容 `/responses` 与 `/chat/completions`），并保留 CC Switch Codex OAuth 本地反代兼容模式；这套配置不注入 Codex、Claude Code 或 OpenCode；
 - Agent 回复使用 SSE 逐段传输并以 GitHub Flavored Markdown 渲染；内部更新事件对齐 ACP `session/update` 的 `agent_message_chunk` 与 `plan` 结构，为后续 Codex / Claude ACP Adapter 保留兼容边界；
-- TTS 支持 macOS 系统语音、OpenAI-compatible `/audio/speech` 和 ElevenLabs；OpenAI 默认使用 `gpt-4o-mini-tts` / `marin`，ElevenLabs 默认建议 `eleven_multilingual_v2` 并单独配置 Voice ID；
-- ASR 与 TTS 独立：Mac ASR 可选“本地优先”或“仅云端”，本地使用 `whisper.cpp` + `large-v3-turbo Q5`，云端默认使用 OpenAI `gpt-transcribe`；云端模型名不与本地模型名混用；
+- Mac 语音输入可选“本地优先”或“仅云端”。本地使用 `whisper.cpp` + `large-v3-turbo Q5`，云端默认使用 OpenAI `gpt-transcribe`。
 - API Key 只写入系统安全凭证存储，SQLite 仅保存非敏感配置与凭证引用；
-- 设置页提供 TTS 实际试听，用来验证系统语音、OpenAI-compatible 网关或 ElevenLabs 配置；试听也走同一套 fallback 链路。
 
 ## 7. AI Native 原则
 
@@ -376,9 +306,8 @@ Apple 官方参考：
 ### 必须完成
 
 - 项目创建、切换与配置；
-- 结构化目标、里程碑、Check-in、风险回投和简报汇总；
 - Repo 连接检查；
-- 工作助理通用对话，以及每日简报的文字生成、语音播放和追问；
+- 项目与共享 Chats，支持对话续接、附件和文件产物。
 - Cron Jobs 列表、新建、启停、立即运行和运行记录；
 - Full Access / 自动批准策略与完整审计；
 - Codex / Claude Code / OpenCode 任务适配器与结果回收；
@@ -391,7 +320,7 @@ Apple 官方参考：
 - GitHub、产品分析、营销渠道、Trading 数据等 Connector；
 - Agent 动态生成表格、图表和操作 UI；
 - 跨项目依赖与注意力分配建议；
-- 通知、移动端简报和语音交互；
+- 通知和移动端语音输入。
 - 团队共享项目与权限模型。
 
 ### 暂不做
@@ -406,7 +335,6 @@ Apple 官方参考：
 
 ```text
 App Shell
-├── Decision Inbox / Briefing
 ├── Projects / Project Context
 ├── Agent Conversation & Dynamic UI
 └── Automation / Run History
@@ -419,7 +347,7 @@ Backend
 ├── Permission Broker & Audit Log
 ├── Scheduler / Cron Runtime
 ├── Briefing Engine
-├── Voice / TTS
+├── Voice Input / ASR
 └── Audit & Approval Log
 ```
 
@@ -429,7 +357,6 @@ Backend
 
 | 页面 | 外观 | 文件 |
 | --- | --- | --- |
-| 今日简报 | Light Mode | [`design/01-today-light.png`](design/01-today-light.png) |
 | 项目设置 | Dark Mode | [`design/02-project-settings-dark.png`](design/02-project-settings-dark.png) |
 | 自动化 | Dark Mode | [`design/03-automation-dark.png`](design/03-automation-dark.png) |
 
@@ -487,18 +414,10 @@ Agent 仍必须服从用户明确的任务范围，不能因为拥有完整访�
 - 不同项目的 Property、Zone、指标定义、目标、基准与业务术语存入 Project Analytics Profile；
 - 规则是：Plugin 负责“能访问什么”，Skill 负责“如何分析”，Project Profile 负责“这个项目具体怎么看”。
 
-### TTS
-
-- 简报首先实现单向 TTS，不在 MVP 中实现完整实时语音对话；
-- TTS 使用可替换 Provider 接口；
-- 云端语音支持 OpenAI `gpt-4o-mini-tts`、OpenAI-compatible Provider 与 ElevenLabs；ElevenLabs 中文简报默认使用 `eleven_multilingual_v2`；
-- Primary 和 Backup 使用独立凭证，失败后自动降级；配置变化会使旧音频缓存失效；
-- 文字简报生成后缓存整段音频，并保留逐句定位与播放速度扩展点。
-
 ### ASR
 
 - Renderer 和 iPhone 都把麦克风输入转换为 16 kHz 单声道音频，本地与云端使用同一份转写输入；
-- Mac 的约 547 MiB 模型不随桌面安装包下载，用户在“语音与 TTS”中按需安装或删除；模型文件按固定字节数和 SHA-256 校验；
+- Mac 的约 547 MiB 模型不随桌面安装包下载，用户在“语音输入”中按需安装或删除；模型文件按固定字节数和 SHA-256 校验；
 - 未安装模型时，只有用户已配置云端 API Key 且启用回退才会上传录音；API Key 只保存在 Keychain；
 - iPhone 构建使用 `npm run prepare:whisper:ios` 下载并校验官方 `whisper.cpp` XCFramework 和 Q5 模型，再把模型作为 App Resource 预置；大模型会显著增加 IPA 体积和峰值内存，正式设备发布前需要覆盖最低支持机型验证。
 
@@ -514,22 +433,19 @@ Agent 仍必须服从用户明确的任务范围，不能因为拥有完整访�
 
 - Electron 主进程、沙盒 Preload 与 React Renderer；
 - 项目和 Agent Run 的共享领域模型；
-- SQLite 本地存储；业务目标与 Agent Run 不使用演示数据填充；
-- 对话 Agent 的受约束应用动作层：创建 / 检查 / 流转目标；
-- Agent 可更新用户确认的项目现状、目标优先级和 Roadmap 状态；所有写操作进入权限审计；
-- 基于实时 Project Profile、Repo / README / Skill 摘要和 Connector 结果的目标分析与证据化 Check-in；
+- 正式版项目和 Chats 保存在本机 SQLite。
+- 项目 Agent 通过受约束的工具更新已确认的项目现状。
 - Settings 控制面、Connector Catalog、Connector 实例与运行记录；
 - 可运行的 Local Repo Connector：只读取 Git 元数据、`AGENTS.md`/Skills 是否存在和数量，不读取源码、`.env` 或凭证内容；
 - 可运行的 PostgreSQL Connector：连接信息按项目保存、密码进入 macOS Keychain、查询强制使用只读事务；
 - Connector 结果指纹去重与证据记录；
-- 独立的每日项目总结存储、手动生成入口、每日 09:00（Asia/Shanghai）调度、聊天推送与启动补跑；
+- 项目简报由用户配置的自动化运行，结果摘要进入运行记录。
 - Roombase Production Analytics Profile：引用项目现有 env、固定聚合 SQL、只读事务，不复制凭证或用户级数据；
 - Vows `vows-growth-v1`：固定聚合付费订单、婚礼创建、邀请就绪/发布、RSVP 与祝福；只返回汇总值，并监控已支付未交付；
 - AI Marketing `ai-marketing-production-v1`：固定聚合生成任务、候选、评审采纳、图片/视频交付与 Worker 心跳；不读取 Prompt、素材内容或用户身份；
 - Vows 的 Fuddy Agent 直接派发 Codex 到现有 `wedding-promotion` Skill 与 `marketing/` 工作区；AI Marketing Adapter 直接复用现有 Super Agent Thread + SSE Chat API；
 - 聚合结果持久化、确定性无模型回退，以及按日期稳定去重的行动信号；
 - 基于操作系统安全存储的 Credential Vault；SQLite 和日志只保存凭证引用；
-- 模型与 TTS 的 Primary / Backup 配置、自动 fallback、ElevenLabs TTS 和按配置失效的音频缓存；
 - Mac / iPhone 语音输入、本地 Whisper、Mac 可选模型生命周期和云端 ASR 回退；
 - Full Access 运行参数、权限策略和单元测试；
 - Codex app-server 与 Claude Agent SDK 的真实可恢复 Session、流式结果、工具事件和取消处理测试；
@@ -538,7 +454,7 @@ Agent 仍必须服从用户明确的任务范围，不能因为拥有完整访�
 - Electron 主进程从交互式 zsh 继承本机 Agent 环境，不改写或过滤用户的 `.zshrc` 配置；
 - Agent Run 在无运行中工具且无运行进展时的 10 分钟超时保护，以及应用启动时的遗留运行状态修正；
 - Sentry 主进程、Renderer 和 Electron 子进程崩溃上报；
-- Pi Agent Runtime、Codex、Claude、OpenCode、Browser Use MCP、CUA Driver MCP 与 TTS 的适配器边界；
+- Pi Agent Runtime、Codex、Claude、OpenCode、Browser Use MCP、CUA Driver MCP 的适配器边界；
 - 固定版本和 SHA-256 校验的第三方工具准备流程，以及 Browser Use / CUA Driver 的真实 MCP smoke；
 - 接近 ChatGPT Mac App 信息架构的基础 UI。
 
@@ -560,9 +476,9 @@ npm run dev:web
 
 Web Mode 使用独立的 Vite 入口，复用 `src/renderer/src/App.tsx`、全部页面和共享样式，支持 React / CSS 热更新。可以让 Codex 在内置浏览器打开上述地址，再使用浏览器的标注功能反馈 UI 修改。Light / Dark 跟随浏览器的 `prefers-color-scheme`，可在浏览器开发工具中模拟两种主题；调整浏览器宽度和应用侧栏可检查布局。`npm run dev` 的 Electron Renderer 也支持热更新，只有原生能力联调才需要启动 Fuddy Dev。
 
-顶部「Web 预览」工具栏明确区分开发数据，支持示例 / 空状态切换和重置；也可以用 `?fixture=empty` 直接进入空状态。`src/renderer/web/fixtures.ts` 提供虚构项目、目标、聊天、文件与自动化，`preview-api.ts` 使用完整的 `DesktopApi` 类型约束提供内存实现。项目编辑、Run 草稿 / 重命名 / 归档、已有示例文件编辑与自动化表单修改只影响当前页面，刷新即还原。新增 Run 不发送消息，开启示例自动化不会启动调度器。
+顶部「Web 预览」工具栏明确区分开发数据，支持示例 / 空状态切换和重置；也可以用 `?fixture=empty` 直接进入空状态。`src/renderer/web/fixtures.ts` 提供虚构项目、聊天、文件与自动化，`preview-api.ts` 使用完整的 `DesktopApi` 类型约束提供内存实现。项目编辑、Run 草稿 / 重命名 / 归档、已有示例文件编辑与自动化表单修改只影响当前页面，刷新即还原。新增 Run 不发送消息，开启示例自动化不会启动调度器。
 
-Web Mode 不连接 Electron IPC、SQLite、Keychain、真实账户、Agent、Companion 或 Sentry，不读取 production / Fuddy Dev 的数据，也不加载项目 `.env` 文件。依赖原生服务的发送消息、生成目标、连接器运行、语音、文件导入等操作明确提示需要 Fuddy Dev，不伪造执行成功。开发服务器默认只监听 `127.0.0.1:5174`，端口占用时退出；可显式使用 `npm run dev:web -- --port 5175`。预览入口不参与 Electron 打包，也不提供独立 Web 发布构建；IPC、原生权限和真实任务执行仍使用隔离的 Fuddy Dev 验证。
+Web Mode 不连接 Electron IPC、SQLite、Keychain、真实账户、Agent、Companion 或 Sentry，不读取 production / Fuddy Dev 的数据，也不加载项目 `.env` 文件。依赖原生服务的发送消息、选择本机项目文件夹、连接器运行、语音、文件导入等操作明确提示需要 Fuddy Dev，不伪造执行成功。开发服务器默认只监听 `127.0.0.1:5174`，端口占用时退出；可显式使用 `npm run dev:web -- --port 5175`。预览入口不参与 Electron 打包，也不提供独立 Web 发布构建；IPC、原生权限和真实任务执行仍使用隔离的 Fuddy Dev 验证。
 
 首次开发账户流程时，在另一个终端准备本地 Account API。复制 `cloud/account-api/.dev.vars.example` 为不受版本控制的 `.dev.vars`，填入仅供开发的值，然后执行：
 
@@ -664,8 +580,6 @@ PostgreSQL Connector 不接受 Agent 生成的任意 SQL。每个项目可以选
 
 基础 Prompt 位于 [`prompts/daily-project-summary.md`](prompts/daily-project-summary.md)。Roombase 第一版 Collector 位于 [`scripts/roombase-daily-metrics.mjs`](scripts/roombase-daily-metrics.mjs)，真实聚合数据生成的样例见 [`docs/examples/roombase-daily-summary-2026-08-04.md`](docs/examples/roombase-daily-summary-2026-08-04.md)。
 
-桌面应用已内置同口径的 `roombase-daily-v0` Analytics Profile。应用每天上海时间 09:00 运行；如果当时未启动，则下次启动时检查并补齐上一完整自然日。生成结果会作为助理消息进入工作助理时间线，并在应用运行时触发桌面通知。模型 Provider 可用时由 Agent Runtime 解释聚合 JSON；不可用或调用失败时使用明确标记的确定性模板，确保早晨仍有结果且不会伪装成模型回答。简报保存在独立的 `daily_briefings` 表中。
-
 本地只读运行：
 
 ```bash
@@ -680,6 +594,5 @@ npm run metrics:roombase:daily -- --env-file /path/to/roombase-api.env
 - 将 Roombase 的本地 env 引用升级为发行版 Keychain 配置；
 - Browser Use 代理、域名 Allowlist 与现有登录态的显式授权流程；
 - CUA Driver bounded policy 与应用级危险动作审批联动；
-- TTS 播放进度、倍速与逐句定位；
 - Scheduler 的系统级后台唤醒、指数退避与运行健康告警；
 - 签名、公证、自动更新与发布流水线。

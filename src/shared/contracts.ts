@@ -854,6 +854,10 @@ export interface RunConnectorsResult {
 }
 
 export type AutomationAction = 'agent-task' | 'run-connectors' | 'check-goals' | 'generate-briefing'
+
+export function isAvailableAutomation(job: { action: AutomationAction; projectId: string | null }): boolean {
+  return job.action !== 'check-goals' && (job.action !== 'generate-briefing' || Boolean(job.projectId))
+}
 export type AutomationStatus = 'idle' | 'running' | 'waiting-confirmation' | 'paused' | 'error'
 export type AutomationRunStatus = 'awaiting-confirmation' | 'running' | 'completed' | 'failed' | 'skipped'
 export type AutomationRunTrigger = 'scheduled' | 'manual'
@@ -952,15 +956,11 @@ export type ConfigureConnectorInput =
 
 export interface AppBootstrap {
   projects: Project[]
-  goals: ProjectGoal[]
   decisions: DecisionItem[]
   decisionRemediations: DecisionRemediation[]
   runs: AgentRun[]
   connectors: ConnectorInstance[]
   connectorRuns: ConnectorRun[]
-  dailyBriefings: DailyBriefing[]
-  morningBriefings: MorningBriefing[]
-  briefingMessages: BriefingMessage[]
   automations: AutomationJob[]
   automationRuns: AutomationRun[]
   providerSettings: ProviderSettings
@@ -979,15 +979,11 @@ function defineAppBootstrapDataKeys<const TKeys extends readonly (keyof AppBoots
 
 export const appBootstrapDataKeys = defineAppBootstrapDataKeys([
   'projects',
-  'goals',
   'decisions',
   'decisionRemediations',
   'runs',
   'connectors',
   'connectorRuns',
-  'dailyBriefings',
-  'morningBriefings',
-  'briefingMessages',
   'automations',
   'automationRuns',
   'providerSettings',
@@ -1164,12 +1160,6 @@ export interface DesktopApi {
   openMicrophoneSettings(): Promise<void>
   updateProject(input: UpdateProjectInput): Promise<Project>
   createProject(input: CreateProjectInput): Promise<Project>
-  createGoal(input: CreateGoalInput): Promise<ProjectGoal>
-  checkGoal(id: string): Promise<CheckGoalResult>
-  updateGoalStatus(id: string, status: GoalStatus): Promise<ProjectGoal>
-  updateGoalPriority(id: string, priority: GoalPriority): Promise<ProjectGoal>
-  completeGoalMilestone(goalId: string, milestoneId: string): Promise<ProjectGoal>
-  deleteGoalMilestone(goalId: string, milestoneId: string): Promise<ProjectGoal>
   createDecision(input: CreateDecisionInput): Promise<DecisionItem>
   updateDecisionStatus(id: string, status: DecisionStatus): Promise<DecisionItem>
   evaluatePermission(intent: PermissionIntent): Promise<PermissionEvaluation>
@@ -1222,13 +1212,6 @@ export interface DesktopApi {
   setConnectorEnabled(id: string, enabled: boolean): Promise<ConnectorInstance>
   configurePostgres(input: ConfigurePostgresInput): Promise<ConnectorActionResult>
   configureConnector(input: ConfigureConnectorInput): Promise<ConnectorActionResult>
-  generateDailyBriefing(projectId: string): Promise<GenerateDailyBriefingResult>
-  generateMorningBriefing(): Promise<GenerateMorningBriefingResult>
-  askMorningBriefing(
-    input: AskMorningBriefingInput,
-    onUpdate: (update: AgentSessionUpdate) => void
-  ): Promise<AskMorningBriefingResult>
-  executeWorkAssistantAction(input: ExecuteWorkAssistantActionInput): Promise<ExecuteWorkAssistantActionResult>
   configureAgentProvider(input: ConfigureAgentProviderInput): Promise<ProviderSettings>
   configureCodingAgents(input: ConfigureCodingAgentSettingsInput): Promise<ProviderSettings>
   listCodingAgentModels(refresh?: boolean): Promise<CodingAgentModelCatalog>
@@ -1241,14 +1224,9 @@ export interface DesktopApi {
   deleteAsrModel(): Promise<AsrModelStatus>
   transcribeAudio(input: TranscribeAudioInput): Promise<TranscriptionResult>
   onAsrDownloadProgress(callback: (progress: AsrDownloadProgress) => void): () => void
-  configureTtsProvider(input: ConfigureTtsProviderInput): Promise<ProviderSettings>
-  getMorningBriefingAudio(briefingId: string): Promise<BriefingAudioResult>
-  testTtsProvider(): Promise<BriefingAudioResult>
-  designElevenLabsVoice(): Promise<ElevenLabsVoiceDesignResult>
   saveAutomation(input: SaveAutomationInput): Promise<AutomationJob>
   setAutomationEnabled(id: string, enabled: boolean): Promise<AutomationJob>
   runAutomation(id: string): Promise<RunAutomationResult>
   approveAutomationRun(runId: string): Promise<RunAutomationResult>
-  onMorningBriefingReady(callback: () => void): () => void
   onAutomationsChanged(callback: () => void): () => void
 }

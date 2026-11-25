@@ -82,8 +82,7 @@ describe('CompanionSyncService live relay', () => {
     const service = new CompanionSyncService(
       database,
       credentials,
-      {} as TaskDispatcher,
-      async () => ({ accepted: true })
+      {} as TaskDispatcher
     )
     const pairingSession = await service.beginPairing(defaultCompanionRelayUrl, 'Integration Test Mac')
     const pairingPayload = JSON.parse(pairingSession.pairingPayload) as {
@@ -114,17 +113,7 @@ describe('CompanionSyncService live relay', () => {
       filename: 'report.txt',
       mimeType: 'text/plain'
     }))
-    const messageEvent = eventPage.events.find((event) => event.type === 'work-assistant-message.created')
-    const attachments = messageEvent?.payload.attachments as Array<Record<string, unknown>>
-    expect(attachments[0]).toMatchObject({ id: 'companion-live-image', filename: 'pixel.png', mimeType: 'image/png' })
-    expect(attachments[0]).not.toHaveProperty('dataUrl')
-    const attachmentResponse = await fetch(authenticatedUrl(
-      '/v1/attachments/companion-live-image',
-      pairingPayload.accountId,
-      phoneId
-    ), { headers: { Authorization: `Bearer ${phone.deviceToken}` } })
-    expect(attachmentResponse.status).toBe(200)
-    expect((await attachmentResponse.arrayBuffer()).byteLength).toBeGreaterThan(0)
+    expect(eventPage.events.some((event) => event.type === 'work-assistant-message.created')).toBe(false)
     const artifactResponse = await fetch(authenticatedUrl(
       '/v1/attachments/companion-live-artifact',
       pairingPayload.accountId,

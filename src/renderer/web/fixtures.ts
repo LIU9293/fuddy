@@ -1,6 +1,5 @@
 import type { AccountState } from '../../shared/account'
 import type { AgentRunDetail, AppBootstrap, Project, WorkspaceFileContent } from '../../shared/contracts'
-import { dailyInspectionJobId, defaultBriefingPrompt } from '../../shared/briefing-prompt'
 
 export const previewTime = '2026-09-21T02:24:00.000Z'
 export const previewOnly = 'Web 预览不会调用原生服务或真实 Agent，请在 Fuddy Dev 中验证。'
@@ -19,7 +18,7 @@ const previewOutputs = [
 export function previewProject(id = 'preview-project', name = 'Fuddy 示例项目'): Project {
   return {
     id, name, summary: '用于前端开发的虚构项目，数据不代表真实项目状态。',
-    focus: '打磨工作助理与 Agent Run 的交互', status: 'active', accent: '#607b68',
+    focus: '打磨项目 Chat 的交互', status: 'active', accent: '#607b68',
     profile: {
       productType: 'macOS App', stage: 'UI 预览', mission: '让多个项目的工作更清晰。',
       vision: '从对话到行动。', repoPath: '', workspaceRoots: [], primaryWorkspaceRootId: null,
@@ -108,32 +107,10 @@ export function previewBootstrap(empty = false): AppBootstrap {
   const ttsEndpoint = { mode: 'system' as const, baseUrl: '', model: '', voice: '', instructions: '', apiKeyConfigured: false }
   return {
     projects: empty ? [] : [previewProject(), previewProject('preview-studio', '创作工作室（示例）')],
-    goals: empty ? [] : [{
-      id: 'preview-goal', projectId: 'preview-project', title: '完成主要页面的 UI 检查',
-      description: '示例目标，用于查看目标列表、里程碑与操作菜单。', status: 'active', priority: 'P1',
-      metric: { label: '检查页面', unit: '个', baseline: null, current: null, target: null },
-      deadline: null, nextCheckInAt: null, progress: 0, confidence: 0,
-      agentSummary: '尚未执行真实检查。', monitoringSources: [], checkIns: [],
-      milestones: [{
-        id: 'preview-milestone', goalId: 'preview-goal', title: '检查工作助理与聊天页', status: 'pending',
-        dueAt: null, evidenceRefs: [], sortOrder: 0, createdAt: previewTime, updatedAt: previewTime, completedAt: null
-      }], createdBy: 'user', createdAt: previewTime, updatedAt: previewTime, completedAt: null
-    }],
     decisions: [],
     decisionRemediations: [], runs: empty ? [] : previewRunDetails().map((detail) => detail.run),
-    connectors: [], connectorRuns: [], dailyBriefings: [], morningBriefings: [],
-    briefingMessages: empty ? [] : [{
-      id: 'preview-assistant', briefingId: null, role: 'assistant',
-      content: '欢迎来到 **Fuddy Web 预览**。\n\n可浏览示例项目、Chats、文件和设置。真实 Agent、账户、语音和 Companion 服务不会启动。',
-      attachments: [], taskContext: null, createdAt: previewTime
-    }],
+    connectors: [], connectorRuns: [],
     automations: empty ? [] : [{
-      id: dailyInspectionJobId, projectId: null, name: '每日项目巡检',
-      scheduleDescription: '每天上午 09:00', cronExpression: '0 9 * * *', timezone: 'Asia/Shanghai',
-      action: 'generate-briefing', prompt: defaultBriefingPrompt, agentProvider: 'pi', enabled: true,
-      requiresConfirmation: false, maxRetries: 1, retryDelaySeconds: 30, status: 'idle',
-      lastRunAt: null, nextRunAt: '2026-09-17T01:00:00.000Z', lastError: null, createdAt: previewTime, updatedAt: previewTime
-    }, {
       id: 'preview-automation', projectId: 'preview-project', name: '每日 UI 检查（示例）',
       scheduleDescription: '每天 09:00', cronExpression: '0 9 * * *', timezone: 'Asia/Shanghai',
       action: 'agent-task', prompt: '检查主要页面的布局。', agentProvider: 'codex', enabled: false,

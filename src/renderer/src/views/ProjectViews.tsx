@@ -50,7 +50,6 @@ import { WorkspaceFilesView } from '../components/WorkspaceFilesView'
 import { AutomationsView } from '../components/AutomationsView'
 import { normalizeChatMarkdown } from '../markdown'
 import { maxChatImages, prepareChatImages } from '../chat-attachments'
-import { workAssistantRunIds } from '../work-assistant-links'
 import { chatIsAtLatest } from '../chat-scroll'
 import { microphoneAccessError } from '../voice-input'
 import fuddyWordmark from '../assets/fuddy-wordmark.png'
@@ -58,7 +57,6 @@ import type {
   AgentPlanEntry,
   AgentRun,
   AgentProviderMode,
-  AgentSessionUpdate,
   AgentEndpointSettings,
   AppBootstrap,
   AsrModelStatus,
@@ -69,24 +67,12 @@ import type {
   ConnectorInstance,
   ConnectorKind,
   ConnectorRun,
-  BriefingMessage,
   DecisionItem,
   DecisionKind,
   DecisionStatus,
   DecisionWaitingReason,
-  GoalMilestone,
-  GoalPriority,
-  GoalStatus,
-  MorningBriefing,
   Project,
-  ProjectGoal,
-  TtsEndpointSettings,
-  TtsProviderMode,
-  UpdateProjectInput,
-  WorkAssistantImageAttachment,
-  WorkAssistantActionProposal,
-  WorkAssistantTaskContext,
-  WorkAssistantTaskReference
+  UpdateProjectInput
 } from '../../../shared/contracts'
 import { normalizeWorkspaceRoots } from '../../../shared/project-workspaces'
 import type { CompanionMacStatus, CompanionPairingSession } from '../../../shared/companion-sync'
@@ -181,7 +167,7 @@ export function ProjectStatusView({
       <div className="project-status-section">
         <div className="project-status-heading">
           <strong>当前现状</strong>
-          <p>这里保存已经确认的事实，是工作助理判断下一步和检查目标进展的基础。</p>
+          <p>这里保存项目的当前重点、状态和已确认事实。</p>
         </div>
         <div className="project-status-fields">
           <label>

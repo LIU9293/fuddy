@@ -4,12 +4,8 @@ import type { AppDatabase } from '../services/database'
 import type { TaskDispatcher } from '../services/task-dispatcher'
 import type { DecisionRemediationService } from '../services/decision-remediation'
 import type { CredentialVault } from '../services/credential-vault'
-import type { DailyBriefingService } from '../services/daily-briefing'
-import type { MorningBriefingService } from '../services/morning-briefing'
-import type { GoalTrackingService } from '../services/goal-tracking'
 import type { ProviderSettingsService } from '../services/provider-settings'
 import type { AsrService } from '../services/asr-service'
-import type { TtsService } from '../services/tts-service'
 import type { WorkspaceFilesService } from '../services/workspace-files'
 import type { AutomationRuntime } from '../services/automation-runtime'
 import type { ProjectAgentIntegrationService } from '../services/project-agent-integration'
@@ -32,12 +28,8 @@ export interface IpcContext {
   connectorRuntime: ConnectorRuntime
   decisionRemediationService: DecisionRemediationService
   credentialVault: CredentialVault
-  dailyBriefingService: DailyBriefingService
-  morningBriefingService: MorningBriefingService
-  goalTrackingService: GoalTrackingService
   providerSettings: ProviderSettingsService
   asrService: AsrService
-  ttsService: TtsService
   workspaceFiles: WorkspaceFilesService
   automationRuntime: AutomationRuntime
   projectAgentIntegration: ProjectAgentIntegrationService

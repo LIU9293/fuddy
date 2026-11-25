@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
-import type { AppBootstrap, AppBootstrapDataKey } from '../../../../shared/contracts'
+import type { AppBootstrapDataKey } from '../../../../shared/contracts'
 import { agentRunUpdateStore } from '../agent-runs/agent-run-update-store'
 import {
   agentRunStatusBootstrapKeys,
   automationBootstrapKeys,
   companionBootstrapKeys,
-  mergeBootstrapKeys,
-  morningBriefingBootstrapKeys
+  mergeBootstrapKeys
 } from './app-bootstrap-state'
 import { AppDataStore } from './app-data-store'
 
@@ -19,7 +18,6 @@ interface UseAppBootstrapOptions {
 export interface AppBootstrapController {
   ready: boolean
   store: AppDataStore
-  setBootstrap: React.Dispatch<React.SetStateAction<AppBootstrap | null>>
   refresh: () => Promise<void>
   refreshDomains: (keys: readonly AppBootstrapDataKey[]) => Promise<void>
 }
@@ -29,10 +27,6 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
   if (!storeRef.current) storeRef.current = new AppDataStore()
   const store = storeRef.current
   const ready = useSyncExternalStore(store.subscribeReady, store.getReadySnapshot, store.getReadySnapshot)
-  const setBootstrap = useCallback<React.Dispatch<React.SetStateAction<AppBootstrap | null>>>(
-    (action) => store.update(action),
-    [store]
-  )
   const callbacks = useRef(options)
   const mounted = useRef(true)
   const refreshQueue = useRef<Promise<void>>(Promise.resolve())
@@ -103,7 +97,6 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
         })
     }
     refreshFromMain()
-    const stopBriefings = window.projectAgent.onMorningBriefingReady(() => refreshPatch(morningBriefingBootstrapKeys))
     const stopAutomations = window.projectAgent.onAutomationsChanged(() => refreshPatch(automationBootstrapKeys))
     const stopCompanionData = window.projectAgent.onCompanionDataChanged(() => refreshPatch(companionBootstrapKeys))
     const stopOpenAgentRun = window.projectAgent.onOpenAgentRun((runId) => {
@@ -119,7 +112,6 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
       mounted.current = false
       active = false
       if (retryTimer !== null) window.clearTimeout(retryTimer)
-      stopBriefings()
       stopAutomations()
       stopCompanionData()
       stopOpenAgentRun()
@@ -127,5 +119,5 @@ export function useAppBootstrap(options: UseAppBootstrapOptions): AppBootstrapCo
     }
   }, [enqueueRefresh, options.enabled, refreshPatch, store])
 
-  return { ready, store, setBootstrap, refresh, refreshDomains }
+  return { ready, store, refresh, refreshDomains }
 }

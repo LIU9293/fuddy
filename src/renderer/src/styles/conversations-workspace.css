@@ -148,438 +148,6 @@
   gap: 22px;
 }
 
-.goal-group-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.goal-group-heading strong {
-  color: #55554f;
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.goal-group-heading span {
-  color: #92918a;
-  font-size: 12px;
-}
-
-.goal-overview {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  color: #85857e;
-  font-size: 12px;
-}
-
-.goal-overview span {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-}
-
-.goal-overview strong {
-  color: #454540;
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.goal-overview .is-risk,
-.goal-overview .is-risk strong {
-  color: #bc514b;
-}
-
-.goal-list {
-  border-top: 1px solid var(--border);
-}
-
-.goal-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.goal-row {
-  padding: 23px 2px 24px;
-  border-bottom: 1px solid var(--border);
-}
-
-.goal-row.is-collapsed {
-  padding-block: 18px;
-}
-
-.goal-row-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.goal-heading-copy {
-  min-width: 0;
-  flex: 1;
-}
-
-.goal-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 7px;
-  color: #777771;
-  font-size: 12px;
-}
-
-.goal-meta > i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.goal-meta b {
-  color: #aaa9a3;
-  font-weight: 400;
-}
-
-.goal-status-label {
-  font-weight: 600;
-}
-
-.goal-status-label.status-active { color: #3e775c; }
-.goal-status-label.status-planned { color: #6f6f69; }
-.goal-status-label.status-at-risk { color: #ba4c47; }
-.goal-status-label.status-completed { color: #59646d; }
-.goal-status-label.status-paused { color: #88877f; }
-
-.goal-heading-copy h2 {
-  margin: 0 0 6px;
-  color: #292925;
-  font-size: 17px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
-}
-
-.goal-heading-copy > p {
-  max-width: 650px;
-  margin: 0;
-  color: #72726c;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.goal-collapsed-summary {
-  display: block;
-  margin-top: 8px;
-  color: #999891;
-  font-size: 12px;
-}
-
-.goal-row-controls {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 7px;
-}
-
-.goal-priority-menu {
-  --goal-priority-color: #667078;
-  --goal-priority-background: rgba(86, 102, 114, 0.09);
-  width: 48px;
-  min-width: 48px;
-  max-width: 48px;
-  flex: 0 0 auto;
-}
-
-.goal-priority-menu .select-menu-trigger {
-  min-height: 20px;
-  gap: 2px;
-  padding: 0 5px 0 7px;
-  border-color: transparent;
-  border-radius: 6px;
-  color: var(--goal-priority-color);
-  background: var(--goal-priority-background);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
-.goal-priority-menu .select-menu-value {
-  min-width: 18px;
-  flex: 0 1 auto;
-}
-
-.goal-priority-menu .select-menu-value > span:last-child {
-  display: block;
-  min-width: 18px;
-  overflow: visible;
-  color: inherit;
-  text-overflow: clip;
-}
-
-.goal-priority-menu .select-menu-chevron {
-  width: 10px;
-  height: 10px;
-  color: currentColor;
-  opacity: 0.72;
-}
-
-.goal-priority-menu .select-menu-trigger:hover,
-.goal-priority-menu.is-open .select-menu-trigger {
-  border-color: transparent;
-  color: var(--goal-priority-color);
-  background: var(--goal-priority-background);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--goal-priority-color) 16%, transparent);
-}
-
-.goal-priority-menu .select-menu-popover {
-  right: auto;
-  left: 0;
-  min-width: 96px;
-}
-
-.goal-priority-menu-p0 {
-  --goal-priority-color: #a84842;
-  --goal-priority-background: rgba(190, 75, 70, 0.09);
-}
-
-.goal-priority-menu-p1 {
-  --goal-priority-color: #80662d;
-  --goal-priority-background: rgba(176, 135, 47, 0.1);
-}
-
-.goal-priority-menu-p2 {
-  --goal-priority-color: #667078;
-  --goal-priority-background: rgba(86, 102, 114, 0.09);
-}
-
-.goal-collapse-button {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 auto;
-  place-items: center;
-  padding: 0;
-  border: 1px solid rgba(40, 40, 35, 0.1);
-  border-radius: 8px;
-  color: #85857e;
-  background: rgba(255, 255, 253, 0.7);
-  cursor: pointer;
-}
-
-.goal-collapse-button:hover {
-  color: #44443f;
-  background: rgba(255, 255, 253, 0.98);
-}
-
-.goal-collapse-button svg {
-  transform: rotate(-90deg);
-  transition: transform 150ms ease;
-}
-
-.goal-collapse-button svg.is-expanded {
-  transform: rotate(0);
-}
-
-.goal-roadmap-list {
-  border-top: 1px solid var(--border);
-}
-
-.goal-roadmap-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 18px 2px 19px;
-  border-bottom: 1px solid var(--border);
-}
-
-.goal-roadmap-copy {
-  min-width: 0;
-  flex: 1;
-}
-
-.goal-roadmap-copy h3 {
-  margin: 0 0 5px;
-  color: #33332f;
-  font-size: 14px;
-  font-weight: 630;
-  letter-spacing: -0.01em;
-}
-
-.goal-roadmap-copy p {
-  max-width: 680px;
-  margin: 0;
-  color: #74746e;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.goal-roadmap-copy small {
-  display: block;
-  margin-top: 8px;
-  color: #999891;
-  font-size: 12px;
-}
-
-.goal-progress-block {
-  margin: 19px 0 20px;
-}
-
-.goal-progress-heading,
-.goal-progress-caption {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.goal-progress-heading {
-  margin-bottom: 8px;
-  color: #63635d;
-  font-size: 12px;
-}
-
-.goal-progress-heading strong {
-  color: #373733;
-  font-size: 12px;
-  font-weight: 620;
-}
-
-.goal-progress-heading strong i {
-  color: #aaa9a3;
-  font-style: normal;
-  font-weight: 400;
-}
-
-.goal-progress-track {
-  height: 5px;
-  overflow: hidden;
-  border-radius: 5px;
-  background: rgba(47, 47, 42, 0.08);
-}
-
-.goal-progress-track i {
-  display: block;
-  height: 100%;
-  min-width: 2px;
-  border-radius: inherit;
-  background: #4f765f;
-}
-
-.goal-at-risk .goal-progress-track i { background: #c55a52; }
-.goal-completed .goal-progress-track i { background: #64717a; }
-.goal-paused .goal-progress-track i { background: #9a9991; }
-
-.goal-progress-caption {
-  margin-top: 6px;
-  color: #92918a;
-  font-size: 12px;
-}
-
-.goal-detail-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.72fr);
-  gap: 28px;
-}
-
-.goal-section-label {
-  display: block;
-  margin-bottom: 10px;
-  color: #8a8982;
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-
-.goal-milestones {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-.goal-milestone {
-  display: flex;
-  align-items: flex-start;
-  min-height: 24px;
-}
-
-.goal-milestone > div {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.goal-milestone strong {
-  color: #4b4b46;
-  font-size: 12px;
-  font-weight: 520;
-  line-height: 1.45;
-}
-
-.goal-milestone.milestone-completed strong {
-  color: #85847d;
-  text-decoration: line-through;
-}
-
-.goal-milestone small {
-  flex: 0 0 auto;
-  color: #92918a;
-  font-size: 12px;
-}
-
-.goal-milestone-actions {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 7px;
-}
-
-.goal-milestone-actions button {
-  display: inline-flex;
-  min-height: 24px;
-  align-items: center;
-  gap: 5px;
-  padding: 0 7px;
-  border: 0;
-  border-radius: 7px;
-  color: #625a80;
-  background: rgba(112, 93, 168, 0.075);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.goal-milestone-actions button:hover {
-  color: #4e466b;
-  background: rgba(112, 93, 168, 0.12);
-}
-
-.goal-milestone-menu {
-  position: relative;
-}
-
-.goal-milestone-actions .action-menu-trigger {
-  display: grid;
-  width: 24px;
-  min-height: 24px;
-  place-items: center;
-  padding: 0;
-  color: #7f7e77;
-  background: transparent;
-}
-
-.goal-milestone-actions .action-menu-trigger:hover,
-.goal-milestone-menu.is-open .action-menu-trigger {
-  color: #4f4e48;
-  background: rgba(55, 55, 50, 0.07);
-}
-
 .action-menu-popover {
   position: absolute;
   z-index: 45;
@@ -596,74 +164,6 @@
 
 .action-menu {
   position: relative;
-}
-
-.goal-milestone-actions .action-menu-popover > button {
-  display: flex;
-  width: 100%;
-  min-height: 31px;
-  align-items: center;
-  gap: 7px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 7px;
-  color: #4d4d47;
-  background: transparent;
-  font-size: 12px;
-  font-weight: 500;
-  text-align: left;
-  cursor: pointer;
-}
-
-.goal-milestone-actions .action-menu-popover > button:hover {
-  color: #2d2d29;
-  background: rgba(53, 53, 48, 0.07);
-}
-
-.goal-milestone-actions .action-menu-popover > button.is-danger { color: #b44d47; }
-.goal-milestone-actions .action-menu-popover > button.is-danger:hover { background: rgba(190, 75, 70, 0.08); }
-
-.goal-checkin-panel {
-  padding-left: 24px;
-  border-left: 1px solid var(--border);
-}
-
-.goal-checkin-panel > p {
-  margin: 0 0 7px;
-  color: #62625c;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.goal-checkin-meta {
-  display: block;
-  margin-bottom: 12px;
-  color: #92918a;
-  font-size: 12px;
-}
-
-.goal-check-button {
-  display: inline-flex;
-  min-height: 29px;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid rgba(38, 38, 34, 0.12);
-  border-radius: 8px;
-  background: rgba(255, 255, 253, 0.72);
-  color: #50504a;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.goal-check-button:hover:not(:disabled) {
-  border-color: rgba(38, 38, 34, 0.2);
-  background: rgba(255, 255, 253, 0.96);
-}
-
-.goal-check-button:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .goals-empty-state {
@@ -4376,8 +3876,6 @@
   .portfolio-overview p { grid-column: 1 / -1; padding: 8px 0 0; border-top: 1px solid var(--border); border-left: 0; }
   .run-row { grid-template-columns: 32px 1fr 90px; }
   .run-summary { display: none; }
-  .goal-detail-grid { grid-template-columns: 1fr; gap: 18px; }
-  .goal-checkin-panel { padding: 18px 0 0; border-top: 1px solid var(--border); border-left: 0; }
   .coding-agent-config-list article,
   .coding-agent-default-control { grid-template-columns: 1fr; gap: 12px; }
   .coding-agent-config-fields { grid-template-columns: 1fr; }
@@ -4391,13 +3889,11 @@
 
 @media (prefers-color-scheme: dark) {
   .content-shell,
-  .main-area-header,
-  .content-column.is-briefing {
+  .main-area-header {
     background: var(--canvas);
   }
 
   .main-area-header,
-  .briefing-page-header,
   .agent-run-page-header {
     border-bottom-color: rgba(255, 255, 248, .08);
   }
@@ -4469,10 +3965,8 @@
   }
 
   .nav-count { color: var(--text-secondary); background: var(--control-hover-background); }
-  .briefing-header-status,
   .filter-tabs button,
   .project-primary-tabs button,
-  .goal-progress-heading,
   .project-status-fields label > span,
   .project-setting-fields label > span,
   .project-setting-field > span,
@@ -4486,8 +3980,6 @@
   .runtime-capability-list p,
   .companion-settings-main label > span,
   .companion-settings-main > p,
-  .goal-meta,
-  .goal-roadmap-copy p,
   .goals-empty-state p,
   .morning-empty,
   .portfolio-overview span,
@@ -4496,23 +3988,11 @@
   .project-icon-remove,
   .loading-screen { color: var(--muted); }
   .project-status-heading strong,
-  .goal-group-heading strong,
-  .goal-roadmap-copy h3,
   .morning-empty strong,
   .empty-state strong,
   .provider-fixed-value { color: var(--text); }
   .project-name,
   .agent-plan { color: var(--text-secondary); }
-
-  .goal-priority-menu,
-  .goal-priority-menu-p2 { --goal-priority-color: var(--text-secondary); }
-  .goal-priority-menu-p0 { --goal-priority-color: var(--text-danger); }
-  .goal-priority-menu-p1 { --goal-priority-color: var(--text-warning); }
-  .goal-status-label,
-  .goal-status-label.status-planned,
-  .goal-status-label.status-paused { color: var(--muted); }
-  .goal-status-label.status-active,
-  .goal-status-label.status-completed,
   .kind-result,
   .provider-ready-pill.is-ready,
   .settings-value-pill.is-ready,
@@ -4520,7 +4000,6 @@
   .run-idle,
   .run-completed,
   .goals-empty-state > span { color: var(--text-success); }
-  .goal-status-label.status-at-risk,
   .kind-risk,
   .project-settings-error,
   .provider-settings-error,
@@ -4534,18 +4013,6 @@
   .chat-markdown a,
   .project-card-footer button,
   .catalog-grid article > button:not(:disabled) { color: var(--text-link); }
-
-  .goal-milestone-actions button { color: var(--text-link); }
-  .goal-milestone-actions button:hover,
-  .goal-milestone-actions .action-menu-trigger:hover,
-  .goal-milestone-menu.is-open .action-menu-trigger {
-    color: var(--text);
-    background: var(--control-hover-background);
-  }
-  .goal-check-button:hover:not(:disabled) {
-    border-color: var(--border);
-    background: var(--control-hover-background);
-  }
   .workspace-root-row button:hover:not(:disabled) { color: var(--text-danger); }
   .project-entry-list a:hover { color: var(--text-link); }
 
@@ -4553,11 +4020,6 @@
   .agent-run-approval button:not(.is-primary) {
     color: var(--text-secondary);
     background: var(--control-hover-background);
-  }
-  .work-assistant-action-options button.is-primary {
-    border-color: var(--text);
-    background: var(--text);
-    color: #20211f;
   }
   .work-task-context,
   .work-task-context strong { color: var(--text-link); }
@@ -4587,7 +4049,6 @@
   .sidebar-run-row { color: #d2d2cd; }
 
   .main-area-header h1,
-  .briefing-page-header strong,
   .agent-run-page-header strong { color: #ededeb; }
   .main-area-header-back { color: #b8b8b2; }
   .main-area-header-back:hover { color: #f1f1ed; background: rgba(255, 255, 248, .08); }
@@ -4634,10 +4095,6 @@
   .select-menu-option {
     color: #d4d4cf;
   }
-
-  .goal-milestone-actions .action-menu-popover > button { color: #d4d4cf; }
-  .goal-milestone-actions .action-menu-popover > button:hover { color: #f0f0ec; background: rgba(255, 255, 248, 0.08); }
-  .goal-milestone-actions .action-menu-popover > button.is-danger { color: #e28a83; }
   .sidebar-run-actions .action-menu-popover > button { color: #d4d4cf; }
   .sidebar-run-actions .action-menu-popover > button:hover { color: #f0f0ec; background: rgba(255, 255, 248, 0.08); }
   .sidebar-run-actions .action-menu-popover > button.is-danger { color: #e28a83; }
@@ -4663,42 +4120,16 @@
     color: #f2f2ef;
   }
 
-  .goal-collapse-button {
-    border-color: rgba(255, 255, 248, 0.11);
-    color: #aaa9a3;
-    background: rgba(28, 29, 27, 0.78);
-  }
-
-  .goal-collapse-button:hover {
-    color: #ededeb;
-    background: rgba(255, 255, 248, 0.08);
-  }
-
   .provider-config-heading strong {
     color: #ededeb;
   }
 
-  .project-primary-tabs button.is-active,
-  .goal-heading-copy h2,
-  .goal-overview strong,
-  .goal-progress-heading strong {
+  .project-primary-tabs button.is-active {
     color: #ededeb;
   }
 
   .project-primary-tabs button.is-active::after {
     background: #ededeb;
-  }
-
-  .goal-heading-copy > p,
-  .goal-checkin-panel > p,
-  .goal-milestone strong {
-    color: #b8b8b2;
-  }
-
-  .goal-check-button {
-    border-color: rgba(255, 255, 248, 0.12);
-    color: #d2d2cd;
-    background: rgba(255, 255, 248, 0.05);
   }
 
   .settings-group-heading h2,
@@ -4725,19 +4156,7 @@
     background: var(--conversation-background);
   }
 
-  .work-assistant-action-card,
-  .work-assistant-action-card.is-accepted {
-    border-color: rgba(255, 255, 248, 0.1);
-    background: rgba(255, 255, 248, 0.055);
-  }
-
-  .work-assistant-action-heading > span {
-    color: #c4c4be;
-    background: rgba(255, 255, 248, 0.07);
-  }
-
   .chat-bubble,
-  .briefing-delivery-copy,
   .chat-markdown {
     color: #d6d6d1;
   }

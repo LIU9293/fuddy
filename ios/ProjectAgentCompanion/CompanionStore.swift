@@ -83,18 +83,6 @@ extension CompanionStore {
         return accountRunID(spaceID: spaceID, runID: id)
     }
 
-    func projectGoals(_ id: String) -> [ProjectGoal] {
-        var goals: [String: ProjectGoal] = [:]
-        for source in accountSources {
-            guard let project = source.store.state.projects.first(where: { accountProjectID($0, spaceID: source.id) == id }) else { continue }
-            for goal in source.store.state.goals where goal.projectId == project.id {
-                if let existing = goals[goal.id], existing.updatedAt >= goal.updatedAt { continue }
-                goals[goal.id] = goal
-            }
-        }
-        return goals.values.sorted { $0.updatedAt > $1.updatedAt }
-    }
-
     func updateAccountProject(_ project: Project) async throws {
         for source in accountSources where source.store.connection == .connected && source.store.macOnline {
             guard let original = source.store.state.projects.first(where: { accountProjectID($0, spaceID: source.id) == project.id }),
@@ -1251,37 +1239,6 @@ final class CompanionStore: ObservableObject {
             persistCache()
             throw error
         }
-    }
-
-    func sendWorkAssistantMessage(_ prompt: String, attachments: [PendingAttachment] = [])
-        async throws
-    {
-        let client = try activeRelayClient()
-        let uploaded = try await upload(attachments, using: client)
-        _ = try await client.sendCommand(
-            type: .assistantSendMessage,
-            payload: AssistantSendMessagePayload(prompt: prompt, attachments: uploaded)
-        )
-    }
-
-    func executeWorkAssistantAction(messageID: String, proposalID: String, optionID: String)
-        async throws -> String?
-    {
-        let client = try activeRelayClient()
-        _ = try await client.sendCommand(
-            type: .assistantExecuteAction,
-            payload: AssistantExecuteActionPayload(
-                messageId: messageID, proposalId: proposalID, optionId: optionID)
-        )
-        for _ in 0..<12 {
-            try await Task.sleep(for: .milliseconds(500))
-            await sync()
-            guard let message = state.workAssistantMessages.first(where: { $0.id == messageID }),
-                let proposal = message.actions.first(where: { $0.id == proposalID })
-            else { continue }
-            if proposal.status != "pending" { return message.linkedRunId }
-        }
-        return nil
     }
 
     func handleDecision(_ decision: Decision) async throws -> String {

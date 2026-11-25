@@ -26,7 +26,6 @@ import {
   respondAgentApprovalSchema,
   saveAutomationSchema,
   sendAgentRunMessageSchema,
-  ttsEndpointSchema,
   updateDecisionSchema,
   workspacePathSchema,
   workspaceProjectIdSchema,
@@ -41,12 +40,8 @@ export function registerSettingsIpc(context: IpcContext): void {
     connectorRuntime,
     decisionRemediationService,
     credentialVault,
-    dailyBriefingService,
-    morningBriefingService,
-    goalTrackingService,
     providerSettings,
     asrService,
-    ttsService,
     workspaceFiles,
     automationRuntime,
     projectAgentIntegration,
@@ -137,24 +132,6 @@ export function registerSettingsIpc(context: IpcContext): void {
       .parse(rawInput)
     return asrService.transcribe(input)
   })
-
-  ipcMain.handle('provider:configure-tts', (_event, rawInput: unknown) => {
-    const input = z
-      .object({
-        primary: ttsEndpointSchema,
-        backup: ttsEndpointSchema,
-        backupEnabled: z.boolean()
-      })
-      .parse(rawInput)
-    return providerSettings.configureTts(input)
-  })
-
-  ipcMain.handle('tts:get-briefing-audio', (_event, rawId: unknown) => {
-    return ttsService.getBriefingAudio(z.string().trim().min(1).max(200).parse(rawId))
-  })
-
-  ipcMain.handle('tts:test', () => ttsService.testProvider())
-  ipcMain.handle('tts:design-elevenlabs-voice', () => ttsService.designElevenLabsVoice())
 
   ipcMain.handle('automation:save', (_event, rawInput: unknown) => {
     return automationRuntime.save(saveAutomationSchema.parse(rawInput))

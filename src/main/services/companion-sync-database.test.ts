@@ -85,7 +85,7 @@ describe('companion sync persistence', () => {
     database.close()
   })
 
-  it('windows every chat snapshot at the newest 100 presentation blocks', () => {
+  it('keeps retired assistant history local and leaves it out of Companion snapshots', () => {
     const database = createDatabase()
     const base = Date.UTC(2026, 0, 1)
     for (let index = 0; index < 220; index += 1) {
@@ -104,27 +104,16 @@ describe('companion sync persistence', () => {
     expect(database.listBriefingMessages()[0]?.id).toBe('message-20')
     expect(database.listBriefingMessages().at(-1)?.id).toBe('message-219')
 
-    const page = database.getCompanionChatPage('assistant', 'work-assistant')
-    expect(page.records).toHaveLength(100)
-    expect(page.records[0]?.assistantMessage?.id).toBe('message-120')
-    expect(page.records.at(-1)?.assistantMessage?.id).toBe('message-219')
-    expect(page.hasMore).toBe(true)
-
-    const olderPage = database.getCompanionChatPage('assistant', 'work-assistant', page.nextBefore)
-    expect(olderPage.records).toHaveLength(100)
-    expect(olderPage.records[0]?.assistantMessage?.id).toBe('message-20')
-    expect(olderPage.records.at(-1)?.assistantMessage?.id).toBe('message-119')
-    expect(olderPage.hasMore).toBe(true)
-
-    const oldestPage = database.getCompanionChatPage('assistant', 'work-assistant', olderPage.nextBefore)
-    expect(oldestPage.records).toHaveLength(20)
-    expect(oldestPage.records[0]?.assistantMessage?.id).toBe('message-0')
-    expect(oldestPage.records.at(-1)?.assistantMessage?.id).toBe('message-19')
-    expect(oldestPage.hasMore).toBe(false)
+    expect(() => database.getCompanionChatPage('assistant', 'work-assistant')).toThrow('工作助理已下线')
+    database.discardRetiredCompanionEvents()
+    expect(database.listPendingCompanionEvents().some((event) => event.type.startsWith('work-assistant-message.'))).toBe(false)
+    expect(database.listBriefingMessages().at(-1)?.id).toBe('message-219')
 
     const snapshot = database.enqueueCompanionSnapshot().payload as CompanionSnapshotPayload
-    expect(snapshot.workAssistantMessages).toHaveLength(100)
-    expect(snapshot.chatPages?.find((item) => item.chatId === 'work-assistant')).toEqual(page)
+    expect(snapshot.workAssistantMessages).toEqual([])
+    expect(snapshot.morningBriefings).toEqual([])
+    expect(snapshot.goals).toEqual([])
+    expect(snapshot.chatPages?.some((item) => item.chatKind === 'assistant')).toBe(false)
     database.close()
   })
 

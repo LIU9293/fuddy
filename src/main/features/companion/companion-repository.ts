@@ -133,6 +133,17 @@ export class CompanionRepository {
     return event
   }
 
+  discardRetiredEvents(): void {
+    this.database.prepare(`
+      DELETE FROM companion_sync_outbox
+      WHERE published_at IS NULL AND (
+        type IN ('goal.created', 'goal.updated', 'morning-briefing.updated',
+          'work-assistant-message.created', 'work-assistant-message.updated')
+        OR (type = 'chat-page.updated' AND entity_id = 'work-assistant')
+      )
+    `).run()
+  }
+
   listPending(limit = 100): CompanionOutboxEvent[] {
     return (
       this.database

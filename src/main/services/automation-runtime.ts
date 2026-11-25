@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { isAvailableAutomation } from '../../shared/contracts'
 import type {
   AutomationJob,
   AutomationRun,
@@ -8,13 +9,11 @@ import type {
 import { nextCronOccurrence } from './automation-cron'
 import { AppDatabase } from './database'
 import { cancellationError, throwIfCancelled } from './cancellation'
-import { dailyInspectionJobId } from '../../shared/briefing-prompt'
 
 export interface AutomationActions {
   runAgentTask(job: AutomationJob, cancellationSignal?: AbortSignal): Promise<{ summary: string; agentRunId: string }>
   runConnectors(projectId: string | null, cancellationSignal?: AbortSignal): Promise<string>
-  checkGoals(projectId: string | null, cancellationSignal?: AbortSignal): Promise<string>
-  generateBriefing(projectId: string | null, cancellationSignal?: AbortSignal, prompt?: string): Promise<string>
+  generateBriefing(projectId: string, cancellationSignal?: AbortSignal, prompt?: string): Promise<string>
 }
 
 function wait(milliseconds: number, cancellationSignal?: AbortSignal): Promise<void> {
@@ -47,6 +46,10 @@ export class AutomationRuntime {
     const now = new Date()
     this.database.recoverInterruptedAutomations(now.toISOString())
     for (const job of this.database.listAutomations()) {
+      if (!isAvailableAutomation(job)) {
+        if (job.enabled || job.nextRunAt) this.database.setAutomationEnabled(job.id, false, null)
+        continue
+      }
       if (job.enabled && job.nextRunAt && new Date(job.nextRunAt).getTime() <= now.getTime() && job.status === 'error') {
         this.database.updateAutomationRuntime(job.id, {
           status: 'error',
@@ -71,9 +74,7 @@ export class AutomationRuntime {
     const now = new Date()
     const existing = input.id ? this.database.getAutomation(input.id) : null
     if (existing?.status === 'running') throw new Error('自动任务运行中，暂时不能修改。')
-    if (input.id === dailyInspectionJobId && (input.action !== 'generate-briefing' || input.projectId !== null || !input.prompt.trim())) {
-      throw new Error('每日项目巡检需要保留全部项目的简报动作，并填写 Prompt。')
-    }
+    if (!isAvailableAutomation(input)) throw new Error('这类自动任务已下线，项目简报需要选择所属项目。')
     if (input.projectId && !this.database.listProjects().some((project) => project.id === input.projectId)) {
       throw new Error('自动任务引用的项目不存在。')
     }
@@ -108,6 +109,7 @@ export class AutomationRuntime {
 
   setEnabled(id: string, enabled: boolean): AutomationJob {
     const existing = this.database.getAutomation(id)
+    if (enabled && !isAvailableAutomation(existing)) throw new Error('这类自动任务已下线。')
     if (existing.status === 'running') throw new Error('自动任务运行中，暂时不能启停。')
     const next = enabled ? nextCronOccurrence(existing.cronExpression, existing.timezone, new Date()).toISOString() : null
     const updated = this.database.setAutomationEnabled(id, enabled, next)
@@ -127,7 +129,8 @@ export class AutomationRuntime {
 
   async runDue(now = new Date()): Promise<RunAutomationResult[]> {
     const due = this.database.listAutomations().filter((job) =>
-      job.enabled && job.status !== 'running' && job.nextRunAt !== null && new Date(job.nextRunAt).getTime() <= now.getTime()
+      isAvailableAutomation(job) && job.enabled && job.status !== 'running'
+      && job.nextRunAt !== null && new Date(job.nextRunAt).getTime() <= now.getTime()
     )
     const results: RunAutomationResult[] = []
     for (const job of due) {
@@ -198,6 +201,7 @@ export class AutomationRuntime {
     cancellationSignal?: AbortSignal
   ): Promise<RunAutomationResult> {
     throwIfCancelled(cancellationSignal)
+    if (!isAvailableAutomation(job)) throw new Error('这类自动任务已下线。')
     if (job.status === 'running') throw new Error('这个自动任务已经在运行。')
     const startedAt = existingRun?.startedAt ?? new Date().toISOString()
     let run = this.database.saveAutomationRun({
@@ -294,9 +298,9 @@ export class AutomationRuntime {
     if (job.action === 'run-connectors') {
       return { summary: await this.actions.runConnectors(job.projectId, cancellationSignal), agentRunId: null }
     }
-    if (job.action === 'check-goals') {
-      return { summary: await this.actions.checkGoals(job.projectId, cancellationSignal), agentRunId: null }
+    if (job.action === 'generate-briefing' && job.projectId) {
+      return { summary: await this.actions.generateBriefing(job.projectId, cancellationSignal, job.prompt), agentRunId: null }
     }
-    return { summary: await this.actions.generateBriefing(job.projectId, cancellationSignal, job.prompt), agentRunId: null }
+    throw new Error('这类自动任务已下线。')
   }
 }

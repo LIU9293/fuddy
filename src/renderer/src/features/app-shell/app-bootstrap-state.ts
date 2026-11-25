@@ -1,22 +1,11 @@
 import type { AppBootstrap, AppBootstrapDataKey, AppBootstrapPatch } from '../../../../shared/contracts'
 
-export const morningBriefingBootstrapKeys = [
-  'dailyBriefings',
-  'morningBriefings',
-  'briefingMessages',
-  'goals'
-] as const satisfies readonly AppBootstrapDataKey[]
-
 /** Generic remote/automation work can mutate any persisted product domain. */
 export const mutableBootstrapKeys = [
   'projects',
-  'goals',
   'runs',
   'connectors',
   'connectorRuns',
-  'dailyBriefings',
-  'morningBriefings',
-  'briefingMessages',
   'automations',
   'automationRuns'
 ] as const satisfies readonly AppBootstrapDataKey[]
