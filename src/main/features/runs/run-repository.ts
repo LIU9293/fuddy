@@ -200,8 +200,8 @@ export class RunRepository {
           provider,
           provider === 'pi' ? 'general' : 'coding',
           provider,
-          provider === 'pi' ? null : normalizedModel,
-          provider === 'pi' ? null : normalizedReasoningEffort,
+          normalizedModel,
+          normalizedReasoningEffort,
           updatedAt,
           id
         )

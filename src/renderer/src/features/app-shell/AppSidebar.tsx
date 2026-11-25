@@ -1,18 +1,19 @@
 import {
   ArchiveX,
   Bot,
+  ChevronRight,
+  CircleDashed,
   Clock3,
   Folder,
-  Inbox,
   LayoutGrid,
-  LoaderCircle,
   MoreHorizontal,
   PanelLeft,
   Pencil,
-  Plus,
+  SquarePen,
   Settings2,
   ArrowLeft
 } from 'lucide-react'
+import { useState } from 'react'
 import type { AgentRun, Project } from '../../../../shared/contracts'
 import { formatAgentProviderName } from '../../../../shared/model-display'
 import fuddyWordmark from '../../assets/fuddy-wordmark.png'
@@ -30,7 +31,6 @@ export interface AppSidebarProps {
   navigation: Navigation
   sidebarSelection: SidebarSelection
   settingsSection: SettingsSection
-  inboxCount: number
   runs: AgentRun[]
   projects: Project[]
   selectedRunId: string | null
@@ -38,7 +38,6 @@ export interface AppSidebarProps {
   onCloseSettings: () => void
   onSettingsSection: (section: SettingsSection) => void
   onBriefing: () => void
-  onInbox: () => void
   onFiles: () => void
   onProjects: () => void
   onSharedProjects: () => void
@@ -50,7 +49,7 @@ export interface AppSidebarProps {
   onOpenSettings: () => void
 }
 
-export type AppSidebarDataProps = Omit<AppSidebarProps, 'inboxCount' | 'runs' | 'projects'> & {
+export type AppSidebarDataProps = Omit<AppSidebarProps, 'runs' | 'projects'> & {
   store: AppDataStore
 }
 
@@ -58,11 +57,9 @@ export function AppSidebarData(props: AppSidebarDataProps): React.JSX.Element {
   const { store, ...sidebarProps } = props
   const runs = useAppDataDomain(store, 'runs') ?? []
   const projects = useAppDataDomain(store, 'projects') ?? []
-  const decisions = useAppDataDomain(store, 'decisions') ?? []
   return (
     <AppSidebar
       {...sidebarProps}
-      inboxCount={decisions.filter((item) => item.status === 'inbox').length}
       runs={runs}
       projects={projects}
     />
@@ -91,6 +88,17 @@ export function groupSidebarRuns(runs: AgentRun[], projects: Project[]): Sidebar
 
 export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
   const runGroups = groupSidebarRuns(props.runs, props.projects)
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set())
+
+  function toggleGroup(id: string): void {
+    setCollapsedGroups(current => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   return (
     <aside className="sidebar">
       <div className="window-drag-region" />
@@ -133,10 +141,6 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
             <NavigationButton active={props.sidebarSelection === 'briefing'} onClick={props.onBriefing} icon={<Bot size={17} />}>
               工作助理
             </NavigationButton>
-            <NavigationButton active={props.sidebarSelection === 'inbox'} onClick={props.onInbox} icon={<Inbox size={17} />}>
-              决策收件箱
-              {props.inboxCount > 0 && <span className="nav-count">{props.inboxCount}</span>}
-            </NavigationButton>
             <NavigationButton active={props.sidebarSelection === 'files'} onClick={props.onFiles} icon={<Folder size={17} />}>
               文件
             </NavigationButton>
@@ -153,50 +157,76 @@ export function AppSidebar(props: AppSidebarProps): React.JSX.Element {
           <section className="sidebar-runs-section" aria-label="项目 Chats">
             <div className="sidebar-projects-heading">项目</div>
             <nav className="sidebar-run-list" aria-label="Chat 列表">
-              {runGroups.map((group) => (
-                <section className="sidebar-run-group" key={group.id} aria-labelledby={`sidebar-run-group-${group.id}`}>
-                  <div className="sidebar-run-group-heading">
-                    <SidebarProjectIcon project={props.projects.find((project) => project.id === group.projectId)} />
-                    <span className="sidebar-run-group-title" id={`sidebar-run-group-${group.id}`}>{group.title}</span>
-                    <button
-                      type="button"
-                      onClick={() => props.onCreateRun(group.projectId)}
-                      aria-label={`在${group.title}中新建 Chat`}
-                    >
-                      <Plus size={12} />
-                    </button>
-                  </div>
-                  {group.runs.map((run) => {
-                    const active = run.status === 'running' || run.status === 'queued'
-                    return (
-                      <div
-                        className={`sidebar-run-row ${props.selectedRunId === run.id && props.navigation === 'runs' ? 'is-active' : ''}`}
-                        key={run.id}
+              {runGroups.map((group) => {
+                const expanded = !collapsedGroups.has(group.id)
+                return (
+                  <section className="sidebar-run-group" key={group.id} aria-labelledby={`sidebar-run-group-${group.id}`}>
+                    <div className="sidebar-run-group-heading">
+                      <button
+                        type="button"
+                        className="sidebar-run-group-toggle"
+                        aria-labelledby={`sidebar-run-group-${group.id}`}
+                        aria-controls={`sidebar-group-chats-${group.id}`}
+                        aria-expanded={expanded}
+                        onClick={() => toggleGroup(group.id)}
                       >
-                        <button type="button" className="sidebar-run-open" title={`${run.title} · ${formatAgentProviderName(run.provider)}`} onClick={() => props.onOpenRun(run.id)}>
-                          <span>
-                            <strong>{run.title}</strong>
-                            {run.executionHost && <small>{run.executionHost.name}{run.executionHost.online ? '' : ' · 离线'}</small>}
-                          </span>
-                          {active && <LoaderCircle size={14} className="spin" />}
-                        </button>
-                        <ActionMenu
-                          className="sidebar-run-actions"
-                          ariaLabel={`${run.title} 操作`}
-                          trigger={<MoreHorizontal size={14} />}
-                          options={[
-                            { value: 'rename', label: '重命名', icon: <Pencil size={13} /> },
-                            ...(!active
-                              ? [{ value: 'archive' as const, label: '归档', icon: <ArchiveX size={13} />, danger: true }]
-                              : [])
-                          ]}
-                          onSelect={(action) => action === 'rename' ? props.onRenameRun(run) : props.onArchiveRun(run)}
-                        />
-                      </div>
-                    )
-                  })}
-                </section>
-              ))}
+                        <SidebarProjectIcon project={props.projects.find((project) => project.id === group.projectId)} />
+                        <span className="sidebar-run-group-title" id={`sidebar-run-group-${group.id}`}>{group.title}</span>
+                        <small className="sidebar-run-group-count">
+                          {!expanded && group.runs.length > 0 ? group.runs.length : null}
+                        </small>
+                        <ChevronRight className="sidebar-run-group-chevron" size={12} aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        className="sidebar-run-group-create"
+                        onClick={() => props.onCreateRun(group.projectId)}
+                        aria-label={`在${group.title}中新建 Chat`}
+                        title={`在${group.title}中新建 Chat`}
+                      >
+                        <SquarePen size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                    <div id={`sidebar-group-chats-${group.id}`} hidden={!expanded}>
+                      {expanded && group.runs.map((run) => {
+                        const active = run.status === 'running' || run.status === 'queued'
+                        return (
+                          <div
+                            className={`sidebar-run-row ${props.selectedRunId === run.id && props.navigation === 'runs' ? 'is-active' : ''}`}
+                            key={run.id}
+                          >
+                            <button type="button" className="sidebar-run-open" title={`${run.title} · ${formatAgentProviderName(run.provider)}`} onClick={() => props.onOpenRun(run.id)}>
+                              <span>
+                                <strong>{run.title}</strong>
+                                {run.executionHost && <small>{run.executionHost.name}{run.executionHost.online ? '' : ' · 离线'}</small>}
+                              </span>
+                            </button>
+                            <div className="sidebar-run-trailing">
+                              <ActionMenu
+                                className="sidebar-run-actions"
+                                ariaLabel={`${run.title} 操作`}
+                                trigger={<MoreHorizontal size={14} />}
+                                options={[
+                                  { value: 'rename', label: '重命名', icon: <Pencil size={13} /> },
+                                  ...(!active
+                                    ? [{ value: 'archive' as const, label: '归档', icon: <ArchiveX size={13} />, danger: true }]
+                                    : [])
+                                ]}
+                                onSelect={(action) => action === 'rename' ? props.onRenameRun(run) : props.onArchiveRun(run)}
+                              />
+                              {active && (
+                                <span className="sidebar-run-indicator" role="img" aria-label={run.status === 'queued' ? '排队中' : '正在运行'}>
+                                  <CircleDashed size={14} aria-hidden="true" />
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </section>
+                )
+              })}
               {runGroups.length === 0 && <p>添加项目后即可新建 Chat</p>}
             </nav>
           </section>

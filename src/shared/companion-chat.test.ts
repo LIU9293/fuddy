@@ -77,6 +77,27 @@ describe('Companion chat records', () => {
     expect(older.hasMore).toBe(false)
   })
 
+  it('projects T3 commentary and each consecutive tool group in order', () => {
+    const metadata = { engine: 't3' }
+    const records = buildAgentChatRecords('run-1', [
+      { ...agentMessage('tool-first', 'tool', 'tool', 0), metadata },
+      agentMessage('reasoning', 'assistant', 'reasoning', 1),
+      { ...agentMessage('comment', 'assistant', 'commentary', 2), metadata },
+      { ...agentMessage('tool-second', 'tool', 'tool', 3), metadata },
+      agentMessage('tool-third', 'tool', 'tool', 4),
+      agentMessage('final', 'assistant', null, 5)
+    ])
+    expect(records[0].activity).toEqual({ version: 1, inline: true, stages: [
+      { id: 'stage-tool-first', reasoningId: null, toolIds: ['tool-first'] },
+      { id: 'reasoning', reasoningId: 'reasoning', toolIds: [] }
+    ] })
+    expect(records[1].agentMessages[0].id).toBe('comment')
+    expect(records[2].activity).toEqual({ version: 1, inline: true, stages: [
+      { id: 'stage-tool-second', reasoningId: null, toolIds: ['tool-second', 'tool-third'] }
+    ] })
+    expect(records[3].agentMessages[0].id).toBe('final')
+  })
+
   it('merges completed morning briefings into the same ordered record stream', () => {
     const briefing: MorningBriefing = {
       id: 'briefing-1',

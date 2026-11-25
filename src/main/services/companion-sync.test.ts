@@ -1499,6 +1499,9 @@ describe('Companion sync transport policy', () => {
     expect(relayMessage.toolKind).toBe('command')
     expect(relayMessage.toolSummary).toBe('private command')
     expect(message.content.length).toBeGreaterThan(relayMessage.content.length)
+    expect(companionAgentMessageForRelay({
+      ...message, metadata: { ...message.metadata, timelineOrdinal: 1_000_004, fileChange: { diff: 'private' } }
+    }).metadata).toEqual({ timelineOrdinal: 1_000_004 })
   })
 
   it('sanitizes Agent tool messages inside unified chat pages', async () => {

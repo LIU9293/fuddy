@@ -214,6 +214,7 @@ const api: DesktopApi = {
   steerQueuedAgentTurn: (requestId: string) => ipcRenderer.invoke('agent-run:steer-queued-turn', requestId),
   respondAgentApproval: (input: RespondAgentApprovalInput) =>
     ipcRenderer.invoke('agent-run:approval', input),
+  respondAgentInput: (input) => ipcRenderer.invoke('agent-run:input', input),
   listWorkspaceFiles: (projectId: string | null) => ipcRenderer.invoke('workspace-files:list', projectId),
   readWorkspaceFile: (projectId: string | null, relativePath: string) =>
     ipcRenderer.invoke('workspace-files:read', { projectId, relativePath }),
@@ -253,7 +254,10 @@ const api: DesktopApi = {
     ipcRenderer.invoke('provider:configure-agent', input),
   configureCodingAgents: (input: ConfigureCodingAgentSettingsInput) =>
     ipcRenderer.invoke('provider:configure-coding-agents', input),
-  listCodingAgentModels: () => ipcRenderer.invoke('provider:list-coding-agent-models'),
+  listCodingAgentModels: (refresh) => ipcRenderer.invoke('provider:list-coding-agent-models', refresh),
+  manageAntigravity: (input) => ipcRenderer.invoke('provider:manage-antigravity', input),
+  searchAcpAgents: (query) => ipcRenderer.invoke('provider:search-acp', query),
+  addAcpAgent: (agentId) => ipcRenderer.invoke('provider:add-acp', agentId),
   configureAsrProvider: (input: ConfigureAsrProviderInput) =>
     ipcRenderer.invoke('provider:configure-asr', input),
   getAsrModelStatus: () => ipcRenderer.invoke('asr:model-status'),

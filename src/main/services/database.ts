@@ -101,6 +101,7 @@ export interface AppDatabaseOptions {
    * intentionally omit this so a clean install starts with no private projects.
    */
   initialProjects?: Project[]
+  decisionInboxEnabled?: boolean
 }
 
 function parseJson<T>(value: string | null, fallback: T): T {
@@ -114,6 +115,7 @@ function parseJson<T>(value: string | null, fallback: T): T {
 }
 
 export class AppDatabase {
+  readonly decisionInboxEnabled: boolean
   private readonly database: DatabaseSync
   private readonly projects: ProjectRepository
   private readonly goals: GoalRepository
@@ -126,6 +128,7 @@ export class AppDatabase {
   private readonly decisions: DecisionRepository
 
   constructor(path: string, options: AppDatabaseOptions = {}) {
+    this.decisionInboxEnabled = options.decisionInboxEnabled ?? true
     mkdirSync(dirname(path), { recursive: true })
     this.database = new DatabaseSync(path)
     this.database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
@@ -433,11 +436,11 @@ export class AppDatabase {
   }
 
   listDecisions(): DecisionItem[] {
-    return this.decisions.list()
+    return this.decisionInboxEnabled ? this.decisions.list() : []
   }
 
   listDecisionRemediations(decisionId?: string): DecisionRemediation[] {
-    return this.decisions.listRemediations(decisionId)
+    return this.decisionInboxEnabled ? this.decisions.listRemediations(decisionId) : []
   }
 
   upsertDecisionRemediation(remediation: DecisionRemediation): DecisionRemediation {
@@ -466,6 +469,19 @@ export class AppDatabase {
     return this.turnQueue.listQueued()
   }
 
+  listRunningAgentTurns(): AgentTurnQueueItem[] {
+    return this.turnQueue.listRunning()
+  }
+
+  commitAgentProjection(requestId: string, sequence: number, apply: () => void): void {
+    this.companionTransaction(() => {
+      apply()
+      const key = `agent.projection.${requestId}`
+      const previous = this.getSetting(key, -1)
+      if (sequence > previous) this.setSetting(key, sequence)
+    })
+  }
+
   listAgentTurnsForRun(runId: string): AgentTurnQueueItem[] {
     return this.turnQueue.listForRun(runId)
   }
@@ -482,12 +498,15 @@ export class AppDatabase {
     return this.turnQueue.claimForSteer(requestId)
   }
 
-  finishAgentTurnSteer(requestId: string): void {
-    this.turnQueue.finishSteer(requestId)
+  finishAgentTurnSteer(message: AgentRunMessage): void {
+    this.companionTransaction(() => {
+      if (!this.hasAgentRunMessage(message.runId, message.id)) this.createAgentRunMessage(message)
+      this.turnQueue.finishSteer(message.id)
+    })
   }
 
-  releaseAgentTurnSteer(requestId: string): void {
-    this.turnQueue.releaseSteer(requestId)
+  releaseAgentTurnSteer(requestId: string, keepExecutionIdentity = false): void {
+    this.turnQueue.releaseSteer(requestId, keepExecutionIdentity)
   }
 
   settleAgentTurn(requestId: string, status: Extract<AgentTurnQueueStatus, 'completed' | 'failed' | 'cancelled'>): void {
@@ -723,10 +742,12 @@ export class AppDatabase {
   }
 
   applyDecisionInspection(input: DecisionInspectionInput): DecisionInspectionResult {
+    if (!this.decisionInboxEnabled) return { decision: null, created: false, updated: false, resolved: false }
     return this.decisions.applyInspection(input)
   }
 
   createDecision(input: CreateDecisionInput): DecisionItem {
+    if (!this.decisionInboxEnabled) throw new Error('决策收件箱已下线。')
     return this.decisions.create(input)
   }
 
@@ -735,6 +756,7 @@ export class AppDatabase {
     status: DecisionStatus,
     transition: DecisionStatusTransitionInput = { actor: 'user' }
   ): DecisionItem {
+    if (!this.decisionInboxEnabled) throw new Error('决策收件箱已下线。')
     return this.decisions.updateStatus(id, status, transition)
   }
 

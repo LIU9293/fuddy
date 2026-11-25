@@ -26,6 +26,7 @@ export type PersistAttachments = (
 
 export interface IpcContext {
   macPeers?: import('../services/mac-peer-sync').MacPeerSyncService
+  t3Catalog: import('../services/t3-provider-catalog').T3ProviderCatalog
   database: AppDatabase
   dispatcher: TaskDispatcher
   connectorRuntime: ConnectorRuntime

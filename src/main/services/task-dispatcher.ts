@@ -10,6 +10,8 @@ import type {
   AgentRunMessage,
   AgentRunStreamUpdate,
   AgentRunProvider,
+  AgentInputRequest,
+  RespondAgentInput,
   DispatchTaskInput,
   DispatchTaskResult,
   CreateAgentRunDraftInput
@@ -26,8 +28,12 @@ import { agentToolPresentation } from '../../shared/agent-activity'
 import { agentRunRetryTarget } from '../../shared/agent-run-retry'
 import {
   AgentProviderRegistry,
-  createDefaultAgentProviderRegistry
+  AgentSteerDeliveryUnknown,
+  createDefaultAgentProviderRegistry,
+  type AgentSteer,
+  type AgentSteerDelivery
 } from './agent-provider-registry'
+import type { AgentTurnQueueItem } from '../../shared/agent-turn-queue'
 import { throwIfCancelled } from './cancellation'
 import { defaultAgentRunTitle, firstMessageTitle, parseGeneratedChatTitle } from '../../shared/agent-run-title'
 import type { ChatAttachmentInput } from '../../shared/chat-attachments'
@@ -67,6 +73,10 @@ function isWithinWorkspace(target: string, root: string): boolean {
   return relation === '' || (!relation.startsWith('..') && !isAbsolute(relation))
 }
 
+function projectedMessageId(requestId: string, attempt: string | null | undefined, itemId: string): string {
+  return createHash('sha256').update(JSON.stringify([requestId, attempt, itemId])).digest('hex')
+}
+
 export class TaskDispatcher {
   private readonly providerRegistry: AgentProviderRegistry
   private readonly runUpdateListeners = new Set<(runId: string, update: AgentRunStreamUpdate) => void>()
@@ -78,9 +88,11 @@ export class TaskDispatcher {
     requestId: string
     abortController: AbortController
     settled: Promise<void>
-    steer?: (prompt: string, attachments: RuntimeAttachment[], requestId: string) => Promise<void>
+    input?: { request: AgentInputRequest; respond: (answers: RespondAgentInput['answers']) => Promise<void> }
+    steer?: AgentSteer
   }>()
   private stopping = false
+  private readonly startupRecovery: Promise<void> | null
   private readonly pendingApprovals = new Map<string, {
     runId: string
     auditId: string
@@ -90,15 +102,30 @@ export class TaskDispatcher {
 
   constructor(
     private readonly database: AppDatabase,
-    piHarness: PiTaskHarness,
+    piHarness: PiTaskHarness | null,
     private readonly workspaceFiles: WorkspaceFilesService,
-    private readonly cliRuntime: CliAgentRuntime,
+    private readonly cliRuntime: CliAgentRuntime | null,
     private readonly inactivityTimeoutMs = AGENT_RUN_INACTIVITY_TIMEOUT_MS,
     private readonly onRunSettled?: (run: AgentRun, turn: AgentTurnSettledPayload) => void | Promise<void>,
     providerRegistry?: AgentProviderRegistry,
-    private readonly generateTitle?: (prompt: string, signal: AbortSignal) => Promise<string | null>
+    private readonly generateTitle?: (prompt: string, signal: AbortSignal) => Promise<string | null>,
+    recoversCommittedTurn?: (run: AgentRun) => boolean,
+    private readonly defaultProvider: () => AgentRunProvider = () => 'pi'
   ) {
-    this.providerRegistry = providerRegistry ?? createDefaultAgentProviderRegistry(piHarness, cliRuntime)
+    if (!providerRegistry && (!piHarness || !cliRuntime)) throw new Error('未注册 Chat Agent 运行时。')
+    this.providerRegistry = providerRegistry ?? createDefaultAgentProviderRegistry(piHarness!, cliRuntime!)
+    const interrupted = recoversCommittedTurn
+      ? this.database.listRunningAgentTurns().filter(turn => recoversCommittedTurn(this.database.getAgentRun(turn.runId)))
+      : []
+    this.startupRecovery = interrupted.length ? Promise.allSettled(interrupted.map(turn =>
+      this.database.hasAgentRunMessage(turn.runId, turn.requestId)
+        ? this.executeTurn(turn.runId, turn.prompt, () => undefined, turn.requestId, [], undefined, null, true)
+        : this.recoverSteeredTurn(turn)
+    )).then(() => this.recoverLegacyAndQueuedTurns()) : null
+    if (!this.startupRecovery) this.recoverLegacyAndQueuedTurns()
+  }
+
+  private recoverLegacyAndQueuedTurns(): void {
     this.database.recoverInterruptedAgentRuns(new Date().toISOString())
     this.database.recoverInterruptedAgentTurns()
     const localUserId = this.database.getSetting<{ user?: { id?: string } } | null>('account.cached-state', null)?.user?.id
@@ -120,6 +147,28 @@ export class TaskDispatcher {
   onRunUpdate(listener: (runId: string, update: AgentRunStreamUpdate) => void): () => void {
     this.runUpdateListeners.add(listener)
     return () => this.runUpdateListeners.delete(listener)
+  }
+
+  async respondToInput(input: RespondAgentInput): Promise<void> {
+    const pending = this.activeTurns.get(input.runId)?.input
+    if (!pending || pending.request.id !== input.requestId) throw new Error('这条输入请求已结束。')
+    if (input.answers) {
+      const questions = new Map(pending.request.questions.map(question => [question.id, question]))
+      const answers = new Map(Object.entries(input.answers))
+      if ([...answers.keys()].some(key => !questions.has(key))) throw new Error('这条输入包含未知问题。')
+      for (const question of questions.values()) {
+        const answer = answers.get(question.id)
+        const choices = Array.isArray(answer) ? answer : answer ? [answer] : []
+        if ((!choices.length && question.required !== false) || (choices.length > 1 && !question.multiSelect)) {
+          throw new Error('请按问题要求选择回答。')
+        }
+        if (question.options.length && !question.allowCustomAnswer && choices.some(value =>
+          !question.options.some(option => (option.value ?? option.label) === value))) {
+          throw new Error('请从提供的选项中选择。')
+        }
+      }
+    }
+    await pending.respond(input.answers)
   }
 
   private publishRunUpdate(runId: string, update: AgentRunStreamUpdate): void {
@@ -159,7 +208,7 @@ export class TaskDispatcher {
       : null
     const resolvedInput: ResolvedDispatchTaskInput = {
       ...input,
-      provider: input.provider ?? project?.profile.defaultAgent ?? 'pi'
+      provider: input.provider ?? project?.profile.defaultAgent ?? this.defaultProvider()
     }
     this.validateInput(resolvedInput)
     const projectWorkspaces = project ? normalizeWorkspaceRoots(project.profile).workspaceRoots : []
@@ -209,7 +258,7 @@ export class TaskDispatcher {
     const project = input.projectId
       ? this.database.listProjects().find((item) => item.id === input.projectId) ?? null
       : null
-    const provider = input.provider ?? project?.profile.defaultAgent ?? 'pi'
+    const provider = input.provider ?? project?.profile.defaultAgent ?? this.defaultProvider()
     this.validateInput(input)
     const projectWorkspaces = project ? normalizeWorkspaceRoots(project.profile).workspaceRoots : []
     const requestedDirectory = input.workingDirectory?.trim() || null
@@ -271,6 +320,7 @@ export class TaskDispatcher {
     cancellationSignal?: AbortSignal,
     actor?: ChatActor | null
   ): Promise<AgentRunDetail> {
+    if (this.startupRecovery) await this.startupRecovery
     this.database.getAgentRun(runId)
     const requestId = userMessageId?.trim() || randomUUID()
     const normalizedPrompt = prompt.trim()
@@ -345,6 +395,7 @@ export class TaskDispatcher {
     cancellationSignal?: AbortSignal,
     actor?: ChatActor | null
   ): Promise<AgentRunDetail> {
+    if (this.startupRecovery) await this.startupRecovery
     throwIfCancelled(cancellationSignal)
     const detail = this.database.getAgentRunDetail(runId)
     const target = agentRunRetryTarget(detail.messages)
@@ -410,10 +461,13 @@ export class TaskDispatcher {
 
   listPendingTurns(runId: string): import('../../shared/agent-turn-queue').AgentTurnQueueSummary[] {
     this.database.getAgentRun(runId)
+    const active = this.activeTurns.get(runId)
     return this.database.listAgentTurnsForRun(runId).map((turn) => ({
       requestId: turn.requestId, runId: turn.runId, prompt: turn.prompt,
       requestedByUserId: turn.requestedByUserId, authorSnapshot: turn.authorSnapshot,
-      status: turn.status, enqueuedAt: turn.enqueuedAt, attachmentCount: turn.attachments.length
+      status: turn.status, enqueuedAt: turn.enqueuedAt, attachmentCount: turn.attachments.length,
+      canSteer: turn.status === 'queued' && !turn.startedAt && Boolean(active?.steer && !active.abortController.signal.aborted),
+      canCancel: turn.status === 'queued' && !turn.startedAt
     }))
   }
 
@@ -437,33 +491,53 @@ export class TaskDispatcher {
     }
     if (!this.database.claimAgentTurnForSteer(requestId)) throw new Error('这条消息的状态已变化，请刷新后重试。')
     const operation = Promise.resolve().then(async () => {
+      const claimed = this.database.getAgentTurn(requestId)!
       const run = this.database.getAgentRun(turn.runId)
-      const files = persistInputAttachments(this.database, this.workspaceFiles, run, requestId, turn.attachments)
-      await steer(turn.prompt, files.runtime, requestId)
-      this.database.createAgentRunMessage({
-        id: requestId,
-        requestId,
-        runId: turn.runId,
-        role: 'user',
-        content: turn.prompt,
-        eventType: null,
-        toolName: null,
-        metadata: null,
-        attachments: files.descriptors,
-        authorUserId: turn.requestedByUserId,
-        authorSnapshot: turn.authorSnapshot,
-        createdAt: new Date().toISOString()
-      })
-      this.database.finishAgentTurnSteer(requestId)
-    }).catch((error: unknown) => {
-      this.database.releaseAgentTurnSteer(requestId)
-      throw error
+      const native = Boolean(this.providerRegistry.get(run.provider).recoverSteer)
+      let files: ReturnType<typeof persistInputAttachments>
+      let delivery: AgentSteerDelivery
+      try {
+        files = persistInputAttachments(this.database, this.workspaceFiles, run, requestId, turn.attachments)
+        delivery = native ? await steer(turn.prompt, files.runtime, requestId, claimed.startedAt)
+          : await steer(turn.prompt, files.runtime, requestId)
+      } catch (error) {
+        if (!(error instanceof AgentSteerDeliveryUnknown)) this.database.releaseAgentTurnSteer(requestId)
+        throw error
+      }
+      this.applySteeredTurn(claimed, delivery, files.descriptors)
     }).finally(() => {
       this.steerOperations.delete(requestId)
     })
     this.steerOperations.set(requestId, operation)
     await operation
     return this.database.getAgentRunDetail(turn.runId)
+  }
+
+  private async recoverSteeredTurn(turn: AgentTurnQueueItem): Promise<void> {
+    const run = this.database.getAgentRun(turn.runId)
+    const adapter = this.providerRegistry.get(run.provider)
+    if (!adapter.recoverSteer) return
+    const delivery = await adapter.recoverSteer(turn.runId, turn.requestId, turn.startedAt)
+    const files = typeof delivery !== 'string'
+      ? persistInputAttachments(this.database, this.workspaceFiles, run, turn.requestId, turn.attachments)
+      : null
+    this.applySteeredTurn(turn, delivery, files?.descriptors ?? [])
+  }
+
+  private applySteeredTurn(turn: AgentTurnQueueItem, delivery: AgentSteerDelivery, attachments: NonNullable<AgentRunMessage['attachments']>): void {
+    if (delivery === 'deferred') {
+      this.database.releaseAgentTurnSteer(turn.requestId, true)
+    } else if (delivery === 'cancelled') {
+      this.database.settleAgentTurn(turn.requestId, 'cancelled')
+    } else {
+      this.database.finishAgentTurnSteer({
+        id: turn.requestId, requestId: turn.requestId, runId: turn.runId,
+        role: 'user', content: turn.prompt, eventType: null, toolName: null,
+        metadata: { steered: true, ...delivery },
+        attachments, authorUserId: turn.requestedByUserId, authorSnapshot: turn.authorSnapshot,
+        createdAt: turn.startedAt ?? turn.enqueuedAt
+      })
+    }
   }
 
   async stopAndDrain(): Promise<void> {
@@ -475,11 +549,12 @@ export class TaskDispatcher {
       this.rejectPendingApprovals(runId)
     }
     await Promise.allSettled([
+      ...(this.startupRecovery ? [this.startupRecovery] : []),
       ...activeTurns.map((active) => active.settled),
       ...this.turnQueueTails.values(),
       ...this.pendingTitles.values()
     ])
-    await this.cliRuntime.stopAndDrain?.()
+    await this.cliRuntime?.stopAndDrain?.()
   }
 
   private generateFirstMessageTitle(runId: string, prompt: string): void {
@@ -513,7 +588,8 @@ export class TaskDispatcher {
     userMessageId?: string,
     attachments: ChatAttachmentInput[] = [],
     cancellationSignal?: AbortSignal,
-    actor?: ChatActor | null
+    actor?: ChatActor | null,
+    recoverCommittedTurn = false
   ): Promise<AgentRunDetail> {
     const abortController = new AbortController()
     const abortForCallerCancellation = (): void => {
@@ -535,22 +611,54 @@ export class TaskDispatcher {
       segmentId: string | null
       content: string
       createdAt: string
+      timelineOrdinal?: number
     } | null = null
     let activeVisibleText = ''
     let activeVisibleMessageId: string | null = null
     let activeVisiblePhase: 'commentary' | 'final_answer' | null = null
     let visibleThinkingIndex = 0
-    const persistReasoning = (content: string, segmentId: string | null, id: string = randomUUID(), createdAt = new Date().toISOString()): void => {
+    let activeCommentary: { id: string; nativeId: string; content: string; createdAt: string; timelineOrdinal?: number } | null = null
+    let finalTimelineOrdinal: number | undefined
+    const messageId = userMessageId?.trim() || randomUUID()
+    const executionStartedAt = this.database.getAgentTurn(messageId)?.startedAt
+    let committedProjection: { sequence: number; publish: () => void } | undefined
+    const persistMessage = (message: AgentRunMessage): void => {
+      if (!this.database.hasAgentRunMessage(runId, message.id)) this.database.createAgentRunMessage(message)
+    }
+    const commitOutcome = (apply: () => void): void => {
+      const projection = committedProjection
+      committedProjection = undefined
+      if (projection) {
+        this.database.commitAgentProjection(messageId, projection.sequence, () => {
+          projection.publish()
+          apply()
+        })
+      } else apply()
+    }
+    const flushCommentary = (): void => {
+      if (!activeCommentary) return
+      const commentary = activeCommentary
+      activeCommentary = null
+      if (!commentary.content.trim()) return
+      persistMessage({
+        id: commentary.id, runId, role: 'assistant', content: commentary.content.trim(),
+        eventType: 'commentary', toolName: null,
+        metadata: { engine: 't3', timelineOrdinal: commentary.timelineOrdinal }, createdAt: commentary.createdAt
+      })
+    }
+    const persistReasoning = (
+      content: string, segmentId: string | null, id: string = randomUUID(), createdAt = new Date().toISOString(), timelineOrdinal?: number
+    ): void => {
       const normalized = content.trim()
       if (!normalized) return
-      this.database.createAgentRunMessage({
+      persistMessage({
         id,
         runId,
         role: 'assistant',
         content: normalized,
         eventType: 'reasoning',
         toolName: null,
-        metadata: segmentId ? { segmentId } : null,
+        metadata: segmentId ? { segmentId, ...(segmentId.startsWith('t3:') ? { engine: 't3', timelineOrdinal } : {}) } : null,
         createdAt
       })
     }
@@ -558,7 +666,7 @@ export class TaskDispatcher {
       if (!activeReasoning) return
       const reasoning = activeReasoning
       activeReasoning = null
-      persistReasoning(reasoning.content, reasoning.segmentId, reasoning.id, reasoning.createdAt)
+      persistReasoning(reasoning.content, reasoning.segmentId, reasoning.id, reasoning.createdAt, reasoning.timelineOrdinal)
     }
     const flushVisibleTextAsReasoning = (): void => {
       const content = activeVisibleText
@@ -596,7 +704,12 @@ export class TaskDispatcher {
         if (update.status === 'running') runningTools.add(key)
         else runningTools.delete(key)
       }
+      if (update.type === 'input_request') {
+        if (update.request) runningTools.add('user-input')
+        else runningTools.delete('user-input')
+      }
       touchActivity()
+      if (update.type !== 'commentary_delta') flushCommentary()
       if (update.type === 'reasoning_delta') {
         if (activeVisibleText.trim()) flushVisibleTextAsReasoning()
         const nextSegmentId = update.segmentId?.trim() || null
@@ -604,21 +717,45 @@ export class TaskDispatcher {
           flushReasoning()
         }
         activeReasoning ??= {
-          id: randomUUID(),
+          id: nextSegmentId?.startsWith('t3:')
+            ? projectedMessageId(messageId, executionStartedAt, nextSegmentId) : randomUUID(),
           segmentId: nextSegmentId,
           content: '',
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(), timelineOrdinal: update.timelineOrdinal
         }
         activeReasoning.content += update.delta
+      } else if (update.type === 'commentary_delta') {
+        flushReasoning()
+        if (activeVisibleMessageId === update.messageId) {
+          activeVisibleText = ''
+          activeVisibleMessageId = null
+          activeVisiblePhase = null
+        }
+        if (activeCommentary?.nativeId !== update.messageId) flushCommentary()
+        activeCommentary ??= {
+          id: projectedMessageId(messageId, executionStartedAt, `commentary:${update.messageId}`),
+          nativeId: update.messageId, content: '', createdAt: new Date().toISOString(), timelineOrdinal: update.timelineOrdinal
+        }
+        activeCommentary.content += update.delta
       } else if (update.type === 'message_delta') {
         flushReasoning()
         const phase = update.phase ?? null
+        if (phase === 'final_answer' && update.timelineOrdinal !== undefined) finalTimelineOrdinal = update.timelineOrdinal
         const continuesCurrentMessage = activeVisibleMessageId === update.messageId && activeVisiblePhase === phase
         if (activeVisibleText.trim() && !continuesCurrentMessage) flushVisibleTextAsReasoning()
         activeVisibleMessageId = update.messageId
         activeVisiblePhase = phase
         activeVisibleText += update.delta
-      } else if (update.type === 'tool' || update.type === 'approval') {
+      } else if (update.type === 'question_record') {
+        flushReasoning()
+        persistMessage({
+          id: projectedMessageId(messageId, executionStartedAt, `question:${update.itemId}`),
+          runId, role: 'assistant', content: update.questions.join('\n\n'), eventType: 'agent_question',
+          toolName: null, metadata: { engine: 't3', questionStatus: update.status, timelineOrdinal: update.timelineOrdinal,
+            ...(update.choices?.length && { questionChoices: update.choices }) },
+          createdAt: new Date().toISOString()
+        })
+      } else if (update.type === 'tool' || update.type === 'approval' || update.type === 'input_request') {
         flushReasoning()
         flushVisibleTextAsReasoning()
       } else if (update.type === 'status' && update.status !== 'running') {
@@ -628,9 +765,8 @@ export class TaskDispatcher {
       onUpdate(update)
     }
     let run = this.database.getAgentRun(runId)
-    const needsTitle = this.database.canGenerateAgentRunTitle(runId)
-    run = this.database.updateAutomaticAgentRunTitle(runId, firstMessageTitle(prompt), true)
-    const messageId = userMessageId?.trim() || randomUUID()
+    const needsTitle = !recoverCommittedTurn && this.database.canGenerateAgentRunTitle(runId)
+    if (!recoverCommittedTurn) run = this.database.updateAutomaticAgentRunTitle(runId, firstMessageTitle(prompt), true)
     const attachmentFiles = persistInputAttachments(this.database, this.workspaceFiles, run, messageId, attachments)
     const projectFilesBefore = new Map(
       this.workspaceFiles.list(run.projectId)
@@ -653,7 +789,8 @@ export class TaskDispatcher {
       createdAt: new Date().toISOString()
     }
     const startedAt = new Date().toISOString()
-    run = this.database.startAgentTurn(userMessage, {
+    if (recoverCommittedTurn && !existingUserMessage) throw new Error('待恢复的 Chat 缺少请求消息。')
+    if (!recoverCommittedTurn) run = this.database.startAgentTurn(userMessage, {
       ...run,
       status: 'running',
       visibility: 'published',
@@ -675,7 +812,8 @@ export class TaskDispatcher {
         || metadata?.isError === true
         || metadata?.is_error === true
       const toolMessage: AgentRunMessage = {
-        id: randomUUID(),
+        id: metadata?.engine === 't3' && typeof metadata.itemId === 'string'
+          ? projectedMessageId(messageId, executionStartedAt, `tool:${metadata.itemId}`) : randomUUID(),
         runId,
         role: 'tool',
         content: detail || toolName,
@@ -689,7 +827,7 @@ export class TaskDispatcher {
         },
         createdAt: new Date().toISOString()
       }
-      this.database.createAgentRunMessage(toolMessage)
+      persistMessage(toolMessage)
       if (metadata?.artifact === true && typeof metadata.relativePath === 'string') {
         const artifact: AgentRunArtifact = {
           id: randomUUID(),
@@ -709,6 +847,20 @@ export class TaskDispatcher {
     try {
       const result = await runWithAbort(this.providerRegistry.runTurn(run.provider, {
         runId,
+        requestId: messageId,
+        executionStartedAt,
+        recoverCommittedTurn,
+        onCommittedProjection: (sequence, terminal, publish) => {
+          if (terminal) committedProjection = { sequence, publish }
+          else this.database.commitAgentProjection(messageId, sequence, publish)
+        },
+        onInputRequest: (request, respond) => {
+          const active = this.activeTurns.get(runId)
+          if (active?.abortController !== abortController) return
+          active.input = request ? { request, respond } : undefined
+          trackedUpdate({ type: 'input_request', request })
+        },
+        title: run.title,
         projectId: run.projectId,
         projectContext: this.buildRunContext(run),
         prompt: prompt.trim(),
@@ -740,84 +892,61 @@ export class TaskDispatcher {
           if (active?.abortController === abortController) active.steer = steer ?? undefined
         }
       }), abortController.signal)
-      const response = result.text
-      if (result.sessionId && result.sessionId !== run.sessionId) {
-        run = this.database.updateAgentRun({ ...run, sessionId: result.sessionId, updatedAt: new Date().toISOString() })
-      }
-
-      flushReasoning()
-      flushVisibleTextAtTurnEnd()
-      const finalResponse = registerLinkedArtifacts(this.database, this.workspaceFiles, run, response, projectWorkspacesFor(this.database, run.projectId))
-      this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
-      const assistantMessageId = randomUUID()
-      const outputAttachments = this.database.getAgentRunDetail(run.id).artifacts
-        .filter(artifact => !artifact.relativePath.startsWith('_attachments/') && (
-          finalResponse.includes(encodeURI(artifact.relativePath)) || !projectFilesBefore.has(artifact.relativePath)
-        )).flatMap(artifact => {
-          try { return [describeArtifact(artifact, this.workspaceFiles, assistantMessageId)] } catch { return [] }
+      commitOutcome(() => {
+        if (result.sessionId && result.sessionId !== run.sessionId) {
+          run = this.database.updateAgentRun({ ...run, sessionId: result.sessionId, updatedAt: new Date().toISOString() })
+        }
+        flushReasoning()
+        flushVisibleTextAtTurnEnd()
+        flushCommentary()
+        const finalResponse = registerLinkedArtifacts(this.database, this.workspaceFiles, run, result.text, projectWorkspacesFor(this.database, run.projectId))
+        this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
+        const assistantMessageId = randomUUID()
+        const outputAttachments = this.database.getAgentRunDetail(run.id).artifacts
+          .filter(artifact => !artifact.relativePath.startsWith('_attachments/') && (
+            finalResponse.includes(encodeURI(artifact.relativePath)) || !projectFilesBefore.has(artifact.relativePath)
+          )).flatMap(artifact => {
+            try { return [describeArtifact(artifact, this.workspaceFiles, assistantMessageId)] } catch { return [] }
+          })
+        this.database.createAgentRunMessage({
+          id: assistantMessageId, runId, role: 'assistant', content: finalResponse,
+          eventType: null, toolName: null,
+          metadata: finalTimelineOrdinal === undefined ? null : { engine: 't3', timelineOrdinal: finalTimelineOrdinal },
+          attachments: outputAttachments,
+          createdAt: new Date().toISOString()
         })
-      const assistantMessage: AgentRunMessage = {
-        id: assistantMessageId,
-        runId,
-        role: 'assistant',
-        content: finalResponse,
-        eventType: null,
-        toolName: null,
-        metadata: null,
-        attachments: outputAttachments,
-        createdAt: new Date().toISOString()
-      }
-      this.database.createAgentRunMessage(assistantMessage)
-      const updatedAt = new Date().toISOString()
-      run = this.database.updateAgentRun({
-        ...run,
-        status: 'idle',
-        summary: finalResponse.replace(/\s+/g, ' ').slice(0, 240),
-        updatedAt
-      })
-      trackedUpdate({ type: 'status', status: 'idle' })
-      this.database.settleAgentTurn(messageId, 'completed')
-      this.publishTurnSettled(run.id, userMessage.id, 'completed')
-      this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
-      return this.database.getAgentRunDetail(run.id)
-    } catch (error) {
-      flushReasoning()
-      flushVisibleTextAtTurnEnd()
-      if (error instanceof AgentRunStoppedError || abortController.signal.reason instanceof AgentRunStoppedError) {
         run = this.database.updateAgentRun({
-          ...run,
-          status: 'idle',
-          summary: run.summary === '等待首次消息' ? '当前回复已停止' : run.summary,
+          ...run, status: 'idle', summary: finalResponse.replace(/\s+/g, ' ').slice(0, 240),
           updatedAt: new Date().toISOString()
         })
-        trackedUpdate({ type: 'status', status: 'idle', detail: '当前回复已停止。' })
-        this.database.settleAgentTurn(messageId, 'cancelled')
-        this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
-        return this.database.getAgentRunDetail(run.id)
-      }
-      const message = error instanceof Error ? error.message : 'Chat 执行失败。'
-      const systemMessage: AgentRunMessage = {
-        id: randomUUID(),
-        requestId: messageId,
-        runId,
-        role: 'system',
-        content: message,
-        eventType: 'error',
-        toolName: null,
-        metadata: null,
-        createdAt: new Date().toISOString()
-      }
-      this.database.createAgentRunMessage(systemMessage)
-      run = this.database.updateAgentRun({
-        ...run,
-        status: 'failed',
-        summary: message,
-        updatedAt: new Date().toISOString()
+        this.database.settleAgentTurn(messageId, 'completed')
+        this.publishTurnSettled(run.id, userMessage.id, 'completed')
       })
-      trackedUpdate({ type: 'status', status: 'failed', detail: message })
-      this.database.settleAgentTurn(messageId, 'failed')
-      this.publishTurnSettled(run.id, userMessage.id, 'failed')
-      this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
+      trackedUpdate({ type: 'status', status: 'idle' })
+      return this.database.getAgentRunDetail(run.id)
+    } catch (error) {
+      if (recoverCommittedTurn && !committedProjection) throw error
+      const cancelled = error instanceof AgentRunStoppedError || abortController.signal.reason instanceof AgentRunStoppedError
+      const message = error instanceof Error ? error.message : 'Chat 执行失败。'
+      commitOutcome(() => {
+        flushCommentary()
+        flushReasoning()
+        flushVisibleTextAtTurnEnd()
+        if (!cancelled) this.database.createAgentRunMessage({
+          id: randomUUID(), requestId: messageId, runId, role: 'system', content: message,
+          eventType: 'error', toolName: null, metadata: null, createdAt: new Date().toISOString()
+        })
+        run = this.database.updateAgentRun({
+          ...run,
+          status: cancelled ? 'idle' : 'failed',
+          summary: cancelled ? (run.summary === '等待首次消息' ? '当前回复已停止' : run.summary) : message,
+          updatedAt: new Date().toISOString()
+        })
+        this.database.settleAgentTurn(messageId, cancelled ? 'cancelled' : 'failed')
+        if (!cancelled) this.publishTurnSettled(run.id, userMessage.id, 'failed')
+        this.tryRegisterChangedProjectFiles(run, projectFilesBefore)
+      })
+      trackedUpdate({ type: 'status', status: cancelled ? 'idle' : 'failed', detail: cancelled ? '当前回复已停止。' : message })
       return this.database.getAgentRunDetail(run.id)
     } finally {
       turnFinished = true

@@ -188,8 +188,8 @@ function checkPrompt(input: {
 - 只能依据给出的目标、里程碑、决策和 Connector 数据。
 - 不得改变成功指标、目标值或截止日期。
 - 没有证据时保守维持现状，并在 summary 中明确缺少什么。
-- 收件箱 Item 是持续问题，不是每日消息。已有目标风险仍存在时，status 保持 at-risk，summary 用最新证据更新原 Item；不要创建同义的新问题。
-- 只有证据直接证明阻塞已经解除、指标恢复或目标完成时，才把 status 改为 active 或 completed；这会让系统主动完成对应的旧收件箱 Item。
+- 已有目标风险仍存在时，status 保持 at-risk，summary 记录最新证据。
+- 只有证据直接证明阻塞解除、指标恢复或目标完成时，才把 status 改为 active 或 completed。
 - 缺少新数据、暂时没有异常记录、或无法检查，都不等于问题已完成。
 - status 只能是 active、at-risk、completed。
 - progress 是 0 到 1。

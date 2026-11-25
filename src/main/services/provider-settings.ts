@@ -1,4 +1,5 @@
 import type {
+  AgentRunProvider,
   AgentProviderMode,
   AsrProviderMode,
   ConfigureAgentEndpointInput,
@@ -10,6 +11,7 @@ import type {
   ProviderSettings,
   TtsProviderMode
 } from '../../shared/contracts'
+import { isAgentRunProvider, modelSettingsForAgent } from '../../shared/agent-providers'
 import { CredentialVault } from './credential-vault'
 import { AppDatabase } from './database'
 
@@ -289,9 +291,10 @@ export class ProviderSettingsService {
       codex?: { defaultModel?: unknown; defaultReasoningEffort?: unknown }
       claude?: { defaultModel?: unknown; defaultReasoningEffort?: unknown }
       opencode?: { defaultModel?: unknown; defaultReasoningEffort?: unknown }
+      additional?: Record<string, { defaultModel?: unknown; defaultReasoningEffort?: unknown } | null>
     }
     return {
-      defaultAgent: value.defaultAgent === 'claude' || value.defaultAgent === 'opencode' || value.defaultAgent === 'codex'
+      defaultAgent: isAgentRunProvider(value.defaultAgent)
         ? value.defaultAgent
         : defaultCodingAgents.defaultAgent,
       codex: {
@@ -305,7 +308,13 @@ export class ProviderSettingsService {
       opencode: {
         defaultModel: typeof value.opencode?.defaultModel === 'string' ? value.opencode.defaultModel : '',
         defaultReasoningEffort: typeof value.opencode?.defaultReasoningEffort === 'string' ? value.opencode.defaultReasoningEffort : ''
-      }
+      },
+      ...(value.additional && typeof value.additional === 'object' ? {
+        additional: Object.fromEntries(Object.entries(value.additional).filter(([id]) => isAgentRunProvider(id)).map(([id, model]) => [id, {
+          defaultModel: typeof model?.defaultModel === 'string' ? model.defaultModel : '',
+          defaultReasoningEffort: typeof model?.defaultReasoningEffort === 'string' ? model.defaultReasoningEffort : ''
+        }]))
+      } : {})
     }
   }
 
@@ -333,6 +342,8 @@ export class ProviderSettingsService {
   }
 
   configureCodingAgents(input: ConfigureCodingAgentSettingsInput): ProviderSettings {
+    const existing = this.readCodingAgents()
+    const additional = { ...existing.additional, ...input.additional }
     this.database.setSetting<ConfigureCodingAgentSettingsInput>(CODING_AGENTS_KEY, {
       defaultAgent: input.defaultAgent,
       codex: {
@@ -346,17 +357,18 @@ export class ProviderSettingsService {
       opencode: {
         defaultModel: input.opencode.defaultModel.trim(),
         defaultReasoningEffort: input.opencode.defaultReasoningEffort.trim()
-      }
+      },
+      ...(Object.keys(additional).length ? { additional } : {})
     })
     return this.getPublicSettings()
   }
 
-  getCodingAgentDefaultModel(provider: 'codex' | 'claude' | 'opencode'): string | null {
-    return this.readCodingAgents()[provider].defaultModel.trim() || null
+  getCodingAgentDefaultModel(provider: AgentRunProvider): string | null {
+    return modelSettingsForAgent(this.readCodingAgents(), provider).defaultModel.trim() || null
   }
 
-  getCodingAgentDefaultReasoningEffort(provider: 'codex' | 'claude' | 'opencode'): string | null {
-    return this.readCodingAgents()[provider].defaultReasoningEffort.trim() || null
+  getCodingAgentDefaultReasoningEffort(provider: AgentRunProvider): string | null {
+    return modelSettingsForAgent(this.readCodingAgents(), provider).defaultReasoningEffort.trim() || null
   }
 
   configureAgent(input: ConfigureAgentProviderInput): ProviderSettings {

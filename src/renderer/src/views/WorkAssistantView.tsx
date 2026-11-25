@@ -37,8 +37,6 @@ import {
   Trash2
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { QRCodeSVG } from 'qrcode.react'
 import { ChatComposer } from '../components/ChatComposer'
 import { ConversationShell } from '../components/ConversationShell'
@@ -50,7 +48,7 @@ import { isProjectImageIcon, ProjectIcon } from '../components/ProjectIcon'
 import { ActionMenu, SelectMenu, SuggestionInput } from '../components/SelectMenu'
 import { WorkspaceFilesView } from '../components/WorkspaceFilesView'
 import { AutomationsView } from '../components/AutomationsView'
-import { normalizeChatMarkdown } from '../markdown'
+import { ChatMarkdown } from '../components/ChatMarkdown'
 import { maxChatImages, prepareChatImages } from '../chat-attachments'
 import { workAssistantRunIds } from '../work-assistant-links'
 import { microphoneAccessError } from '../voice-input'
@@ -92,45 +90,14 @@ import { defaultCompanionRelayUrl } from '../../../shared/companion-sync'
 import { formatAgentProviderName } from '../../../shared/model-display'
 import { agentRunStatusLabels } from './shared'
 import {
-  codingAgentOptions,
   connectorStatusLabels,
-  decisionWaitingReasonLabels,
-  formatDecisionSource,
   formatExpiryLabel,
   formatRelativeTime,
-  kindIcons,
-  kindLabels,
   settingsNavigationItems,
   settingsSectionTitles,
   useAutoDismissMessage,
   type SettingsSection
 } from './shared'
-
-export function MarkdownMessage({
-  content,
-  streaming = false
-}: {
-  content: string
-  streaming?: boolean
-}): React.JSX.Element {
-  return (
-    <div className={`chat-markdown ${streaming ? 'is-streaming' : ''}`}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ({ children, ...props }) => (
-            <a {...props} target="_blank" rel="noreferrer">
-              {children}
-            </a>
-          )
-        }}
-      >
-        {normalizeChatMarkdown(content)}
-      </ReactMarkdown>
-      {streaming && <span className="streaming-caret" aria-hidden="true" />}
-    </div>
-  )
-}
 
 export function TaskContextBadge({ context }: { context: WorkAssistantTaskContext }): React.JSX.Element {
   return (
@@ -144,22 +111,7 @@ export function TaskContextBadge({ context }: { context: WorkAssistantTaskContex
 }
 
 export function BriefingTranscript({ body }: { body: string }): React.JSX.Element {
-  return (
-    <div className="briefing-card-transcript">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ({ children, ...props }) => (
-            <a {...props} target="_blank" rel="noreferrer">
-              {children}
-            </a>
-          )
-        }}
-      >
-        {normalizeChatMarkdown(body)}
-      </ReactMarkdown>
-    </div>
-  )
+  return <ChatMarkdown content={body} className="briefing-card-transcript" />
 }
 
 export function AudioBriefingCard({
@@ -644,7 +596,7 @@ export function WorkAssistantView({
                     )}
                     {item.message.role === 'user' && <MessageImageAttachments attachments={item.message.attachments} />}
                     {item.message.role === 'assistant' ? (
-                      <MarkdownMessage content={workAssistantMessageContent(item.message)} />
+                      <ChatMarkdown content={workAssistantMessageContent(item.message)} />
                     ) : (
                       <UserMessageBubble content={workAssistantMessageContent(item.message)} />
                     )}
@@ -701,7 +653,7 @@ export function WorkAssistantView({
                     </div>
                   )}
                   {pendingTurn.assistantContent ? (
-                    <MarkdownMessage content={pendingTurn.assistantContent} streaming={asking} />
+                    <ChatMarkdown content={pendingTurn.assistantContent} streaming={asking} />
                   ) : (
                     <div className="briefing-thinking">
                       <LoaderCircle className="spin" size={14} /> 正在处理你的请求…

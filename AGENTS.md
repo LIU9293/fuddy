@@ -39,6 +39,7 @@ npm run ios:typecheck
 - Fuddy Dev owns `~/Library/Application Support/ai-native-project-agent-dev`, a distinct app identity, single-instance lock, database, credential vault, project files, Agent sessions, Browser Use state, Companion pairing, outbox, and schedulers. Never copy production credentials, pairing tokens, or live customer data into it.
 - Target the development window by the explicit `Fuddy Dev` name or its exact development app path. Do not use the production bundle ID or `/Applications/Fuddy.app` as a convenient UI-test target. If Fuddy Dev is not running, start a new isolated dev process; do not stop production to free a lock or port.
 - Packaged development and smoke builds use bundle ID `dev.ainative.projectagent.dev`, product name `Fuddy Dev`, disabled auto-updates, and an isolated or temporary dev `userData`. The production bundle keeps `dev.ainative.projectagent` and the legacy production data path for upgrade compatibility.
+- For a local Fuddy update, replace `/Applications/Fuddy.app` with the verified build. After successful installation, leave no backup of the previous app bundle.
 - Before any Mac UI test, resolve the exact target process and verify that its runtime profile is development. After the test, stop only the dev process created for that test. A generic `Electron`, `Fuddy`, or bundle-ID match is not sufficient when multiple copies exist.
 - The daily QA Inspector scheduler may live in production Fuddy, but production is only its control plane. When a Fuddy QA run starts, connect to an existing Fuddy Dev instance or start a new isolated dev process from the Workspace; report a blocker if that fails. Never fall back to the installed production app, production database, production Companion account, or production relay identity.
 
@@ -125,10 +126,9 @@ RUN_COMPANION_RELAY_SMOKE=1 npx vitest run src/main/services/companion-sync.inte
 
 ## Working-tree discipline
 
-- Preserve unrelated user changes in a dirty worktree.
+- Fuddy is in personal development. Use the existing checkout on `main` for all development. Do not create branches or additional Git worktrees.
+- Preserve unrelated user changes in the checkout.
 - Use `rg` / `rg --files` for search and `apply_patch` for manual edits.
 - Do not change shell startup files, local Agent config, credentials, or user project repositories unless the user explicitly requests it.
-- Do not commit or push unless the user asks. When asked to push all changes, review the final diff, run the full checks, and report the commit and remote branch.
-- Whenever creating a pull request, create it as ready for review; do not create draft pull requests.
-- When fixing CI failures or review feedback on an existing pull request, commit and push the fixes directly to the current PR branch without asking for confirmation again.
+- Do not commit or push unless the user asks. When asked to push all changes, review the final diff, run the full checks, commit and push directly to `origin/main`, and report the commit and remote branch.
 - Keep `README.md` current when product behavior, Agent runtime policy, setup steps, or major workflow status changes.

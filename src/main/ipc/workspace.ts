@@ -111,7 +111,7 @@ export function registerWorkspaceIpc(context: IpcContext): void {
   ipcMain.handle('connector:run-all', (_event, rawProjectId: unknown) => {
     const projectId = z.string().nullable().parse(rawProjectId)
     return connectorRuntime.runConnectors(projectId).then(async (result) => {
-      await decisionRemediationService.sync(projectId)
+      if (database.decisionInboxEnabled) await decisionRemediationService.sync(projectId)
       return result
     })
   })

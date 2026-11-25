@@ -1032,7 +1032,6 @@ final class SyncModelTests: XCTestCase {
     func testDrawerCanOpenFromRootListsAndSettingsOnly() {
         XCTAssertTrue(companionCanOpenDrawer(section: .assistant, pathIsEmpty: true))
         XCTAssertTrue(companionCanOpenDrawer(section: .projects, pathIsEmpty: true))
-        XCTAssertTrue(companionCanOpenDrawer(section: .inbox, pathIsEmpty: true))
         XCTAssertTrue(companionCanOpenDrawer(section: .settings, pathIsEmpty: true))
         XCTAssertTrue(companionCanOpenDrawer(section: .runs, pathIsEmpty: true))
         XCTAssertFalse(companionCanOpenDrawer(section: .projects, pathIsEmpty: false))
@@ -1096,6 +1095,24 @@ final class SyncModelTests: XCTestCase {
         XCTAssertEqual(records.map(\.id), ["agent-message-user", "process-reasoning", "agent-message-answer"])
         XCTAssertEqual(records[1].agentMessages.map(\.id), ["reasoning", "tool"])
         XCTAssertEqual(records[1].completedAt, "2026-01-01T00:00:03.000Z")
+    }
+
+    func testNativeTimelinePreservesTheOrderOfLateToolResultsAndSteersAcrossPages() {
+        let messages = [
+            AgentMessage(id: "user", runId: "run", role: "user", content: "Start", eventType: nil, toolName: nil, createdAt: "1"),
+            AgentMessage(id: "steer", runId: "run", role: "user", content: "Change", eventType: nil, toolName: nil,
+                metadata: AgentMessageMetadata(timelineOrdinal: 5, steered: true), createdAt: "2"),
+            AgentMessage(id: "tool", runId: "run", role: "tool", content: "pwd", eventType: "tool", toolName: "runCommand",
+                metadata: AgentMessageMetadata(timelineOrdinal: 4), createdAt: "3"),
+            AgentMessage(id: "answer", runId: "run", role: "assistant", content: "Done", eventType: nil, toolName: nil,
+                metadata: AgentMessageMetadata(timelineOrdinal: 6), createdAt: "4")
+        ]
+        let records = buildAgentChatRecords(runID: "run", messages: messages)
+        let earlier = companionChatPage(chatId: "run", chatKind: "agent", records: Array(records.prefix(2)))
+        let later = companionChatPage(chatId: "run", chatKind: "agent", records: Array(records.suffix(2)))
+        let merged = mergeOlderCompanionChatPage(earlier, into: later)
+
+        XCTAssertEqual(flattenAgentChatRecords(merged.records).map(\.id), ["user", "tool", "steer", "answer"])
     }
 
     func testMergingOlderChatPagePreservesCurrentRecordsAndCursor() {

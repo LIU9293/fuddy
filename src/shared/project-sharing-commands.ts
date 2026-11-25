@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { agentRunProviderSchema } from './agent-provider-validation'
 import { openCompanionJson, sealCompanionJson,
   type CompanionEncryptedEnvelope } from './companion-crypto'
 import type { ChatAuthorSnapshot } from './project-sharing'
@@ -6,7 +7,7 @@ import { sharedAttachmentSchema } from './project-sharing-attachments'
 
 export const sharedProjectCommandPayloadSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('create-chat'), title: z.string().trim().min(1).max(200),
-    provider: z.enum(['pi', 'codex', 'claude', 'opencode']).optional() }).strict(),
+    provider: agentRunProviderSchema.optional() }).strict(),
   z.object({ type: z.literal('send-message'), prompt: z.string().trim().min(1).max(200_000),
     attachments: z.array(sharedAttachmentSchema).max(4).optional() }).strict(),
   z.object({ type: z.literal('cancel-turn') }).strict(),

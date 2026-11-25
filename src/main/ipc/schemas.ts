@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { agentRunProviderSchema } from '../../shared/agent-provider-validation'
 import { maximumChatAttachmentBytes, maximumChatAttachments } from '../../shared/chat-attachments'
 
 export const chatAttachmentSchema = z.object({
@@ -64,7 +65,7 @@ export const dispatchTaskSchema = z.object({
   decisionId: z.string().trim().min(1).max(200).nullable().optional(),
   goalId: z.string().nullable().optional(),
   milestoneId: z.string().nullable().optional(),
-  provider: z.enum(['pi', 'codex', 'claude', 'opencode']).optional(),
+  provider: agentRunProviderSchema.optional(),
   title: z.string().trim().max(200).optional(),
   workingDirectory: z.string().trim().max(2_000).nullable().optional(),
   prompt: z.string().trim().min(1).max(20_000)
@@ -102,7 +103,7 @@ export const renameAgentRunSchema = z.object({
 
 export const updateAgentRunExecutionSettingsSchema = z.object({
   id: z.string().trim().min(1).max(200),
-  provider: z.enum(['pi', 'codex', 'claude', 'opencode']),
+  provider: agentRunProviderSchema,
   model: z.string().trim().max(300).nullable(),
   reasoningEffort: z.string().trim().max(100).nullable()
 })
@@ -181,7 +182,7 @@ export const saveAutomationSchema = z.object({
   timezone: z.string().trim().min(1).max(100),
   action: z.enum(['agent-task', 'run-connectors', 'check-goals', 'generate-briefing']),
   prompt: z.string().trim().max(20_000),
-  agentProvider: z.enum(['pi', 'codex', 'claude', 'opencode']),
+  agentProvider: agentRunProviderSchema,
   enabled: z.boolean(),
   requiresConfirmation: z.boolean(),
   maxRetries: z.number().int().min(0).max(5),

@@ -1,14 +1,25 @@
 import Foundation
 
-let companionAgentProviderIDs = ["pi", "codex", "claude", "opencode"]
+let companionAgentProviderIDs = ["codex", "claude", "cursor", "grok", "fx", "opencode", "antigravity", "kiro", "pi", "muse"]
+
+func isCompanionAgentProvider(_ provider: String) -> Bool {
+    companionAgentProviderIDs.contains(provider)
+        || provider.range(of: #"^acp-[a-zA-Z0-9_-]{1,60}$"#, options: .regularExpression) != nil
+}
 
 func companionAgentProviderLabel(_ provider: String) -> String {
     switch provider {
-    case "pi": "Fuddy Agent"
+    case "pi": "Pi"
     case "codex": "Codex"
     case "claude": "Claude Code"
     case "opencode": "OpenCode"
-    default: "Agent"
+    case "cursor": "Cursor"
+    case "grok": "Grok Build"
+    case "fx": "Fx"
+    case "antigravity": "Antigravity"
+    case "kiro": "Kiro"
+    case "muse": "Muse"
+    default: provider.hasPrefix("acp-") ? String(provider.dropFirst(4)) : "Agent"
     }
 }
 

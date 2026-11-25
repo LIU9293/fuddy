@@ -1203,7 +1203,7 @@ final class CompanionStore: ObservableObject {
         let client = try activeRelayClient()
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { throw RelayError.invalidResponse }
-        if let provider, !companionAgentProviderIDs.contains(provider) { throw RelayError.invalidResponse }
+        if let provider, !isCompanionAgentProvider(provider) { throw RelayError.invalidResponse }
         let project = projectID.flatMap { id in state.projects.first(where: { $0.id == id }) }
         if projectID != nil && project == nil { throw RelayError.invalidResponse }
 

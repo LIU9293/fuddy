@@ -19,10 +19,12 @@ import { WorkspaceAgentActions } from './services/workspace-agent-actions'
 import { DecisionRemediationService } from './services/decision-remediation'
 import { WorkspaceFilesService } from './services/workspace-files'
 import { ProjectInspectionService } from './services/project-inspection'
-import { PiTaskHarness } from './services/pi-task-harness'
 import { AutomationRuntime } from './services/automation-runtime'
 import { AutomationScheduler } from './services/automation-scheduler'
 import { CliAgentRuntime } from './services/cli-agent-runtime'
+import { createT3AgentRegistry, t3EngineBindingKey } from './services/t3-agent-dispatch'
+import { T3ProviderCatalog } from './services/t3-provider-catalog'
+import { T3RuntimeProcess } from './services/t3-runtime-process'
 import { resolveThirdPartyMcpOptions, ThirdPartyMcpRuntime } from './services/third-party-mcp-runtime'
 import { ProjectAgentIntegrationService } from './services/project-agent-integration'
 import { SENTRY_DSN, SENTRY_PROJECT } from '../shared/sentry'
@@ -104,6 +106,7 @@ let macPeerSync: MacPeerSyncService | null = null
 let pendingAgentRunNavigationId: string | null = null
 let stopAutoUpdates: (() => void) | null = null
 let taskDispatcher: TaskDispatcher | null = null
+let t3RuntimeProcess: T3RuntimeProcess | null = null
 let projectSharingHost: ProjectSharingHost | null = null
 
 app.on('render-process-gone', (_event, webContents, details) => {
@@ -312,7 +315,7 @@ if (!hasLock) {
       registerBundledDailyBriefingStrategies()
       loadProjectAnalyticsProfiles(analyticsProfilePath)
       const databasePath = join(userDataPath, 'project-agent.sqlite')
-      database = new AppDatabase(databasePath)
+      database = new AppDatabase(databasePath, { decisionInboxEnabled: false })
       const credentialVault = new CredentialVault(join(userDataPath, 'credentials.enc'))
       const configuredAccountApiUrl = process.env.FUDDY_ACCOUNT_API_URL?.trim()
       const defaultAccountApiUrl = runtimeProfile.channel === 'development'
@@ -370,24 +373,33 @@ if (!hasLock) {
         hostBundleId: runtimeProfile.hostBundleId
       })
       agentToolsMcp = new ThirdPartyMcpRuntime(mcpOptions)
-      const piTaskHarness = new PiTaskHarness(
-        providerSettings,
-        database,
-        agentToolsMcp,
-        join(userDataPath, 'pi-sessions')
-      )
+      const t3Entry = app.isPackaged
+        ? join(process.resourcesPath, 't3-runtime', 'dist', 'bin.mjs')
+        : join(app.getAppPath(), '.third-party-tools', 't3-runtime', 'dist', 'bin.mjs')
+      const t3Process = new T3RuntimeProcess(t3Entry, join(userDataPath, 't3-runtime'))
+      const t3Catalog = new T3ProviderCatalog(t3Process)
+      t3RuntimeProcess = t3Process
+      const appDatabase = database
+      const providerRegistry = createT3AgentRegistry({
+        process: t3Process,
+        tools: agentToolsMcp,
+        settings: providerSettings,
+        codexMigration: new CliAgentRuntime(agentToolsMcp),
+        mcpScript: join(__dirname, 'project-agent-mcp.js'),
+        databasePath,
+        bind: (key) => appDatabase.setSetting(key, 't3')
+      })
       const dispatcher = new TaskDispatcher(
         database,
-        piTaskHarness,
+        null,
         workspaceFiles,
-        new CliAgentRuntime(agentToolsMcp, join(__dirname, 'project-agent-mcp.js'), databasePath, providerSettings),
+        null,
         undefined,
-        async (run, turn) => {
-          showAgentRunNotification(turn)
-          if (turn.outcome === 'completed') await decisionRemediationService.sync(run.projectId)
-        },
-        undefined,
-        (prompt, signal) => accountService.generateChatTitle(prompt, signal)
+        (_run, turn) => showAgentRunNotification(turn),
+        providerRegistry,
+        (prompt, signal) => accountService.generateChatTitle(prompt, signal),
+        (run) => appDatabase.getSetting<string>(t3EngineBindingKey(run.provider, run.id), '') === 't3',
+        () => providerSettings.getPublicSettings().codingAgents.defaultAgent
       )
       taskDispatcher = dispatcher
       dispatcher.onRunUpdate((runId, update) => {
@@ -421,7 +433,7 @@ if (!hasLock) {
         runtime,
         goalTrackingService,
         workspaceAgentActions,
-        decisionRemediationService,
+        undefined,
         workAssistantAgent
       )
       workspaceAgentActions.setMorningBriefingGenerator((cancellationSignal) => (
@@ -477,8 +489,7 @@ if (!hasLock) {
         },
         runConnectors: async (projectId, cancellationSignal) => {
           const result = await connectorRuntime.runConnectors(projectId, cancellationSignal)
-          const remediation = await decisionRemediationService.sync(projectId, cancellationSignal)
-          return `Connector 巡检完成：${result.succeeded} 成功，${result.failed} 失败；核验 ${remediation.remediations.length} 条修复进度。`
+          return `Connector 巡检完成，${result.succeeded} 成功，${result.failed} 失败。`
         },
         checkGoals: async (projectId, cancellationSignal) => {
           const results = await goalTrackingService.checkDueGoals(projectId ?? undefined, cancellationSignal)
@@ -531,7 +542,8 @@ if (!hasLock) {
         companionSync,
         accountService,
         accountEnrollmentCoordinator,
-        macPeerSync
+        macPeerSync,
+        t3Catalog
       )
       const keys = new ProjectSharingKeyStore(accountService, credentialVault)
       projectSharingHost = new ProjectSharingHost(database, accountService, keys,
@@ -542,14 +554,6 @@ if (!hasLock) {
       stopAutoUpdates = startAutoUpdateService((error) => {
         Sentry.captureException(error, { tags: { boundary: 'auto-update' } })
       }, runtimeProfile.autoUpdatesEnabled && updateConfigurationExists)
-      void decisionRemediationService
-        .sync()
-        .then(() => {
-          if (!mainWindow?.webContents.isDestroyed()) mainWindow?.webContents.send('companion:data-changed')
-        })
-        .catch((error: unknown) => {
-          Sentry.captureException(error, { tags: { boundary: 'decision-remediation-startup' } })
-        })
       const accountState = accountService.getState()
       if (accountState.status === 'signed-in' && accountState.user) {
         // The coordinator activates the account inside its retry loop. A
@@ -608,6 +612,9 @@ async function shutdown(): Promise<void> {
     const activeTaskDispatcher = taskDispatcher
     taskDispatcher = null
     await activeTaskDispatcher?.stopAndDrain()
+    const activeT3Runtime = t3RuntimeProcess
+    t3RuntimeProcess = null
+    await activeT3Runtime?.stop()
     await agentToolsMcp?.stop()
     agentToolsMcp = null
     database?.close()

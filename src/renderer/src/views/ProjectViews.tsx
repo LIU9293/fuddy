@@ -93,15 +93,11 @@ import type { CompanionMacStatus, CompanionPairingSession } from '../../../share
 import { defaultCompanionRelayUrl } from '../../../shared/companion-sync'
 import { buildAgentModelLabels } from '../../../shared/model-display'
 import { agentProviderDefinitions, codingAgentProviders } from '../../../shared/agent-providers'
+import { useAgentProviderOptions } from '../components/useAgentProviderOptions'
 import {
-  codingAgentOptions,
   connectorStatusLabels,
-  decisionWaitingReasonLabels,
-  formatDecisionSource,
   formatExpiryLabel,
   formatRelativeTime,
-  kindIcons,
-  kindLabels,
   settingsNavigationItems,
   settingsSectionTitles,
   useAutoDismissMessage,
@@ -232,6 +228,7 @@ export function ProjectSettingsView({
   onNotice: (message: string) => void
 }): React.JSX.Element {
   const [draft, setDraft] = useState<UpdateProjectInput>(structuredClone(project))
+  const providers = useAgentProviderOptions(draft.profile.defaultAgent)
   const previousProjectRef = useRef(project)
   const [saving, setSaving] = useState(false)
   const [selectingFolder, setSelectingFolder] = useState(false)
@@ -439,12 +436,7 @@ export function ProjectSettingsView({
             <span>默认 Agent</span>
             <SelectMenu
               value={draft.profile.defaultAgent}
-              options={[
-                { value: 'pi', label: 'Pi Agent' },
-                { value: 'codex', label: 'Codex' },
-                { value: 'claude', label: 'Claude Code' },
-                { value: 'opencode', label: 'OpenCode' }
-              ]}
+              options={providers}
               onChange={(defaultAgent) =>
                 updateProfile({ defaultAgent: defaultAgent as Project['profile']['defaultAgent'] })
               }

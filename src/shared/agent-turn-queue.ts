@@ -19,4 +19,6 @@ export interface AgentTurnQueueItem {
 export type AgentTurnQueueSummary = Pick<AgentTurnQueueItem,
   'requestId' | 'runId' | 'prompt' | 'requestedByUserId' | 'authorSnapshot' | 'status' | 'enqueuedAt'> & {
     attachmentCount: number
+    canSteer?: boolean
+    canCancel?: boolean
   }

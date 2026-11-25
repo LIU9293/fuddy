@@ -7,7 +7,8 @@ import { createProjectSchema, updateProjectSchema } from '../../shared/project-v
 import { connectorCatalog } from '../connectors/connector-runtime'
 import { listProjectAnalyticsProfileSummaries } from '../analytics/project-analytics-profiles'
 import { getCapabilities } from '../services/capabilities'
-import { discoverCodingAgentModels } from '../services/coding-agent-models'
+import { agentRunProviderSchema } from '../../shared/agent-provider-validation'
+import { antigravitySetupInputSchema } from '../../shared/antigravity-setup'
 import { collectGitWorkingTreeSummary } from '../services/git-working-tree'
 import { requestMacMicrophoneAccess } from '../services/microphone-permissions'
 import {
@@ -72,10 +73,11 @@ export function registerSettingsIpc(context: IpcContext): void {
     })
     const input = z
       .object({
-        defaultAgent: z.enum(['codex', 'claude', 'opencode']),
+        defaultAgent: agentRunProviderSchema,
         codex: model,
         claude: model,
-        opencode: model
+        opencode: model,
+        additional: z.partialRecord(agentRunProviderSchema, model).optional()
       })
       .parse(rawInput)
     const settings = providerSettings.configureCodingAgents(input)
@@ -83,7 +85,31 @@ export function registerSettingsIpc(context: IpcContext): void {
     return settings
   })
 
-  ipcMain.handle('provider:list-coding-agent-models', () => discoverCodingAgentModels())
+  ipcMain.handle('provider:list-coding-agent-models', (_event, refresh: unknown) =>
+    context.t3Catalog.list(z.boolean().optional().parse(refresh)))
+  ipcMain.handle('provider:manage-antigravity', async (_event, input: unknown) => {
+    const request = antigravitySetupInputSchema.parse(input)
+    const { authorizationUrl, ...state } = await context.t3Catalog.manageAntigravity(request).catch((error: unknown) => {
+      if (request.operation === 'finish-sign-in') throw new Error('Antigravity 登录未完成，请核对重定向地址。')
+      throw error
+    })
+    const url = authorizationUrl && URL.canParse(authorizationUrl) ? new URL(authorizationUrl) : null
+    const canOpenSignIn = url?.origin === 'https://accounts.google.com' && !url.username && !url.password
+    if (request.operation === 'open-sign-in' && canOpenSignIn) await shell.openExternal(url.href)
+    return { ...state, canOpenSignIn }
+  })
+  ipcMain.handle('provider:search-acp', (_event, input: unknown) => context.t3Catalog.searchAcp(z.string().trim().max(120).parse(input)))
+  ipcMain.handle('provider:add-acp', async (_event, input: unknown) => {
+    const agent = await context.t3Catalog.addAcp(z.string().regex(/^[a-zA-Z0-9_-]{1,60}$/u).parse(input))
+    const settings = providerSettings.getPublicSettings().codingAgents
+    if (!settings.additional?.[agent]) {
+      providerSettings.configureCodingAgents({ ...settings, additional: {
+        ...settings.additional, [agent]: { defaultModel: '', defaultReasoningEffort: '' }
+      } })
+      companionSync.publishModelLabels()
+    }
+    return agent
+  })
 
   ipcMain.handle('provider:configure-asr', (_event, rawInput: unknown) => {
     const input = z

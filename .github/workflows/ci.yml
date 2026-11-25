@@ -87,6 +87,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm install --global pnpm@12.14.0
       - run: npm run package:smoke
       - name: Verify packaged application
         run: |

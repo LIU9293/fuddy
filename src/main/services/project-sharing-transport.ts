@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
+import { agentRunProviderSchema } from '../../shared/agent-provider-validation'
 import type { AccountProjectShare } from '../../shared/account'
 import type { AgentRunArtifact } from '../../shared/contracts'
 import type { ChatAttachmentInput } from '../../shared/chat-attachments'
@@ -36,7 +37,7 @@ const projectSchema = z.object({
 const chatSchema = z.object({
   id: z.string(), projectId: z.string(), title: z.string(),
   status: z.enum(['draft', 'queued', 'running', 'idle', 'completed', 'failed', 'cancelled']),
-  provider: z.enum(['pi', 'codex', 'claude', 'opencode']),
+  provider: agentRunProviderSchema,
   executionHostId: z.string().optional(), createdByUserId: z.string().nullable(),
   createdBySnapshot: authorSchema.nullable(), createdAt: z.string(), updatedAt: z.string(),
   archivedAt: z.string().nullable().optional()

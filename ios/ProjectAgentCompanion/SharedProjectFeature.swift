@@ -708,7 +708,7 @@ struct SharedProjectDetailView: View {
                 Section("新建 Chat") {
                     Picker("执行 Agent", selection: $provider) {
                         Text("项目默认 Agent").tag("")
-                        ForEach(companionAgentProviderIDs, id: \.self) { id in
+                        ForEach(store.state.modelLabels.agentProviderIDs, id: \.self) { id in
                             Text(companionAgentProviderLabel(id)).tag(id)
                         }
                     }

@@ -52,7 +52,7 @@ export function ChatComposer({
   onAttachmentsSelected,
   onRemoveAttachment,
   submitAriaLabel = '提交',
-  voicePrompt = 'Fuddy，项目，目标，决策收件箱，工作助理，Chat',
+  voicePrompt = 'Fuddy，项目，目标，工作助理，Chat',
   modelLabel,
   modelControl,
   layout = 'default'

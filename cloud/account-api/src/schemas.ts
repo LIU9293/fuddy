@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { sharedProjectEventKinds } from '../../../src/shared/project-sharing-events'
 
 export const deviceSchema = z.object({
   id: z.uuid().optional(),
@@ -83,7 +84,7 @@ export const completeProjectDeviceGrantSchema = z.object({
 export const publishProjectEventSchema = z.object({
   eventId: z.uuid(),
   keyEpoch: z.number().int().positive().max(1_000_000),
-  kind: z.enum(['snapshot', 'chat', 'message', 'settings']),
+  kind: z.enum(sharedProjectEventKinds),
   envelope: z.object({
     algorithm: z.literal('A256GCM'),
     keyId: z.string().regex(/^[A-Za-z0-9_-]{16}$/u),

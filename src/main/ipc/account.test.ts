@@ -63,7 +63,7 @@ describe('account IPC lifecycle', () => {
 
   it('keeps project sharing available and reports a missing service route', async () => {
     vi.stubEnv('PROJECT_AGENT_PROJECT_SHARING', '0')
-    const projectId = '11111111-1111-4111-8111-111111111111'
+    const projectId = 'local-project-团队'
     const sharedId = '22222222-2222-4222-8222-222222222222'
     const listProjectShares = vi.fn()
       .mockResolvedValueOnce([])
@@ -79,6 +79,19 @@ describe('account IPC lifecycle', () => {
     })
     await expect(overview({}, projectId)).rejects.toThrow('共享服务接口不存在。')
     expect(listProjectShares).toHaveBeenCalledTimes(2)
+  })
+
+  it('activates sharing for a local project ID using its sync identity', async () => {
+    const projectId = 'local-project-团队'
+    const sharedId = '22222222-2222-4222-8222-222222222222'
+    const registerProjectShare = vi.fn().mockRejectedValue(new Error('共享服务暂不可用。'))
+    registerAccountIpc({
+      database: { listProjects: () => [{ id: projectId, shared: { id: sharedId } }] },
+      accountService: { getState: () => signedInState, registerProjectShare }
+    } as unknown as IpcContext)
+
+    await expect(electronMocks.handlers.get('account:activate-project-sharing')!({}, projectId)).rejects.toThrow('共享服务暂不可用。')
+    expect(registerProjectShare).toHaveBeenCalledWith(sharedId, signedInState.device?.hostId)
   })
 
   it('broadcasts an already signed-out state to clear a stale root renderer', () => {

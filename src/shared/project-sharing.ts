@@ -123,7 +123,8 @@ export interface SharedMessageView {
 }
 
 export function sharedMessageView(message: AgentRunMessage): SharedMessageView | null {
-  if (message.role === 'tool' || message.role === 'system' || message.eventType === 'reasoning') return null
+  if (message.role === 'tool' || message.role === 'system'
+    || message.eventType === 'reasoning' || message.eventType === 'commentary') return null
   return {
     id: message.id,
     runId: message.runId,

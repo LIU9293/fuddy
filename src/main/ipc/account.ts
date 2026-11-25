@@ -132,7 +132,7 @@ export function registerAccountIpc(context: IpcContext): void {
   ))
 
   ipcMain.handle('account:project-sharing-overview', (_event, rawProjectId: unknown) => {
-    const projectId = z.string().uuid().parse(rawProjectId)
+    const projectId = z.string().trim().min(1).max(200).parse(rawProjectId)
     const localProject = database.listProjects().find((project) =>
       project.id === projectId || project.shared?.id === projectId)
     if (!localProject) throw new Error('本机没有这个项目。')
@@ -149,7 +149,7 @@ export function registerAccountIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('account:activate-project-sharing', (_event, rawProjectId: unknown) => {
-    const localProjectId = z.string().uuid().parse(rawProjectId)
+    const localProjectId = z.string().trim().min(1).max(200).parse(rawProjectId)
     const project = database.listProjects().find((item) => item.id === localProjectId)
     if (!project?.shared?.id) throw new Error('本机项目尚未建立同步身份。')
     const hostId = accountService.getState().device?.hostId
@@ -403,12 +403,17 @@ export function registerAccountIpc(context: IpcContext): void {
     return state
   })
 
-  ipcMain.handle('onboarding:detect-coding-agents', () => {
-    const capabilities = getCapabilities(providerSettings.getPublicSettings())
+  ipcMain.handle('onboarding:detect-coding-agents', async () => {
+    const catalog = await context.t3Catalog.list()
+    const capabilities = Object.values(catalog).flatMap(agent => agent ? [{
+      id: agent.provider, label: agent.label ?? agent.provider,
+      status: agent.error ? 'needs-setup' as const : 'ready' as const,
+      detail: agent.error ?? 'T3 已检测到可用 Agent。'
+    }] : [])
     return {
       capabilities,
       readyAgentIds: capabilities
-        .filter((capability) => ['codex', 'claude', 'opencode'].includes(capability.id) && capability.status === 'ready')
+        .filter((capability) => capability.status === 'ready')
         .map((capability) => capability.id)
     }
   })

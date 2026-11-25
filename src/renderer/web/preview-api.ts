@@ -179,22 +179,8 @@ export function createPreviewApi(empty = false): DesktopApi {
       goal.milestones = goal.milestones.filter((item) => item.id !== milestoneId)
       return copy(goal)
     },
-    createDecision: async (input) => {
-      const decision = {
-        id: crypto.randomUUID(), projectId: input.projectId, goalId: input.goalId,
-        kind: 'decision' as const, title: input.title, summary: input.summary ?? '', impact: '',
-        urgency: 'medium' as const, confidence: 0, suggestedActions: [], evidenceRefs: input.evidenceRefs ?? [],
-        status: 'inbox' as const, source: 'Web 预览示例', createdAt: now()
-      }
-      data.decisions.unshift(decision)
-      return copy(decision)
-    },
-    updateDecisionStatus: async (id, status) => {
-      const decision = required(data.decisions.find((item) => item.id === id))
-      decision.status = status
-      decision.statusUpdatedAt = now()
-      return copy(decision)
-    },
+    createDecision: unavailable,
+    updateDecisionStatus: unavailable,
     evaluatePermission: unavailable,
     dispatchTask: unavailable,
     dispatchProjectAgent: unavailable,
@@ -255,6 +241,7 @@ export function createPreviewApi(empty = false): DesktopApi {
     cancelQueuedAgentTurn: unavailable,
     steerQueuedAgentTurn: unavailable,
     respondAgentApproval: unavailable,
+    respondAgentInput: unavailable,
     listWorkspaceFiles: async (projectId) => copy(files.filter((file) => file.entry.projectId === projectId).map((file) => file.entry)),
     readWorkspaceFile: async (projectId, path) => copy(required(files.find(
       (file) => file.entry.projectId === projectId && file.entry.relativePath === path
@@ -283,6 +270,9 @@ export function createPreviewApi(empty = false): DesktopApi {
       data.providerSettings.codingAgents = copy(input)
       return copy(data.providerSettings)
     },
+    manageAntigravity: unavailable,
+    searchAcpAgents: unavailable,
+    addAcpAgent: unavailable,
     listCodingAgentModels: async () => ({
       codex: { provider: 'codex', models: [], defaultReasoningEfforts: [], defaultReasoningEffort: null, error: previewOnly },
       claude: { provider: 'claude', models: [], defaultReasoningEfforts: [], defaultReasoningEffort: null, error: previewOnly },

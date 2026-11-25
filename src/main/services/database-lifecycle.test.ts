@@ -23,6 +23,28 @@ afterEach(() => {
 })
 
 describe('AppDatabase lifecycle', () => {
+  it('retires Inbox operations without deleting existing projects or archived records', () => {
+    const path = temporaryDatabasePath()
+    const legacy = new AppDatabase(path)
+    const project = legacy.createProject({
+      name: '历史项目', summary: '测试下线收件箱', focus: '',
+      mission: '', vision: '', productType: 'macOS App', stage: '构建中'
+    })
+    const decision = legacy.createDecision({ projectId: project.id, title: '历史事项' })
+    legacy.close()
+
+    const current = new AppDatabase(path, { decisionInboxEnabled: false })
+    expect(current.listProjects()).toEqual([expect.objectContaining({ id: project.id })])
+    expect(current.listDecisions()).toEqual([])
+    expect(() => current.createDecision({ projectId: project.id, title: '新增事项' })).toThrow('收件箱已下线')
+    expect(() => current.updateDecisionStatus(decision.id, 'resolved')).toThrow('收件箱已下线')
+    current.close()
+
+    const archive = new AppDatabase(path)
+    expect(archive.listDecisions()).toEqual([expect.objectContaining({ id: decision.id, status: 'inbox' })])
+    archive.close()
+  })
+
   it('records and preserves the current schema version across restarts', () => {
     const path = temporaryDatabasePath()
     new AppDatabase(path).close()

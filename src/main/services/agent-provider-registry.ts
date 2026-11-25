@@ -5,10 +5,17 @@ import type {
   AgentRunProvider,
   AgentRunStreamUpdate
 } from '../../shared/contracts'
-import type { CliAgentRuntime } from './cli-agent-runtime'
+import type { CliAgentRuntime, CliAgentTurnInput } from './cli-agent-runtime'
 import type { PiTaskHarness } from './pi-task-harness'
 import { codingAgentProviders } from '../../shared/agent-providers'
 import type { RuntimeAttachment } from '../../shared/chat-attachments'
+
+export type AgentSteerDelivery = 'deferred' | 'cancelled' | { timelineOrdinal: number } | void
+export type AgentSteer = (
+  prompt: string, attachments: RuntimeAttachment[], requestId: string, executionStartedAt?: string | null
+) => Promise<AgentSteerDelivery>
+
+export class AgentSteerDeliveryUnknown extends Error {}
 
 export interface AgentProviderCapabilities {
   nativeSessions: boolean
@@ -20,6 +27,12 @@ export interface AgentProviderCapabilities {
 
 export interface AgentProviderTurnInput {
   runId: string
+  requestId?: string
+  executionStartedAt?: string | null
+  recoverCommittedTurn?: boolean
+  onCommittedProjection?: (sequence: number, terminal: boolean, publish: () => void) => void
+  onInputRequest?: CliAgentTurnInput['onInputRequest']
+  title?: string
   projectId: string | null
   projectContext: string
   prompt: string
@@ -41,7 +54,7 @@ export interface AgentProviderTurnInput {
   onSessionId: (sessionId: string) => void
   onAccountContext?: (context: import('../../shared/agent-account-context').AgentAccountContext) => void
   onApproval: (request: Omit<AgentApprovalRequest, 'runId' | 'createdAt'>) => Promise<AgentApprovalDecision>
-  onSteerReady?: (steer: ((prompt: string, attachments: RuntimeAttachment[], requestId: string) => Promise<void>) | null) => void
+  onSteerReady?: (steer: AgentSteer | null) => void
 }
 
 export interface AgentProviderTurnResult {
@@ -53,6 +66,7 @@ export interface AgentProviderAdapter {
   provider: AgentRunProvider
   capabilities: AgentProviderCapabilities
   runTurn(input: AgentProviderTurnInput): Promise<AgentProviderTurnResult>
+  recoverSteer?(runId: string, requestId: string, executionStartedAt: string | null): Promise<AgentSteerDelivery>
 }
 
 const codingAgentHistoryMessageLimit = 12
@@ -89,7 +103,7 @@ export function codingAgentContinuationContext(messages: AgentRunMessage[]): str
 export class AgentProviderRegistry {
   private readonly adapters = new Map<AgentRunProvider, AgentProviderAdapter>()
 
-  constructor(adapters: AgentProviderAdapter[] = []) {
+  constructor(adapters: AgentProviderAdapter[] = [], private readonly resolveProvider?: (provider: AgentRunProvider) => AgentProviderAdapter | undefined) {
     for (const adapter of adapters) this.register(adapter)
   }
 
@@ -101,7 +115,7 @@ export class AgentProviderRegistry {
   }
 
   get(provider: AgentRunProvider): AgentProviderAdapter {
-    const adapter = this.adapters.get(provider)
+    const adapter = this.adapters.get(provider) ?? this.resolveProvider?.(provider)
     if (!adapter) throw new Error(`Agent provider is not registered: ${provider}`)
     return adapter
   }
@@ -115,7 +129,7 @@ export class AgentProviderRegistry {
   }
 }
 
-const sharedCapabilities: AgentProviderCapabilities = {
+export const sharedCapabilities: AgentProviderCapabilities = {
   nativeSessions: true,
   modelSelection: true,
   reasoningSummaries: true,
@@ -165,6 +179,12 @@ export function createDefaultAgentProviderRegistry(
         const continuationContext = input.sessionId ? '' : codingAgentContinuationContext(history)
         return await cliRuntime.runTurn({
           runId: input.runId,
+          requestId: input.requestId,
+          executionStartedAt: input.executionStartedAt,
+          recoverCommittedTurn: input.recoverCommittedTurn,
+          onCommittedProjection: input.onCommittedProjection,
+          onInputRequest: input.onInputRequest,
+          title: input.title,
           history,
           codexSessionOwned: input.codexSessionOwned,
           onCodexSessionReady: input.onCodexSessionReady,

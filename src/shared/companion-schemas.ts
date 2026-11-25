@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { agentRunProviderSchema } from './agent-provider-validation'
 import { agentAccountContextSchema } from './agent-account-context'
 import {
   companionCommandTypes,
@@ -57,7 +58,7 @@ const projectProfile = z.object({
   repoPath: z.string(),
   workspaceRoots: z.array(workspaceRoot),
   primaryWorkspaceRootId: identifier.nullable(),
-  defaultAgent: z.enum(['pi', 'codex', 'claude', 'opencode']),
+  defaultAgent: agentRunProviderSchema,
   websiteUrl: z.string().nullable(),
   surfaces: z.array(z.string()),
   focusAreas: z.array(z.string()),
@@ -159,7 +160,7 @@ const agentRun = z.object({
   decisionId: identifier.nullable().optional(),
   goalId: identifier.nullable().optional(),
   milestoneId: identifier.nullable().optional(),
-  provider: z.enum(['pi', 'codex', 'claude', 'opencode']),
+  provider: agentRunProviderSchema,
   model: z.string().nullable().optional(),
   reasoningEffort: z.string().nullable().optional(),
   title: z.string(),
@@ -265,13 +266,31 @@ const chatRecord = z.object({
   completedAt: isoDate.nullable(),
   assistantMessage: assistantMessage.nullable(),
   agentMessages: z.array(agentMessage),
-  morningBriefing: morningBriefing.nullable()
+  morningBriefing: morningBriefing.nullable(),
+  activity: z.object({
+    version: z.literal(1),
+    inline: z.boolean(),
+    stages: z.array(z.object({
+      id: chatRecordIdentifier,
+      reasoningId: identifier.nullable(),
+      toolIds: z.array(identifier)
+    }))
+  }).optional()
 }).superRefine((record, context) => {
   const reject = (message: string): void => {
     context.addIssue({ code: 'custom', message })
   }
   if (record.kind !== 'process' && record.completedAt !== null) {
     reject('Only process blocks may contain completedAt.')
+  }
+  if (record.activity) {
+    const orderedIds = record.activity.stages.flatMap(stage => [
+      ...(stage.reasoningId ? [stage.reasoningId] : []), ...stage.toolIds
+    ])
+    if (record.kind !== 'process' || orderedIds.length !== record.agentMessages.length
+      || orderedIds.some((id, index) => id !== record.agentMessages[index].id)) {
+      reject('Agent activity stages must match their process messages in order.')
+    }
   }
   if (record.chatKind === 'assistant') {
     if (record.kind === 'message' && record.assistantMessage === null) reject('Assistant message block requires assistantMessage.')
@@ -317,7 +336,7 @@ const chatPage = z.object({
 })
 const modelLabels = z.object({
   workAssistant: z.string(),
-  providers: z.object({ pi: z.string(), codex: z.string(), claude: z.string(), opencode: z.string() })
+  providers: z.object({ pi: z.string(), codex: z.string(), claude: z.string(), opencode: z.string() }).catchall(z.string())
 })
 
 const payloadSchemas = {
@@ -445,7 +464,7 @@ const commandPayloadSchemas = {
   'agent.create-session': z.object({
     runId: identifier,
     projectId: identifier.optional(),
-    provider: z.enum(['pi', 'codex', 'claude', 'opencode']).optional(),
+    provider: agentRunProviderSchema.optional(),
     goalId: identifier.optional(),
     milestoneId: identifier.optional(),
     draftPrompt: z.string().max(20_000).optional(),
@@ -453,7 +472,7 @@ const commandPayloadSchemas = {
   }),
   'agent.rename-session': z.object({ runId: identifier, title: z.string().trim().min(1).max(200) }),
   'agent.update-draft-prompt': z.object({ runId: identifier, draftPrompt: z.string().max(20_000) }),
-  'agent.update-execution-settings': z.object({ runId: identifier, provider: z.enum(['pi', 'codex', 'claude', 'opencode']), model: z.string().max(200).optional(), reasoningEffort: z.string().max(100).optional() }),
+  'agent.update-execution-settings': z.object({ runId: identifier, provider: agentRunProviderSchema, model: z.string().max(200).optional(), reasoningEffort: z.string().max(100).optional() }),
   'agent.archive-session': z.object({ runId: identifier }),
   'chat.load-history': z.object({
     chatKind: z.enum(['assistant', 'agent']),

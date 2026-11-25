@@ -1,15 +1,14 @@
-import { ArrowLeft, CircleCheck, Inbox, PanelLeft, Settings2, Target } from 'lucide-react'
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import type { AppBootstrap, AppBootstrapDataKey, DecisionStatus } from '../../../../shared/contracts'
+import { ArrowLeft, CircleCheck, PanelLeft, Settings2, Target } from 'lucide-react'
+import { useMemo, useState, useSyncExternalStore } from 'react'
+import type { AppBootstrap, AppBootstrapDataKey } from '../../../../shared/contracts'
 import { buildAgentModelLabels } from '../../../../shared/model-display'
 import { AgentRunsView } from '../../components/AgentRunsView'
 import { AutomationsView } from '../../components/AutomationsView'
 import { ChatComposer } from '../../components/ChatComposer'
 import { NoticeToast } from '../../components/NoticeToast'
 import { ProjectIcon } from '../../components/ProjectIcon'
-import { SelectMenu } from '../../components/SelectMenu'
 import { WorkspaceFilesView } from '../../components/WorkspaceFilesView'
-import { DecisionRow, EmptyState, GoalsView } from '../../views/InboxGoalsView'
+import { GoalsView } from '../../views/GoalsView'
 import { ProjectsView } from '../../views/ProjectsView'
 import { ProjectSettingsView, ProjectStatusView } from '../../views/ProjectViews'
 import { ProjectSharingSettingsView } from '../../views/ProjectSharingSettingsView'
@@ -44,7 +43,6 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
     props.store.getSnapshot,
     props.store.getSnapshot
   ) as AppBootstrap
-  const [decisionStatus, setDecisionStatus] = useState<DecisionStatus>('inbox')
   const [agentRunPrefill, setAgentRunPrefill] = useState<{ runId: string; prompt: string; requestId: string } | null>(null)
   const workflows = useProjectWorkflows({
     bootstrap,
@@ -61,25 +59,18 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
     onCreated: () => nav.setProjectSection('goals'),
     onNotice: props.onNotice
   })
-  useEffect(() => {
-    if (nav.navigation === 'inbox') setDecisionStatus('inbox')
-  }, [nav.navigation, nav.selectedProject])
   useAutoDismissMessage(composer.attachmentError, composer.dismissAttachmentError)
 
   const selectedProject = bootstrap.projects.find((project) => project.id === nav.selectedProject)
-  const filteredDecisions = useMemo(() => nav.projectSection === 'inbox'
-    ? bootstrap.decisions.filter(
-        (item) => item.status === decisionStatus && (!nav.selectedProject || item.projectId === nav.selectedProject)
-      )
-    : [], [bootstrap.decisions, decisionStatus, nav.projectSection, nav.selectedProject])
   const filteredGoals = useMemo(() => bootstrap.goals.filter(
     (goal) => !nav.selectedProject || goal.projectId === nav.selectedProject
   ), [bootstrap.goals, nav.selectedProject])
-  const pageTitle = pageTitleForNavigation(nav, selectedProject?.name ?? null)
+  const pageTitle = pageTitleForNavigation(nav)
+  const showingProjectGoals = nav.navigation === 'project' && nav.projectSection === 'goals' && Boolean(selectedProject)
 
   return (
     <main className="content-shell">
-      {nav.navigation !== 'runs' && <div className="window-drag-region content-drag-region" />}
+      {nav.navigation === 'settings' && <div className="window-drag-region content-drag-region" />}
       {!props.sidebarOpen && (
         <button className="floating-sidebar-button" onClick={props.onExpandSidebar} aria-label="展开侧边栏">
           <PanelLeft size={18} />
@@ -89,15 +80,15 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
       {nav.navigation !== 'briefing' && nav.navigation !== 'runs' && nav.navigation !== 'settings' && (
         <header className="app-page-header main-area-header">
           <div className="main-area-header-title">
-            {nav.navigation === 'inbox' && selectedProject && (
+            {nav.navigation === 'project' && selectedProject && (
               <button type="button" className="main-area-header-back" onClick={nav.openProjects} aria-label="返回项目列表">
                 <ArrowLeft size={18} />
               </button>
             )}
-            {nav.navigation === 'inbox' && selectedProject && <ProjectIcon project={selectedProject} className="is-page-header" />}
+            {nav.navigation === 'project' && selectedProject && <ProjectIcon project={selectedProject} className="is-page-header" />}
             <div>
               <h1 className="app-page-header-title">{pageTitle}</h1>
-              {nav.navigation === 'inbox' && selectedProject && <span>{selectedProject.name}</span>}
+              {nav.navigation === 'project' && selectedProject && <span>{selectedProject.name}</span>}
             </div>
           </div>
         </header>
@@ -125,13 +116,10 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
           />
         )}
 
-        {nav.navigation === 'inbox' && (
+        {nav.navigation === 'project' && selectedProject && (
           <>
-            {selectedProject && <ProjectTabs section={nav.projectSection} onSelect={nav.setProjectSection} />}
-            {nav.projectSection === 'inbox' && (
-              <DecisionFilters selected={decisionStatus} onSelect={setDecisionStatus} />
-            )}
-            {nav.projectSection === 'settings' && selectedProject ? (
+            <ProjectTabs section={nav.projectSection} onSelect={nav.setProjectSection} />
+            {nav.projectSection === 'settings' ? (
               <div className="project-settings-content">
                 <ProjectSettingsView
                   project={selectedProject}
@@ -151,13 +139,13 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
                   />
                 </div>
               </div>
-            ) : nav.projectSection === 'status' && selectedProject ? (
+            ) : nav.projectSection === 'status' ? (
               <ProjectStatusView
                 project={selectedProject}
                 onSaved={() => props.refreshDomains(['projects'])}
                 onNotice={props.onNotice}
               />
-            ) : nav.projectSection === 'goals' ? (
+            ) : (
               <GoalsView
                 goals={filteredGoals}
                 checkingGoalId={workflows.checkingGoalId}
@@ -167,24 +155,12 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
                 onCompleteMilestone={workflows.completeMilestone}
                 onDeleteMilestone={workflows.deleteMilestone}
               />
-            ) : (
-              <DecisionList
-                decisions={filteredDecisions}
-                projects={bootstrap.projects}
-                status={decisionStatus}
-                handlingDecisionId={workflows.handlingDecisionId}
-                onStatus={workflows.updateDecisionStatus}
-                onHandle={workflows.handleDecision}
-              />
             )}
           </>
         )}
 
         {nav.navigation === 'projects' && (
-          <ProjectsView projects={bootstrap.projects} onOpen={(projectId) => {
-            nav.openProject(projectId)
-            setDecisionStatus('inbox')
-          }} />
+          <ProjectsView projects={bootstrap.projects} onOpen={nav.openProject} />
         )}
         {nav.navigation === 'shared-projects' && <SharedProjectsView currentUserId={props.currentUserId} currentUserDisplayName={props.currentUserDisplayName} />}
         {nav.navigation === 'files' && (
@@ -231,7 +207,7 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
         )}
       </div>
 
-      {(nav.navigation === 'settings' || (nav.navigation === 'inbox' && nav.projectSection === 'goals' && !nav.selectedProject)) && (
+      {(nav.navigation === 'settings' || showingProjectGoals) && (
         <div className={`composer-area ${nav.navigation === 'settings' ? 'is-settings' : ''}`}>
           {props.notice && <NoticeToast notice={props.notice} onClose={() => props.onNotice(null)} />}
           {nav.navigation !== 'settings' && (
@@ -245,40 +221,22 @@ export function AppRouteOutlet(props: AppRouteOutletProps): React.JSX.Element {
               attachmentError={composer.attachmentError}
               onAttachmentsSelected={composer.addAttachments}
               onRemoveAttachment={composer.removeAttachment}
-              leftControls={
-                <SelectMenu
-                  className="composer-select-menu composer-project-select"
-                  value={composer.projectId ?? ''}
-                  options={[
-                    { value: '', label: '全部项目', icon: <span className="project-dot all-projects-dot" /> },
-                    ...composer.projectOptions(bootstrap.projects).map((project) => ({
-                      value: project.value,
-                      label: project.label,
-                      icon: <span className="project-dot" style={{ background: project.accent }} />
-                    }))
-                  ]}
-                  onChange={(value) => composer.setProjectId(value || null)}
-                  ariaLabel="任务所属项目"
-                  position="up"
-                />
-              }
             />
           )}
         </div>
       )}
-      {props.notice && nav.navigation !== 'settings' && !(nav.navigation === 'inbox' && nav.projectSection === 'goals' && !nav.selectedProject) && (
+      {props.notice && nav.navigation !== 'settings' && !showingProjectGoals && (
         <NoticeToast className="notice-toast global-notice-toast" notice={props.notice} onClose={() => props.onNotice(null)} />
       )}
     </main>
   )
 }
 
-function pageTitleForNavigation(nav: AppNavigationController, projectName: string | null): string {
-  if (nav.navigation === 'inbox') {
+function pageTitleForNavigation(nav: AppNavigationController): string {
+  if (nav.navigation === 'project') {
     if (nav.projectSection === 'settings') return '项目设置'
     if (nav.projectSection === 'status') return '项目状态'
     if (nav.projectSection === 'goals') return '目标'
-    return projectName ? '项目收件箱' : '收件箱'
   }
   if (nav.navigation === 'projects') return '项目'
   if (nav.navigation === 'shared-projects') return '与我共享'
@@ -289,7 +247,8 @@ function pageTitleForNavigation(nav: AppNavigationController, projectName: strin
 }
 
 function contentColumnClassName(nav: AppNavigationController): string {
-  return `content-column ${nav.navigation === 'briefing' ? 'is-briefing' : ''} ${nav.navigation === 'projects' ? 'is-projects' : ''} ${nav.navigation === 'shared-projects' ? 'is-shared-projects' : ''} ${nav.navigation === 'files' ? 'is-files' : ''} ${nav.navigation === 'runs' ? 'is-runs' : ''} ${nav.navigation === 'automations' ? 'is-automations' : ''} ${nav.navigation === 'settings' ? 'is-settings' : ''} ${nav.navigation === 'inbox' && nav.projectSection === 'inbox' ? 'is-inbox-list' : ''} ${nav.navigation === 'inbox' && nav.projectSection === 'settings' ? 'is-project-settings' : ''} ${nav.navigation === 'inbox' && nav.projectSection === 'status' ? 'is-project-status' : ''}`
+  const section = nav.navigation === 'project' ? `project-${nav.projectSection}` : nav.navigation
+  return `content-column is-${section}`
 }
 
 function ProjectTabs(props: {
@@ -298,57 +257,9 @@ function ProjectTabs(props: {
 }): React.JSX.Element {
   return (
     <div className="project-primary-toolbar"><div className="project-primary-tabs">
-      <button className={props.section === 'inbox' ? 'is-active' : ''} onClick={() => props.onSelect('inbox')}><Inbox size={14} /> 收件箱</button>
       <button className={props.section === 'status' ? 'is-active' : ''} onClick={() => props.onSelect('status')}><CircleCheck size={14} /> 状态</button>
       <button className={props.section === 'goals' ? 'is-active' : ''} onClick={() => props.onSelect('goals')}><Target size={14} /> 目标</button>
       <button className={props.section === 'settings' ? 'is-active' : ''} onClick={() => props.onSelect('settings')}><Settings2 size={14} /> 设置</button>
     </div></div>
-  )
-}
-
-const decisionStatuses: DecisionStatus[] = ['inbox', 'in_progress', 'waiting', 'resolved', 'ignored']
-const decisionStatusLabels: Record<DecisionStatus, string> = {
-  inbox: '待处理', in_progress: '进行中', waiting: '等待中', resolved: '已完成', ignored: '已忽略'
-}
-
-function DecisionFilters(props: { selected: DecisionStatus; onSelect: (status: DecisionStatus) => void }): React.JSX.Element {
-  return (
-    <div className="inbox-toolbar inbox-status-toolbar"><div className="filter-tabs">
-      {decisionStatuses.map((status) => (
-        <button key={status} className={props.selected === status ? 'is-active' : ''} onClick={() => props.onSelect(status)}>
-          {decisionStatusLabels[status]}
-        </button>
-      ))}
-    </div></div>
-  )
-}
-
-function DecisionList(props: {
-  decisions: AppBootstrap['decisions']
-  projects: AppBootstrap['projects']
-  status: DecisionStatus
-  handlingDecisionId: string | null
-  onStatus: (id: string, status: DecisionStatus) => Promise<void>
-  onHandle: (item: AppBootstrap['decisions'][number]) => Promise<void>
-}): React.JSX.Element {
-  return (
-    <section className="decision-list">
-      {props.decisions.length > 0 ? <>
-        {props.status !== 'resolved' && <div className="decision-list-header" aria-hidden="true">
-          <span>项目</span><span>类型</span><span>标题</span><span>摘要与证据</span><span>操作</span>
-        </div>}
-        {props.decisions.map((item) => <DecisionRow
-          key={item.id}
-          item={item}
-          project={props.projects.find((project) => project.id === item.projectId)}
-          onStatus={props.onStatus}
-          onHandle={props.onHandle}
-          handling={props.handlingDecisionId === item.id}
-        />)}
-      </> : <EmptyState
-        title={props.status === 'inbox' ? '没有待处理事项' : props.status === 'in_progress' ? '没有进行中的事项' : props.status === 'waiting' ? '没有等待中的事项' : props.status === 'resolved' ? '还没有已完成事项' : '没有已忽略事项'}
-        detail={props.status === 'inbox' ? '新的项目变化会继续投递到决策收件箱。' : '事项状态发生变化后会显示在这里。'}
-      />}
-    </section>
   )
 }

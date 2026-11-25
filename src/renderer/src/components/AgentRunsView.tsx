@@ -2,6 +2,7 @@ import {
   Archive,
   ArrowLeft,
   Bot,
+  Brain,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -9,6 +10,7 @@ import {
   ExternalLink,
   FileOutput,
   FileText,
+  FileDiff,
   FolderGit2,
   Globe2,
   GitBranch,
@@ -17,10 +19,12 @@ import {
   Ellipsis,
   LoaderCircle,
   MessageSquare,
+  MessageCircleQuestion,
   Paperclip,
   Pencil,
   Plus,
   RefreshCw,
+  Redo2,
   Search,
   ShieldCheck,
   SquareTerminal,
@@ -28,10 +32,9 @@ import {
   Wrench
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import type {
   AgentApprovalRequest,
+  AgentInputRequest,
   AgentRun,
   AgentRunArtifact,
   AgentRunArtifactPreview,
@@ -46,7 +49,9 @@ import type {
   Project,
   ProjectGoal
 } from '../../../shared/contracts'
-import { normalizeChatMarkdown } from '../markdown'
+import { AgentInputCard } from './AgentInputCard'
+import { ChatMarkdown as Markdown } from './ChatMarkdown'
+import { agentProviderOptions, modelSettingsForAgent } from '../../../shared/agent-providers'
 import { prepareChatAttachments } from '../chat-attachments'
 import { maximumChatAttachments, isNativeImage, type ChatAttachmentInput } from '../../../shared/chat-attachments'
 import type { CompanionAttachmentDescriptor } from '../../../shared/companion-sync'
@@ -57,6 +62,7 @@ import { ConversationMessageActions } from './ConversationMessageActions'
 import { ConversationSpeaker, ConversationUserSpeaker } from './ConversationSpeaker'
 import { UserMessageBubble } from './UserMessageBubble'
 import { conversationAuthors } from '../conversation-authors'
+import { orderTimelineItems, orderTimelineMessages, timelineMessageOrdinal } from '../../../shared/agent-timeline-order'
 import { agentRunRetryTarget, withoutSupersededRunErrors } from '../../../shared/agent-run-retry'
 import { ProjectIcon } from './ProjectIcon'
 import { SelectMenu } from './SelectMenu'
@@ -66,15 +72,11 @@ import { formatAgentModelLabel, formatAgentProviderName } from '../../../shared/
 import {
   agentToolGroupSummary,
   agentToolPresentation,
-  type AgentToolKind
+  groupAgentActivity,
+  readAgentFileChange,
+  type AgentToolKind,
+  type AgentFileChange
 } from '../../../shared/agent-activity'
-
-const agentOptions = [
-  { value: 'pi', label: 'Pi Agent' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'claude', label: 'Claude Code' },
-  { value: 'opencode', label: 'OpenCode' }
-]
 
 const defaultAgentRunInfoWidth = 390
 const minimumAgentRunInfoWidth = 300
@@ -402,6 +404,8 @@ type ToolActivity = {
   kind: AgentToolKind
   label: string
   summary: string
+  fileChange?: AgentFileChange
+  timelineOrdinal?: number
 }
 
 type ThinkingActivity = {
@@ -409,10 +413,11 @@ type ThinkingActivity = {
   segmentId: string | null
   content: string
   status: 'running' | 'completed'
+  timelineOrdinal?: number
 }
 
 export type LiveActivity =
-  | { kind: 'thinking'; value: ThinkingActivity }
+  | { kind: 'thinking' | 'commentary'; value: ThinkingActivity }
   | { kind: 'tool'; value: ToolActivity }
 
 function isClaudeThinkingSegment(segmentId: unknown): boolean {
@@ -431,7 +436,7 @@ export function visibleRunMessages(
   // The sending view already holds the full live reply. A detail reload must
   // not add its persisted copy beside that reply while the turn is running.
   const persisted = liveTurnStart < 0 ? messages : messages.filter((message, index) =>
-    index <= liveTurnStart || message.role === 'user' || message.role === 'system')
+    index <= liveTurnStart || message.role === 'user' || message.role === 'system' || message.eventType === 'agent_question')
   const visible = provider === 'claude'
     ? persisted.filter((message) => message.eventType !== 'reasoning' || !isClaudeThinkingSegment(message.metadata?.segmentId))
     : persisted
@@ -450,33 +455,58 @@ export function hasVisibleRunFeedback(provider: AgentRunProvider, activities: Li
 }
 
 export type LiveActivityBlock =
-  | { kind: 'thinking'; value: ThinkingActivity }
+  | { kind: 'thinking' | 'commentary'; value: ThinkingActivity }
   | { kind: 'tool-group'; values: ToolActivity[] }
 
 export type LiveActivityStage = {
   id: string
   thinking: ThinkingActivity | null
+  commentary?: string
   tools: ToolActivity[]
 }
 
 type MessageTimelineBlock =
   | { kind: 'message'; value: AgentRunMessage }
   | { kind: 'tool-group'; values: AgentRunMessage[] }
-  | { kind: 'process'; values: AgentRunMessage[]; completedAt: string }
+  | { kind: 'process'; values: AgentRunMessage[]; completedAt: string; startedAt?: string }
+
+function canGroupUserMessages(first?: AgentRunMessage, second?: AgentRunMessage): boolean {
+  return first?.role === 'user' && second?.role === 'user' && first.authorUserId === second.authorUserId
+}
 
 function ToolKindIcon({ kind }: { kind: AgentToolKind }): React.JSX.Element {
-  if (kind === 'read') return <FileText size={12} />
-  if (kind === 'search') return <Search size={12} />
-  if (kind === 'edit') return <Pencil size={12} />
-  if (kind === 'command') return <SquareTerminal size={12} />
-  if (kind === 'browser') return <Globe2 size={12} />
-  return <Wrench size={12} />
+  if (kind === 'read') return <FileText size={16} />
+  if (kind === 'search') return <Search size={16} />
+  if (kind === 'edit') return <Pencil size={16} />
+  if (kind === 'command') return <SquareTerminal size={16} />
+  if (kind === 'browser') return <Globe2 size={16} />
+  return <Wrench size={16} />
 }
 
 function ToolCallItem({ tool }: { tool: ToolActivity }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
   const active = tool.status === 'running'
 
+  if (tool.fileChange) {
+    const { path, paths, additions, deletions, diff } = tool.fileChange
+    const multiple = Boolean(paths && paths.length > 1)
+    return (
+      <details className="agent-file-change">
+        <summary title={paths?.join('\n') || path}>
+          <FileDiff size={16} />
+          <span>{multiple ? `修改了 ${paths?.length} 个文件` : path}</span>
+          <FileChangeCounts additions={additions} deletions={deletions} />
+          {tool.status === 'failed' && <X size={14} aria-label="文件变更失败" />}
+          <ChevronRight className="agent-tool-call-chevron" size={14} />
+        </summary>
+        {multiple && <pre className="agent-file-diff">{paths?.join('\n')}</pre>}
+        {diff ? <pre className="agent-file-diff">{diff.split('\n').map((line, index) => (
+          <code key={index} data-change={line.startsWith('+++') || line.startsWith('---') ? undefined
+            : line.startsWith('+') ? 'addition' : line.startsWith('-') ? 'deletion' : undefined}>{line || ' '}</code>
+        ))}</pre> : <pre className="agent-file-diff">{tool.detail === path ? '暂无变更内容。' : tool.detail}</pre>}
+      </details>
+    )
+  }
   return (
     <div className={`agent-tool-call ${active ? 'is-running' : ''} ${tool.status === 'failed' ? 'is-failed' : ''} ${expanded ? 'is-expanded' : ''}`}>
       <button
@@ -499,12 +529,22 @@ function ToolCallItem({ tool }: { tool: ToolActivity }): React.JSX.Element {
   )
 }
 
+function FileChangeCounts({ additions, deletions }: Pick<AgentFileChange, 'additions' | 'deletions'>): React.JSX.Element | null {
+  if (additions === undefined && deletions === undefined) return null
+  return <span className="agent-file-change-counts" aria-label={`新增 ${additions ?? 0} 行，删除 ${deletions ?? 0} 行`}>
+    {additions !== undefined && <span data-change="addition">+{additions}</span>}
+    {deletions !== undefined && <span data-change="deletion">−{deletions}</span>}
+  </span>
+}
+
 function ToolCallGroup({ tools }: { tools: ToolActivity[] }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
   const latest = tools.findLast((tool) => tool.status === 'running') ?? tools.at(-1)!
   const active = tools.some((tool) => tool.status === 'running')
   const failed = !active && tools.some((tool) => tool.status === 'failed')
-  const summary = agentToolGroupSummary(tools)
+  const summary = active ? `${latest.label} · ${latest.summary}` : agentToolGroupSummary(tools)
+
+  if (tools.length === 1) return <ToolCallItem tool={latest} />
 
   return (
     <div className={`agent-tool-call-group ${active ? 'is-running' : ''} ${failed ? 'is-failed' : ''} ${expanded ? 'is-expanded' : ''}`}>
@@ -522,9 +562,7 @@ function ToolCallGroup({ tools }: { tools: ToolActivity[] }): React.JSX.Element 
       </button>
       {expanded && (
         <div className="agent-tool-call-group-detail">
-          {tools.length === 1
-            ? <pre>{tools[0].detail}</pre>
-            : tools.map((tool) => <ToolCallItem key={tool.id} tool={tool} />)}
+          {tools.map((tool) => <ToolCallItem key={tool.id} tool={tool} />)}
         </div>
       )}
     </div>
@@ -534,20 +572,40 @@ function ToolCallGroup({ tools }: { tools: ToolActivity[] }): React.JSX.Element 
 function ThinkingMarker({ thinking }: { thinking: ThinkingActivity }): React.JSX.Element {
   const active = thinking.status === 'running'
   return (
-    <div className={`agent-thinking-marker ${active ? 'is-running' : ''}`} role={active ? 'status' : undefined}>
+    <details className={`agent-thinking-marker ${active ? 'is-running' : ''}`}>
+      <summary title="展开思考摘要">
+        <Brain size={16} />
+        <span className="agent-thinking-preview">{thinking.content.replace(/\s+/g, ' ').trim() || '思考中…'}</span>
+        <ChevronRight className="agent-tool-call-chevron" size={14} />
+      </summary>
       <div className="agent-thinking-marker-content">
         {thinking.content && <Markdown content={thinking.content} />}
       </div>
-    </div>
+    </details>
   )
 }
 
+function QuestionTimelineRow({ content, status, choices }: {
+  content: string; status: 'pending' | 'completed' | 'cancelled'; choices?: unknown
+}): React.JSX.Element {
+  const choiceSummary = Array.isArray(choices) ? choices.filter(choice => typeof choice === 'string').join('、') : ''
+  return <details className="agent-thinking-marker agent-question-timeline">
+    <summary>
+      <MessageCircleQuestion size={16} />
+      <span className="agent-thinking-preview">{status === 'pending' ? '等待回答' : content.split('\n', 1)[0]}</span>
+      {status !== 'pending' && <small>{choiceSummary || (status === 'cancelled' ? '已结束' : '已回答')}</small>}
+      <ChevronRight className="agent-tool-call-chevron" size={14} />
+    </summary>
+    <div className="agent-thinking-marker-content"><Markdown content={content} />{choiceSummary && <p>{choiceSummary}</p>}</div>
+  </details>
+}
+
 function completeLiveActivities(activities: LiveActivity[]): LiveActivity[] {
-  return activities.map((activity) => activity.kind === 'thinking'
-    ? { ...activity, value: { ...activity.value, status: 'completed' } }
-    : activity.value.status === 'running'
-      ? { ...activity, value: { ...activity.value, status: 'completed' } }
-      : activity)
+  return activities.map((activity) => {
+    if (activity.value.status !== 'running') return activity
+    if (activity.kind === 'tool') return { ...activity, value: { ...activity.value, status: 'completed' } }
+    return { ...activity, value: { ...activity.value, status: 'completed' } }
+  })
 }
 
 function completeThinkingActivities(activities: LiveActivity[]): LiveActivity[] {
@@ -557,6 +615,19 @@ function completeThinkingActivities(activities: LiveActivity[]): LiveActivity[] 
 }
 
 export function applyAgentLiveUpdate(activities: LiveActivity[], update: AgentRunStreamUpdate): LiveActivity[] {
+  if (update.type === 'commentary_delta') {
+    const completed = completeThinkingActivities(activities)
+    if (completed.some(activity => activity.kind === 'commentary' && activity.value.id === update.messageId)) {
+      return completed.map(activity => activity.kind === 'commentary' && activity.value.id === update.messageId
+        ? { ...activity, value: { ...activity.value, content: activity.value.content + update.delta } }
+        : activity)
+    }
+    return [...completed, { kind: 'commentary', value: {
+      id: update.messageId, segmentId: null, content: update.delta, status: 'running',
+      timelineOrdinal: update.timelineOrdinal
+    } }]
+  }
+
   if (update.type === 'reasoning_delta') {
     const segmentId = update.segmentId?.trim() || null
     const last = activities.at(-1)
@@ -572,7 +643,8 @@ export function applyAgentLiveUpdate(activities: LiveActivity[], update: AgentRu
         id: `thinking-${segmentId ?? 'stream'}-${completed.length}`,
         segmentId,
         content: update.delta,
-        status: 'running'
+        status: 'running',
+        timelineOrdinal: update.timelineOrdinal
       }
     }]
   }
@@ -592,6 +664,7 @@ export function applyAgentLiveUpdate(activities: LiveActivity[], update: AgentRu
             ...activity.value,
             detail: update.detail,
             status: update.status,
+            ...(update.fileChange && { fileChange: update.fileChange }),
             ...agentToolPresentation(update.toolName, update.detail.split('\n\n', 1)[0])
           } }
         : activity)
@@ -604,6 +677,8 @@ export function applyAgentLiveUpdate(activities: LiveActivity[], update: AgentRu
         name: update.toolName,
         detail: update.detail,
         status: update.status,
+        timelineOrdinal: update.timelineOrdinal,
+        ...(update.fileChange && { fileChange: update.fileChange }),
         ...agentToolPresentation(update.toolName, update.detail.split('\n\n', 1)[0])
       }
     }]
@@ -625,6 +700,7 @@ export type AgentRunLiveState = {
   streamingPhase: 'commentary' | 'final_answer' | null
   activities: LiveActivity[]
   pendingApproval: AgentApprovalRequest | null
+  pendingInput?: AgentInputRequest | null
   visibleThinkingIndex: number
 }
 
@@ -661,6 +737,11 @@ export function applyScopedAgentLiveUpdate(
   let activities = state.activities
   let visibleThinkingIndex = state.visibleThinkingIndex
 
+  if (update.type === 'commentary_delta' && streamingMessageId === update.messageId) {
+    streamingText = ''
+    streamingMessageId = null
+    streamingPhase = null
+  }
   if (update.type === 'message_delta') {
     const phase = update.phase ?? null
     const continuesCurrentMessage = streamingMessageId === update.messageId && streamingPhase === phase
@@ -703,7 +784,8 @@ export function applyScopedAgentLiveUpdate(
     streamingPhase,
     activities,
     visibleThinkingIndex,
-    pendingApproval: update.type === 'approval' ? update.request : state.pendingApproval
+    pendingApproval: update.type === 'approval' ? update.request : state.pendingApproval,
+    pendingInput: update.type === 'input_request' ? update.request : state.pendingInput
   }
 }
 
@@ -720,7 +802,7 @@ export function applyAgentLiveUpdateForRun(
 
 export function groupLiveActivities(activities: LiveActivity[]): LiveActivityBlock[] {
   return activities.reduce<LiveActivityBlock[]>((blocks, activity) => {
-    if (activity.kind === 'thinking') {
+    if (activity.kind !== 'tool') {
       blocks.push(activity)
       return blocks
     }
@@ -732,16 +814,13 @@ export function groupLiveActivities(activities: LiveActivity[]): LiveActivityBlo
 }
 
 export function groupLiveActivityStages(activities: LiveActivity[]): LiveActivityStage[] {
-  return activities.reduce<LiveActivityStage[]>((stages, activity) => {
-    if (activity.kind === 'thinking') {
-      stages.push({ id: activity.value.id, thinking: activity.value, tools: [] })
-      return stages
-    }
-    const latest = stages.at(-1)
-    if (latest) latest.tools.push(activity.value)
-    else stages.push({ id: `stage-${activity.value.id}`, thinking: null, tools: [activity.value] })
-    return stages
-  }, [])
+  return groupAgentActivity(activities, activity => activity.kind === 'tool', activity => activity.value.id)
+    .map(({ id, anchor, tools }) => ({
+      id,
+      thinking: anchor?.kind === 'thinking' ? anchor.value : null,
+      ...(anchor?.kind === 'commentary' ? { commentary: anchor.value.content } : {}),
+      tools: tools.flatMap(activity => activity.kind === 'tool' ? [activity.value] : [])
+    }))
 }
 
 function toolActivityFromMessage(message: AgentRunMessage): ToolActivity {
@@ -751,19 +830,33 @@ function toolActivityFromMessage(message: AgentRunMessage): ToolActivity {
     detail: message.content,
     status: message.toolStatus
       ?? (message.metadata?.status === 'failed' ? 'failed' : 'completed'),
+    fileChange: readAgentFileChange(message.metadata?.fileChange),
+    timelineOrdinal: timelineMessageOrdinal(message),
     ...agentToolPresentation(message.toolName ?? 'Tool', message.content, message.metadata)
   }
 }
 
-function activityStagesFromMessages(messages: AgentRunMessage[]): LiveActivityStage[] {
-  return groupLiveActivityStages(messages.flatMap((message): LiveActivity[] => message.role === 'tool'
+function activitiesFromMessages(messages: AgentRunMessage[]): LiveActivity[] {
+  return messages.flatMap((message): LiveActivity[] => message.role === 'tool'
     ? [{ kind: 'tool', value: toolActivityFromMessage(message) }]
-    : [{ kind: 'thinking', value: {
+    : [{ kind: message.eventType === 'commentary' ? 'commentary' : 'thinking', value: {
         id: message.id,
         segmentId: typeof message.metadata?.segmentId === 'string' ? message.metadata.segmentId : null,
         content: message.content,
-        status: 'completed'
-      } }]))
+        status: 'completed',
+        timelineOrdinal: timelineMessageOrdinal(message)
+      } }])
+}
+
+export function mergeNativeLiveActivities(
+  persisted: AgentRunMessage[],
+  live: LiveActivity[]
+): LiveActivity[] {
+  const liveOrdinals = new Set(live.map(activity => activity.value.timelineOrdinal))
+  return [
+    ...live,
+    ...activitiesFromMessages(persisted).filter(activity => !liveOrdinals.has(activity.value.timelineOrdinal))
+  ]
 }
 
 function ActivityStages({ stages, live = false }: { stages: LiveActivityStage[]; live?: boolean }): React.JSX.Element {
@@ -773,6 +866,7 @@ function ActivityStages({ stages, live = false }: { stages: LiveActivityStage[];
         <section className={`agent-activity-stage ${index === stages.length - 1 && live ? 'is-current' : ''}`} key={stage.id}>
           <div className="agent-activity-stage-content">
             {stage.thinking && <ThinkingMarker thinking={stage.thinking} />}
+            {stage.commentary && <Markdown content={stage.commentary} />}
             {stage.tools.length > 0 && <ToolCallGroup tools={stage.tools} />}
           </div>
         </section>
@@ -789,87 +883,100 @@ function appendOpenProcess(blocks: MessageTimelineBlock[], messages: AgentRunMes
       else blocks.push({ kind: 'tool-group', values: [message] })
       return
     }
-    blocks.push({ kind: 'message', value: message })
+      blocks.push({ kind: 'message', value: message })
   })
 }
 
 export function groupMessageTimeline(messages: AgentRunMessage[]): MessageTimelineBlock[] {
   const blocks: MessageTimelineBlock[] = []
+  const ordered = orderTimelineMessages(messages)
+  const nativeTurnEndByBoundary = new Map<string, string>()
   let processMessages: AgentRunMessage[] = []
+  let nativeTurnEnd: string | undefined
+  let startedAt: string | undefined
 
-  messages.forEach((message) => {
-    const isProcessMessage = message.eventType === 'reasoning' || message.role === 'tool'
+  for (const message of ordered.slice().reverse()) {
+    if (message.role === 'assistant' && !message.eventType && timelineMessageOrdinal(message) !== undefined) {
+      nativeTurnEnd = message.createdAt
+    } else if (message.eventType === 'agent_question' || message.metadata?.steered === true) {
+      if (nativeTurnEnd) nativeTurnEndByBoundary.set(message.id, nativeTurnEnd)
+    } else if (message.role === 'user') nativeTurnEnd = undefined
+  }
+
+  ordered.forEach((message) => {
+    const isProcessMessage = message.eventType === 'reasoning' || message.eventType === 'commentary' || message.role === 'tool'
     if (isProcessMessage) {
       processMessages.push(message)
       return
     }
 
     if (processMessages.length > 0) {
-      if (message.role === 'assistant') {
-        blocks.push({ kind: 'process', values: processMessages, completedAt: message.createdAt })
+      const terminalReply = message.role === 'assistant' && !message.eventType
+      const nativeEnd = nativeTurnEndByBoundary.get(message.id)
+      const completedAt = terminalReply ? message.createdAt : nativeEnd
+      if (completedAt && processMessages.some(item => item.role === 'tool' || item.eventType === 'reasoning')) {
+        blocks.push({ kind: 'process', values: processMessages, completedAt,
+          startedAt: nativeEnd || timelineMessageOrdinal(message) !== undefined ? startedAt : undefined })
       } else {
         appendOpenProcess(blocks, processMessages)
       }
       processMessages = []
     }
     blocks.push({ kind: 'message', value: message })
+    if (message.role === 'user') startedAt = message.createdAt
+    else if (message.eventType === 'agent_question') startedAt = message.createdAt
   })
 
   appendOpenProcess(blocks, processMessages)
   return blocks
 }
 
-export function formatAgentProcessDuration(startedAt: string, completedAt: string): string {
-  const elapsedSeconds = Math.max(1, Math.round((new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1_000))
+function formatAgentElapsedTime(startedAt: string, finishedAt: number): string {
+  const elapsedSeconds = Math.max(0, Math.floor((finishedAt - Date.parse(startedAt)) / 1_000))
+  if (!Number.isFinite(elapsedSeconds)) return ''
+  const hours = Math.floor(elapsedSeconds / 3_600)
   const minutes = Math.floor(elapsedSeconds / 60)
   const seconds = elapsedSeconds % 60
-  return minutes > 0 ? `耗时 ${minutes} 分 ${seconds} 秒` : `耗时 ${seconds} 秒`
+  if (hours > 0) return `${hours} 小时 ${minutes % 60} 分`
+  return minutes > 0 ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`
 }
 
-function AgentProcessDisclosure({ messages, completedAt }: { messages: AgentRunMessage[]; completedAt: string }): React.JSX.Element {
+export function formatAgentProcessDuration(startedAt: string, completedAt: string): string {
+  const duration = formatAgentElapsedTime(startedAt, Date.parse(completedAt))
+  return duration ? `耗时 ${duration}` : '已完成'
+}
+
+function AgentWorkingLabel({ startedAt }: { startedAt: string }): React.JSX.Element {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(interval)
+  }, [])
+  return <div className="agent-working-label">已运行 {formatAgentElapsedTime(startedAt, now)}</div>
+}
+
+function AgentProcessDisclosure({ messages, startedAt, completedAt }: {
+  messages: AgentRunMessage[]; startedAt?: string; completedAt: string
+}): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
-  const duration = formatAgentProcessDuration(messages[0].createdAt, completedAt)
-  const stages = activityStagesFromMessages(messages)
+  const duration = formatAgentProcessDuration(startedAt ?? messages[0].createdAt, completedAt)
+  const native = messages.some(message => message.metadata?.engine === 't3')
+  const stages = groupLiveActivityStages(activitiesFromMessages(messages))
   const operationCount = stages.reduce((count, stage) => count + stage.tools.length, 0)
 
   return (
-    <div className={`agent-process-disclosure ${expanded ? 'is-expanded' : ''}`}>
+    <div className={`agent-process-disclosure ${native ? 'is-native' : ''} ${expanded ? 'is-expanded' : ''}`}>
       <button type="button" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}>
-        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        {!native && (expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />)}
         <span>{duration}</span>
-        {operationCount > 0 && <small>· {operationCount} 次操作</small>}
+        {native && (expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />)}
+        {!native && operationCount > 0 && <small>· {operationCount} 次操作</small>}
       </button>
       {expanded && (
         <div className="agent-process-detail">
           <ActivityStages stages={stages} />
         </div>
       )}
-    </div>
-  )
-}
-
-function Markdown({ content, onOpenLink }: { content: string; onOpenLink?: (href: string) => boolean }): React.JSX.Element {
-  return (
-    <div className="chat-markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          img: ({ src, alt }) => typeof src === 'string' && !/^https?:/i.test(src)
-            ? <button className="message-attachment" type="button" onClick={() => onOpenLink?.(src)}>{alt || '查看图片'}</button>
-            : <img src={src} alt={alt} />,
-          a: ({ children, href, ...props }) => (
-            <a
-              {...props}
-              href={href}
-              target={href && /^(https?:|mailto:)/i.test(href) ? '_blank' : undefined}
-              rel={href && /^(https?:|mailto:)/i.test(href) ? 'noreferrer' : undefined}
-              onClick={(event) => {
-                if (href && onOpenLink?.(href)) event.preventDefault()
-              }}
-            >{children}</a>
-          )
-        }}
-      >{normalizeChatMarkdown(content)}</ReactMarkdown>
     </div>
   )
 }
@@ -960,7 +1067,6 @@ export function AgentRunsView({
   const [liveStateByRunId, setLiveStateByRunId] = useState<Record<string, AgentRunLiveState>>({})
   const [queuedMessagesByRunId, setQueuedMessagesByRunId] = useState<Record<string, QueuedRunMessage[]>>({})
   const [persistedQueueByRunId, setPersistedQueueByRunId] = useState<Record<string, import('../../../shared/agent-turn-queue').AgentTurnQueueSummary[]>>({})
-  const [steeringRequestIds, setSteeringRequestIds] = useState<Set<string>>(new Set())
   const cancelledQueuedRequestIdsRef = useRef(new Set<string>())
   const [reply, setReply] = useState('')
   const [replyAttachments, setReplyAttachments] = useState<ChatAttachmentInput[]>([])
@@ -975,7 +1081,7 @@ export function AgentRunsView({
   const [gitSummary, setGitSummary] = useState<GitWorkingTreeSummary | null>(null)
   const [gitSummaryLoading, setGitSummaryLoading] = useState(false)
   const [gitRefreshKey, setGitRefreshKey] = useState(0)
-  const [provider, setProvider] = useState<AgentRunProvider>(projects[0]?.profile.defaultAgent ?? 'pi')
+  const [provider, setProvider] = useState<AgentRunProvider>(projects[0]?.profile.defaultAgent ?? codingAgentSettings.defaultAgent)
   const [projectId, setProjectId] = useState<string | null>(projects[0]?.id ?? null)
   const [milestoneValue, setMilestoneValue] = useState('')
   const selectedHost = executionHosts.find((host) => executionHostId ? host.id === executionHostId : host.isCurrent)
@@ -1024,6 +1130,7 @@ export function AgentRunsView({
   const runBusy = visibleLiveState?.busy ?? Boolean(detail && runIsActive(detail.run))
   const optimisticQueuedMessages = detail ? queuedMessagesByRunId[detail.run.id] ?? [] : []
   const persistedQueuedMessages = detail ? (persistedQueueByRunId[detail.run.id] ?? []).filter((turn) => turn.status === 'queued') : []
+  const [steeringRequestIds, setSteeringRequestIds] = useState<ReadonlySet<string>>(new Set())
   const authors = conversationAuthors([
     ...(detail?.messages ?? []),
     ...persistedQueuedMessages.map((turn) => ({ role: 'user', authorUserId: turn.requestedByUserId, authorSnapshot: turn.authorSnapshot })),
@@ -1035,11 +1142,12 @@ export function AgentRunsView({
     ...persistedQueuedMessages.map((turn) => ({
       requestId: turn.requestId, content: turn.prompt, attachmentCount: turn.attachmentCount,
       author: authors.speaker({ role: 'user', authorUserId: turn.requestedByUserId, authorSnapshot: turn.authorSnapshot }).label,
-      canManage: !turn.requestedByUserId || turn.requestedByUserId === currentUserId
+      canManage: !turn.requestedByUserId || turn.requestedByUserId === currentUserId,
+      canSteer: turn.canSteer === true, canCancel: turn.canCancel !== false
     })),
     ...optimisticQueuedMessages.filter((turn) => !persistedQueuedMessages.some((saved) => saved.requestId === turn.requestId))
       .map((turn) => ({ requestId: turn.requestId, content: turn.content,
-        attachmentCount: turn.attachments.length, author: '你', canManage: true }))
+        attachmentCount: turn.attachments.length, author: '你', canManage: true, canSteer: false, canCancel: true }))
   ]
   const runActive = Boolean(detail && (runBusy || runIsActive(detail.run) || queuedMessages.length > 0))
   const retryTarget = detail ? agentRunRetryTarget(detail.messages) : null
@@ -1047,15 +1155,43 @@ export function AgentRunsView({
   const streamingText = visibleLiveState?.streamingText ?? ''
   const liveActivities = visibleLiveState?.activities ?? []
   const pendingApproval = visibleLiveState?.pendingApproval ?? null
+  const pendingInput = visibleLiveState?.pendingInput ?? null
 
+  const hasQueuedMessages = queuedMessages.length > 0
   useEffect(() => {
     if (!selectedRunId) return
     let active = true
-    void window.projectAgent.listAgentRunPendingTurns(selectedRunId).then((turns) => {
+    const refresh = () => void window.projectAgent.listAgentRunPendingTurns(selectedRunId).then((turns) => {
       if (active) setPersistedQueueByRunId((current) => ({ ...current, [selectedRunId]: turns }))
     }).catch(() => undefined)
-    return () => { active = false }
-  }, [selectedRunId, detail?.messages.length])
+    refresh()
+    const timer = hasQueuedMessages ? window.setInterval(refresh, 750) : undefined
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [selectedRunId, detail?.messages.length, hasQueuedMessages])
+
+  async function steerQueuedMessage(requestId: string): Promise<void> {
+    if (!detail) return
+    const runId = detail.run.id
+    setSteeringRequestIds(current => new Set(current).add(requestId))
+    try {
+      const updated = await window.projectAgent.steerQueuedAgentTurn(requestId)
+      const turns = await window.projectAgent.listAgentRunPendingTurns(runId)
+      if (!turns.some(turn => turn.requestId === requestId)) removeQueuedMessage(runId, requestId)
+      if (selectedRunIdRef.current === runId) setDetail(updated)
+      setPersistedQueueByRunId(current => ({ ...current, [runId]: turns }))
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : '无法追加指令。')
+    } finally {
+      setSteeringRequestIds(current => {
+        const next = new Set(current)
+        next.delete(requestId)
+        return next
+      })
+    }
+  }
 
   async function cancelQueuedMessage(requestId: string): Promise<void> {
     if (!detail) return
@@ -1068,28 +1204,6 @@ export function AgentRunsView({
       setPersistedQueueByRunId((current) => ({ ...current, [runId]: turns }))
     } catch (error) {
       onNotice(error instanceof Error ? error.message : '取消排队消息失败。')
-    }
-  }
-
-  async function steerQueuedMessage(requestId: string): Promise<void> {
-    if (!detail) return
-    const runId = detail.run.id
-    setSteeringRequestIds((current) => new Set(current).add(requestId))
-    try {
-      const updated = await window.projectAgent.steerQueuedAgentTurn(requestId)
-      removeQueuedMessage(runId, requestId)
-      if (selectedRunIdRef.current === runId) setDetail(updated)
-      const turns = await window.projectAgent.listAgentRunPendingTurns(runId)
-      setPersistedQueueByRunId((current) => ({ ...current, [runId]: turns }))
-      await onRefresh()
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Steer 失败，消息仍在队列中。')
-    } finally {
-      setSteeringRequestIds((current) => {
-        const next = new Set(current)
-        next.delete(requestId)
-        return next
-      })
     }
   }
 
@@ -1182,11 +1296,12 @@ export function AgentRunsView({
     }
     if (activeRequestIdByRunRef.current.has(runId) || update.type === 'created') return
     setLiveStateByRunId((current) => applyAgentLiveUpdateForRun(current, runId, update))
-    if (update.type !== 'status' || update.status === 'running' || update.status === 'queued') return
+    const terminal = update.type === 'status' && update.status !== 'running' && update.status !== 'queued'
+    if (!terminal && update.type !== 'question_record') return
     void window.projectAgent.getAgentRun(runId).then((nextDetail) => {
       if (selectedRunIdRef.current === runId) setDetail(nextDetail)
     }).catch(() => undefined)
-    void onRefreshRef.current()
+    if (terminal) void onRefreshRef.current()
   }), [])
 
   useEffect(() => {
@@ -1299,6 +1414,11 @@ export function AgentRunsView({
     }
     if (activeRequestIdByRunRef.current.get(runId) !== requestId) return
     setLiveStateByRunId((current) => applyAgentLiveUpdateForRun(current, runId, update))
+    if (update.type === 'question_record') {
+      void window.projectAgent.getAgentRun(runId).then((nextDetail) => {
+        if (selectedRunIdRef.current === runId) setDetail(nextDetail)
+      }).catch(() => undefined)
+    }
     if (update.type === 'status') {
       setDetail((current) => current?.run.id === runId
         ? { ...current, run: { ...current.run, status: update.status, updatedAt: new Date().toISOString() } }
@@ -1323,7 +1443,7 @@ export function AgentRunsView({
   }
 
   function projectDefaultAgent(nextProjectId: string | null): AgentRunProvider {
-    return projects.find((project) => project.id === nextProjectId)?.profile.defaultAgent ?? 'pi'
+    return projects.find((project) => project.id === nextProjectId)?.profile.defaultAgent ?? codingAgentSettings.defaultAgent
   }
 
   function resetNewRun(nextProjectId: string | null): void {
@@ -1567,7 +1687,7 @@ export function AgentRunsView({
               options={executionHosts.map((host) => ({ value: host.id, label: `${host.name} · ${host.isCurrent ? '本机' : host.online ? '在线' : '离线'}${host.online && !host.workspaceConfigured ? ' · 未配置目录' : ''}`, disabled: !host.online || !host.workspaceConfigured }))}
               onChange={(id) => { setExecutionHostId(id); setMilestoneValue('') }} ariaLabel="执行 Mac" /></label>}
             {(hostsError || selectedHost?.unavailableReason) && <p role="status">{hostsError ?? selectedHost?.unavailableReason}</p>}
-            <label><span>Agent</span><SelectMenu value={provider} options={agentOptions} onChange={(value) => setProvider(value as AgentRunProvider)} ariaLabel="执行 Agent" /></label>
+            <label><span>Agent</span><SelectMenu value={provider} options={agentProviderOptions(codingAgentModels, provider)} onChange={(value) => setProvider(value as AgentRunProvider)} ariaLabel="执行 Agent" /></label>
             <label><span>关联 Milestone（可选）</span><SelectMenu value={milestoneValue} options={[{ value: '', label: '不关联 Milestone' }, ...milestoneOptions]} onChange={setMilestoneValue} ariaLabel="关联 Milestone" /></label>
             <button className="run-create-submit" onClick={() => void createRun()} disabled={creatingBusy || hostUnavailable}>
               {creatingBusy ? <LoaderCircle size={15} className="spin" /> : <Bot size={15} />}
@@ -1602,6 +1722,52 @@ export function AgentRunsView({
     else onNotice('这个文件尚未登记为当前 Chat 的产物，无法在侧边栏预览。')
     return true
   }
+
+  const liveUserMessageId = runBusy ? liveUserMessageIdByRunRef.current.get(detail.run.id) ?? null : null
+  const visibleLive = visibleLiveActivities(detail.run.provider, liveActivities)
+  const latestUser = detail.messages.findLast(message => message.role === 'user' && message.metadata?.steered !== true)
+  const nativeLive = runBusy && (Boolean(pendingInput) || visibleLive.some(activity => activity.value.timelineOrdinal !== undefined))
+  const timelineMessages = visibleRunMessages(detail.run.provider, detail.messages,
+    runBusy && (Boolean(pendingInput) || hasVisibleRunFeedback(detail.run.provider, liveActivities, streamingText, pendingApproval)),
+    nativeLive ? null : liveUserMessageId)
+  const liveRoot = liveUserMessageId ?? (nativeLive ? latestUser?.id : null)
+  const liveStart = timelineMessages.findIndex(message => message.id === liveRoot)
+  const liveCommittedRows = liveStart < 0 ? [] : timelineMessages.slice(liveStart + 1)
+    .filter(message => (message.metadata?.steered === true || message.eventType === 'agent_question') &&
+      timelineMessageOrdinal(message) !== undefined)
+  const persistedLiveWork = nativeLive && liveStart >= 0 ? timelineMessages.slice(liveStart + 1).filter(message =>
+    timelineMessageOrdinal(message) !== undefined &&
+    (message.role === 'tool' || message.eventType === 'reasoning' || message.eventType === 'commentary')) : []
+  const liveRowIds = new Set([...liveCommittedRows, ...persistedLiveWork].map(message => message.id))
+  const historical = timelineMessages.filter(message => !liveRowIds.has(message.id))
+  const liveTimeline = orderTimelineItems([
+    ...mergeNativeLiveActivities(persistedLiveWork, visibleLive).map(activity => ({ kind: 'activity' as const, activity })),
+    ...liveCommittedRows.map(message => ({ kind: 'message' as const, message }))
+  ], entry => entry.kind === 'activity' ? entry.activity.value.timelineOrdinal : timelineMessageOrdinal(entry.message))
+  const liveSections: Array<{ activities: LiveActivity[]; message?: AgentRunMessage }> = [{ activities: [] }]
+  for (const entry of liveTimeline) {
+    if (entry.kind === 'activity') liveSections.at(-1)!.activities.push(entry.activity)
+    else {
+      liveSections.at(-1)!.message = entry.message
+      liveSections.push({ activities: [] })
+    }
+  }
+  const historyBlocks = groupMessageTimeline(historical)
+  const lastHistoryBlock = historyBlocks.at(-1)
+  const firstLiveRow = runBusy && liveSections[0].activities.length === 0 ? liveSections[0].message : undefined
+
+  const renderUserMessage = (message: AgentRunMessage, previous = false, next = false): React.JSX.Element => (
+    <article className="chat-turn is-user" key={message.id}
+      data-grouped-with-previous={previous || undefined} data-grouped-with-next={next || undefined}>
+      <div className="chat-turn-content">
+        {!previous && <ConversationUserSpeaker message={message} authors={authors} />}
+        <MessageAttachments message={message} onOpen={openArtifact} />
+        <UserMessageBubble content={message.content} />
+        {message.metadata?.steered === true && <span className="agent-steered-label"><Redo2 size={13} />已追加</span>}
+        <ConversationMessageActions content={message.content} createdAt={message.createdAt} />
+      </div>
+    </article>
+  )
 
   return (
     <section className="agent-runs-view agent-run-chat-view">
@@ -1645,21 +1811,29 @@ export function AgentRunsView({
       <ConversationShell
         ariaLabel={`${detail.run.title} 对话`}
         resetKey={selectedRunId}
-        composerTopContent={queuedMessages.length > 0 ? (
+        composerTopContent={<>
+          {queuedMessages.length > 0 && (
           <div className="agent-run-message-queue" aria-label="已排队消息">
             {queuedMessages.map((message) => (
               <div className="agent-run-queued-message" key={message.requestId}>
                 <span title={message.content}>{authors.showSpeakers ? `${message.author}：` : ''}{message.content}</span>
-                <small title={steeringRequestIds.has(message.requestId) ? '正在发送到当前 Agent' : '尚未进入 Agent 上下文'}>{message.attachmentCount > 0 ? `${message.attachmentCount} 个附件 · ` : ''}{steeringRequestIds.has(message.requestId) ? '正在 Steer' : '排队中'}</small>
-                {message.canManage && runBusy && detail.run.provider !== 'opencode' && !detail.run.id.startsWith('remote:') && (
-                  <button type="button" className="agent-run-queue-cancel" disabled={steeringRequestIds.has(message.requestId)} onClick={() => void steerQueuedMessage(message.requestId)} aria-label={`Steer ${message.author} 的排队消息`}>Steer</button>
-                )}
-                {message.canManage && <button type="button" className="agent-run-queue-cancel" disabled={steeringRequestIds.has(message.requestId)} onClick={() => void cancelQueuedMessage(message.requestId)} aria-label={`取消 ${message.author} 的排队消息`}>取消</button>}
+                <small>{message.attachmentCount > 0 ? `${message.attachmentCount} 个附件 · ` : ''}{steeringRequestIds.has(message.requestId) ? '正在追加…' : '排队中'}</small>
+                {message.canManage && message.canSteer && <button type="button" className="agent-run-queue-cancel"
+                  disabled={steeringRequestIds.has(message.requestId)} onClick={() => void steerQueuedMessage(message.requestId)}
+                  title="将排队的消息追加到当前轮次">Steer</button>}
+                {message.canManage && message.canCancel && <button type="button" className="agent-run-queue-cancel"
+                  disabled={steeringRequestIds.has(message.requestId)} onClick={() => void cancelQueuedMessage(message.requestId)}
+                  aria-label={`取消 ${message.author} 的排队消息`}>取消</button>}
               </div>
             ))}
           </div>
-        ) : null}
-        composer={(
+          )}
+        </>}
+        composer={pendingInput ? (
+          <AgentInputCard key={pendingInput.id} request={pendingInput} onStop={stopCurrentReply}
+            modelLabel={formatAgentProviderName(detail.run.provider)} onRespond={answers =>
+              window.projectAgent.respondAgentInput({ runId: detail.run.id, requestId: pendingInput.id, answers })} />
+        ) : (
           <ChatComposer
             layout="agent-run"
             imageOnly={false}
@@ -1686,21 +1860,14 @@ export function AgentRunsView({
                 provider={detail.run.provider}
                 model={detail.run.model ?? ''}
                 reasoningEffort={detail.run.reasoningEffort ?? ''}
-                inheritedModel={detail.run.provider === 'pi'
-                  ? ''
-                  : codingAgentSettings[detail.run.provider].defaultModel}
-                inheritedReasoningEffort={detail.run.provider === 'pi'
-                  ? ''
-                  : codingAgentSettings[detail.run.provider].defaultReasoningEffort}
-                label={detail.run.provider === 'pi'
-                  ? modelLabels.providers.pi
-                  : formatAgentModelLabel(
-                      detail.run.model ?? codingAgentSettings[detail.run.provider].defaultModel,
-                      detail.run.reasoningEffort ?? codingAgentSettings[detail.run.provider].defaultReasoningEffort,
-                      modelLabels.providers[detail.run.provider]
-                    )}
+                inheritedModel={modelSettingsForAgent(codingAgentSettings, detail.run.provider).defaultModel}
+                inheritedReasoningEffort={modelSettingsForAgent(codingAgentSettings, detail.run.provider).defaultReasoningEffort}
+                label={formatAgentModelLabel(
+                  detail.run.model ?? modelSettingsForAgent(codingAgentSettings, detail.run.provider).defaultModel,
+                  detail.run.reasoningEffort ?? modelSettingsForAgent(codingAgentSettings, detail.run.provider).defaultReasoningEffort,
+                  modelLabels.providers[detail.run.provider] ?? formatAgentProviderName(detail.run.provider)
+                )}
                 catalog={codingAgentModels}
-                allowPi
                 disabled={runActive}
                 status={codingAgentModels ? '切换后会在下一条消息生效。' : '正在读取可用模型…'}
                 onChange={(nextProvider, model, reasoningEffort) => {
@@ -1726,9 +1893,7 @@ export function AgentRunsView({
               <span>发送第一条消息后，{formatAgentProviderName(detail.run.provider)} 才会开始工作。</span>
             </div>
           )}
-          {groupMessageTimeline(visibleRunMessages(detail.run.provider, detail.messages,
-            runBusy && hasVisibleRunFeedback(detail.run.provider, liveActivities, streamingText, pendingApproval),
-            runBusy ? liveUserMessageIdByRunRef.current.get(detail.run.id) ?? null : null)).map((block, index, blocks) => {
+          {historyBlocks.map((block, index, blocks) => {
             if (block.kind === 'tool-group') {
               return <ToolCallGroup
                 key={`tool-group-${block.values[0].id}`}
@@ -1737,14 +1902,26 @@ export function AgentRunsView({
             }
             if (block.kind === 'process') {
               return <div className="chat-response-process" key={`process-${block.values[0].id}`}>
-                <ConversationSpeaker label={formatAgentProviderName(detail.run.provider)} />
+                {!block.values.some(message => message.metadata?.engine === 't3') &&
+                  <ConversationSpeaker label={formatAgentProviderName(detail.run.provider)} />}
                 <AgentProcessDisclosure
                   messages={block.values}
+                  startedAt={block.startedAt}
                   completedAt={block.completedAt}
                 />
               </div>
             }
             const message = block.value
+            if (message.eventType === 'agent_question') {
+              return <QuestionTimelineRow key={message.id} content={message.content}
+                choices={message.metadata?.questionChoices}
+                status={message.metadata?.questionStatus === 'cancelled' ? 'cancelled' : 'completed'} />
+            }
+            if (message.eventType === 'commentary') {
+              return <div className="agent-run-commentary" key={message.id}>
+                <Markdown content={message.content} onOpenLink={openMessageLink} />
+              </div>
+            }
             if (message.eventType === 'reasoning') {
               return <ThinkingMarker key={message.id} thinking={{
                 id: message.id,
@@ -1753,6 +1930,11 @@ export function AgentRunsView({
                 status: 'completed'
               }} />
             }
+            const previous = blocks[index - 1]
+            const next = blocks[index + 1]
+            if (message.role === 'user') return renderUserMessage(message,
+              canGroupUserMessages(previous?.kind === 'message' ? previous.value : undefined, message),
+              canGroupUserMessages(message, next?.kind === 'message' ? next.value : !next ? firstLiveRow : undefined))
             return message.role === 'system' ? (
             <article className="agent-run-system-message" key={message.id}>
               <CircleAlert size={14} />
@@ -1766,25 +1948,42 @@ export function AgentRunsView({
               )}
             </article>
           ) : (
-            <article className={`chat-turn is-${message.role}`} key={message.id}>
+            <article className="chat-turn is-assistant" key={message.id}>
               <div className="chat-turn-content">
-                {message.role === 'assistant' && blocks[index - 1]?.kind !== 'process' && <ConversationSpeaker label={formatAgentProviderName(detail.run.provider)} />}
-                {message.role === 'user' && <ConversationUserSpeaker message={message} authors={authors} />}
-                {message.role === 'user' && <MessageAttachments message={message} onOpen={openArtifact} />}
-                {message.role === 'user' ? <UserMessageBubble content={message.content} /> : <Markdown content={message.content} onOpenLink={openMessageLink} />}
-                {message.role === 'assistant' && <MessageAttachments message={message} onOpen={openArtifact} />}
+                {(previous?.kind !== 'process' || previous.values.some(item => item.metadata?.engine === 't3')) &&
+                  <ConversationSpeaker label={formatAgentProviderName(detail.run.provider)} />}
+                <Markdown content={message.content} onOpenLink={openMessageLink} />
+                <MessageAttachments message={message} onOpen={openArtifact} />
                 <ConversationMessageActions content={message.content} createdAt={message.createdAt} />
               </div>
             </article>
           )})}
-          {runBusy && (
-            <article className="chat-turn is-assistant is-pending">
-              <div className="chat-turn-content">
-                <div className="chat-turn-meta"><strong>{formatAgentProviderName(detail.run.provider)}</strong><time>正在回复</time></div>
-                <RunLiveActivity activities={visibleLiveActivities(detail.run.provider, liveActivities)} streamingText={streamingText} approval={pendingApproval} onApproval={respondToApproval} />
-              </div>
-            </article>
-          )}
+          {runBusy && liveSections.flatMap(({ activities, message }, index) => {
+            const last = index === liveSections.length - 1
+            const rows: React.JSX.Element[] = []
+            if (last || activities.length) rows.push(
+              <article className="chat-turn is-assistant is-pending" key={message ? `activity-${message.id}` : 'live-activity'}>
+                <div className="chat-turn-content">
+                  {index === 0 && (nativeLive && latestUser ? <AgentWorkingLabel startedAt={latestUser.createdAt} /> : <div className="chat-turn-meta">
+                    <strong>{formatAgentProviderName(detail.run.provider)}</strong><time>正在回复</time>
+                  </div>)}
+                  <RunLiveActivity activities={activities} streamingText={last ? streamingText : ''}
+                    approval={last ? pendingApproval : null} onApproval={respondToApproval} inputRequest={last ? pendingInput : null} />
+                </div>
+              </article>)
+            const previous = index === 0
+              ? (lastHistoryBlock?.kind === 'message' ? lastHistoryBlock.value : undefined)
+              : liveSections[index - 1].message
+            const next = liveSections[index + 1]
+            if (message) rows.push(message.eventType === 'agent_question'
+              ? <QuestionTimelineRow key={message.id} content={message.content}
+                choices={message.metadata?.questionChoices}
+                status={message.metadata?.questionStatus === 'cancelled' ? 'cancelled' : 'completed'} />
+              : renderUserMessage(message,
+                activities.length === 0 && canGroupUserMessages(previous, message),
+                next?.activities.length === 0 && canGroupUserMessages(message, next.message)))
+            return rows
+          })}
       </ConversationShell>
       </div>
       <button className="agent-run-info-backdrop" type="button" aria-label="收起 Chat 信息" onClick={() => setInfoSidebarOpen(false)} />
@@ -1836,12 +2035,14 @@ export function RunLiveActivity({
   activities,
   streamingText,
   approval,
-  onApproval
+  onApproval,
+  inputRequest
 }: {
   activities: LiveActivity[]
   streamingText: string
   approval: AgentApprovalRequest | null
   onApproval: (decision: 'approve' | 'deny') => Promise<void>
+  inputRequest?: AgentInputRequest | null
 }): React.JSX.Element {
   return (
     <div className="agent-run-live" aria-live="polite" aria-atomic={false} aria-busy="true">
@@ -1852,8 +2053,9 @@ export function RunLiveActivity({
         <button className="is-primary" onClick={() => void onApproval('approve')}>仅批准这次</button>
       </div>}
       {activities.length > 0 && <ActivityStages stages={groupLiveActivityStages(activities)} live />}
-      {streamingText.trim() && <div className="agent-run-live-message"><Markdown content={streamingText} /></div>}
-      {activities.length === 0 && !streamingText.trim() && !approval && (
+      {streamingText.trim() && <div className="agent-run-live-message"><Markdown content={streamingText} streaming /></div>}
+      {inputRequest && <QuestionTimelineRow status="pending" content={inputRequest.questions.map(question => question.question).join('\n\n')} />}
+      {activities.length === 0 && !streamingText.trim() && !approval && !inputRequest && (
         <div className="agent-run-live-idle" role="status">
           <LoaderCircle size={13} className="spin" aria-hidden="true" />
           <span>正在思考…</span>

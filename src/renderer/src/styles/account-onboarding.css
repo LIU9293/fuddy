@@ -2,9 +2,8 @@
   position: relative;
   width: 100%;
   height: 100%;
-  color: #272724;
-  background:
-    radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.96) 0, rgba(250, 250, 247, 0.94) 38%, rgba(244, 244, 240, 0.95) 100%);
+  color: var(--text);
+  background: var(--canvas);
 }
 
 .account-entry-titlebar {
@@ -493,11 +492,6 @@
 @media (prefers-color-scheme: dark) {
   .onboarding-progress li.is-current,
   .onboarding-progress li.is-complete { color: var(--text-link); }
-  .account-entry-shell {
-    color: #ededeb;
-    background: radial-gradient(circle at 50% 42%, #22231f 0, #1c1d1a 48%, #171816 100%);
-  }
-
   .account-entry-titlebar {
     border-bottom-color: rgba(255, 255, 248, 0.07);
   }

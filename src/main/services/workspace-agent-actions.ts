@@ -14,6 +14,7 @@ import type {
   WorkAssistantCapabilityId
 } from '../../shared/contracts'
 import { evaluateAggressivePermission } from '../../shared/permissions'
+import { isAgentRunProvider } from '../../shared/agent-providers'
 import { AppDatabase } from './database'
 import type { GoalTrackingService } from './goal-tracking'
 import type { AgentRuntime } from './pi-runtime'
@@ -97,9 +98,7 @@ function createProjectInput(value: unknown): CreateProjectInput {
     stage: text(input.stage, 200)
   }
   if (Object.values(required).some((item) => !item)) throw new Error('创建项目所需资料不完整。')
-  const defaultAgent = ['pi', 'codex', 'claude', 'opencode'].includes(String(input.defaultAgent))
-    ? input.defaultAgent as CreateProjectInput['defaultAgent']
-    : 'codex'
+  const defaultAgent = isAgentRunProvider(input.defaultAgent) ? input.defaultAgent : 'codex'
   return {
     ...required,
     websiteUrl: nullableText(input.websiteUrl, 2_000),
@@ -108,9 +107,10 @@ function createProjectInput(value: unknown): CreateProjectInput {
   }
 }
 
-function capabilitySchema() {
+function capabilitySchema(inboxEnabled: boolean) {
   return Type.Union([
-    ...confirmableCapabilities.map((capability) => Type.Literal(capability)),
+    ...confirmableCapabilities.filter(capability => inboxEnabled || capability !== 'inbox.manage')
+      .map((capability) => Type.Literal(capability)),
     Type.Literal('assistant.dismiss')
   ])
 }
@@ -167,14 +167,16 @@ export class WorkspaceAgentActions {
     const getContext = defineTool({
       name: 'get_workspace_context',
       label: 'Get workspace context',
-      description: '读取工作助理可管理的项目、目标、收件箱、Chat、自动化和最近 Action 状态。先用它找到真实 ID，不要猜测。',
+      description: '读取工作助理可管理的项目、目标、Chat、自动化和最近 Action 状态。先用它找到真实 ID。',
       promptSnippet: 'Inspect projects, goals, inbox items, Chats, automations, and recent action state',
       parameters: Type.Object({}),
       execute: async () => {
         const context = {
           projects: this.database.listProjects().map((item) => ({ id: item.id, name: item.name, status: item.status, focus: item.focus })),
           goals: this.database.listGoals().map((item) => ({ id: item.id, projectId: item.projectId, title: item.title, status: item.status, priority: item.priority, progress: item.progress })),
-          inbox: this.database.listDecisions().slice(0, 60).map((item) => ({ id: item.id, projectId: item.projectId, goalId: item.goalId, title: item.title, status: item.status, summary: item.summary })),
+          ...(this.database.decisionInboxEnabled && {
+            inbox: this.database.listDecisions().slice(0, 60).map((item) => ({ id: item.id, projectId: item.projectId, goalId: item.goalId, title: item.title, status: item.status, summary: item.summary }))
+          }),
           runs: this.database.listRuns().slice(0, 60).map((item) => ({ id: item.id, projectId: item.projectId, goalId: item.goalId, milestoneId: item.milestoneId, decisionId: item.decisionId, title: item.title, status: item.status, summary: item.summary })),
           automations: this.database.listAutomations().map((item) => ({ id: item.id, name: item.name, projectId: item.projectId, enabled: item.enabled, action: item.action })),
           recentActions: this.database.listBriefingMessages().slice(-12).flatMap((message) => (message.actions ?? []).map((action) => ({ messageId: message.id, ...action })))
@@ -187,7 +189,7 @@ export class WorkspaceAgentActions {
     const inspectProject = defineTool({
       name: 'inspect_project',
       label: 'Inspect project',
-      description: '读取一个项目的配置、当前状态、目标、收件箱和 Chat。',
+      description: '读取一个项目的配置、当前状态、目标和 Chat。',
       promptSnippet: 'Inspect one project and its operational state',
       parameters: Type.Object({ projectId: Type.String() }),
       execute: async (_id, params) => {
@@ -195,7 +197,9 @@ export class WorkspaceAgentActions {
         const result = {
           project,
           goals: this.database.listGoals(project.id),
-          inbox: this.database.listDecisions().filter((item) => item.projectId === project.id),
+          ...(this.database.decisionInboxEnabled && {
+            inbox: this.database.listDecisions().filter((item) => item.projectId === project.id)
+          }),
           runs: this.database.listRuns().filter((run) => run.projectId === project.id)
         }
         capture('inspect_project', result)
@@ -285,10 +289,13 @@ export class WorkspaceAgentActions {
       }
     })
 
+    const supportedActions = this.database.decisionInboxEnabled ? askUserGuidelines : askUserGuidelines
+      .split('\n').filter(line => !line.startsWith('- inbox.manage')).join('\n')
+      .replace('projectId,decisionId,', 'projectId,')
     const askUser = defineTool({
       name: 'ask_user',
       label: 'Ask user',
-      description: `向用户发送真正可点击的确认或选择按钮，并持久保存每个按钮对应的 Action。这个工具不会执行 Action；调用后应停止本轮并等待用户选择。\n\n${askUserGuidelines}`,
+      description: `向用户发送真正可点击的确认或选择按钮，并持久保存每个按钮对应的 Action。这个工具不会执行 Action；调用后应停止本轮并等待用户选择。\n\n${supportedActions}`,
       promptSnippet: 'Ask the user with persistent buttons before any confirm or explicit action',
       promptGuidelines: [
         'Any capability marked confirm or explicit must be proposed with ask_user before execution.',
@@ -303,7 +310,7 @@ export class WorkspaceAgentActions {
           id: Type.String(),
           label: Type.String(),
           style: Type.Union([Type.Literal('primary'), Type.Literal('secondary'), Type.Literal('quiet')]),
-          capability: capabilitySchema(),
+          capability: capabilitySchema(this.database.decisionInboxEnabled),
           payload: Type.Record(Type.String(), Type.Any())
         }), { minItems: 1, maxItems: 4 })
       }),
@@ -403,7 +410,7 @@ export class WorkspaceAgentActions {
       if (!this.dispatcher) throw new Error('工作助理的 Chat 管理能力尚未初始化。')
       const projectId = nullableText(payload.projectId, 200)
       if (projectId) requireProject(this.database, projectId)
-      const decisionId = nullableText(payload.decisionId, 200)
+      const decisionId = this.database.decisionInboxEnabled ? nullableText(payload.decisionId, 200) : null
       const title = text(payload.title, 200)
       const draftPrompt = text(payload.draftPrompt, 20_000)
       if (!title || !draftPrompt) throw new Error('Chat 标题和任务说明不能为空。')
@@ -465,6 +472,7 @@ export class WorkspaceAgentActions {
     } else if (option.capability === 'goal.manage') {
       notice = await this.executeGoalAction(payload, cancellationSignal)
     } else if (option.capability === 'inbox.manage') {
+      if (!this.database.decisionInboxEnabled) throw new Error('决策收件箱已下线。')
       notice = this.executeInboxAction(payload)
     } else if (option.capability === 'automation.manage') {
       if (!this.automationRuntime) throw new Error('工作助理的自动化管理能力尚未初始化。')

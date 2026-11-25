@@ -5,7 +5,7 @@ import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { attachmentPrompt, isNativeImage, type RuntimeAttachment } from '../../shared/chat-attachments'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { AgentApprovalDecision, AgentApprovalRequest, AgentRunProvider, AgentRunStreamUpdate } from '../../shared/contracts'
+import type { AgentApprovalDecision, AgentApprovalRequest, AgentInputRequest, AgentRunProvider, AgentRunStreamUpdate, RespondAgentInput } from '../../shared/contracts'
 import { resolveCliBinary } from './cli-executables'
 import type { ProviderSettingsService } from './provider-settings'
 import type { McpServerLaunchConfig } from './third-party-mcp-runtime'
@@ -22,6 +22,12 @@ export interface McpLaunchConfigProvider {
 
 export interface CliAgentTurnInput {
   runId?: string
+  requestId?: string
+  executionStartedAt?: string | null
+  recoverCommittedTurn?: boolean
+  onCommittedProjection?: (sequence: number, terminal: boolean, publish: () => void) => void
+  onInputRequest?: (request: AgentInputRequest | null, respond: (answers: RespondAgentInput['answers']) => Promise<void>) => void
+  title?: string
   history?: import('../../shared/contracts').AgentRunMessage[]
   codexSessionOwned?: boolean
   onCodexSessionReady?: (ready: CodexSessionReady) => void
@@ -55,7 +61,9 @@ export interface CliAgentTurnResult {
 
 export interface CliAgentProviderRuntimeAdapter {
   provider: CliAgentTurnInput['provider']
+  requiresOwnedCodexSession?: boolean
   runTurn(input: CliAgentTurnInput, mcpServers: McpServerLaunchConfig[]): Promise<CliAgentTurnResult>
+  recoverTurn?(input: CliAgentTurnInput): Promise<CliAgentTurnResult>
 }
 
 type JsonRecord = Record<string, unknown>
@@ -457,7 +465,8 @@ export class CliAgentRuntime {
     private readonly projectAgentMcpScript?: string,
     private readonly databasePath?: string,
     private readonly providerSettings?: ProviderSettingsService,
-    adapters?: CliAgentProviderRuntimeAdapter[]
+    adapters?: CliAgentProviderRuntimeAdapter[],
+    private readonly selectAdapter?: (input: CliAgentTurnInput) => CliAgentProviderRuntimeAdapter | undefined
   ) {
     const defaults: CliAgentProviderRuntimeAdapter[] = [
       { provider: 'codex', runTurn: (input, servers) => this.runCodexAppServer(input, servers) },
@@ -474,6 +483,11 @@ export class CliAgentRuntime {
 
   async runTurn(input: CliAgentTurnInput): Promise<CliAgentTurnResult> {
     throwIfCancelled(input.abortController.signal)
+    if (input.recoverCommittedTurn) {
+      const adapter = this.selectAdapter?.(input)
+      if (!adapter?.recoverTurn) throw new Error('未找到原执行引擎，无法回读 Chat。')
+      return adapter.recoverTurn(input)
+    }
     const configuredModel = input.model?.trim() || this.providerSettings?.getCodingAgentDefaultModel(input.provider)
     const configuredReasoningEffort = input.reasoningEffort?.trim()
       || this.providerSettings?.getCodingAgentDefaultReasoningEffort(input.provider)
@@ -496,10 +510,16 @@ export class CliAgentRuntime {
         }
       })
     }
-    const adapter = this.adapters.get(resolvedInput.provider)
+    const adapter = this.selectAdapter?.(resolvedInput) ?? this.adapters.get(resolvedInput.provider)
     if (!adapter) throw new Error(`CLI agent provider is not registered: ${resolvedInput.provider}`)
     throwIfCancelled(input.abortController.signal)
-    const turn = adapter.runTurn(resolvedInput, mcpServers)
+    const turn = (async () => {
+      if (!adapter.requiresOwnedCodexSession || !resolvedInput.sessionId || resolvedInput.codexSessionOwned) {
+        return adapter.runTurn(resolvedInput, mcpServers)
+      }
+      const prepared = await this.runCodexAppServer(resolvedInput, mcpServers, true)
+      return adapter.runTurn({ ...resolvedInput, sessionId: prepared.sessionId, codexSessionOwned: true }, mcpServers)
+    })()
     this.activeTurns.add(turn)
     try {
       return await turn
@@ -510,6 +530,11 @@ export class CliAgentRuntime {
 
   async stopAndDrain(): Promise<void> {
     await Promise.allSettled([...this.activeTurns])
+  }
+
+  async adoptCodexSession(input: CliAgentTurnInput, servers: McpServerLaunchConfig[]): Promise<string | null> {
+    const result = await this.runCodexAppServer(input, servers, true)
+    return result.sessionId
   }
 
   private async runClaudeSdk(
@@ -719,7 +744,8 @@ export class CliAgentRuntime {
 
   private async runCodexAppServer(
     input: CliAgentTurnInput,
-    mcpServers: McpServerLaunchConfig[]
+    mcpServers: McpServerLaunchConfig[],
+    prepareOnly = false
   ): Promise<CliAgentTurnResult> {
     const binary = resolveCliBinary('codex')
     throwIfCancelled(input.abortController.signal)
@@ -784,7 +810,7 @@ export class CliAgentRuntime {
       const finishSuccess = (): void => {
         if (settled) return
         const text = (finalAnswerText || legacyText || lastAgentMessageText).trim()
-        if (!text) return finishError(new Error('Codex app-server 没有返回 Agent 消息。'))
+        if (!prepareOnly && !text) return finishError(new Error('Codex app-server 没有返回 Agent 消息。'))
         settled = true
         input.onSteerReady?.(null)
         closePending()
@@ -945,6 +971,7 @@ export class CliAgentRuntime {
         if (prepared.ready && input.onCodexSessionReady) input.onCodexSessionReady(prepared.ready)
         else if (found !== input.sessionId) input.onSessionId(found)
         throwIfCancelled(input.abortController.signal)
+        if (prepareOnly) return finishSuccess()
         const started = await request('turn/start', buildCodexTurnStartParams(found, input.prompt, input.reasoningEffort, input.attachments))
         const startedTurn = started.turn && typeof started.turn === 'object' ? started.turn as JsonRecord : {}
         activeTurnId = textValue(startedTurn.id) || activeTurnId

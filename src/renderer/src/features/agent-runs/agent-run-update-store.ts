@@ -51,6 +51,7 @@ function appendReplayableUpdate(
   }
   if (update.type === 'tool') {
     const retained = history.filter((entry) => entry.update.type === 'status'
+      || entry.update.type === 'input_request'
       || (entry.update.type === 'tool'
         && entry.update.status === 'running'
         && !isSameToolCall(entry.update, update)))
@@ -59,6 +60,10 @@ function appendReplayableUpdate(
   if (update.type === 'approval') {
     const activeStatus = history.filter((entry) => entry.update.type === 'status')
     return appendUpdate(activeStatus, envelope)
+  }
+  if (update.type === 'input_request') {
+    const retained = history.filter((entry) => entry.update.type !== 'input_request')
+    return update.request ? appendUpdate(retained, envelope) : retained
   }
   return appendUpdate(history, envelope)
 }

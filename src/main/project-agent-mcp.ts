@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
+import { agentRunProviderSchema } from '../shared/agent-provider-validation'
 import type { Project, ProjectProfile, ProjectWorkspaceRoot } from '../shared/contracts'
 import { evaluateAggressivePermission } from '../shared/permissions'
 import { normalizeWorkspaceRoots } from '../shared/project-workspaces'
@@ -30,7 +32,7 @@ const patchSchema = {
   mission: z.string().trim().min(1).max(2_000).optional(),
   vision: z.string().trim().min(1).max(2_000).optional(),
   websiteUrl: z.string().url().nullable().optional(),
-  defaultAgent: z.enum(['pi', 'codex', 'claude', 'opencode']).optional(),
+  defaultAgent: agentRunProviderSchema.optional(),
   focusAreas: z.array(z.string().trim().min(1).max(200)).max(30).optional(),
   dataSources: z.array(z.string().trim().min(1).max(300)).max(50).optional(),
   nextMoves: z.array(z.string().trim().min(1).max(500)).max(30).optional(),
@@ -123,10 +125,7 @@ function saveProject(project: Project): void {
 }
 
 const server = new McpServer({ name: 'project-agent', version: '0.1.0' })
-server.registerTool('update_project_info', {
-  description: '更新当前 Fuddy 项目的基本信息、产品上下文、Workspace Roots、默认 Agent、数据源或当前状态。只传需要修改的字段；Workspace 变更会在下一个 Run 生效。',
-  inputSchema: patchSchema
-}, async (patch) => {
+function updateProjectInfo(patch: ProjectPatch): CallToolResult {
   try {
     const saved = applyPatch(loadProject(), patch)
     saveProject(saved)
@@ -147,14 +146,33 @@ server.registerTool('update_project_info', {
       content: [{ type: 'text', text: error instanceof Error ? error.message : '项目配置更新失败。' }]
     }
   }
-})
-
-const transport = new StdioServerTransport()
-await server.connect(transport)
+}
 
 const close = (): void => {
   database.close()
   process.exit(0)
 }
-process.on('SIGINT', close)
-process.on('SIGTERM', close)
+if (process.argv.includes('--update-from-stdin')) {
+  try {
+    const chunks: Uint8Array[] = []
+    let size = 0
+    for await (const chunk of process.stdin) {
+      size += chunk.length
+      if (size > 64_000) throw new Error('项目配置更新请求过长。')
+      chunks.push(chunk)
+    }
+    const patch = z.object(patchSchema).strict().parse(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+    process.stdout.write(JSON.stringify(updateProjectInfo(patch)))
+  } finally {
+    database.close()
+  }
+} else {
+  server.registerTool('update_project_info', {
+    description: '更新当前 Fuddy 项目的基本信息、产品上下文、Workspace Roots、默认 Agent、数据源或当前状态。只传需要修改的字段；Workspace 变更会在下一个 Run 生效。',
+    inputSchema: patchSchema
+  }, async patch => updateProjectInfo(patch))
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+  process.on('SIGINT', close)
+  process.on('SIGTERM', close)
+}

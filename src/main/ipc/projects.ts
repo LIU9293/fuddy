@@ -120,6 +120,7 @@ export function registerProjectIpc(context: IpcContext): void {
 
   ipcMain.handle('decision:create', (_event, rawInput: unknown) => {
     const input = createDecisionSchema.parse(rawInput)
+    if (!database.decisionInboxEnabled) throw new Error('决策收件箱已下线。')
     const evidenceRefs = persistAttachments(input.projectId, `decisions/${randomUUID()}`, input.attachments)
     return database.createDecision({ ...input, evidenceRefs })
   })

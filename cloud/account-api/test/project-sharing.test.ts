@@ -349,6 +349,10 @@ describe('project share authorization', () => {
     expect(appendProjectEvent).toHaveBeenCalledWith(projectId, expect.objectContaining({
       eventId: event.eventId, actorUserId: owner.user.id, sourceDeviceId: expect.any(String)
     }))
+    expect((await publish(owner.session.accessToken, projectId, {
+      ...event, eventId: crypto.randomUUID(), kind: 'artifact'
+    })).status).toBe(201)
+    expect(appendProjectEvent).toHaveBeenLastCalledWith(projectId, expect.objectContaining({ kind: 'artifact' }))
     expect((await post(`/v1/project-shares/${projectId}/publishers/self`, {},
       member.session.accessToken)).status).toBe(404)
     expect((await post(`/v1/project-shares/${projectId}/publishers/self`, {},

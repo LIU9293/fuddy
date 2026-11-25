@@ -54,7 +54,8 @@ export function registerIpc(
   companionSync: CompanionSyncService,
   accountService: AccountService,
   accountEnrollmentCoordinator: AccountEnrollmentCoordinator,
-  macPeers?: import('./services/mac-peer-sync').MacPeerSyncService
+  macPeers: import('./services/mac-peer-sync').MacPeerSyncService | undefined,
+  t3Catalog: import('./services/t3-provider-catalog').T3ProviderCatalog
 ): void {
   const persistAttachments = (
     projectId: string | null,
@@ -74,6 +75,7 @@ export function registerIpc(
 
   const context: IpcContext = {
     macPeers,
+    t3Catalog,
     database,
     dispatcher,
     connectorRuntime,

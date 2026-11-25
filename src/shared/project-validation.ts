@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { agentRunProviderSchema } from './agent-provider-validation'
 
 const projectIconSchema = z.union([
   z.string().trim().max(16),
@@ -17,7 +18,7 @@ export const projectProfileSchema = z.object({
     path: z.string().trim().min(1).max(2_000)
   })).max(12),
   primaryWorkspaceRootId: z.string().trim().min(1).max(100).nullable(),
-  defaultAgent: z.enum(['pi', 'codex', 'claude', 'opencode']),
+  defaultAgent: agentRunProviderSchema,
   websiteUrl: z.url().nullable(),
   surfaces: z.array(z.string().trim().min(1).max(200)).max(30),
   focusAreas: z.array(z.string().trim().min(1).max(200)).max(30),
@@ -54,5 +55,5 @@ export const createProjectSchema = z.object({
   stage: z.string().trim().min(1).max(200),
   websiteUrl: z.url().nullable().optional(),
   workspacePath: z.string().trim().max(2_000).nullable().optional(),
-  defaultAgent: z.enum(['pi', 'codex', 'claude', 'opencode']).optional()
+  defaultAgent: agentRunProviderSchema.optional()
 })

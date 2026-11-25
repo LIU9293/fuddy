@@ -124,7 +124,7 @@ export interface DecisionRemediation {
   lastSeenAt: string
 }
 
-export type AgentRunProvider = 'pi' | CodingAgentProvider
+export type AgentRunProvider = import('./agent-providers').T3AgentProvider
 export type AgentRunStatus = 'draft' | 'queued' | 'running' | 'idle' | 'completed' | 'failed' | 'cancelled'
 export type AgentRunMessageRole = 'user' | 'assistant' | 'system' | 'tool'
 
@@ -210,6 +210,27 @@ export interface AgentApprovalRequest {
 
 export type AgentApprovalDecision = 'approve' | 'deny'
 
+export interface AgentInputQuestion {
+  id: string
+  header?: string
+  question: string
+  options: Array<{ label: string; description: string; value?: string; preview?: string }>
+  multiSelect?: boolean
+  allowCustomAnswer?: boolean
+  required?: boolean
+}
+
+export interface AgentInputRequest {
+  id: string
+  questions: AgentInputQuestion[]
+}
+
+export interface RespondAgentInput {
+  runId: string
+  requestId: string
+  answers: Record<string, string | string[]> | null
+}
+
 export interface AgentRunDetail {
   run: AgentRun
   messages: AgentRunMessage[]
@@ -243,10 +264,16 @@ export type AgentRunStreamUpdate =
       messageId: string
       delta: string
       phase?: 'commentary' | 'final_answer' | null
+      timelineOrdinal?: number
     }
-  | { type: 'reasoning_delta'; segmentId?: string; delta: string }
-  | { type: 'tool'; toolCallId?: string; toolName: string; status: 'running' | 'completed' | 'failed'; detail: string }
+  | { type: 'reasoning_delta'; segmentId?: string; delta: string; timelineOrdinal?: number }
+  | { type: 'commentary_delta'; messageId: string; delta: string; timelineOrdinal?: number }
+  | { type: 'tool'; toolCallId?: string; toolName: string; status: 'running' | 'completed' | 'failed'; detail: string
+      fileChange?: import('./agent-activity').AgentFileChange; timelineOrdinal?: number }
   | { type: 'approval'; request: AgentApprovalRequest }
+  | { type: 'input_request'; request: AgentInputRequest | null }
+  | { type: 'question_record'; itemId: string; questions: string[]; choices?: string[];
+      status: 'completed' | 'cancelled'; timelineOrdinal?: number }
 
 export interface AgentRunStreamEnvelope {
   requestId: string
@@ -648,7 +675,8 @@ export interface CodingAgentModelSettings {
 }
 
 export interface CodingAgentSettings extends Record<CodingAgentProvider, CodingAgentModelSettings> {
-  defaultAgent: CodingAgentProvider
+  defaultAgent: AgentRunProvider
+  additional?: Partial<Record<AgentRunProvider, CodingAgentModelSettings>>
 }
 
 export type ConfigureCodingAgentSettingsInput = CodingAgentSettings
@@ -669,7 +697,8 @@ export interface CodingAgentModelOption {
 }
 
 export interface CodingAgentModelCatalogEntry {
-  provider: CodingAgentProvider
+  provider: AgentRunProvider
+  label?: string
   models: CodingAgentModelOption[]
   defaultReasoningEfforts: CodingAgentReasoningEffortOption[]
   defaultReasoningEffort: string | null
@@ -677,6 +706,7 @@ export interface CodingAgentModelCatalogEntry {
 }
 
 export type CodingAgentModelCatalog = Record<CodingAgentProvider, CodingAgentModelCatalogEntry>
+  & Partial<Record<AgentRunProvider, CodingAgentModelCatalogEntry>>
 
 export interface ConfigureAgentEndpointInput {
   mode: AgentProviderMode
@@ -1180,6 +1210,7 @@ export interface DesktopApi {
   cancelQueuedAgentTurn(requestId: string): Promise<boolean>
   steerQueuedAgentTurn(requestId: string): Promise<AgentRunDetail>
   respondAgentApproval(input: RespondAgentApprovalInput): Promise<void>
+  respondAgentInput(input: RespondAgentInput): Promise<void>
   listWorkspaceFiles(projectId: string | null): Promise<WorkspaceFileEntry[]>
   readWorkspaceFile(projectId: string | null, relativePath: string): Promise<WorkspaceFileContent>
   writeWorkspaceFile(input: WriteWorkspaceFileInput): Promise<WorkspaceFileEntry>
@@ -1200,7 +1231,10 @@ export interface DesktopApi {
   executeWorkAssistantAction(input: ExecuteWorkAssistantActionInput): Promise<ExecuteWorkAssistantActionResult>
   configureAgentProvider(input: ConfigureAgentProviderInput): Promise<ProviderSettings>
   configureCodingAgents(input: ConfigureCodingAgentSettingsInput): Promise<ProviderSettings>
-  listCodingAgentModels(): Promise<CodingAgentModelCatalog>
+  listCodingAgentModels(refresh?: boolean): Promise<CodingAgentModelCatalog>
+  manageAntigravity(input: import('./antigravity-setup').AntigravitySetupInput): Promise<import('./antigravity-setup').AntigravitySetupState>
+  searchAcpAgents(query: string): Promise<Array<{ id: string; name: string; description: string }>>
+  addAcpAgent(agentId: string): Promise<`acp-${string}`>
   configureAsrProvider(input: ConfigureAsrProviderInput): Promise<ProviderSettings>
   getAsrModelStatus(): Promise<AsrModelStatus>
   downloadAsrModel(): Promise<AsrModelStatus>

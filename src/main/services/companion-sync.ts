@@ -36,7 +36,7 @@ import {
   companionRelayMaximumRetainedEvents
 } from '../../shared/companion-sync'
 import { companionContractFingerprint } from '../../shared/companion-contract.generated'
-import type { CodingAgentProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
+import type { AgentRunProvider, DecisionStatus, WorkAssistantImageAttachment } from '../../shared/contracts'
 import { attachmentStorageId, incomingAttachmentDirectory } from './agent-attachments'
 import type { AgentRunArtifact, AgentRunMessage, BriefingMessage } from '../../shared/contracts'
 import { emptyAgentModelLabels, type AgentModelLabels } from '../../shared/model-display'
@@ -142,13 +142,14 @@ export function companionAgentMessageForRelay(message: AgentRunMessage): AgentRu
     ? `${normalized.slice(0, companionToolSummaryMaximumCharacters).trimEnd()}…`
     : normalized
   const nativeStatus = message.metadata?.status
+  const ordinal = message.metadata?.timelineOrdinal
   const failed = nativeStatus === 'failed'
     || message.metadata?.isError === true
     || message.metadata?.is_error === true
   return {
     ...message,
     content,
-    metadata: null,
+    metadata: typeof ordinal === 'number' && Number.isSafeInteger(ordinal) ? { timelineOrdinal: ordinal } : null,
     toolStatus: failed ? 'failed' : 'completed',
     toolKind: presentation.kind,
     toolSummary: presentation.summary
@@ -341,7 +342,7 @@ export class CompanionSyncService {
       cancellationSignal: AbortSignal
     ) => Promise<unknown>,
     private readonly incomingAttachmentsRoot = resolve(process.cwd(), '.companion-uploads'),
-    private readonly defaultCodingAgent: () => CodingAgentProvider = () => 'codex',
+    private readonly defaultCodingAgent: () => AgentRunProvider = () => 'codex',
     private readonly workspaceFiles?: WorkspaceFilesService,
     private readonly modelLabels: () => AgentModelLabels = () => emptyAgentModelLabels
   ) {

@@ -3,7 +3,7 @@ import Foundation
 
 let companionMinimumProtocolVersion = 5
 let companionProtocolVersion = 5
-let companionContractFingerprint = "d72d3c8e8d3c3fdca088f4da"
+let companionContractFingerprint = "c9c3d4141e4cd249bf2b6154"
 
 func companionProtocolVersionIsSupported(_ version: Int) -> Bool {
     version >= companionMinimumProtocolVersion && version <= companionProtocolVersion

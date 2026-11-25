@@ -62,7 +62,7 @@ import type {
   AsrModelStatus,
   Capability,
   CodingAgentModelCatalog,
-  CodingAgentProvider,
+  AgentRunProvider as SettingsAgentProvider,
   CodingAgentSettings,
   ConnectorInstance,
   ConnectorKind,
@@ -90,16 +90,14 @@ import { normalizeWorkspaceRoots } from '../../../shared/project-workspaces'
 import type { CompanionMacStatus } from '../../../shared/companion-sync'
 import { buildAgentModelLabels } from '../../../shared/model-display'
 import { agentProviderDefinitions, codingAgentProviders } from '../../../shared/agent-providers'
+import { agentProviderOptions, modelSettingsForAgent, withAgentModelSettings } from '../../../shared/agent-providers'
+import { AcpAgentSettings } from '../components/AcpAgentSettings'
+import { AntigravitySetup } from '../components/AntigravitySetup'
 import type { AccountDeviceSummary, AccountIdentity, AccountState } from '../../../shared/account'
 import { userFacingErrorMessage } from '../user-facing-error'
 import {
-  codingAgentOptions,
   connectorStatusLabels,
-  decisionWaitingReasonLabels,
-  formatDecisionSource,
   formatRelativeTime,
-  kindIcons,
-  kindLabels,
   settingsNavigationItems,
   settingsSectionTitles,
   useAutoDismissMessage,
@@ -173,7 +171,7 @@ export function SettingsView({
   const [accountError, setAccountError] = useState<string | null>(null)
   const [modelSettingsTab, setModelSettingsTab] = useState<'assistant' | 'coding'>('assistant')
   const [editingAgentSlot, setEditingAgentSlot] = useState<'primary' | 'backup' | null>(null)
-  const [expandedCodingAgent, setExpandedCodingAgent] = useState<CodingAgentProvider | null>(null)
+  const [expandedCodingAgent, setExpandedCodingAgent] = useState<SettingsAgentProvider | null>(null)
   const [voiceSettingsTab, setVoiceSettingsTab] = useState<'input' | 'output'>('input')
   const [voiceAdvancedOpen, setVoiceAdvancedOpen] = useState(false)
   const [microphoneTesting, setMicrophoneTesting] = useState(false)
@@ -190,6 +188,17 @@ export function SettingsView({
   const selectedPostgres = bootstrap.connectors.find(
     (connector) => connector.projectId === projectId && connector.kind === 'postgres'
   )
+
+  useEffect(() => {
+    if (section !== 'models' || modelSettingsTab !== 'coding') return
+    let active = true
+    void window.projectAgent.listCodingAgentModels().then(catalog => {
+      if (active) setCodingAgentModels(catalog)
+    }).catch(() => {
+      if (active) setProviderError('无法读取 T3 Agent，请重新检测。')
+    })
+    return () => { active = false }
+  }, [section, modelSettingsTab])
 
   useEffect(() => {
     if (section !== 'general') return
@@ -720,8 +729,7 @@ export function SettingsView({
     setProviderBusy('coding-detect')
     setProviderError(null)
     try {
-      const [, catalog] = await Promise.all([onRefresh(), window.projectAgent.listCodingAgentModels()])
-      setCodingAgentModels(catalog)
+      setCodingAgentModels(await window.projectAgent.listCodingAgentModels(true))
       onNotice('已重新检查 Coding Agent，并更新了可用模型和思考深度。')
     } catch (error) {
       setProviderError(error instanceof Error ? error.message : '无法检查 Coding Agent，请重试。')
@@ -1287,25 +1295,25 @@ export function SettingsView({
               <div className="settings-flat-list settings-editable-list">
                 <article>
                   <div>
-                    <strong>默认 Coding Agent</strong>
-                    <p>“去处理”等未手动选择 Agent 的入口会使用它。</p>
+                    <strong>默认 Chat Agent</strong>
+                    <p>未选择 Agent 且项目没有默认配置时使用。</p>
                   </div>
                   <div className="settings-row-control">
                     <SelectMenu
                       value={codingAgents.defaultAgent}
-                      options={codingAgentOptions.map((option) => ({ value: option.id, label: option.label }))}
+                      options={agentProviderOptions(codingAgentModels, codingAgents.defaultAgent)}
                       onChange={(value) =>
-                        setCodingAgents((current) => ({ ...current, defaultAgent: value as CodingAgentProvider }))
+                        setCodingAgents((current) => ({ ...current, defaultAgent: value as SettingsAgentProvider }))
                       }
                       ariaLabel="默认 Coding Agent"
                     />
                   </div>
                 </article>
-                {codingAgentOptions.map((option) => {
-                  const capability = bootstrap.capabilities.find((item) => item.id === option.id)
-                  const installed = capability?.status === 'ready'
+                {agentProviderOptions(codingAgentModels, codingAgents.defaultAgent).map(({ value: id, label }) => {
+                  const option = { id, label }
                   const catalog = codingAgentModels?.[option.id]
-                  const savedSettings = codingAgents[option.id]
+                  const ready = catalog && !catalog.error
+                  const savedSettings = modelSettingsForAgent(codingAgents, option.id)
                   const savedModel = savedSettings.defaultModel
                   const savedReasoningEffort = savedSettings.defaultReasoningEffort
                   const discoveredModels = catalog?.models ?? []
@@ -1349,8 +1357,8 @@ export function SettingsView({
                           {savedReasoningEffort ? ` · ${savedReasoningEffort}` : ''}
                         </p>
                       </div>
-                      <span className={`settings-row-status ${installed ? 'is-ready' : 'is-needs-setup'}`}>
-                        {installed ? '已安装' : '未安装'}
+                      <span className={`settings-row-status ${ready ? 'is-ready' : 'is-needs-setup'}`}>
+                        {ready ? '就绪' : catalog ? '待配置' : '待检测'}
                       </span>
                       <button
                         className="settings-row-button"
@@ -1370,22 +1378,19 @@ export function SettingsView({
                                   ? (discoveredModels.find((model) => model.id === value)?.reasoningEfforts ?? [])
                                   : (catalog?.defaultReasoningEfforts ?? [])
                                 setCodingAgents((current) => {
-                                  const currentSettings = current[option.id]
+                                  const currentSettings = modelSettingsForAgent(current, option.id)
                                   const keepReasoningEffort =
                                     !currentSettings.defaultReasoningEffort ||
                                     nextReasoningEfforts.some(
                                       (effort) => effort.id === currentSettings.defaultReasoningEffort
                                     )
-                                  return {
-                                    ...current,
-                                    [option.id]: {
+                                  return withAgentModelSettings(current, option.id, {
                                       ...currentSettings,
                                       defaultModel: value,
                                       defaultReasoningEffort: keepReasoningEffort
                                         ? currentSettings.defaultReasoningEffort
                                         : ''
-                                    }
-                                  }
+                                  })
                                 })
                               }}
                               ariaLabel={`${option.label} 默认模型`}
@@ -1398,9 +1403,8 @@ export function SettingsView({
                               value={savedReasoningEffort}
                               options={reasoningEffortOptions}
                               onChange={(value) =>
-                                setCodingAgents((current) => ({
-                                  ...current,
-                                  [option.id]: { ...current[option.id], defaultReasoningEffort: value }
+                                setCodingAgents((current) => withAgentModelSettings(current, option.id, {
+                                  ...modelSettingsForAgent(current, option.id), defaultReasoningEffort: value
                                 }))
                               }
                               ariaLabel={`${option.label} 思考深度`}
@@ -1411,14 +1415,20 @@ export function SettingsView({
                             />
                           </label>
                           <p className={catalog?.error ? 'is-error' : ''}>
-                            {catalog?.error ?? capability?.detail ?? '留空时使用 Agent 自己的默认配置。'}
+                            {catalog?.error ?? '留空时使用 Agent 自己的默认配置。'}
                           </p>
+                          {option.id === 'antigravity' && <AntigravitySetup onReady={() => void detectCodingAgents()} />}
                         </div>
                       )}
                     </article>
                   )
                 })}
               </div>
+              <AcpAgentSettings onAdded={async id => {
+                setCodingAgentModels(await window.projectAgent.listCodingAgentModels())
+                setExpandedCodingAgent(id)
+                onNotice('已添加 ACP Agent。')
+              }} />
               {providerError && <p className="provider-settings-error">{providerError}</p>}
               <div className="provider-page-actions">
                 <button
@@ -1850,7 +1860,7 @@ export function SettingsView({
               <div>
                 <span className="settings-kicker">连接与数据</span>
                 <h2>已配置的 Connectors</h2>
-                <p>Connector 负责取证；变化经过指纹去重后回投决策收件箱。</p>
+                <p>Connector 为项目状态、目标检查和简报提供证据。</p>
               </div>
               <button className="secondary-action-button" onClick={() => void runAll()} disabled={runningAll}>
                 <RefreshCw size={14} className={runningAll ? 'spin' : ''} />

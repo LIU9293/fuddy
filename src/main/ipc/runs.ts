@@ -241,4 +241,14 @@ export function registerRunIpc(context: IpcContext): void {
     const input = respondAgentApprovalSchema.parse(rawInput)
     dispatcher.respondToApproval(input.requestId, input.decision)
   })
+
+  ipcMain.handle('agent-run:input', (_event, rawInput: unknown) => {
+    const id = z.string().min(1).max(400)
+    const answer = z.string().trim().min(1).max(4000)
+    const input = z.object({
+      runId: id, requestId: id,
+      answers: z.record(id, z.union([answer, z.array(answer).max(32)])).nullable()
+    }).parse(rawInput)
+    return dispatcher.respondToInput(input)
+  })
 }

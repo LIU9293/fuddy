@@ -29,16 +29,15 @@ describe('renderer CSS architecture', () => {
       './styles/base.css',
       './styles/account-onboarding.css',
       './styles/page-layout.css',
-      './styles/shell-settings-inbox.css',
+      './styles/shell-and-navigation.css',
       './styles/conversations-workspace.css',
       './styles/agent-runs.css',
       './styles/conversation-typography.css',
-      './styles/settings-inbox-current.css',
-      './styles/settings-current.css'
+      './styles/settings.css'
     ])
-    expect(imports.indexOf('./styles/shell-settings-inbox.css'))
+    expect(imports.indexOf('./styles/shell-and-navigation.css'))
       .toBeLessThan(imports.indexOf('./styles/conversations-workspace.css'))
-    expect(imports.indexOf('./styles/settings-inbox-current.css'))
+    expect(imports.indexOf('./styles/settings.css'))
       .toBeGreaterThan(imports.indexOf('./styles/conversations-workspace.css'))
     expect(entrypoint).not.toContain('final-overrides')
   })
@@ -48,12 +47,11 @@ describe('renderer CSS architecture', () => {
       'base.css',
       'account-onboarding.css',
       'page-layout.css',
-      'shell-settings-inbox.css',
+      'shell-and-navigation.css',
       'conversations-workspace.css',
       'agent-runs.css',
       'conversation-typography.css',
-      'settings-inbox-current.css',
-      'settings-current.css'
+      'settings.css'
     ]
 
     for (const file of featureFiles) {
@@ -64,7 +62,7 @@ describe('renderer CSS architecture', () => {
   it('keeps Work Assistant and Agent Run on the same conversation shell', () => {
     const workAssistant = readFileSync(join(rendererDirectory, 'views/WorkAssistantView.tsx'), 'utf8')
     const agentRuns = readFileSync(join(rendererDirectory, 'components/AgentRunsView.tsx'), 'utf8')
-    const sharedStyles = readFileSync(join(stylesDirectory, 'shell-settings-inbox.css'), 'utf8')
+    const sharedStyles = readFileSync(join(stylesDirectory, 'shell-and-navigation.css'), 'utf8')
     const agentRunStyles = readFileSync(join(stylesDirectory, 'agent-runs.css'), 'utf8')
 
     expect(workAssistant).toContain('<ConversationShell')

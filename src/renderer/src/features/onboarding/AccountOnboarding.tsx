@@ -251,7 +251,7 @@ function AgentStep({ onStateChange }: Pick<AccountOnboardingProps, 'onStateChang
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const codingAgents = useMemo(
-    () => result?.capabilities.filter((item) => ['codex', 'claude', 'opencode'].includes(item.id)) ?? [],
+    () => result?.capabilities ?? [],
     [result]
   )
 

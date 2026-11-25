@@ -76,6 +76,35 @@ func buildWorkAssistantChatRecords(
     return (messageRecords + briefingRecords).sorted(by: companionChatRecordPrecedes)
 }
 
+private func orderAgentTimelineMessages(_ messages: [AgentMessage]) -> [AgentMessage] {
+    var ordered: [AgentMessage] = []
+    var turn: [AgentMessage] = []
+
+    func appendTurn() {
+        let positions = turn.indices.filter { turn[$0].metadata?.timelineOrdinal != nil }
+        let nativeOrder = positions.sorted {
+            let left = turn[$0].metadata?.timelineOrdinal ?? 0
+            let right = turn[$1].metadata?.timelineOrdinal ?? 0
+            return left == right ? $0 < $1 : left < right
+        }
+        var sortedTurn = turn
+        for (position, source) in zip(positions, nativeOrder) { sortedTurn[position] = turn[source] }
+        ordered.append(contentsOf: sortedTurn)
+        turn.removeAll(keepingCapacity: true)
+    }
+
+    for message in messages {
+        if message.role == "user" && message.metadata?.steered != true {
+            appendTurn()
+            ordered.append(message)
+        } else {
+            turn.append(message)
+        }
+    }
+    appendTurn()
+    return ordered
+}
+
 func buildAgentChatRecords(runID: String, messages: [AgentMessage]) -> [CompanionChatRecord] {
     var records: [CompanionChatRecord] = []
     var processMessages: [AgentMessage] = []
@@ -95,12 +124,13 @@ func buildAgentChatRecords(runID: String, messages: [AgentMessage]) -> [Companio
         )
     }
 
-    for message in messages {
+    for message in orderAgentTimelineMessages(messages) {
         if message.eventType == "reasoning" || message.role == "tool" {
             processMessages.append(message)
             continue
         }
-        if let record = processRecord(completedAt: message.role == "assistant" ? message.createdAt : nil) {
+        if let record = processRecord(completedAt: message.role == "assistant" && message.eventType == nil
+            ? message.createdAt : nil) {
             records.append(record)
             processMessages.removeAll(keepingCapacity: true)
         }
@@ -142,12 +172,12 @@ func mergeOlderCompanionChatPage(
     _ olderPage: CompanionChatPage,
     into currentPage: CompanionChatPage
 ) -> CompanionChatPage {
-    var recordsByID = Dictionary(uniqueKeysWithValues: currentPage.records.map { ($0.id, $0) })
-    for record in olderPage.records { recordsByID[record.id] = record }
+    let olderIDs = Set(olderPage.records.map(\.id))
+    let records = olderPage.records + currentPage.records.filter { !olderIDs.contains($0.id) }
     return CompanionChatPage(
         chatId: currentPage.chatId,
         chatKind: currentPage.chatKind,
-        records: recordsByID.values.sorted(by: companionChatRecordPrecedes),
+        records: currentPage.chatKind == "agent" ? records : records.sorted(by: companionChatRecordPrecedes),
         hasMore: olderPage.hasMore,
         nextBefore: olderPage.nextBefore
     )

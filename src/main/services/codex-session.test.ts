@@ -40,6 +40,23 @@ describe('Fuddy Codex session ownership', () => {
     expect(request).toHaveBeenCalledExactlyOnceWith('thread/resume', { ...params, threadId: 'owned' })
   })
 
+  it('pages complete history in chronological order for newer Codex sessions', async () => {
+    const request = vi.fn<CodexRequest>(async (method, params) => {
+      if (method === 'thread/read' && params.includeTurns) throw new Error('paginated threads do not support thread/read(includeTurns=true)')
+      if (method === 'thread/read') return { thread: { id: 'legacy', status: { type: 'idle' } } }
+      if (method === 'thread/fork') return { thread: { id: 'fuddy-new' } }
+      return params.cursor
+        ? { data: [turn('second', '第二轮', time + 100)], nextCursor: null }
+        : { data: [turn('first', '第一轮')], nextCursor: 'page-2' }
+    })
+    const result = await prepare(request)
+    expect(request).toHaveBeenCalledWith('thread/turns/list', expect.objectContaining({
+      cursor: 'page-2', itemsView: 'full', sortDirection: 'asc'
+    }))
+    expect(request).toHaveBeenLastCalledWith('thread/fork', expect.objectContaining({ lastTurnId: 'second', excludeTurns: true }))
+    expect(result.ready?.messages.filter(message => message.role === 'user').map(message => message.content)).toEqual(['第一轮', '第二轮'])
+  })
+
   it('creates new chats directly without forking', async () => {
     const request = vi.fn<CodexRequest>().mockResolvedValue({ thread: { id: 'new' } })
     expect((await prepare(request, { sessionId: null })).ready).toMatchObject({ sessionId: 'new', sourceSessionId: null })

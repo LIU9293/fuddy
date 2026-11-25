@@ -4,17 +4,13 @@ export const morningBriefingBootstrapKeys = [
   'dailyBriefings',
   'morningBriefings',
   'briefingMessages',
-  'goals',
-  'decisions',
-  'decisionRemediations'
+  'goals'
 ] as const satisfies readonly AppBootstrapDataKey[]
 
 /** Generic remote/automation work can mutate any persisted product domain. */
 export const mutableBootstrapKeys = [
   'projects',
   'goals',
-  'decisions',
-  'decisionRemediations',
   'runs',
   'connectors',
   'connectorRuns',

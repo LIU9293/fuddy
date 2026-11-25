@@ -34,7 +34,6 @@ import {
 export { AccountRelay, ProjectRelay }
 
 const maximumJsonBytes = 5 * 1024 * 1024
-export const maximumAttachmentBytes = companionAttachmentObjectMaximumBytes
 const relayBuild = '2026-08-20.3'
 const canonicalRelayPathPrefix = '/api/relay'
 
@@ -420,7 +419,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         throw new HttpError(400, 'End-to-end encrypted attachment envelope is required.')
       }
       const contentLength = Number.parseInt(request.headers.get('Content-Length') ?? '0', 10)
-      if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > maximumAttachmentBytes) {
+      if (!Number.isFinite(contentLength) || contentLength <= 0 || contentLength > companionAttachmentObjectMaximumBytes) {
         throw new HttpError(413, 'Attachment size is invalid or exceeds 20 MiB.')
       }
       const sha256 = request.headers.get('X-Content-SHA256')?.trim().toLowerCase() ?? ''
@@ -478,7 +477,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         await cancelUploadLease().catch(() => undefined)
         throw error
       }
-      if (uploaded.size !== contentLength || uploaded.size > maximumAttachmentBytes) {
+      if (uploaded.size !== contentLength || uploaded.size > companionAttachmentObjectMaximumBytes) {
         await env.ATTACHMENTS.delete(storageKey)
         await cancelUploadLease()
         throw new HttpError(413, 'Attachment size is invalid or exceeds 20 MiB.')

@@ -19,7 +19,7 @@ describe('app route state machine', () => {
       section: 'goals'
     })
 
-    expect(navigationForRoute(route)).toBe('inbox')
+    expect(navigationForRoute(route)).toBe('project')
     expect(sidebarSelectionForRoute(route)).toBe('projects')
     expect(selectedProjectForRoute(route)).toBe('project-1')
     expect(projectSectionForRoute(route)).toBe('goals')

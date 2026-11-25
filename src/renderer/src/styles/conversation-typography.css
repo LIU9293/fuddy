@@ -63,8 +63,8 @@
 .conversation-shell .chat-bubble,
 .conversation-shell .chat-markdown,
 .conversation-shell .chat-turn-content > .chat-markdown {
-  font-size: 15px;
-  line-height: 1.75;
+  font-size: 14px;
+  line-height: 1.65;
 }
 
 .chat-speaker {
@@ -94,6 +94,15 @@
 .chat-response-process .chat-speaker { margin-bottom: 0; }
 .agent-run-chat-main > .conversation-shell .chat-response-process .agent-process-disclosure {
   margin: 0;
+}
+.agent-process-disclosure.is-native > button {
+  font-size: 14px;
+  color: var(--conversation-muted);
+}
+.agent-process-disclosure.is-native.is-expanded > button {
+  width: 100%;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--conversation-border);
 }
 .agent-run-chat-main > .conversation-shell .chat-turn-content > .chat-markdown { color: var(--conversation-text); }
 .agent-run-host { flex-shrink: 1; }
@@ -255,10 +264,6 @@
   .agent-tool-call-group.is-running { color: #90a9e2; background: transparent; box-shadow: none; }
   .agent-tool-call.is-failed,
   .agent-tool-call-group.is-failed { color: #df8880; background: transparent; }
-  .agent-tool-call-summary:hover,
-  .agent-tool-call-group-summary:hover { color: #d6d6d1; background: transparent; }
-  .agent-tool-call-summary strong,
-  .agent-tool-call-group-summary strong { color: #d0d0cb; }
   .agent-tool-call-preview,
   .agent-tool-call-summary small,
   .agent-tool-call-detail pre { color: #969690; }

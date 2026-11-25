@@ -107,7 +107,6 @@ export default function App(): React.JSX.Element {
         onCloseSettings={navigation.closeSettings}
         onSettingsSection={navigation.setSettingsSection}
         onBriefing={navigation.openBriefing}
-        onInbox={navigation.openInbox}
         onFiles={navigation.openFiles}
         onProjects={navigation.openProjects}
         onSharedProjects={navigation.openSharedProjects}

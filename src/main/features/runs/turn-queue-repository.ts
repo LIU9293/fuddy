@@ -64,6 +64,12 @@ export class TurnQueueRepository {
     ).all() as TurnRow[]).map(mapTurn)
   }
 
+  listRunning(): AgentTurnQueueItem[] {
+    return (this.database.prepare(
+      "SELECT * FROM agent_turn_queue WHERE status = 'running' ORDER BY started_at, rowid"
+    ).all() as TurnRow[]).map(mapTurn)
+  }
+
   listForRun(runId: string): AgentTurnQueueItem[] {
     return (this.database.prepare(
       `SELECT * FROM agent_turn_queue WHERE run_id = ? AND status IN ('queued', 'running')
@@ -73,7 +79,7 @@ export class TurnQueueRepository {
 
   claim(requestId: string): boolean {
     const result = this.database.prepare(`
-      UPDATE agent_turn_queue SET status = 'running', started_at = ?
+      UPDATE agent_turn_queue SET status = 'running', started_at = COALESCE(started_at, ?)
       WHERE request_id = ? AND status = 'queued'
     `).run(new Date().toISOString(), requestId)
     return Number(result.changes) === 1
@@ -90,7 +96,7 @@ export class TurnQueueRepository {
   claimForSteer(requestId: string): boolean {
     const result = this.database.prepare(`
       UPDATE agent_turn_queue SET status = 'running', started_at = ?
-      WHERE request_id = ? AND status = 'queued'
+      WHERE request_id = ? AND status = 'queued' AND started_at IS NULL
     `).run(new Date().toISOString(), requestId)
     return Number(result.changes) === 1
   }
@@ -102,11 +108,11 @@ export class TurnQueueRepository {
     `).run(new Date().toISOString(), requestId)
   }
 
-  releaseSteer(requestId: string): void {
+  releaseSteer(requestId: string, keepExecutionIdentity: boolean): void {
     this.database.prepare(`
-      UPDATE agent_turn_queue SET status = 'queued', started_at = NULL
+      UPDATE agent_turn_queue SET status = 'queued', started_at = CASE WHEN ? THEN started_at ELSE NULL END
       WHERE request_id = ? AND status = 'running'
-    `).run(requestId)
+    `).run(Number(keepExecutionIdentity), requestId)
   }
 
   settle(requestId: string, status: Extract<AgentTurnQueueStatus, 'completed' | 'failed' | 'cancelled'>): void {
@@ -119,7 +125,7 @@ export class TurnQueueRepository {
   cancelQueued(requestId: string): boolean {
     const result = this.database.prepare(`
       UPDATE agent_turn_queue SET status = 'cancelled', settled_at = ?
-      WHERE request_id = ? AND status = 'queued'
+      WHERE request_id = ? AND status = 'queued' AND started_at IS NULL
     `).run(new Date().toISOString(), requestId)
     return Number(result.changes) === 1
   }

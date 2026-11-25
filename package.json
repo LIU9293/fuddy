@@ -4,9 +4,10 @@
   "private": true,
   "fuddyRuntimeProfile": "production",
   "type": "module",
-  "description": "A native decision inbox and project agent for macOS.",
+  "description": "A native project workspace and agent chat for macOS.",
   "main": "./out/main/index.js",
   "scripts": {
+    "predev": "npm run prepare:t3-runtime",
     "dev": "electron-vite dev --watch",
     "dev:web": "vite --config vite.web.config.ts",
     "build": "npm run typecheck && electron-vite build",
@@ -29,12 +30,13 @@
     "check:companion-contracts": "node scripts/generate-companion-contracts.mjs --check",
     "metrics:roombase:daily": "node scripts/roombase-daily-metrics.mjs",
     "prepare:agent-tools": "node scripts/prepare-agent-tools.mjs",
+    "prepare:t3-runtime": "node scripts/prepare-t3-runtime.mjs",
     "prepare:whisper": "node scripts/prepare-whisper.mjs",
     "prepare:whisper:ios": "node scripts/prepare-whisper.mjs --ios",
-    "dist:mac": "npm run prepare:agent-tools && npm run prepare:whisper && npm run build && electron-builder --mac dmg zip",
-    "dist:mac:unsigned": "npm run prepare:agent-tools && npm run prepare:whisper && npm run build && electron-builder --mac dmg zip --publish never -c.mac.identity=null",
-    "dist:mac:dev": "npm run prepare:agent-tools && npm run prepare:whisper && npm run build && electron-builder --mac dmg zip --publish never -c.appId=dev.ainative.projectagent.dev -c.productName='Fuddy Dev' -c.extraMetadata.fuddyRuntimeProfile=development -c.mac.identity=null -c.directories.output=dist/dev",
-    "package:smoke": "npm run build && electron-builder --dir --mac --publish never -c.appId=dev.ainative.projectagent.dev -c.productName='Fuddy Dev' -c.extraMetadata.fuddyRuntimeProfile=development -c.mac.identity=null -c.extraResources=[] -c.directories.output=dist/dev-smoke"
+    "dist:mac": "npm run prepare:agent-tools && npm run prepare:whisper && npm run prepare:t3-runtime && npm run build && electron-builder --mac dmg zip",
+    "dist:mac:unsigned": "npm run prepare:agent-tools && npm run prepare:whisper && npm run prepare:t3-runtime && npm run build && electron-builder --mac dmg zip --publish never -c.mac.identity=null",
+    "dist:mac:dev": "npm run prepare:agent-tools && npm run prepare:whisper && npm run prepare:t3-runtime && npm run build && electron-builder --mac dmg zip --publish never -c.appId=dev.ainative.projectagent.dev -c.productName='Fuddy Dev' -c.extraMetadata.fuddyRuntimeProfile=development -c.mac.identity=null -c.directories.output=dist/dev",
+    "package:smoke": "npm run prepare:agent-tools && npm run prepare:whisper && npm run prepare:t3-runtime && npm run build && electron-builder --dir --mac --publish never -c.appId=dev.ainative.projectagent.dev -c.productName='Fuddy Dev' -c.extraMetadata.fuddyRuntimeProfile=development -c.mac.identity=null -c.directories.output=dist/dev-smoke"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.224",
@@ -87,6 +89,14 @@
       "!node_modules/@anthropic-ai/claude-agent-sdk-*/**/*"
     ],
     "extraResources": [
+      {
+        "from": ".third-party-tools/t3-runtime",
+        "to": "t3-runtime"
+      },
+      {
+        "from": ".third-party-tools/t3-runtime/node_modules",
+        "to": "t3-runtime/node_modules"
+      },
       {
         "from": ".third-party-tools/uv/darwin-${arch}/uv",
         "to": "third-party/uv/uv"

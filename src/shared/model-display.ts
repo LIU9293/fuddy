@@ -1,26 +1,20 @@
 import type { AgentRunProvider, ProviderSettings } from './contracts'
+import { agentProviderLabel, agentRunProviders, isAgentRunProvider, modelSettingsForAgent } from './agent-providers'
 
 export interface AgentModelLabels {
   workAssistant: string
-  providers: Record<AgentRunProvider, string>
+  providers: Record<'pi' | 'codex' | 'claude' | 'opencode', string> & Partial<Record<AgentRunProvider, string>>
 }
 
-const providerLabels: Record<AgentRunProvider, string> = {
+const providerLabels: AgentModelLabels['providers'] = {
   pi: 'Pi Default',
   codex: 'Codex Default',
   claude: 'Claude Default',
   opencode: 'OpenCode Default'
 }
 
-const providerNames: Record<AgentRunProvider, string> = {
-  pi: 'Pi Agent',
-  codex: 'Codex',
-  claude: 'Claude Code',
-  opencode: 'OpenCode'
-}
-
 export function formatAgentProviderName(provider: AgentRunProvider): string {
-  return providerNames[provider]
+  return agentProviderLabel(provider)
 }
 
 export const emptyAgentModelLabels: AgentModelLabels = {
@@ -78,25 +72,11 @@ export function buildAgentModelLabels(settings: ProviderSettings): AgentModelLab
     : settings.agent.backupEnabled && endpointReady(settings.agent.backup)
       ? settings.agent.backup
       : settings.agent.primary
-  return {
-    workAssistant: formatAgentModelLabel(agentEndpoint.model, 'medium'),
-    providers: {
-      pi: formatAgentModelLabel(agentEndpoint.model),
-      codex: formatAgentModelLabel(
-        settings.codingAgents.codex.defaultModel,
-        settings.codingAgents.codex.defaultReasoningEffort,
-        providerLabels.codex
-      ),
-      claude: formatAgentModelLabel(
-        settings.codingAgents.claude.defaultModel,
-        settings.codingAgents.claude.defaultReasoningEffort,
-        providerLabels.claude
-      ),
-      opencode: formatAgentModelLabel(
-        settings.codingAgents.opencode.defaultModel,
-        settings.codingAgents.opencode.defaultReasoningEffort,
-        providerLabels.opencode
-      )
-    }
+  const providers = { ...providerLabels }
+  const ids = [...agentRunProviders, ...Object.keys(settings.codingAgents.additional ?? {}).filter(isAgentRunProvider)]
+  for (const id of ids) {
+    const { defaultModel, defaultReasoningEffort } = modelSettingsForAgent(settings.codingAgents, id)
+    providers[id] = formatAgentModelLabel(defaultModel, defaultReasoningEffort, providerLabels[id] ?? `${agentProviderLabel(id)} Default`)
   }
+  return { workAssistant: formatAgentModelLabel(agentEndpoint.model, 'medium'), providers }
 }

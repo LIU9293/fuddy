@@ -79,6 +79,26 @@ export function codexSessionError(error: Error): Error {
   return error
 }
 
+async function readPaginatedCodexThread(
+  request: CodexRequest, threadId: string, checkCancelled: () => void
+): Promise<RecordValue> {
+  const thread = record((await request('thread/read', { threadId, includeTurns: false })).thread)
+  if (thread.id !== threadId || record(thread.status).type === 'active') return thread
+  const turns: RecordValue[] = []
+  const cursors = new Set<string | null>()
+  let cursor: string | null = null
+  do {
+    checkCancelled()
+    if (cursors.has(cursor)) throw new Error('Codex 历史分页没有继续前进，暂未迁移。')
+    cursors.add(cursor)
+    const page = await request('thread/turns/list', { threadId, cursor, limit: 20, sortDirection: 'asc', itemsView: 'full' })
+    if (!Array.isArray(page.data)) throw new Error('无法完整读取旧 Codex 会话，暂未迁移，请重试。')
+    turns.push(...page.data.map(record))
+    cursor = text(page.nextCursor) || null
+  } while (cursor !== null)
+  return { ...thread, turns }
+}
+
 /** Old IDs are forked once, never resumed. Owned IDs always resume, never auto-fork on failure. */
 export async function prepareCodexSession(input: {
   request: CodexRequest
@@ -97,19 +117,28 @@ export async function prepareCodexSession(input: {
   let messages: AgentRunMessage[] = []
   let result: RecordValue
   if (sessionId) {
-    const read = await request('thread/read', { threadId: sessionId, includeTurns: true })
+    let paginated = false
+    const thread = await request('thread/read', { threadId: sessionId, includeTurns: true })
+      .then(read => record(read.thread), async (error: unknown) => {
+        if (!(error instanceof Error) || !error.message.includes('paginated threads')) throw error
+        paginated = true
+        return readPaginatedCodexThread(request, sessionId, checkCancelled)
+      })
     checkCancelled()
-    const thread = record(read.thread)
-    if (!Array.isArray(thread.turns) || thread.id !== sessionId) throw new Error('无法完整读取旧 Codex 会话，暂未迁移，请重试。')
-    const turns = thread.turns.map(record)
-    if (record(thread.status).type === 'active' || turns.some(turn => turn.status === 'inProgress')) {
+    if (thread.id !== sessionId) throw new Error('无法完整读取旧 Codex 会话，暂未迁移，请重试。')
+    const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : null
+    if (record(thread.status).type === 'active' || turns?.some(turn => turn.status === 'inProgress')) {
       throw new Error('旧 Codex 会话仍有任务在运行。请等待任务结束后重新发送，Fuddy 再迁移历史并独立继续。')
+    }
+    if (!turns || turns.some(turn => turn.itemsView === 'summary' || turn.itemsView === 'notLoaded')) {
+      throw new Error('无法完整读取旧 Codex 会话，暂未迁移，请重试。')
     }
     const lastTurnId = text(turns.at(-1)?.id)
     if (!lastTurnId) throw new Error('旧 Codex 会话没有可确认的历史轮次，暂未迁移。')
     messages = missingCodexMessages(input.runId, sessionId, turns, input.history)
     result = await request('thread/fork', {
-      ...params, threadId: sessionId, lastTurnId, threadSource: 'fuddy', deferGoalContinuation: true
+      ...params, threadId: sessionId, lastTurnId, threadSource: 'fuddy', deferGoalContinuation: true,
+      ...(paginated ? { excludeTurns: true } : {})
     })
   } else {
     result = await request('thread/start', { ...params, serviceName: 'fuddy' })

@@ -6,12 +6,14 @@ import {
 import type { SharedChatView, SharedMessageView, SharedProjectView } from './project-sharing'
 import type { SharedAttachmentView } from './project-sharing-attachments'
 
+export const sharedProjectEventKinds = ['snapshot', 'chat', 'message', 'settings', 'artifact'] as const
+
 /** Ciphertext is scoped to one project and one key epoch; the service never sees plaintext. */
 export interface SharedProjectEncryptedEvent {
   eventId: string
   projectId: string
   keyEpoch: number
-  kind: 'snapshot' | 'chat' | 'message' | 'settings' | 'artifact'
+  kind: typeof sharedProjectEventKinds[number]
   envelope: CompanionEncryptedEnvelope
   actorUserId: string
   sourceDeviceId: string

@@ -1,25 +1,22 @@
 import { ArrowLeft, Plus, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import type { AccountProjectShare } from '../../../shared/account'
 import type { SharedProjectBaselineData } from '../../../shared/project-sharing-events'
 import type { SharedProjectCommand } from '../../../shared/project-sharing-commands'
 import type { SharedProjectMemberActivity } from '../../../shared/project-sharing-commands'
 import type { ChatAttachmentInput } from '../../../shared/chat-attachments'
+import type { AgentRunProvider } from '../../../shared/contracts'
 import { maximumChatAttachments } from '../../../shared/chat-attachments'
 import type { SharedAttachmentView } from '../../../shared/project-sharing-attachments'
 import { ChatComposer } from '../components/ChatComposer'
+import { ChatMarkdown } from '../components/ChatMarkdown'
 import { ConversationShell } from '../components/ConversationShell'
 import { ConversationSpeaker, ConversationUserSpeaker } from '../components/ConversationSpeaker'
+import { SelectMenu } from '../components/SelectMenu'
 import { UserMessageBubble } from '../components/UserMessageBubble'
+import { useAgentProviderOptions } from '../components/useAgentProviderOptions'
 import { conversationAuthors } from '../conversation-authors'
-import { normalizeChatMarkdown } from '../markdown'
 import { prepareChatAttachments } from '../chat-attachments'
-
-function sharedMarkdownUrl(url: string): string {
-  return /^(https?:|mailto:)/iu.test(url) ? url : ''
-}
 
 async function awaitCommand(projectId: string, commandId: string): Promise<SharedProjectCommand> {
   for (let attempt = 0; attempt < 300; attempt += 1) {
@@ -45,6 +42,8 @@ export function SharedProjectsView({ currentUserId, currentUserDisplayName }: {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [data, setData] = useState<SharedProjectBaselineData | null>(null)
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
+  const [newChatProvider, setNewChatProvider] = useState<AgentRunProvider | ''>('')
+  const agentOptions = useAgentProviderOptions(newChatProvider || undefined, Boolean(selectedProjectId))
   const [drafts, setDrafts] = useState<SharedProjectMemberActivity['drafts']>([])
   const [activeTurns, setActiveTurns] = useState<SharedProjectMemberActivity['activeTurns']>([])
   const [invitationToken, setInvitationToken] = useState('')
@@ -80,6 +79,7 @@ export function SharedProjectsView({ currentUserId, currentUserDisplayName }: {
   useEffect(() => {
     setData(null)
     setSelectedChatId(null)
+    setNewChatProvider('')
     setDrafts([])
     setActiveTurns([])
     setAttachments([])
@@ -156,7 +156,7 @@ export function SharedProjectsView({ currentUserId, currentUserDisplayName }: {
     try {
       const submitted = await window.projectAgent.submitSharedProjectCommand({
         projectId: selectedProjectId, runId: null, requestId: null,
-        payload: { type: 'create-chat', title }
+        payload: { type: 'create-chat', title, ...(newChatProvider && { provider: newChatProvider }) }
       })
       const completed = await awaitCommand(selectedProjectId, submitted.commandId)
       if (!completed.resultRunId) throw new Error('执行 Mac 未返回 Chat ID。')
@@ -295,6 +295,12 @@ export function SharedProjectsView({ currentUserId, currentUserDisplayName }: {
       {status && <p className="shared-projects-status" role="status">{status}</p>}
       {data?.pendingSources && data.pendingSources.length > 0 &&
         <p className="shared-projects-status" role="status">部分历史尚未同步：{data.pendingSources.join('、')}</p>}
+      {data && <SelectMenu<AgentRunProvider | ''>
+        value={newChatProvider}
+        options={[{ value: '', label: '项目默认 Agent' }, ...agentOptions]}
+        onChange={setNewChatProvider}
+        ariaLabel="新建 Chat 的 Agent"
+      />}
       <button type="button" className="shared-projects-new-chat" onClick={() => void createChat()} disabled={busy || !data}>
         <Plus size={15} /> 新建 Chat
       </button>
@@ -340,8 +346,7 @@ export function SharedProjectsView({ currentUserId, currentUserDisplayName }: {
               : <ConversationSpeaker label="Agent" />}
             {item.role === 'user'
               ? <UserMessageBubble content={item.content} />
-              : <div className="chat-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}
-                urlTransform={sharedMarkdownUrl}>{normalizeChatMarkdown(item.content)}</ReactMarkdown></div>}
+              : <ChatMarkdown content={item.content} />}
             {item.attachments?.map((attachment) => <button type="button" key={attachment.id}
               onClick={() => void downloadAttachment(attachment)}>{attachment.filename}</button>)}
           </div></article>)}

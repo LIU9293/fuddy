@@ -288,6 +288,12 @@ export interface CompanionSnapshotPayload {
 export type CompanionChatKind = 'assistant' | 'agent'
 export type CompanionChatRecordKind = 'message' | 'process' | 'briefing'
 
+export interface CompanionAgentActivity {
+  version: 1
+  inline: boolean
+  stages: Array<{ id: string; reasoningId: string | null; toolIds: string[] }>
+}
+
 /**
  * A stable presentation block shared by every Companion chat surface.
  * Exactly one payload family is populated for each kind/chat combination.
@@ -302,6 +308,7 @@ export interface CompanionChatRecord<TAssistantMessage = BriefingMessage> {
   assistantMessage: TAssistantMessage | null
   agentMessages: AgentRunMessage[]
   morningBriefing: MorningBriefing | null
+  activity?: CompanionAgentActivity
 }
 
 export interface CompanionChatPage<TAssistantMessage = BriefingMessage> {

@@ -15,7 +15,7 @@ describe('agent model display', () => {
   })
 
   it('keeps provider names consistent in user-facing Run metadata', () => {
-    expect(formatAgentProviderName('pi')).toBe('Pi Agent')
+    expect(formatAgentProviderName('pi')).toBe('Pi')
     expect(formatAgentProviderName('codex')).toBe('Codex')
     expect(formatAgentProviderName('claude')).toBe('Claude Code')
     expect(formatAgentProviderName('opencode')).toBe('OpenCode')
@@ -39,10 +39,16 @@ describe('agent model display', () => {
     expect(buildAgentModelLabels(settings)).toEqual({
       workAssistant: '5.6 Medium',
       providers: {
-        pi: '5.6',
+        pi: 'Pi Default',
         codex: '5.6 Sol High',
         claude: 'Claude Default',
-        opencode: '5.6 Mini Low'
+        opencode: '5.6 Mini Low',
+        cursor: 'Cursor Default',
+        grok: 'Grok Build Default',
+        fx: 'Fx Default',
+        antigravity: 'Antigravity Default',
+        kiro: 'Kiro Default',
+        muse: 'Muse Default'
       }
     })
   })

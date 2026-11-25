@@ -8,14 +8,13 @@ private let companionAgentRunChatTopSpacing: CGFloat = 16
 let companionChatLatestDistanceThreshold: CGFloat = 50
 
 enum CompanionSection: String, CaseIterable, Identifiable {
-    case runs, assistant, inbox, projects, shared, settings
+    case runs, assistant, projects, shared, settings
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .assistant: "助理"
         case .runs: "Chats"
-        case .inbox: "收件箱"
         case .projects: "项目"
         case .shared: "与我共享"
         case .settings: "设置"
@@ -26,7 +25,6 @@ enum CompanionSection: String, CaseIterable, Identifiable {
         switch self {
         case .assistant: "sparkles"
         case .runs: "bubble.left.and.bubble.right"
-        case .inbox: "tray"
         case .projects: "square.grid.2x2"
         case .shared: "person.2"
         case .settings: "gearshape"
@@ -37,7 +35,6 @@ enum CompanionSection: String, CaseIterable, Identifiable {
 enum CompanionRoute: Hashable {
     case run(id: String, prefill: String)
     case newRun(projectId: String?)
-    case decision(id: String)
     case project(id: String)
 }
 
@@ -105,7 +102,7 @@ func companionDrawerTargetIsPresented(
 func companionCanOpenDrawer(section: CompanionSection, pathIsEmpty: Bool) -> Bool {
     guard pathIsEmpty else { return false }
     switch section {
-    case .assistant, .runs, .inbox, .projects, .shared, .settings: return true
+    case .assistant, .runs, .projects, .shared, .settings: return true
     }
 }
 
@@ -203,7 +200,6 @@ struct CompanionRootView: View {
                     switch route {
                     case .run(let id, let prefill): AccountRunDestination(runID: id, prefill: prefill)
                     case .newRun(let projectId): NewRunView(initialProjectID: projectId)
-                    case .decision(let id): DecisionDetailView(decisionID: id)
                     case .project(let id):
                         if let project = store.accountProjects.first(where: { $0.id == id }) {
                             ProjectDetailView(project: project)
@@ -278,7 +274,6 @@ struct CompanionRootView: View {
         switch router.section {
         case .assistant: WorkAssistantView(topChromeHeight: 62 + statusBannerHeight)
         case .runs: RunsListView(topContentInset: 62 + statusBannerHeight)
-        case .inbox: DecisionListView()
         case .projects: ProjectListView()
         case .shared: SharedProjectsView()
         case .settings: CompanionSettingsView()
@@ -1216,7 +1211,7 @@ struct NewRunView: View {
             Section("Agent") {
                 Picker("执行 Agent", selection: $provider) {
                     Text(projectID.isEmpty ? "默认 Coding Agent" : "项目默认 Agent").tag("")
-                    ForEach(companionAgentProviderIDs, id: \.self) { id in
+                    ForEach(store.state.modelLabels.agentProviderIDs, id: \.self) { id in
                         Text(companionAgentProviderLabel(id)).tag(id)
                     }
                 }
@@ -1274,6 +1269,20 @@ func groupRunActivityStages(_ messages: [AgentMessage]) -> [RunActivityStage] {
         }
     }
     return stages
+}
+
+func runActivityStages(for record: CompanionChatRecord) -> [RunActivityStage] {
+    guard let activity = record.activity, activity.version == 1 else {
+        return groupRunActivityStages(record.agentMessages)
+    }
+    let messages = Dictionary(record.agentMessages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    return activity.stages.map { stage in
+        RunActivityStage(
+            id: stage.id,
+            reasoning: stage.reasoningId.flatMap { messages[$0] },
+            tools: stage.toolIds.compactMap { messages[$0] }
+        )
+    }
 }
 
 func formatRunProcessDuration(startedAt: String, completedAt: String) -> String {
@@ -1588,10 +1597,11 @@ struct RunDetailView: View {
     @ViewBuilder
     private func runRecordView(_ record: CompanionChatRecord, active: Bool) -> some View {
         if record.kind == "process" {
-            if let completedAt = record.completedAt {
-                RunProcessDisclosureView(messages: record.agentMessages, completedAt: completedAt)
+            let stages = runActivityStages(for: record)
+            if let completedAt = record.completedAt, record.activity?.inline != true {
+                RunProcessDisclosureView(stages: stages, startedAt: record.createdAt, completedAt: completedAt)
             } else {
-                RunActivityStagesView(messages: record.agentMessages, active: active)
+                RunActivityStagesView(stages: stages, active: active && record.completedAt == nil)
             }
         } else if let message = record.agentMessages.first {
             MessageView(message: message, active: active)
@@ -1653,11 +1663,11 @@ struct RunDetailView: View {
 }
 
 private struct RunProcessDisclosureView: View {
-    let messages: [AgentMessage]
+    let stages: [RunActivityStage]
+    let startedAt: String
     let completedAt: String
     @State private var expanded = false
 
-    private var stages: [RunActivityStage] { groupRunActivityStages(messages) }
     private var operationCount: Int { stages.reduce(0) { $0 + $1.tools.count } }
 
     var body: some View {
@@ -1671,7 +1681,7 @@ private struct RunProcessDisclosureView: View {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
                         .font(.caption.weight(.semibold))
                     Text(formatRunProcessDuration(
-                        startedAt: messages.first?.createdAt ?? completedAt,
+                        startedAt: startedAt,
                         completedAt: completedAt
                     ))
                         .font(.subheadline.weight(.medium))
@@ -1687,13 +1697,13 @@ private struct RunProcessDisclosureView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("思考过程")
             .accessibilityValue(formatRunProcessDuration(
-                startedAt: messages.first?.createdAt ?? completedAt,
+                startedAt: startedAt,
                 completedAt: completedAt
             ))
             .accessibilityHint(expanded ? "轻点收起" : "轻点展开")
 
             if expanded {
-                RunActivityStagesView(messages: messages, active: false)
+                RunActivityStagesView(stages: stages, active: false)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
@@ -1702,10 +1712,8 @@ private struct RunProcessDisclosureView: View {
 }
 
 private struct RunActivityStagesView: View {
-    let messages: [AgentMessage]
+    let stages: [RunActivityStage]
     let active: Bool
-
-    private var stages: [RunActivityStage] { groupRunActivityStages(messages) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1861,6 +1869,16 @@ struct MessageView: View {
     var body: some View {
         if message.eventType == "reasoning" {
             ThinkingText(content: message.content, active: active)
+        } else if message.eventType == "agent_question" {
+            DisclosureGroup {
+                MarkdownText(message.content)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Label(message.metadata?.questionStatus == "cancelled" ? "已跳过提问" : "已回答提问",
+                      systemImage: "questionmark.bubble")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         } else {
             CompanionConversationMessage(
                 role: message.role,
@@ -2271,225 +2289,6 @@ struct MarkdownText: View {
         case 2: return .headline
         default: return .subheadline.bold()
         }
-    }
-}
-
-struct DecisionListView: View {
-    @EnvironmentObject private var store: CompanionStore
-    @State private var status = "inbox"
-    private let statuses = [
-        ("inbox", "待处理"),
-        ("in_progress", "进行中"),
-        ("waiting", "等待中"),
-        ("resolved", "已完成"),
-        ("ignored", "已忽略")
-    ]
-    private var decisions: [Decision] { store.decisions.filter { $0.status == status } }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            CompanionCompactTabBar(
-                selection: $status,
-                items: statuses.map(\.0),
-                title: statusTitle
-            )
-            .padding(.vertical, 10)
-
-            List(decisions) { decision in
-                NavigationLink(value: CompanionRoute.decision(id: decision.id)) { DecisionRow(decision: decision) }
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-            }
-            .listStyle(.plain)
-            .refreshable { await store.sync() }
-            .overlay {
-                if decisions.isEmpty {
-                    ContentUnavailableView("没有\(statuses.first(where: { $0.0 == status })?.1 ?? "")事项", systemImage: "tray")
-                }
-            }
-        }
-    }
-
-    private func statusTitle(_ value: String) -> String {
-        statuses.first(where: { $0.0 == value })?.1 ?? value
-    }
-}
-
-struct DecisionRow: View {
-    let decision: Decision
-    var body: some View {
-        if decision.status == "resolved" {
-            DecisionCompletionCard(decision: decision, compact: true)
-        } else {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 7) {
-                    Text(decision.title).font(.headline)
-                    if decision.status == "in_progress" {
-                        Text("进行中")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.blue)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.blue.opacity(0.09), in: Capsule())
-                    }
-                    if decision.status == "waiting" {
-                        Text(decisionWaitingLabel(decision.waitingReason))
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.orange)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.orange.opacity(0.09), in: Capsule())
-                    }
-                }
-                Text(decision.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                if decision.status == "waiting", let statusSummary = decision.statusSummary {
-                    Text(statusSummary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }
-                Text("\(decision.source) · \(relativeDate(decision.createdAt))").font(.caption).foregroundStyle(.tertiary)
-            }
-            .padding(.vertical, 5)
-        }
-    }
-}
-
-private struct DecisionCompletionCard: View {
-    let decision: Decision
-    let compact: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 7 : 10) {
-            HStack(spacing: 7) {
-                Image(systemName: "checkmark.circle.fill")
-                Text("已完成").font(.subheadline.weight(.semibold))
-                Spacer()
-                if let resolvedAt = decision.resolvedAt {
-                    Text(relativeDate(resolvedAt)).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .foregroundStyle(.green)
-
-            Text(decision.title).font(.headline).foregroundStyle(.primary)
-            Text(decision.resolutionSummary ?? "事项已经完成。")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(compact ? 2 : nil)
-
-            if !compact && !decision.evidenceRefs.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(decision.evidenceRefs, id: \.uri) { evidence in
-                            Label(evidence.label, systemImage: "checkmark")
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.green)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(.green.opacity(0.09), in: Capsule())
-                        }
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(compact ? 14 : 16)
-        .background(.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(.green.opacity(0.13), lineWidth: 1)
-        }
-    }
-}
-
-struct DecisionDetailView: View {
-    @EnvironmentObject private var store: CompanionStore
-    @EnvironmentObject private var router: CompanionRouter
-    let decisionID: String
-    @State private var busy = false
-    @State private var error: String?
-    private var decision: Decision? { store.state.decisions.first { $0.id == decisionID } }
-
-    var body: some View {
-        Form {
-            if let decision {
-                Section("发现") {
-                    Text(decision.summary)
-                    LabeledContent("影响", value: decision.impact)
-                    LabeledContent("来源", value: decision.source)
-                }
-                if decision.status == "resolved" {
-                    Section {
-                        DecisionCompletionCard(decision: decision, compact: false)
-                            .listRowInsets(EdgeInsets())
-                            .listRowBackground(Color.clear)
-                        ForEach(decision.evidenceRefs, id: \.uri) { evidence in
-                            if let url = URL(string: evidence.uri) {
-                                Link(evidence.label, destination: url)
-                            }
-                        }
-                        Button("取消完成", systemImage: "arrow.uturn.backward") { Task { await cancelCompletion() } }.disabled(busy)
-                    }
-                } else if decision.status == "ignored" {
-                    Section("处理") {
-                        Button("恢复待处理", systemImage: "arrow.uturn.backward") { Task { await restore() } }.disabled(busy)
-                    }
-                } else {
-                    Section("处理") {
-                        if decision.status == "waiting", let statusSummary = decision.statusSummary {
-                            LabeledContent(decisionWaitingLabel(decision.waitingReason), value: statusSummary)
-                        }
-                        Button(decision.status == "in_progress" || decision.status == "waiting" ? "继续处理" : "去处理", systemImage: "arrow.up.right") { Task { await handle(decision) } }.disabled(busy)
-                        Button("忽略", systemImage: "archivebox", role: .destructive) { Task { await ignore() } }.disabled(busy)
-                    }
-                }
-                if let error { Section { Text(error).foregroundStyle(.red) } }
-            }
-        }
-        .navigationTitle(decision?.title ?? "收件箱")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private func handle(_ decision: Decision) async {
-        busy = true; defer { busy = false }
-        do {
-            let runID = try await store.handleDecision(decision)
-            router.openRun(id: runID, prefill: decision.summary)
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func ignore() async {
-        busy = true; defer { busy = false }
-        do {
-            try await store.updateDecision(id: decisionID, status: "ignored")
-            await store.sync()
-            router.select(.inbox)
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func cancelCompletion() async {
-        busy = true; defer { busy = false }
-        do {
-            try await store.updateDecision(id: decisionID, status: "in_progress")
-            await store.sync()
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func restore() async {
-        busy = true; defer { busy = false }
-        do {
-            try await store.updateDecision(id: decisionID, status: "inbox")
-            await store.sync()
-        } catch { self.error = error.localizedDescription }
-    }
-}
-
-private func decisionWaitingLabel(_ reason: String?) -> String {
-    switch reason {
-    case "deployment": return "等待部署"
-    case "verification": return "等待验证"
-    case "external": return "等待外部处理"
-    case "measurement": return "等待指标"
-    case "user": return "等待用户"
-    case "scheduled": return "等待复查"
-    default: return "等待中"
     }
 }
 

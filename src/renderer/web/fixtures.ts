@@ -119,18 +119,12 @@ export function previewBootstrap(empty = false): AppBootstrap {
         dueAt: null, evidenceRefs: [], sortOrder: 0, createdAt: previewTime, updatedAt: previewTime, completedAt: null
       }], createdBy: 'user', createdAt: previewTime, updatedAt: previewTime, completedAt: null
     }],
-    decisions: empty ? [] : [{
-      id: 'preview-decision', projectId: 'preview-project', kind: 'decision', title: '确认聊天页的布局方向',
-      summary: '示例事项：比较工作助理和 Agent Run 的标题、内容宽度与输入框。',
-      impact: '帮助检查收件箱的详情、状态切换与「去处理」交互。', urgency: 'medium', confidence: 0,
-      suggestedActions: ['检查共享布局与 Light / Dark 模式'], evidenceRefs: [], status: 'inbox',
-      source: 'Web 预览示例', createdAt: previewTime
-    }],
+    decisions: [],
     decisionRemediations: [], runs: empty ? [] : previewRunDetails().map((detail) => detail.run),
     connectors: [], connectorRuns: [], dailyBriefings: [], morningBriefings: [],
     briefingMessages: empty ? [] : [{
       id: 'preview-assistant', briefingId: null, role: 'assistant',
-      content: '欢迎来到 **Fuddy Web 预览**。\n\n这里复用桌面端的页面与样式，所有项目和聊天都是示例数据。你可以打开收件箱、项目、Agent Run、文件和设置，直接调整 UI。\n\n真实 Agent、账户、语音和 Companion 服务不会启动。',
+      content: '欢迎来到 **Fuddy Web 预览**。\n\n可浏览示例项目、Chats、文件和设置。真实 Agent、账户、语音和 Companion 服务不会启动。',
       attachments: [], taskContext: null, createdAt: previewTime
     }],
     automations: empty ? [] : [{

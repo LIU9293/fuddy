@@ -1,5 +1,7 @@
 import type { AgentRunMessage, BriefingMessage, MorningBriefing } from './contracts'
 import type { CompanionChatPage, CompanionChatRecord } from './companion-sync'
+import { groupAgentActivity } from './agent-activity'
+import { orderTimelineMessages } from './agent-timeline-order'
 
 export const companionInitialChatBlockLimit = 100
 export const companionMaximumChatPageLimit = 100
@@ -50,6 +52,7 @@ export function buildAgentChatRecords(runId: string, messages: AgentRunMessage[]
 
   const appendProcess = (completedAt: string | null): void => {
     if (processMessages.length === 0) return
+    const stages = groupAgentActivity(processMessages, message => message.role === 'tool', message => message.id)
     records.push({
       id: `process-${processMessages[0].id}`,
       chatId: runId,
@@ -59,17 +62,24 @@ export function buildAgentChatRecords(runId: string, messages: AgentRunMessage[]
       completedAt,
       assistantMessage: null,
       agentMessages: processMessages,
-      morningBriefing: null
+      morningBriefing: null,
+      activity: {
+        version: 1,
+        inline: processMessages.some(message => message.metadata?.engine === 't3'),
+        stages: stages.map(({ id, anchor, tools }) => ({
+          id, reasoningId: anchor?.id ?? null, toolIds: tools.map(tool => tool.id)
+        }))
+      }
     })
     processMessages = []
   }
 
-  for (const message of messages) {
+  for (const message of orderTimelineMessages(messages)) {
     if (message.eventType === 'reasoning' || message.role === 'tool') {
       processMessages.push(message)
       continue
     }
-    appendProcess(message.role === 'assistant' ? message.createdAt : null)
+    appendProcess(message.role === 'assistant' && !message.eventType ? message.createdAt : null)
     records.push({
       id: `agent-message-${message.id}`,
       chatId: runId,

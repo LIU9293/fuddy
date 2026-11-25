@@ -4,8 +4,6 @@ import type {
   AgentSessionUpdate,
   AppBootstrap,
   AppBootstrapDataKey,
-  DecisionItem,
-  DecisionStatus,
   GoalMilestone,
   GoalPriority,
   Project,
@@ -13,7 +11,7 @@ import type {
   WorkAssistantImageAttachment,
   WorkAssistantTaskReference
 } from '../../../../shared/contracts'
-import { buildMilestoneDraftPrompt } from '../../views/InboxGoalsView'
+import { buildMilestoneDraftPrompt } from '../../views/GoalsView'
 import { morningBriefingBootstrapKeys, mutableBootstrapKeys } from './app-bootstrap-state'
 
 interface UseProjectWorkflowsOptions {
@@ -28,15 +26,12 @@ interface UseProjectWorkflowsOptions {
 
 export interface ProjectWorkflowController {
   checkingGoalId: string | null
-  handlingDecisionId: string | null
   briefingGenerating: boolean
-  updateDecisionStatus: (id: string, status: DecisionStatus) => Promise<void>
   updateGoalPriority: (id: string, priority: GoalPriority) => Promise<void>
   completeMilestone: (goalId: string, milestoneId: string) => Promise<void>
   deleteMilestone: (goalId: string, milestoneId: string) => Promise<void>
   checkGoal: (id: string) => Promise<void>
   startMilestoneTask: (goal: ProjectGoal, milestone: GoalMilestone) => Promise<void>
-  handleDecision: (item: DecisionItem) => Promise<void>
   generateMorningBriefing: () => Promise<void>
   askMorningBriefing: (
     briefingId: string | null,
@@ -50,17 +45,8 @@ export interface ProjectWorkflowController {
 
 export function useProjectWorkflows(options: UseProjectWorkflowsOptions): ProjectWorkflowController {
   const [checkingGoalId, setCheckingGoalId] = useState<string | null>(null)
-  const [handlingDecisionId, setHandlingDecisionId] = useState<string | null>(null)
   const [briefingGenerating, setBriefingGenerating] = useState(false)
   const startingMilestoneIds = useRef<Set<string>>(new Set())
-
-  async function updateDecisionStatus(id: string, status: DecisionStatus): Promise<void> {
-    const updated = await window.projectAgent.updateDecisionStatus(id, status)
-    options.setBootstrap((current) => current ? {
-      ...current,
-      decisions: current.decisions.map((item) => item.id === id ? updated : item)
-    } : current)
-  }
 
   async function updateGoalPriority(id: string, priority: GoalPriority): Promise<void> {
     const updated = await window.projectAgent.updateGoalPriority(id, priority)
@@ -113,7 +99,7 @@ export function useProjectWorkflows(options: UseProjectWorkflowsOptions): Projec
     try {
       const result = await window.projectAgent.checkGoal(id)
       options.onNotice(result.message)
-      await options.refreshDomains(['goals', 'decisions', 'decisionRemediations'])
+      await options.refreshDomains(['goals'])
     } catch (error) {
       options.onNotice(error instanceof Error ? error.message : '目标检查失败。')
     } finally {
@@ -150,34 +136,6 @@ export function useProjectWorkflows(options: UseProjectWorkflowsOptions): Projec
     }
   }
 
-  async function handleDecision(item: DecisionItem): Promise<void> {
-    if (handlingDecisionId) return
-    if (!options.bootstrap) return
-    setHandlingDecisionId(item.id)
-    options.onNotice(null)
-    try {
-      const existing = options.bootstrap.runs.find(
-        (run) => run.decisionId === item.id && run.status !== 'completed' && run.status !== 'cancelled'
-      )
-      const detail = existing
-        ? await window.projectAgent.getAgentRun(existing.id)
-        : await window.projectAgent.createAgentRunDraft({
-            projectId: item.projectId,
-            decisionId: item.id,
-            provider: options.bootstrap.providerSettings.codingAgents.defaultAgent,
-            title: `处理 · ${item.title}`,
-            draftPrompt: item.summary
-          })
-      await updateDecisionStatus(item.id, 'in_progress')
-      await options.refreshDomains(['runs'])
-      options.onOpenRun(detail.run.id)
-    } catch (error) {
-      options.onNotice(error instanceof Error ? error.message : 'Chat 创建失败。')
-    } finally {
-      setHandlingDecisionId(null)
-    }
-  }
-
   async function generateMorningBriefing(): Promise<void> {
     setBriefingGenerating(true)
     options.onNotice(null)
@@ -185,7 +143,7 @@ export function useProjectWorkflows(options: UseProjectWorkflowsOptions): Projec
       const result = await window.projectAgent.generateMorningBriefing()
       options.onNotice(
         result.briefing.status === 'completed'
-          ? `已生成 ${result.briefing.reportDate} 跨项目简报，新增 ${result.createdSignals.length} 条决策信号。`
+          ? `已生成 ${result.briefing.reportDate} 跨项目简报。`
           : `简报暂未生成：${result.briefing.error ?? '数据聚合失败'}`
       )
       await options.refreshDomains(morningBriefingBootstrapKeys)
@@ -233,15 +191,12 @@ export function useProjectWorkflows(options: UseProjectWorkflowsOptions): Projec
 
   return {
     checkingGoalId,
-    handlingDecisionId,
     briefingGenerating,
-    updateDecisionStatus,
     updateGoalPriority,
     completeMilestone,
     deleteMilestone,
     checkGoal,
     startMilestoneTask,
-    handleDecision,
     generateMorningBriefing,
     askMorningBriefing,
     executeWorkAssistantAction

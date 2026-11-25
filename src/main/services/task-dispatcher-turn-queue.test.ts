@@ -6,6 +6,7 @@ import type { CliAgentRuntime, CliAgentTurnInput } from './cli-agent-runtime'
 import type { PiTaskHarness } from './pi-task-harness'
 import { createTestDatabase } from '../test-support/project-fixtures'
 import { TaskDispatcher } from './task-dispatcher'
+import { AgentProviderRegistry, sharedCapabilities } from './agent-provider-registry'
 import { WorkspaceFilesService } from './workspace-files'
 
 const temporaryDirectories: string[] = []
@@ -14,6 +15,85 @@ afterEach(() => {
 })
 
 describe('durable Chat turn dispatch', () => {
+  it('adopts a T3 follow-up using the identity reserved when it was steered', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'fuddy-steer-fallback-'))
+    temporaryDirectories.push(root)
+    const database = createTestDatabase(join(root, 'app.sqlite'))
+    let releaseFirst = (): void => undefined
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve })
+    const nativeSteer = vi.fn(async () => 'deferred' as const)
+    const execute = vi.fn()
+    const registry = new AgentProviderRegistry([{
+      provider: 'codex', capabilities: sharedCapabilities,
+      recoverSteer: async () => 'deferred',
+      async runTurn(input) {
+        execute(input.requestId, input.executionStartedAt)
+        if (input.prompt === 'start') {
+          input.onSteerReady?.(nativeSteer)
+          await firstGate
+        }
+        return { text: 'Done', sessionId: 'session' }
+      }
+    }])
+    const dispatcher = new TaskDispatcher(database, null, new WorkspaceFilesService(database, join(root, 'files')),
+      null, undefined, undefined, registry)
+    const runId = dispatcher.createDraft({ projectId: null, provider: 'codex' }).run.id
+    const first = dispatcher.sendMessage(runId, 'start', undefined, 'first-req')
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1))
+    const second = dispatcher.sendMessage(runId, 'follow-up', undefined, 'second-req')
+    await dispatcher.steerQueuedTurn('second-req')
+    const timestamp = database.getAgentTurn('second-req')?.startedAt
+    expect(timestamp).toEqual(expect.any(String))
+    expect(nativeSteer).toHaveBeenCalledWith('follow-up', [], 'second-req', timestamp)
+    expect(database.hasAgentRunMessage(runId, 'second-req')).toBe(false)
+    releaseFirst()
+    await Promise.all([first, second])
+    expect(execute).toHaveBeenNthCalledWith(2, 'second-req', timestamp)
+    expect(database.listAgentRunMessages(runId).filter(message => message.id === 'second-req')).toHaveLength(1)
+    database.close()
+  })
+  it('restores a T3 turn and commits the reply and projection sequence together', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'fuddy-recover-t3-'))
+    temporaryDirectories.push(root)
+    const database = createTestDatabase(join(root, 'app.sqlite'))
+    const files = new WorkspaceFilesService(database, join(root, 'files'))
+    const runTurn = vi.fn(async (input: CliAgentTurnInput) => {
+      expect(input.recoverCommittedTurn).toBe(true)
+      input.onCommittedProjection?.(42, true, () => {
+        input.onTool('runCommand', 'pwd', { engine: 't3', itemId: 'tool-1' })
+      })
+      return { text: '已完成', sessionId: 'restored-session' }
+    })
+    const cli = { runTurn } as unknown as CliAgentRuntime
+    const initial = new TaskDispatcher(database, {} as PiTaskHarness, files, cli)
+    const run = initial.createDraft({ projectId: null, title: '恢复 T3', provider: 'codex' }).run
+    const requestId = crypto.randomUUID()
+    database.enqueueAgentTurn({ requestId, runId: run.id, prompt: '请执行', attachments: [],
+      requestedByUserId: null, authorSnapshot: null })
+    database.claimAgentTurn(requestId)
+    database.startAgentTurn({ id: requestId, requestId, runId: run.id, role: 'user', content: '请执行',
+      eventType: null, toolName: null, metadata: null, createdAt: run.createdAt },
+    { ...run, status: 'running', visibility: 'published' })
+
+    expect(() => database.commitAgentProjection(requestId, 41, () => {
+      database.createAgentRunMessage({ id: 'rolled-back', runId: run.id, role: 'assistant', content: '未提交',
+        eventType: null, toolName: null, metadata: null, createdAt: run.createdAt })
+      throw new Error('模拟事务失败')
+    })).toThrow('模拟事务失败')
+    expect(database.hasAgentRunMessage(run.id, 'rolled-back')).toBe(false)
+    expect(database.getSetting(`agent.projection.${requestId}`, null)).toBeNull()
+
+    const reopened = new TaskDispatcher(database, {} as PiTaskHarness, files, cli, undefined, undefined,
+      undefined, undefined, () => true)
+    const detail = await reopened.sendMessage(run.id, '请执行', undefined, requestId)
+    expect(runTurn).toHaveBeenCalledTimes(1)
+    expect(detail.run).toMatchObject({ status: 'idle', sessionId: 'restored-session' })
+    expect(detail.messages.map(message => message.content)).toEqual(['请执行', 'pwd', '已完成'])
+    expect(database.getAgentTurn(requestId)?.status).toBe('completed')
+    expect(database.getSetting(`agent.projection.${requestId}`, null)).toBe(42)
+    database.close()
+  })
+
   it('keeps the first accepted author identity when a queued request is retried', async () => {
     const root = mkdtempSync(join(tmpdir(), 'fuddy-author-snapshot-'))
     temporaryDirectories.push(root)

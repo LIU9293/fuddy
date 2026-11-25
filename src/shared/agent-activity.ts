@@ -6,6 +6,51 @@ export interface AgentToolPresentation {
   summary: string
 }
 
+export interface AgentFileChange {
+  path: string
+  paths?: string[]
+  additions?: number
+  deletions?: number
+  diff?: string
+}
+
+export function readAgentFileChange(value: unknown): AgentFileChange | undefined {
+  const change = asRecord(value)
+  if (!change || typeof change.path !== 'string') return undefined
+  return {
+    path: change.path,
+    paths: Array.isArray(change.paths) ? change.paths.filter((path): path is string => typeof path === 'string') : undefined,
+    additions: typeof change.additions === 'number' ? change.additions : undefined,
+    deletions: typeof change.deletions === 'number' ? change.deletions : undefined,
+    diff: typeof change.diff === 'string' ? change.diff : undefined
+  }
+}
+
+export interface AgentActivityStage<T> {
+  id: string
+  anchor: T | null
+  tools: T[]
+}
+
+/** An explanation or public reply starts a new stage. Only adjacent tools share a group. */
+export function groupAgentActivity<T>(
+  items: T[],
+  isTool: (item: T) => boolean,
+  itemId: (item: T) => string
+): AgentActivityStage<T>[] {
+  const stages: AgentActivityStage<T>[] = []
+  for (const item of items) {
+    if (!isTool(item)) {
+      stages.push({ id: itemId(item), anchor: item, tools: [] })
+      continue
+    }
+    const latest = stages.at(-1)
+    if (latest) latest.tools.push(item)
+    else stages.push({ id: `stage-${itemId(item)}`, anchor: null, tools: [item] })
+  }
+  return stages
+}
+
 type JsonRecord = Record<string, unknown>
 
 const toolKindLabels: Record<AgentToolKind, string> = {

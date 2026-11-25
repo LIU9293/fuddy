@@ -595,12 +595,23 @@ struct AgentMessage: Codable, Identifiable, Hashable {
 
 struct AgentMessageMetadata: Codable, Hashable {
     var segmentId: String?
+    var timelineOrdinal: Int?
+    var steered: Bool?
+    var questionStatus: String?
 
-    init(segmentId: String? = nil) { self.segmentId = segmentId }
+    init(segmentId: String? = nil, timelineOrdinal: Int? = nil, steered: Bool? = nil, questionStatus: String? = nil) {
+        self.segmentId = segmentId
+        self.timelineOrdinal = timelineOrdinal
+        self.steered = steered
+        self.questionStatus = questionStatus
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         segmentId = try? container.decode(String.self, forKey: .segmentId)
+        timelineOrdinal = try? container.decode(Int.self, forKey: .timelineOrdinal)
+        steered = try? container.decode(Bool.self, forKey: .steered)
+        questionStatus = try? container.decode(String.self, forKey: .questionStatus)
     }
 }
 
@@ -650,6 +661,19 @@ struct CompanionChatRecord: Codable, Identifiable, Hashable {
     let assistantMessage: WorkAssistantMessage?
     let agentMessages: [AgentMessage]
     let morningBriefing: MorningBriefing?
+    var activity: CompanionAgentActivity? = nil
+}
+
+struct CompanionAgentActivity: Codable, Hashable {
+    struct Stage: Codable, Hashable {
+        let id: String
+        let reasoningId: String?
+        let toolIds: [String]
+    }
+
+    let version: Int
+    let inline: Bool
+    let stages: [Stage]
 }
 
 struct CompanionChatPage: Codable, Hashable {
@@ -675,7 +699,11 @@ struct AgentModelLabels: Codable, Equatable {
     )
 
     func label(for provider: String) -> String {
-        providers[provider] ?? "\(provider.capitalized) Default"
+        providers[provider] ?? Self.fallback.providers[provider] ?? "\(companionAgentProviderLabel(provider)) Default"
+    }
+
+    var agentProviderIDs: [String] {
+        companionAgentProviderIDs + providers.keys.filter { $0.hasPrefix("acp-") && isCompanionAgentProvider($0) }.sorted()
     }
 }
 

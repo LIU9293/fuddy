@@ -23,6 +23,7 @@ import type {
   SaveAutomationInput
 } from '../../../shared/contracts'
 import { SelectMenu } from './SelectMenu'
+import { useAgentProviderOptions } from './useAgentProviderOptions'
 import { dailyInspectionJobId, defaultBriefingPrompt } from '../../../shared/briefing-prompt'
 
 const actionLabels: Record<AutomationAction, string> = {
@@ -31,13 +32,6 @@ const actionLabels: Record<AutomationAction, string> = {
   'check-goals': '目标 Check-in',
   'generate-briefing': '生成简报'
 }
-
-const agentOptions = [
-  { value: 'pi', label: 'Pi Agent' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'claude', label: 'Claude Code' },
-  { value: 'opencode', label: 'OpenCode' }
-]
 
 const statusLabels: Record<AutomationJob['status'], string> = {
   idle: '等待下次运行',
@@ -116,6 +110,7 @@ export function AutomationsView({
   const [drawer, setDrawer] = useState<'form' | 'detail' | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [draft, setDraft] = useState<SaveAutomationInput>(blankInput)
+  const agentOptions = useAgentProviderOptions(draft.agentProvider, drawer === 'form')
   const [busy, setBusy] = useState<string | null>(null)
   const selected = automations.find((job) => job.id === selectedId) ?? null
   const selectedRuns = useMemo(

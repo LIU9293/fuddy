@@ -3,7 +3,6 @@ import type { Navigation, ProjectSection, SettingsSection, SidebarSelection } fr
 
 export type AppMainRoute =
   | { kind: 'briefing' }
-  | { kind: 'inbox' }
   | { kind: 'files' }
   | { kind: 'projects' }
   | { kind: 'shared-projects' }
@@ -56,7 +55,7 @@ export function appRouteReducer(route: AppRoute, action: AppRouteAction): AppRou
 }
 
 export function navigationForRoute(route: AppRoute): Navigation {
-  return route.kind === 'project' ? 'inbox' : route.kind
+  return route.kind
 }
 
 export function sidebarSelectionForRoute(route: AppRoute): SidebarSelection {
@@ -71,7 +70,7 @@ export function selectedProjectForRoute(route: AppRoute): string | null {
 }
 
 export function projectSectionForRoute(route: AppRoute): ProjectSection {
-  return route.kind === 'project' ? route.section : 'inbox'
+  return route.kind === 'project' ? route.section : 'status'
 }
 
 export function selectedRunForRoute(route: AppRoute): string | null {
@@ -97,7 +96,6 @@ export interface AppNavigationController {
   creatingAgentRun: boolean
   creatingAgentRunProjectId: string | null | undefined
   openBriefing: () => void
-  openInbox: () => void
   openFiles: () => void
   openProjects: () => void
   openSharedProjects: () => void
@@ -128,12 +126,11 @@ export function useAppNavigation(): AppNavigationController {
     creatingAgentRun: creatingRunForRoute(route),
     creatingAgentRunProjectId: creatingRunProjectForRoute(route),
     openBriefing: () => dispatch({ type: 'open-main', route: { kind: 'briefing' } }),
-    openInbox: () => dispatch({ type: 'open-main', route: { kind: 'inbox' } }),
     openFiles: () => dispatch({ type: 'open-main', route: { kind: 'files' } }),
     openProjects: () => dispatch({ type: 'open-main', route: { kind: 'projects' } }),
     openSharedProjects: () => dispatch({ type: 'open-main', route: { kind: 'shared-projects' } }),
     openAutomations: () => dispatch({ type: 'open-main', route: { kind: 'automations' } }),
-    openProject: (projectId, section = 'inbox') => dispatch({ type: 'open-project', projectId, section }),
+    openProject: (projectId, section = 'status') => dispatch({ type: 'open-project', projectId, section }),
     setProjectSection: (section) => dispatch({ type: 'set-project-section', section }),
     openRun: (runId) => dispatch({ type: 'open-main', route: { kind: 'runs', runId, creating: false } }),
     openRuns: () => dispatch({ type: 'open-main', route: { kind: 'runs', runId: null, creating: false } }),

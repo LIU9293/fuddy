@@ -11,6 +11,7 @@ import {
   groupLiveActivityStages,
   groupMessageTimeline,
   hasVisibleRunFeedback,
+  mergeNativeLiveActivities,
   RunLiveActivity,
   shouldBlockAgentRunDetailRefresh,
   visibleLiveActivities,
@@ -34,6 +35,43 @@ function message(input: Partial<AgentRunMessage> & Pick<AgentRunMessage, 'id' | 
 }
 
 describe('Agent Run live activity timeline', () => {
+  it('keeps a Steer after native work even when the tool completion was written later', () => {
+    const rows = groupMessageTimeline([
+      message({ id: 'start', role: 'user', createdAt: '1' }),
+      message({ id: 'steer', role: 'user', createdAt: '2', metadata: { steered: true, timelineOrdinal: 4 } }),
+      message({ id: 'plan', role: 'assistant', eventType: 'commentary', createdAt: '3',
+        metadata: { engine: 't3', timelineOrdinal: 2 } }),
+      message({ id: 'tool', role: 'tool', createdAt: '4', metadata: { engine: 't3', timelineOrdinal: 3 } }),
+      message({ id: 'reply', role: 'assistant', createdAt: '5', metadata: { engine: 't3', timelineOrdinal: 5 } }),
+      message({ id: 'next-turn', role: 'user', createdAt: '6' })
+    ])
+    expect(rows.flatMap(row => row.kind === 'message' ? [row.value.id] : row.values.map(value => value.id)))
+      .toEqual(['start', 'plan', 'tool', 'steer', 'reply', 'next-turn'])
+    expect(rows.find(row => row.kind === 'process')).toMatchObject({ startedAt: '1', completedAt: '5' })
+  })
+
+  it('only shows one native tool when streamed and persisted activity overlap', () => {
+    const call: AgentRunStreamUpdate = { type: 'tool', toolName: 'runCommand', toolCallId: 'live',
+      status: 'completed', detail: 'pwd', timelineOrdinal: 4 }
+    const persisted = [
+      message({ id: 'stored', role: 'tool', toolName: 'runCommand', createdAt: '2', metadata: { timelineOrdinal: 4 } }),
+      message({ id: 'reasoning', role: 'assistant', eventType: 'reasoning', createdAt: '1',
+        metadata: { timelineOrdinal: 3, segmentId: 't3:separate' } })
+    ]
+    expect(mergeNativeLiveActivities(persisted, apply([call])).map(activity => activity.value.id))
+      .toEqual(['live', 'reasoning'])
+  })
+
+  it('preserves native file counts and diff in the expanded work card', () => {
+    const markup = renderToStaticMarkup(createElement(RunLiveActivity, {
+      activities: apply([{ type: 'tool', toolName: 'applyPatch', toolCallId: 'file',
+        status: 'completed', detail: 'notes.md', fileChange: { path: 'notes.md', additions: 1, deletions: 1, diff: '-before\n+after' } }]),
+      streamingText: '', approval: null, onApproval: async () => undefined
+    }))
+    expect(markup).toContain('class="agent-file-change"')
+    expect(markup).toContain('data-change="addition">+after')
+    expect(markup).toContain('data-change="deletion">-before')
+  })
   it('keeps the current conversation mounted during background detail refreshes', () => {
     expect(shouldBlockAgentRunDetailRefresh('run-1', 'run-1')).toBe(false)
     expect(shouldBlockAgentRunDetailRefresh(null, 'run-1')).toBe(true)
@@ -313,7 +351,10 @@ describe('Agent Run live activity timeline', () => {
 
   it('shows a trailing disclosure chevron on collapsed tool groups', () => {
     const markup = renderToStaticMarkup(createElement(RunLiveActivity, {
-      activities: apply([{ type: 'tool', toolCallId: 'tool-1', toolName: 'Bash', status: 'completed', detail: 'A long command summary' }]),
+      activities: apply([
+        { type: 'tool', toolCallId: 'tool-1', toolName: 'Bash', status: 'completed', detail: 'A long command summary' },
+        { type: 'tool', toolCallId: 'tool-2', toolName: 'Read', status: 'completed', detail: 'note.txt' }
+      ]),
       streamingText: '',
       approval: null,
       onApproval: async () => undefined
