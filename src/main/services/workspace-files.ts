@@ -53,6 +53,12 @@ function normalizeRelativePath(value: string): string {
   return value.trim().replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/{2,}/g, '/')
 }
 
+class WorkspacePathOutsideError extends Error {
+  constructor() {
+    super('路径必须位于项目文件空间内。')
+  }
+}
+
 export class WorkspaceFilesService {
   constructor(
     private readonly database: AppDatabase,
@@ -76,8 +82,14 @@ export class WorkspaceFilesService {
         if (item.name === '.DS_Store') continue
         const absolutePath = resolve(directory, item.name)
         const relativePath = relative(root, absolutePath).split(sep).join('/')
-        const entry = this.toEntry(projectId, root, relativePath)
-        entries.push(entry)
+        try {
+          entries.push(this.toEntry(projectId, root, relativePath))
+        } catch (error) {
+          if (error instanceof WorkspacePathOutsideError) continue
+          const code = (error as NodeJS.ErrnoException).code
+          if (item.isSymbolicLink() && (code === 'ENOENT' || code === 'ENOTDIR' || code === 'ELOOP')) continue
+          throw error
+        }
         if (item.isDirectory() && entries.length < 2_000) visit(absolutePath)
         if (entries.length >= 2_000) return
       }
@@ -307,7 +319,7 @@ export class WorkspaceFilesService {
   private assertInside(root: string, target: string): void {
     const relativeTarget = relative(root, target)
     if (isAbsolute(relativeTarget) || relativeTarget === '..' || relativeTarget.startsWith(`..${sep}`) || resolve(target) === resolve(this.root)) {
-      throw new Error('路径必须位于项目文件空间内。')
+      throw new WorkspacePathOutsideError()
     }
     // Check the nearest existing ancestor for writes as well as reads. lstat
     // includes dangling symlinks, which must not bypass this boundary.
@@ -319,6 +331,6 @@ export class WorkspaceFilesService {
       }
     }
     const actual = relative(realpathSync(root), realpathSync(ancestor))
-    if (isAbsolute(actual) || actual === '..' || actual.startsWith(`..${sep}`)) throw new Error('路径必须位于项目文件空间内。')
+    if (isAbsolute(actual) || actual === '..' || actual.startsWith(`..${sep}`)) throw new WorkspacePathOutsideError()
   }
 }
